@@ -19,6 +19,46 @@ On synthesised durable events, a domain child that has recurred past the retriev
 
 `entity-fields.TreeProfile`-family obligations untouched; the harvest and promotion rules' existing obligations must stay green (report the coverage line for `PromoteWellScoredClass` and the harvest rules).
 
+## Verification
+
+No new production path. Two readers were fixed and one field carried. Walk-down's synthetic child candidate now
+carries the scope its description was read under, tree-class for a runtime-emergent domain child and
+tree-fingerprint for a seeded one, instead of a hardcoded seeded axis that hid a walk-down-selected domain child
+from every tree-class consumer downstream. The harvested body carries the domain label as an optional field, read
+from the class's tree-class concept at harvest time; the label lives on the concept, which is what distinguishes a
+domain child from every other tree-class concept (seeded and lazily created concepts carry their own identifier as
+their label, the same convention RS-2's children lookup relies on). Harvest's gate, the consolidator, the retrieval
+gate and the reindex trigger are byte-identical; a domain mint does not force a reindex, by decision, and the child
+becomes searchable at the next rebuild like any other claim write.
+
+Seam 4 throughout: real store, real commands, real read-models, no retrieval index loaded. The index feed and the
+retrieval-gate band were green on first write and are reported as findings, as the brief predicted: the feed already
+reads assembled tree-class bodies (the child's document carries its birth signature as content, granularity
+tree-class, confidence zero because it has no strengths yet), and the gate treats the child's identity like any
+tree-class (surfaced at zero occurrences, filtered at one and two, surfaced again at three). The walk-down scope
+and the harvested label were red-first: one failure each, for the stated reason, then green. The harvest proof
+mirrors the good-class harvest with a minted child in place of a recorded description: twelve synthesised
+occurrences on the child, the first carrying the parent behavior, promote exactly one behavioral child under that
+parent whose body carries the injected signature and the domain label, through the direct call and through the
+processor.
+
+Independent inspection re-ran the RS-5 suite with the birth, walk-down, harvest, body-assembly, consolidator,
+RS-2, seeds, convergence-capture, coherence, recurrence and hierarchy suites plus the RS-3 durable and RS-4 render
+suites (179 tests, 954 assertions, 0 failures), re-read the three diffs and confirmed the gated forms untouched.
+The implementer surfaced, root-caused and did not paper over a harness defect in a helper it had been told to reuse:
+the birth suite's dispatch helper appended every command's events a second time, because the real command
+processor already appends before returning; one mint left ten events in the store. Both suites now dispatch through
+the command processor alone, and the birth suite's idempotency test now proves one minted event in the store after
+two mints rather than reading only the second command's return value. One stale name in the brief (a recurrence
+corroboration suite that does not exist as a file; its subject lives in the coherence suite) was reported rather
+than silently substituted. Coverage `0 obligations, 0 covered, 0 uncovered` for new ones; the harvest and promotion
+rules' existing obligations hold through their suites.
+
+On the combined RS-4 and RS-5 tree the ontology brick passes in each owning project graph as its own JVM (82
+namespaces, 706 tests / 3982 assertions each, 0 failures) and the complete two-project `orc-service` brick passes
+with exit 0 in 54 minutes 46 seconds under a 3 GB heap cap (132 namespaces per graph, 2142 tests / 11970 assertions
+across both, 0 failures, 0 errors) — this run is also RS-4's brick gate.
+
 ## Test seams
 
 Seam 4 — synthesised-event tests (prior art: `el4_harvest_test`, `rr21_winning_shape_coherence_test`, `seeds_test`).

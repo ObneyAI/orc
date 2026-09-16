@@ -305,17 +305,26 @@
    C-2d-1's projector). RS-P2's Q-c finding: reading :tree-fingerprint only
    made every domain child invisible to this walk even though its parent
    edge existed. Children without a description under EITHER scope are
-   dropped (the rerank step needs content)."
+   dropped (the rerank step needs content).
+
+   RS-5 (gap A): each returned map also carries `:scope` — the SCOPE the
+   description was actually found under (`:tree-class` or
+   `:tree-fingerprint`), never hardcoded — so `pick-best-child` can stamp
+   the synthetic candidate's `:document-metadata :granularity` with the
+   scope it was read under instead of a hardcoded axis."
   [ctx parent-target-id]
   (let [parent-uri (str tree-class-uri-prefix parent-target-id)
         child-uris (or (get-narrower-concepts ctx parent-uri) #{})]
     (vec
       (keep (fn [child-uri]
               (let [child-id (uri->target-id child-uri)
-                    desc (or (get-description ctx :tree-class child-id)
+                    tree-class-desc (get-description ctx :tree-class child-id)
+                    scope (if tree-class-desc :tree-class :tree-fingerprint)
+                    desc (or tree-class-desc
                              (get-description ctx :tree-fingerprint child-id))]
                 (when desc
                   {:target-id child-id
+                   :scope scope
                    :description desc})))
             child-uris))))
 
@@ -325,14 +334,22 @@
    that meets the auto-classify threshold, or nil if no child does.
 
    RR-2: `model` is an OPTIONAL reranker :model override, threaded
-   straight through to `rerank!`'s own :model opt — nil is a no-op."
+   straight through to `rerank!`'s own :model opt — nil is a no-op.
+
+   RS-5 (gap A): each candidate's `:document-metadata :granularity` is the
+   SCOPE `get-tree-class-children` actually read the child's description
+   under (`:scope`, RS-5) — `:tree-class` for a runtime-emergent domain
+   child (CV-1's signature route) or `:tree-fingerprint` for a seeded
+   instance — never a hardcoded axis. Defaults to `:tree-fingerprint` when
+   a caller-supplied child map carries no `:scope` (defensive; every child
+   `get-tree-class-children` returns carries one)."
   [ctx intent children threshold model]
   (when (seq children)
     (let [candidates (mapv (fn [c]
                              {:content (or (-> c :description :summary) "")
                               :score 0.0
                               :document-id (str (:target-id c))
-                              :document-metadata {:granularity :tree-fingerprint
+                              :document-metadata {:granularity (or (:scope c) :tree-fingerprint)
                                                   :target-id (:target-id c)
                                                   :confidence 1.0
                                                   :last-update "—"}})

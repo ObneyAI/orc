@@ -31,10 +31,13 @@
    :source-tick-id (random-uuid)
    :source-node-id (random-uuid)})
 
-(defn- dispatch! [ctx command]
-  (let [r (cp/process-command (assoc ctx :command command))]
-    (th/apply-events! ctx r)
-    r))
+(defn- dispatch!
+  "Dispatch through the real command processor, which APPENDS the result's
+   events itself (Grain command-processor-v2 `execute-command`). Never
+   follow it with `th/apply-events!` — that appended every event a second
+   time (RS-5 inspection finding: one mint left ten events in the store)."
+  [ctx command]
+  (cp/process-command (assoc ctx :command command)))
 
 (defn- tree-class-uri [id] (str "tree-class:" id))
 
@@ -70,6 +73,10 @@
         (let [r2 (dispatch! ctx (mint-command parent-id child-id "recipe-scaling"))]
           (is (empty? (:command-result/events r2))
               "re-minting the SAME identity emits nothing new")
+          (is (= 1 (count (into [] (es/read (:event-store ctx)
+                                            {:tenant-id (:tenant-id ctx)
+                                             :types #{:ontology/domain-child-minted}}))))
+              "exactly ONE domain-child-minted event in the store after two mints")
           (is (contains? (ontology/get-narrower-concepts ctx (tree-class-uri parent-id))
                          (tree-class-uri child-id))
               "the edge still holds after the no-op re-mint"))))))

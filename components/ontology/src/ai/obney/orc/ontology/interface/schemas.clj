@@ -127,7 +127,15 @@
    ;; behavior IDs here. Sticky on subsequent consolidations. Absent
    ;; for non-tree-fingerprint granularities and on the orphan path
    ;; (classify-behaviors returned the fresh-mint marker).
-   [:behavioral-subtree-ids    {:optional true} [:vector [:or :uuid :string]]]])
+   [:behavioral-subtree-ids    {:optional true} [:vector [:or :uuid :string]]]
+   ;; RS-5 (gap B): the domain label a harvested behavioral child was
+   ;; promoted FROM. The label lives on the domain child's tree-class
+   ;; CONCEPT (RS-3's `mint-domain-child` stamps it at birth), never in a
+   ;; description body — `harvest/harvest-body` looks it up separately and
+   ;; stamps it here so the harvested behavior still carries it. Optional/
+   ;; omit-when-absent: every pre-existing body (and every harvest of a
+   ;; non-domain-child class) stays byte-shaped.
+   [:domain-label              {:optional true} :string]])
 
 (def node-instance-target
   "Identity tuple for a node-instance description target —
