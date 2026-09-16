@@ -6,19 +6,48 @@ PRD `docs/prd/r-inject-specialisation.md`; decisions D1–D6 in `docs/build-time
 
 ## What to build
 
-After the existing match, bundle, walk-down and deferral logic has produced an outcome, the classifier applies the assigned candidate's coverage verdict. A matched outcome whose assigned class has no children and whose verdict is uncovered becomes a domain-child assignment: the child identity derived deterministically from the parent class and the canonical label, the parent, the label, the reasoning, and a provenance of its own, distinct from walk-down's mint. Partial keeps the leaf assignment and carries the label. Unknown returns the shape assignment with a domain-axis deferral to be recorded. Covered changes nothing. Walk-down's own leaf mint and the bundle band are untouched, and the same task twice derives the same child identity.
+After the existing match, bundle, walk-down and deferral logic has produced an outcome, the classifier applies the assigned candidate's coverage verdict. A matched outcome whose assigned class has no children and whose verdict is uncovered becomes a domain-child assignment: the child identity derived deterministically from the parent class and the canonical label, the parent, the label, the reasoning, and a provenance of its own, distinct from walk-down's mint. After D7 and D7b: a partial or uncovered verdict mints the class's first domain child; covered keeps the leaf; unknown returns the shape assignment with a domain-axis deferral to be recorded; once the class has domain children the verdict is not consulted and the judged label decides (an existing sibling's label lands the task on that child, a new label mints a sibling). Walk-down's own leaf mint and the bundle band are untouched, and the same task twice derives the same child identity.
 
 ## Acceptance criteria
 
-- [ ] An uncovered leaf match yields the derived child identity, parent, label and its own provenance, and the same task again yields the identical identity
-- [ ] A partial verdict assigns the leaf and carries the label; a covered verdict is byte-identical to today's result
-- [ ] An unknown, missing or malformed verdict yields the shape assignment plus a domain-axis deferral, and no child identity
-- [ ] A match on a class that has children, and walk-down's own mint, behave exactly as before (the existing walk-down and three-state suites are green unchanged)
-- [ ] Label canonicalisation is deterministic and documented in the function's contract
+- [x] An uncovered leaf match yields the derived child identity, parent, label and its own provenance, and the same task again yields the identical identity
+- [x] A partial verdict mints the first child exactly as uncovered does; a covered verdict is byte-identical to today's result
+- [x] An unknown, missing or malformed verdict yields the shape assignment plus a domain-axis deferral, and no child identity
+- [x] A match on a class that has children, and walk-down's own mint, behave exactly as before (the existing walk-down and three-state suites are green unchanged)
+- [x] Label canonicalisation is deterministic and documented in the function's contract
 
 ## Spec obligations covered
 
 `rule-success.MintDomainChild`, `rule-failure.MintDomainChild.1/.2/.3`, and after D7b also `rule-success.LandOnDomainChild`, `rule-failure.LandOnDomainChild.1/.2/.3`, `rule-success.MintSiblingDomainChild`, `rule-failure.MintSiblingDomainChild.1/.2/.3`; `enum-comparable.DomainCoverage` (covered by RS-1, stays green). D7b: the coverage verdict decides only a class's FIRST child; with children present the judged label decides (sibling → that child; new → new sibling).
+
+## Verification
+
+After the existing match, bundle, walk-down and deferral logic, a `:tree-class` match now carries the assigned
+candidate's domain verdict through the rerank join (which dropped it before) and applies the spec's three rules. With
+no domain children, `partial` or `uncovered` mints the first child — identity derived deterministically from the parent
+and the canonical label (`nameUUIDFromBytes` over `"domain-child:<parent>:<label>"`, the same derivation the behavioral
+mint uses), provenance `:mint-domain-child`, the parent and label on the result — while `covered` leaves the match
+untouched and `unknown` (or a missing or blank label) adds a domain-axis deferral and mints nothing. With children
+present the verdict is not consulted: a judged label equal to a sibling's lands on that child
+(`:land-on-domain-child`), a new label mints a sibling (`:mint-sibling-domain-child`), and this runs whatever the top
+match's fitness, so a class with domain children is never a leaf. Bundle, walk-down's own mint, uncertain and a
+fingerprint-axis match pass through byte-identical. The only label normalisation is trim, lower-case and whitespace to
+hyphen; the lookup of a parent's children is an injected capability with a real default.
+
+Red-first: the join (3 failures), the first-child mint and its stability (7 failures); the remaining branches were
+green on first write because one function implements them and the implementer wrote it whole — reported as findings,
+not hidden. Two of the implementer's own test expectations were wrong and were fixed in the tests, not the code (an
+invalid baseline, and the codebase's omit-not-nil idiom). One real regression surfaced in the guard run: two older
+suites classify with a bare context and the new lookup reached the store and threw. The implementer made the default
+fail open — a store failure reading as "no children" — and the orchestrator reversed that during inspection: a failed
+lookup now defers on the domain axis (`:children-lookup-failed`) and mints nothing, because reading a failure as "no
+children" would mint a fresh sibling for a domain that already has a child, the scatter this arc exists to prevent;
+red-first, and the two older suites stay green because the deferral leaves their assignment untouched.
+
+Independent inspection re-read both diffs, confirmed no `.allium` edit and no weakened assertion, and re-ran the RS-2
+suite with the reranker and classifier suites: 0 failures. Coverage `12 obligations, 12 covered, 0 uncovered`
+(`rule-success` and `rule-failure.1/.2/.3` for `MintDomainChild`, `LandOnDomainChild`, `MintSiblingDomainChild`; the
+graph-edge obligations belong to RS-3). On the final tree the ontology brick passes in each owning project graph run as its own JVM (80 namespaces, 695 tests / 3934 assertions each, 0 failures) and the complete two-project `orc-service` brick passes with exit 0 in 68 minutes 2 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1058 tests / 5885 assertions per graph, 0 failures, 0 errors); Allium on the ontology spec holds at 43 information diagnostics, 8 warnings, 0 errors, 0 analyse findings.
 
 ## Test seams
 

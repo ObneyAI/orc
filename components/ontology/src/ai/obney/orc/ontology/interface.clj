@@ -951,7 +951,19 @@
                              (-> orig
                                  (assoc :reasoning (:reasoning r))
                                  (assoc :fitness-score (:fitness-score r))
-                                 (assoc :rerank-source :reranker))))
+                                 (assoc :rerank-source :reranker)
+                                 ;; RS-2: widen the JOIN to also carry RS-1's
+                                 ;; domain verdict. Present on every reranked
+                                 ;; entry since RS-1's parse (parse-reranked-json
+                                 ;; always defaults these three keys -- :unknown/
+                                 ;; nil when the model omitted them, never
+                                 ;; simply absent) so the classifier can apply
+                                 ;; MintDomainChild / LandOnDomainChild /
+                                 ;; MintSiblingDomainChild after a :tree-class
+                                 ;; match.
+                                 (assoc :domain-coverage (:domain-coverage r))
+                                 (assoc :domain-label (:domain-label r))
+                                 (assoc :domain-reasoning (:domain-reasoning r)))))
                          reranked)
             ;; EL-5: contrastive domain penalty + re-sort, then take k. The
             ;; scorer is config-selected (ADR 0016 amendment): :colbert (DEFAULT)
