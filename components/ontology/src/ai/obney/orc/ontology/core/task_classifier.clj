@@ -758,6 +758,10 @@
               (assoc :assigned-tree-id (:target-id existing))
               (assoc :assigned-via :land-on-domain-child)
               (assoc :parent-tree-id parent-id)
+              ;; RS-4 inspection: the landed child's label is a fact of the
+              ;; outcome (the spec's TaskClassified carries domain_label on
+              ;; every rule); the R-Inject render names the child by it.
+              (assoc :domain-label canonical-label)
               (assoc :was-fresh-mint? false))
           (-> base
               (assoc :assigned-tree-id (stable-domain-child-identity parent-id canonical-label))

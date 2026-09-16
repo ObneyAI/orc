@@ -196,6 +196,8 @@
             (is (= :land-on-domain-child (:assigned-via second-classified)))
             (is (= first-child-id (:assigned-tree-id second-classified))
                 "the SAME child identity — DomainChildIdentityIsStable")
+            (is (= "marathon-training-plan" (:domain-label second-classified))
+                "a landing records the landed child's label")
             (is (false? (:was-fresh-mint? second-classified)))
             (is (= 1 (count (ontology/get-claims ctx :tree-class first-child-id)))
                 "still exactly one claim on the child — no second capture")))))))

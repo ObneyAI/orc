@@ -19,6 +19,44 @@ When a task is assigned to a domain child that has no consolidated body, the pre
 
 None new (a consumer surface); the prepend suites are the evidence.
 
+## Verification
+
+The wedge's classifier payload gains one optional key, present only on the three domain outcomes: the assignment
+kind, the parent, the child and the label. Every other outcome's payload, and therefore the durable classification
+context on the classified event, is byte-identical to before (the bounded-campaign literals prove it). The renderer
+branches on that key before the fresh-mint check, which is the D5 defect: the classifier stamps a domain mint as a
+fresh mint, and the fresh-mint branch discarded the parent's shape. A newborn child (its assembled body carries a
+consolidation count of zero, the birth claim's evidence count) renders the parent's plain-match entry then one line
+naming the child and its label; a consolidated child (count one or more) renders as the primary entry, built from
+the payload with the top match's score and reasoning attached, and the parent drops to one shape-context line
+carrying its whole summary. The SPECIALIZE bullet is a function of the payload: with a domain assignment it points
+at that assignment; without one it is the pre-existing text, byte for byte. Holdout arms and the injection record's
+shape are unchanged; the one observable record difference is that a domain mint now records the parent candidates
+it rendered, where before it recorded none.
+
+Red-first on cycles 1, 2 and 4; the implementer reported, unprompted, that cycle 3 was implemented together with
+cycle 1 and came back green with no red captured, then forced a genuine red by disabling the discriminator and
+restored it. One test-side mistake (asserting on the stub body's summary where the render quotes the candidate's
+content) was fixed in the test. The implementer surfaced a real gap it was told not to touch: a landing on an
+existing child carried no label, so a second task landing on a still-newborn child would have rendered a blank
+label.
+
+Independent inspection re-ran the RS-4 suite with the classifier-context, injection-record, claim-holdout,
+offered-pattern, placement, bounded-campaign, observability and walk-down suites (131 tests, 792 assertions,
+0 failures) before any change, re-read the diff, and found three things to fix. A landing now records the landed
+child's canonical label: the spec's classified fact carries the label on every rule, so the earlier RS-2 assertion
+that a landing omits it read the rule's ensures clause as a prohibition it is not; the RS-2 and RS-3 suites now
+assert the label on a landing. The consolidated child was rendered but not recorded: the display-candidate function
+returned nothing for it, so the injection record named no candidate for the entry the model saw, against the
+injection record's single-source rule; the child is now the one display candidate, recorded at its own body
+version, and the render draws from that same candidate. The shape-context line truncated the parent's summary at
+the first sentence break, a parse over claim-authored prose; it now carries the summary whole. These three were
+applied with their tests in one pass rather than red-first; each test fails on the pre-fix code by construction (an
+asserted absence, an empty record, a truncated string), reported here rather than claimed. Final run of the same
+eleven suites: 131 tests, 794 assertions, 0 failures. Coverage `0 obligations, 0 covered, 0 uncovered` (a consumer
+surface); Allium on the ontology spec unchanged, 0 errors, 0 analyse findings. Docs now silent or stale on this
+path are listed on RS-6 for its truth pass. Brick gates run on the combined RS-4 and RS-5 tree before RS-5 commits.
+
 ## Test seams
 
 Seam 5 — the deterministic prepend suite (prior art: `r_inject_classifier_context_test`, `cc13_injection_record_test`).

@@ -19,6 +19,16 @@ The whole-spec integration slice, orchestrator solo. The classify-only sweep har
 
 All eight new obligations plus the classification contract's existing invariants — the convergence check.
 
+## Docs truth-pass list (accumulated by inspections)
+
+- `docs/RLM-GUIDE.md` "Pattern injection via R-Inject": silent on the domain-child waterfall (newborn: parent entry
+  plus child line; consolidated: child primary, parent as shape context) and on the domain-aware SPECIALIZE bullet;
+  the sample prepend shows pre-four-move copy; it still claims a `/tmp/r-inject-trace-<sheet-id>.edn` sidecar that the
+  injection record replaced.
+- `docs/SELF-IMPROVING-LOOP.md`: the same retired sidecar in three places; the "resolved" claim about specialisation.
+- `components/ontology/test/.../el4_harvest_test.clj` docstring names the wrong harvest topics.
+- `components/ontology/src/.../interface.clj` `get-description` docstring omits the `:tree-class` granularity.
+
 ## Test seams
 
 Seam 6 — live; plus every seam above re-run on the final tree.

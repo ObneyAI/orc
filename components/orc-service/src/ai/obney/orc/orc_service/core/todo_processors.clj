@@ -812,12 +812,30 @@
         (assoc node :context
                {:tree-id (:assigned-tree-id result)
                 :r05-classifier
-                {:structural {:assigned-tree-id (:assigned-tree-id result)
-                              :confidence (:confidence result)
-                              :was-fresh-mint? (:was-fresh-mint? result)
-                              :reasoning (:reasoning result)
-                              :top-candidates (vec (:top-candidates result))
-                              :rerank-fallback? (boolean (:rerank-fallback? result))}
+                {:structural
+                 (cond-> {:assigned-tree-id (:assigned-tree-id result)
+                          :confidence (:confidence result)
+                          :was-fresh-mint? (:was-fresh-mint? result)
+                          :reasoning (:reasoning result)
+                          :top-candidates (vec (:top-candidates result))
+                          :rerank-fallback? (boolean (:rerank-fallback? result))}
+                   ;; RS-4: the domain facts RS-2/RS-3's assign-domain-child
+                   ;; produced, omit-when-absent — a plain :match/:bundle/
+                   ;; :mint/:walk-down result carries none of the three
+                   ;; :assigned-via values below, so this payload stays
+                   ;; byte-identical to pre-RS-4 for every non-domain
+                   ;; outcome (the bounded-campaign literals prove it). The
+                   ;; renderer (format-structural-section) reads :domain to
+                   ;; render the waterfall top down instead of discarding
+                   ;; the parent's shape on :was-fresh-mint? true.
+                   (contains? #{:mint-domain-child :land-on-domain-child
+                                :mint-sibling-domain-child}
+                              (:assigned-via result))
+                   (assoc :domain
+                          {:assigned-via (:assigned-via result)
+                           :parent-tree-id (:parent-tree-id result)
+                           :child-tree-id (:assigned-tree-id result)
+                           :domain-label (:domain-label result)}))
                  :behavioral {:behaviors (vec (:behaviors behavioral-result))
                               :rerank-fallback? (boolean
                                                   (:rerank-fallback? behavioral-result))}}})))))
@@ -1206,6 +1224,90 @@
              "(no guidance content recorded)") "\n\n"
          (or rich ""))))
 
+(defn- plain-match-candidates
+  "The gated, capped top-candidates list a plain match renders: the display-
+   confidence floor applied BEFORE the cap so a weak candidate doesn't push
+   out the slot for a stronger one. Shared by the plain-match branch and,
+   from RS-4, by a newborn domain assignment (whose display is the parent's
+   plain-match view plus one child-assignment line)."
+  [top-candidates]
+  (->> (or top-candidates [])
+       (filter (fn [c] (>= (double (or (:fitness-score c) 0.0))
+                           min-display-confidence)))
+       (take structural-cap)
+       vec))
+
+(defn- domain-child-consolidated?
+  "RS-4's discriminator between a newborn domain child (render the parent's
+   full entry, the shape the task matched) and a consolidated one (render
+   the child as the primary entry): the child's tree-class body is present
+   AND its :consolidated-from-event-count is >= 1 — the LAST claim event's
+   :evidence-event-count. The birth claim RS-3's wedge records carries 0 (one
+   representative-use, unconsolidated); a harvest or reflection claim carries
+   >= 1. Nil-ness is NOT the discriminator: the birth claim already
+   assembles a body with one representative use, so a nil body only means
+   the read genuinely missed (best-effort, like every other fetch-tree-body
+   caller here) — treated as NOT consolidated, never as a reason to crash."
+  [ctx child-tree-id]
+  (let [body (fetch-tree-body ctx child-tree-id)]
+    (and (some? body)
+         (>= (long (or (:consolidated-from-event-count body) 0)) 1))))
+
+(defn- format-domain-child-line
+  "RS-4 newborn branch: ONE line, built only from the payload's :domain
+   values, naming the child this task was assigned to and its label —
+   follows the parent's full entry (rendered exactly as a plain match)
+   rather than replacing it."
+  [{:keys [child-tree-id domain-label]}]
+  (str "Assigned to domain child " child-tree-id
+       " (label: " domain-label ") under the top match — "
+       "this campaign's outcome is that child's first evidence.\n"))
+
+(defn- format-domain-shape-context-line
+  "RS-4 consolidated branch: the parent drops from a full entry to this one
+   line — its identity and its own :summary, whole (the summary is the
+   mechanical one-line join the descriptions read-model assembles; it is
+   never parsed or truncated here) — since the child is now the primary
+   entry and the parent's full body (strengths, representative uses, etc.)
+   is not repeated."
+  [ctx suppress-claims? parent-tree-id]
+  (let [parent-body (fetch-tree-body ctx parent-tree-id)
+        summary (guidance-summary (:summary parent-body) parent-body suppress-claims?)]
+    (str "Shape context — parent " parent-tree-id
+         (when (seq summary) (str ": " summary))
+         "\n")))
+
+(defn- consolidated-domain-child-candidate
+  "RS-4: the ONE candidate a consolidated domain child renders as — built
+   from the payload, not from top-candidates: the child is the target (a
+   :tree-class candidate, so the injection record names the child at its
+   own body version — CC-13's single source of truth), the :content quoted
+   as 'Pattern guidance' is the child's own body :summary, and the top
+   match's :fitness-score/:reasoning/:rerank-source stay attached (that
+   score and reasoning are WHY this class was reached)."
+  [ctx {:keys [domain top-candidates]}]
+  (let [{:keys [child-tree-id]} domain
+        top-1 (first top-candidates)
+        child-body (fetch-tree-body ctx child-tree-id)]
+    {:content (:summary child-body)
+     :fitness-score (:fitness-score top-1)
+     :reasoning (:reasoning top-1)
+     :rerank-source (:rerank-source top-1)
+     :document-metadata {:granularity :tree-class :target-id child-tree-id}}))
+
+(defn- format-consolidated-domain-child
+  "RS-4: the child HAS a consolidated body — it renders as the PRIMARY
+   entry (its own :summary + strengths via format-structural-candidate)
+   from the candidate structural-display-candidates produced, then the
+   parent as one shape-context line."
+  [ctx suppress-claims? candidates {:keys [domain]}]
+  (str "### Structural patterns (top " (count candidates) " from corpus retrieval)\n"
+       (->> candidates
+            (map-indexed (fn [i c] (format-structural-candidate ctx suppress-claims? (inc i) c)))
+            (str/join "\n"))
+       "\n"
+       (format-domain-shape-context-line ctx suppress-claims? (:parent-tree-id domain))))
+
 (defn- structural-display-candidates
   "The structural candidates the render actually puts in front of the model.
 
@@ -1215,22 +1317,58 @@
    >= floor entries reach the model. The fresh-mint branch shows NO
    candidates at all (it renders guidance instead), so it yields none.
 
+   RS-4: a domain assignment (:domain present) overrides :was-fresh-mint? —
+   a newborn domain child (not yet consolidated) renders the PARENT's
+   top-candidates entry exactly like a plain match (the top one IS the
+   parent), regardless of RS-2 stamping :was-fresh-mint? true on the mint.
+   A CONSOLIDATED domain child renders ONE candidate: the child itself,
+   built from the payload rather than from top-candidates
+   (consolidated-domain-child-candidate) — so the injection record names
+   the child it showed, at the child's own body version.
+
    CC-13: single source of truth for the render AND for the injection record.
    A record of 'what was injected' computed from a different filter than the
    render's would be a measurement of something that never happened."
-  [{:keys [was-fresh-mint? top-candidates]}]
-  (if was-fresh-mint?
+  [ctx {:keys [was-fresh-mint? top-candidates domain] :as structural}]
+  (cond
+    (and domain (not (domain-child-consolidated? ctx (:child-tree-id domain))))
+    (plain-match-candidates top-candidates)
+
+    domain
+    [(consolidated-domain-child-candidate ctx structural)]
+
+    was-fresh-mint?
     []
-    (->> (or top-candidates [])
-         (filter (fn [c] (>= (double (or (:fitness-score c) 0.0))
-                             min-display-confidence)))
-         (take structural-cap)
-         vec)))
+
+    :else
+    (plain-match-candidates top-candidates)))
 
 (defn- format-structural-section [ctx suppress-claims? structural]
-  (let [{:keys [was-fresh-mint? rerank-fallback?]} structural
-        candidates (structural-display-candidates structural)]
+  (let [{:keys [was-fresh-mint? rerank-fallback? domain]} structural
+        candidates (structural-display-candidates ctx structural)]
     (cond
+      ;; RS-4: branch on a domain assignment BEFORE the fresh-mint check.
+      ;; RS-2 stamps :was-fresh-mint? true on a domain mint, and until this
+      ;; slice the fresh-mint branch below fired on that flag alone,
+      ;; discarding the parent's shape — the D5 failure this slice fixes.
+      (and domain (domain-child-consolidated? ctx (:child-tree-id domain)))
+      (format-consolidated-domain-child ctx suppress-claims? candidates structural)
+
+      ;; Newborn domain child: the parent's plain-match entry (every
+      ;; candidate that clears the display floor) then the child line — the
+      ;; child line is the assignment and renders regardless.
+      domain
+      (str "### Structural patterns (top "
+           (count candidates)
+           " from corpus retrieval)\n"
+           (when rerank-fallback?
+             "Classifier reranker fell back to similarity scoring; treat suggestions with caution and prioritize your own reading of the task.\n\n")
+           (->> candidates
+                (map-indexed (fn [i c] (format-structural-candidate ctx suppress-claims? (inc i) c)))
+                (str/join "\n"))
+           "\n"
+           (format-domain-child-line domain))
+
       ;; No high-confidence match — caller fresh-minted at root.
       was-fresh-mint?
       (str "### Structural patterns\n"
@@ -1624,7 +1762,7 @@
   [ctx {:keys [structural behavioral]}]
   (vec
     (concat
-      (for [c (structural-display-candidates structural)
+      (for [c (structural-display-candidates ctx structural)
             :let [tid (get-in c [:document-metadata :target-id])]
             :when (some? tid)]
         {:axis :structural
@@ -1714,6 +1852,28 @@
           (cp/process-command (assoc ctx :command command))
           (catch Exception _ nil))))))
 
+(defn- format-specialize-bullet
+  "The four-move menu's SPECIALIZE bullet, as a function of the payload's
+   structural axis.
+
+   RS-4: when `:domain` is present the runtime has ALREADY assigned this
+   task to a domain child (RS-2/RS-3's assign-domain-child, dispatched
+   before the model ever sees this prompt) — inviting the model to
+   `mint-behavior!` a structural specialization here would invite a SECOND,
+   redundant structural mint on top of the one the runtime already made.
+   The bullet points at that assignment instead.
+
+   Without `:domain` the bullet is BYTE-IDENTICAL to the pre-RS-4 text —
+   every other render (plain match, walk-down's own mint, top-level fresh
+   mint, uncertain) is unaffected."
+  [structural]
+  (if-let [domain (:domain structural)]
+    (str "  - SPECIALIZE — the runtime has already assigned this task to a "
+         "domain child of the top match (label: " (:domain-label domain)
+         "); design for that domain under the parent's shape, do NOT mint a "
+         "structural child yourself.\n")
+    (str "  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n")))
+
 (defn apply-r05-classifier-context
   "R-Inject: prepend R05's classifier output to the node's :instruction
    when the wedge has stashed a :r05-classifier payload on :context.
@@ -1768,7 +1928,7 @@
                        "You always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n"
                        "  - ADOPT — use a reference as-is when it is an EXACT fit.\n"
                        "  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n"
-                       "  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n"
+                       (format-specialize-bullet structural)
                        "  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\n"
                        "A match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n"
                        (format-structural-section ctx suppress-claims? structural)

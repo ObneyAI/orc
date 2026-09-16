@@ -247,9 +247,10 @@
               "assigned the MATCHING child's identity, not a derived one")
           (is (= class-id (:parent-tree-id r)))
           (is (false? (:was-fresh-mint? r)))
-          (is (not (contains? r :domain-label))
-              "LandOnDomainChild does not stamp a top-level :domain-label — the spec's
-               ensures clause carries no label, unlike the two minting rules")
+          (is (= "marathon-training-plan" (:domain-label r))
+              "LandOnDomainChild records the landed child's canonical label — the
+               spec's TaskClassified carries domain_label on every rule, and the
+               R-Inject render (RS-4) names the child by it")
           (is (= #{"marathon-training-plan" "recipe-scaling"}
                  (set (:domain-children-considered r))))
           (is (= {:domain-coverage :covered
