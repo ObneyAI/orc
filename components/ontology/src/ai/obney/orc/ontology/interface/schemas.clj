@@ -398,11 +398,21 @@
    :score so downstream consumers can see both signals.
 
    `:number` (not `:double`) so that JSON-parsed integers (e.g. `1`
-   or `0`) round-trip correctly through the LLM's structured output."
+   or `0`) round-trip correctly through the LLM's structured output.
+
+   RS-1: `:domain-coverage`/`:domain-label`/`:domain-reasoning` realise
+   `specs/ontology.allium`'s `DomainVerdict`/`DomainCoverage` — a discrete
+   verdict the reranker gives BESIDE fitness (fitness stays shape-and-intent
+   fit; domain coverage is judged separately, never read off the fitness
+   number). OPTIONAL so pre-RS-1 payloads (and the three-key shipped
+   contract) still validate unchanged."
   [:map
    [:document-id   :string]
    [:reasoning     :string]
-   [:fitness-score [:and number? [:>= 0.0] [:<= 1.0]]]])
+   [:fitness-score [:and number? [:>= 0.0] [:<= 1.0]]]
+   [:domain-coverage  {:optional true} [:enum :covered :partial :uncovered :unknown]]
+   [:domain-label     {:optional true} [:maybe :string]]
+   [:domain-reasoning {:optional true} [:maybe :string]]])
 
 (def reranked-results
   "Vector of reranked-result entries, descending by :fitness-score

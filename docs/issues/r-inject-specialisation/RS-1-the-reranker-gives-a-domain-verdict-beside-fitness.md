@@ -10,14 +10,35 @@ Every per-candidate result from the rerank call carries, beside its fitness and 
 
 ## Acceptance criteria
 
-- [ ] A reranked entry validates with the two new fields present, and a missing or malformed verdict reads as unknown rather than failing the entry or being coerced to a value
-- [ ] The instruction asks for the verdict with reason-before-verdict and defines the four values; fitness's definition is unchanged
-- [ ] Every existing reranker suite is green unchanged; the enrichment contract and failure-surfacing behaviour are untouched
-- [ ] No consumer reads a domain judgement off fitness or off a similarity score
+- [x] A reranked entry validates with the two new fields present, and a missing or malformed verdict reads as unknown rather than failing the entry or being coerced to a value
+- [x] The instruction asks for the verdict with reason-before-verdict and defines the four values; fitness's definition is unchanged
+- [x] Every existing reranker suite is green unchanged; the enrichment contract and failure-surfacing behaviour are untouched
+- [x] No consumer reads a domain judgement off fitness or off a similarity score
 
 ## Spec obligations covered
 
 `entity-fields.DomainVerdict`, `value-equality.DomainVerdict`, `enum-comparable.DomainCoverage`; `contract-signature.TaskClassification.judge_domain_coverage` is realised as the reranker's per-candidate verdict (report the coverage line).
+
+## Verification
+
+Every per-candidate result of the rerank call now carries `:domain-coverage` (one of the four verdicts), `:domain-label`
+and `:domain-reasoning` beside fitness and reasoning. The parse step canonicalises the three keys exactly as it does
+the shipped two and reads a missing or malformed verdict as `:unknown` — never coercing it, and never dropping the
+entry: the implementer's red run showed that a naive coercion would have made a legitimate ranked entry vanish from the
+result when the enum validation rejected it, which is the second-order harm the no-coercion rule prevents. The
+instruction gained the domain section the two prototypes proved, verbatim, in place of the shipped three-key output
+contract; the orchestrator proved the text before and after that paragraph byte-identical to the shipped instruction.
+Candidates may carry `:existing-domain-children`, rendered to the model for label reuse; the orchestrator renamed the
+field in the instruction to the kebab form every other candidate field uses.
+
+Red-first per cycle: the three fields dropped by `select-keys` (RED 3 failures); missing and malformed verdicts (RED 4);
+the instruction section and the candidate key (RED at compile time, the constant did not exist). Independent
+inspection re-read both diffs, proved the instruction prefix and suffix unchanged, confirmed no `.allium` edit and no
+weakened assertion, and re-ran the RS-1 suite with eleven reranker and classifier suites: 0 failures. Coverage
+`4 obligations, 4 covered, 0 uncovered` (`contract-signature.TaskClassification.judge_domain_coverage`,
+`entity-fields.DomainVerdict`, `value-equality.DomainVerdict`, `enum-comparable.DomainCoverage` — all uncovered before
+this slice). Finding carried to RS-2: `apply-rerank`'s join copies only reasoning, fitness and rerank source onto the
+candidate, so the verdict stops at the rerank return value today; RS-2 widens that join. On the final tree the ontology brick passes in each owning project graph run as its own JVM (79 namespaces, 679 tests / 3847 assertions each, 0 failures) and the complete two-project `orc-service` brick passes with exit 0 in 72 minutes 35 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1058 tests / 5885 assertions per graph, 0 failures, 0 errors); Allium on the ontology spec holds at 43 information diagnostics, 8 warnings, 0 errors, 0 analyse findings.
 
 ## Test seams
 
