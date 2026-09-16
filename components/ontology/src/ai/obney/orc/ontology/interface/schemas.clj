@@ -420,6 +420,44 @@
   [:vector reranked-result])
 
 ;; =============================================================================
+;; RS-3 — the domain verdict and a domain-axis deferral, carried durably
+;; =============================================================================
+;;
+;; RS-2's `assign-domain-child` result map carries these onto
+;; :ontology/assign-task-class / :ontology/task-classified so the classified
+;; event records the coverage verdict, the label, the reasoning, the children
+;; considered, and — on a domain-axis deferral — the axis and reason
+;; (@invariant DeferralIsVisible names the axis that deferred).
+
+(def domain-verdict
+  "The RAW {:domain-coverage :domain-label :domain-reasoning} verdict
+   `assign-domain-child` carries, unnormalised. Every key is optional and
+   every value may be nil — a missing/unknown/malformed verdict is carried
+   as-seen (the CC-31 omit-not-nil idiom), never fabricated.
+
+   `:domain-coverage` allows `nil` alongside the four judged values: the
+   `apply-rerank` JOIN always assocs the key onto a reranked entry (never
+   leaves it simply absent) — `parse-reranked-json`'s real JSON parse path
+   defaults an omitted/malformed value to `:unknown`, but a caller that
+   stubs the reranker seam directly (bypassing that parse, as classifier-
+   level tests do) can legitimately produce `nil` here. RS-2's
+   `assign-domain-child` already treats that the same as `:unknown` (defer,
+   DomainCoverageIsJudgedNotInferred) — the schema must not reject what the
+   join can genuinely produce and the domain logic already handles."
+  [:map
+   [:domain-coverage  {:optional true} [:maybe [:enum :covered :partial :uncovered :unknown]]]
+   [:domain-label     {:optional true} [:maybe :string]]
+   [:domain-reasoning {:optional true} [:maybe :string]]])
+
+(def domain-deferral
+  "RS-2's `:domain-deferral` marker: the domain axis could not be resolved.
+   `:reason` is a CLOSED set (the CC-28 idiom) — a new reason must be added
+   here and to `task-classifier/domain-deferral` deliberately."
+  [:map
+   [:axis   [:enum :domain]]
+   [:reason [:enum :unknown-coverage :children-lookup-failed]]])
+
+;; =============================================================================
 ;; CC-23 (contract TaskClassification) — bounded pre-gate ranking snapshot
 ;; =============================================================================
 
@@ -732,7 +770,19 @@
     ;; CC-23: the assigned identity's provenance — WHICH branch produced
     ;; :assigned-tree-id. CLOSED set (the CC-28 idiom): a new provenance
     ;; must be added here deliberately. OPTIONAL for pre-CC-23 replay.
-   [:assigned-via {:optional true} [:enum :match :bundle :walk-down :mint]]]
+    ;; RS-3: :mint-domain-child / :land-on-domain-child /
+    ;; :mint-sibling-domain-child widen a :tree-class :match with the
+    ;; domain-child outcome (spec rules MintDomainChild / LandOnDomainChild
+    ;; / MintSiblingDomainChild).
+    [:assigned-via {:optional true}
+     [:enum :match :bundle :walk-down :mint
+      :mint-domain-child :land-on-domain-child :mint-sibling-domain-child]]
+    ;; RS-3: the domain-child facts, all optional (omit-not-nil) so every
+    ;; pre-RS-3 event stays byte-shaped.
+    [:domain-verdict {:optional true} domain-verdict]
+    [:domain-label {:optional true} [:maybe :string]]
+    [:domain-children-considered {:optional true} [:vector [:maybe :string]]]
+    [:domain-deferral {:optional true} domain-deferral]]
 
    ;; RR-19: one explicit recurrence fact for a classified researcher
    ;; campaign that reached a behavior verdict. Infrastructure endings are
@@ -796,7 +846,11 @@
    ;;
    ;; :fallback-source is a CLOSED set (the CC-28 idiom): a new fallback
    ;; flavour must be added HERE and to task-classifier/rerank-fallback-sources
-   ;; deliberately, never slipped in as a stringly value.
+   ;; deliberately, never slipped in as a stringly value. RS-3 adds
+   ;; :domain-coverage — NOT a reranker fallback (the reranker DID rank; the
+   ;; DOMAIN axis deferred: unknown/missing/malformed coverage, or a failed
+   ;; domain-children lookup) — so it is dispatched directly by the wedge,
+   ;; never through task-classifier/rerank-fallback-sources.
    ;;
    ;; :ranked-candidates carries the same bounded pre-gate snapshot the
    ;; classified event records — length <= retrieval k (5), entries closed
@@ -807,12 +861,34 @@
     [:source-sheet-id   :uuid]
     [:source-tick-id    :uuid]
     [:source-node-id    :uuid]
-    [:fallback-source   [:enum :colbert-fallback :timeout-fallback]]
+    [:fallback-source   [:enum :colbert-fallback :timeout-fallback :domain-coverage]]
     [:ranked-candidates ranked-candidates]
     [:reasoning         :string]
     [:deferred-at       :string]
     [:researcher-ownership-epoch {:optional true} [:and :int [:>= 1]]]
     [:classification-context {:optional true} :map]]
+
+   ;; -------------------------------------------------------------------------
+   ;; RS-3 — a domain child's birth (rule-entity-creation.MintDomainChild.1 /
+   ;; MintSiblingDomainChild.1)
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Emitted by the :ontology/mint-domain-child defcommand — the audit-trail
+   ;; fact that a domain child was minted. The concept-created /
+   ;; relationship-created events (also emitted by that command, when the
+   ;; parent/child concepts or the skos:broader edge did not already exist)
+   ;; are the durable graph facts; this event is the classification-side
+   ;; audit record naming WHICH occurrence minted it.
+
+   :ontology/domain-child-minted
+   [:map
+    [:parent-tree-id [:or :uuid :string]]
+    [:child-tree-id  :uuid]
+    [:domain-label   :string]
+    [:minted-at      :string]
+    [:source-sheet-id {:optional true} :uuid]
+    [:source-tick-id  {:optional true} :uuid]
+    [:source-node-id  {:optional true} :uuid]]
 
    ;; -------------------------------------------------------------------------
    ;; R05c — Behavioral subtree minting (audit-trail event)
@@ -1568,7 +1644,15 @@
     ;; wedge from the classify-task result. Optional so pre-CC-23 callers
     ;; (and replayed tooling) stay valid; new producers always attach them.
     [:ranked-candidates {:optional true} ranked-candidates]
-   [:assigned-via {:optional true} [:enum :match :bundle :walk-down :mint]]]
+    [:assigned-via {:optional true}
+     [:enum :match :bundle :walk-down :mint
+      :mint-domain-child :land-on-domain-child :mint-sibling-domain-child]]
+    ;; RS-3: the domain-child facts forwarded by the wedge (all optional,
+    ;; omit-not-nil) — see :ontology/task-classified for the shared shapes.
+    [:domain-verdict {:optional true} domain-verdict]
+    [:domain-label {:optional true} [:maybe :string]]
+    [:domain-children-considered {:optional true} [:vector [:maybe :string]]]
+    [:domain-deferral {:optional true} domain-deferral]]
 
    :ontology/record-tree-class-occurrence
    [:map
@@ -1610,11 +1694,33 @@
     [:source-sheet-id   :uuid]
     [:source-tick-id    :uuid]
     [:source-node-id    :uuid]
-    [:fallback-source   [:enum :colbert-fallback :timeout-fallback]]
+    [:fallback-source   [:enum :colbert-fallback :timeout-fallback :domain-coverage]]
     [:ranked-candidates ranked-candidates]
     [:reasoning         :string]
     [:researcher-ownership-epoch {:optional true} [:and :int [:>= 1]]]
     [:classification-context {:optional true} :map]]
+
+   ;; -------------------------------------------------------------------------
+   ;; RS-3 — birth a domain child through ONE command
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Dispatched by the wedge BEFORE the CV-1 signature claim and BEFORE
+   ;; :ontology/assign-task-class, on :assigned-via :mint-domain-child /
+   ;; :mint-sibling-domain-child, so the concept and the skos:broader edge
+   ;; exist before anything references the child. `:child-tree-id` is the
+   ;; identity RS-2's `stable-domain-child-identity` already derived
+   ;; (parent + canonical label) — this command does not derive it again.
+   ;; Idempotent: minting the same (parent, child) identity again emits
+   ;; nothing new (@invariant DomainChildIdentityIsStable).
+
+   :ontology/mint-domain-child
+   [:map
+    [:parent-tree-id [:or :uuid :string]]
+    [:child-tree-id  :uuid]
+    [:domain-label   :string]
+    [:source-sheet-id {:optional true} :uuid]
+    [:source-tick-id  {:optional true} :uuid]
+    [:source-node-id  {:optional true} :uuid]]
 
    ;; -------------------------------------------------------------------------
    ;; R05c — Mint a new behavioral-subtree concept

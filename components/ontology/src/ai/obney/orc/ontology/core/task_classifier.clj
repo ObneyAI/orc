@@ -217,6 +217,10 @@
   ((requiring-resolve 'ai.obney.orc.ontology.interface/get-description)
    ctx granularity target-id))
 
+(defn- get-concept-by-uri [ctx uri]
+  ((requiring-resolve 'ai.obney.orc.ontology.interface/get-concept-by-uri)
+   ctx uri))
+
 (defn- rerank! [ctx opts]
   ((requiring-resolve 'ai.obney.orc.ontology.core.reranker/rerank!)
    ctx opts))
@@ -294,15 +298,22 @@
 (defn- get-tree-class-children
   "Return the children of `parent-target-id` as {:target-id :description}
    maps. Reads the concepts read-model for narrower URIs and pulls each
-   child's description from the descriptions read-model. Children
-   without a description are dropped (the rerank step needs content)."
+   child's description from the descriptions read-model, trying :tree-class
+   scope FIRST (RS-3: a runtime-emergent domain child describes itself
+   through the CV-1 signature claim route, which lands under :tree-class —
+   C-Loop-1) and falling back to :tree-fingerprint (the seeded instances,
+   C-2d-1's projector). RS-P2's Q-c finding: reading :tree-fingerprint only
+   made every domain child invisible to this walk even though its parent
+   edge existed. Children without a description under EITHER scope are
+   dropped (the rerank step needs content)."
   [ctx parent-target-id]
   (let [parent-uri (str tree-class-uri-prefix parent-target-id)
         child-uris (or (get-narrower-concepts ctx parent-uri) #{})]
     (vec
       (keep (fn [child-uri]
               (let [child-id (uri->target-id child-uri)
-                    desc (get-description ctx :tree-fingerprint child-id)]
+                    desc (or (get-description ctx :tree-class child-id)
+                             (get-description ctx :tree-fingerprint child-id))]
                 (when desc
                   {:target-id child-id
                    :description desc})))
@@ -664,12 +675,13 @@
    existing domain children of a :tree-class parent, as
    {:target-id :domain-label} maps. Reads the parent's narrower concepts
    (the same graph edge walk-down's own child lookup uses) and each
-   child's recorded :tree-class description for a :domain-label field.
-   RS-3 owns populating that field on mint; until it does, a child without
-   one is invisible here (absent -> no children) — the documented gap this
-   slice defers to RS-3, not a store read from the pure classifier logic
-   above (this fn IS the seam; classify-task calls whatever is injected on
-   ctx, defaulting to this).
+   child's CONCEPT :label — RS-3's `:ontology/mint-domain-child` stamps the
+   judged domain label directly onto the child's tree-class concept at
+   birth (RS-P2: the command path, never a description body write — CC-6).
+   A child whose :label is blank, or equals its own id (the generic
+   placeholder `ensure-tree-class-concept!` lazy-creates for an ordinary,
+   non-domain tree-class concept it happens to have as a narrower — never a
+   judged domain label), is excluded — absent -> no children.
 
    Does NOT fail open. A store failure here is not \"no children yet\" —
    reading it that way would mint a fresh sibling for a domain that already
@@ -684,9 +696,10 @@
     (vec
       (keep (fn [child-uri]
               (let [child-id (uri->target-id child-uri)
-                    desc (get-description ctx :tree-class child-id)
-                    label (:domain-label desc)]
-                (when (and (string? label) (not (clojure.string/blank? label)))
+                    concept (get-concept-by-uri ctx child-uri)
+                    label (:label concept)]
+                (when (and (string? label) (not (clojure.string/blank? label))
+                           (not= label (str child-id)))
                   {:target-id child-id :domain-label label})))
             child-uris))))
 

@@ -12,13 +12,66 @@ The auto-classify wedge records the coverage verdict, the label, the reasoning a
 
 - [ ] Through the live processor path with the reranker redefined, an uncovered leaf match yields a classified event carrying the verdict, label, reasoning, parent and the child's provenance, a signature claim on the child, and a SKOS broader edge from the child to the parent after the projectors run
 - [ ] The child is reachable as a child of its parent by the walk-down's own child lookup
-- [ ] A partial verdict yields a representative-use claim carrying the label on the parent class and no child
+- [ ] ~~A partial verdict yields a representative-use claim carrying the label on the parent class and no child~~
+      Superseded by D7 before this slice was briefed: a partial verdict on a childless class mints the first child,
+      exactly as an uncovered one does; the label reaches the parent only through the child's edge
 - [ ] An unknown verdict yields a deferral event naming the domain axis and no assignment of a child
 - [ ] The classification remains one per campaign occurrence; every existing wedge, claim-capture and observability suite is green unchanged
 
 ## Spec obligations covered
 
 `rule-entity-creation.MintDomainChild.1` (the ConceptRelationship created), plus `invariant.DeferralIsVisible` and `invariant.ClassificationIsOnePerCampaign` (must stay green).
+
+## Verification
+
+One command births a domain child: it lazily creates the parent's tree-class concept, creates the child's concept
+with the judged label as its `:label`, provenance agent-authored and the parent as `:broader`, records the
+`skos:broader` relationship the projector already turns into the parent's narrower set, and emits the audit fact
+naming the parent, the child, the label and the occurrence that minted it. Minting the same identity again emits
+nothing. The classified event and the deferral carry the domain facts (verdict, label, children considered, deferral)
+as optional keys, so every pre-existing event stays byte-shaped; the deferral's fallback source gains the domain
+coverage flavour. The two lookups read what is written: the children lookup reads each narrower concept's label
+(excluding the placeholder label an ordinary lazily-created concept carries), and the walk-down's child lookup reads
+the tree-class scope first and the seeded tree-fingerprint scope second, the RS-P2 finding. The wedge dispatches the
+mint first, then the signature claim on the child, then the assignment; a landing dispatches only the assignment; a
+domain-axis deferral dispatches the structural assignment and the deferral, both.
+
+Red-first on the brief's cycles 1, 2, 3, 4, 6 (cycle 5 was green on first write because identity stability is RS-2's
+pure logic; reported as a finding). The implementer's regression surfaced the cc23 observability suite rejecting a
+nil coverage at the schema, fixed by widening the classified event's coverage to nullable: in production the reranker
+parse folds a missing value to `unknown` before the classifier sees it, and the classifier's own default defers on
+anything that is not one of the four values, so nothing is inferred from an absent verdict. Two divergences from the
+brief were accepted: the mint audit event names its occurrence with the flat source keys every other classification
+event uses rather than a nested triple, and the durable proof runs on the synchronous test context because every
+assertion reads the store through pull-based projectors, which RS-P2 showed need no processor thread.
+
+Independent inspection re-ran the two RS-3 suites with the wedge, claim-capture, observability, placement, seeds,
+walk-down, RS-1, RS-2, convergence and harvest suites (178 tests, 967 assertions, 0 failures), re-read every diff,
+confirmed no `.allium` edit and no weakened assertion, then tried to break the checkpointed path the implementer had
+flagged as untested. Two defects, both real on the public default: the atomic classification commit interprets its
+effects by command name and did not know the mint, so every domain mint under a checkpointed campaign was refused as
+an unsupported effect; and it required exactly one outcome, so a domain-axis deferral recorded beside the structural
+assignment was refused as a second outcome. Red-first through the real wedge's staging seam and the real commit
+command on a real store: the commit now prepares the mint (ordered before the claim capture and the assignment),
+treats a deferral whose fallback source is domain coverage as the domain axis of the same outcome rather than a second
+one, and binds both to the campaign: at most one mint, present exactly when the assignment is a domain mint, naming the
+assigned child; at most one domain deferral, only beside an assignment, under the committing epoch. The schema-side
+rule and the handler-side rule were changed together. A durable sibling-mint proof was added for the sibling rule's
+edge obligation (green on first write; the command is shared with the first mint). Final RS-3 durable suite: 7 tests,
+76 assertions, 0 failures; the commit-boundary suite unchanged and green.
+
+Coverage `2 obligations, 2 covered, 0 uncovered` (`rule-entity-creation.MintDomainChild.1` by the birth and durable
+suites, `rule-entity-creation.MintSiblingDomainChild.1` by the sibling proof); the invariants this slice must keep
+(`DeferralIsVisible`, `ClassificationIsOnePerCampaign`, `DecidedRankingIsRecorded`) hold through their existing
+suites and the new commit-boundary rules. Weed items carried, not fixed here: the tree-class ontology identifier is
+duplicated in the ontology commands namespace (the processor's copy is private to another brick), and the mint builds
+its concept and relationship events inline rather than through the create commands, which a later slice should fold
+into one shared event constructor. Allium on the ontology spec unchanged: 0 errors, 0 analyse findings.
+
+On the final tree the ontology brick passes in each owning project graph as its own JVM (81 namespaces, 700 tests /
+3948 assertions each, 0 failures) and the complete two-project `orc-service` brick passes with exit 0 in 54 minutes
+37 seconds under a 3 GB heap cap (131 namespaces per graph, 2130 tests / 11922 assertions across both, 0 failures,
+0 errors); Allium on the ontology spec holds at 0 errors, 0 analyse findings.
 
 ## Test seams
 

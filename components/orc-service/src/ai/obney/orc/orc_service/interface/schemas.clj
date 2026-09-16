@@ -494,12 +494,26 @@
   #{:ontology/assign-task-class
     :ontology/record-task-classification-deferral})
 
+(def ^:private domain-mint-assignment-vias
+  #{:mint-domain-child :mint-sibling-domain-child})
+
+(defn- domain-axis-deferral?
+  "RS-3: the domain-axis deferral recorded BESIDE a structural assignment
+   (the wedge's :domain-classification-deferral effect). It reuses the
+   deferral command with :fallback-source :domain-coverage, so by name it
+   looks like a second outcome — it is not; it is the domain axis of the
+   same outcome."
+  [effect]
+  (and (= :ontology/record-task-classification-deferral (:command/name effect))
+       (= :domain-coverage (:fallback-source effect))))
+
 (defn- valid-researcher-classification-commit?
   [{:keys [sheet-id tick-id node-id ownership-epoch effects]}]
   (let [outcomes
         (filterv
-         #(contains? researcher-classification-outcome-command-names
-                     (:command/name %))
+         #(and (contains? researcher-classification-outcome-command-names
+                          (:command/name %))
+               (not (domain-axis-deferral? %)))
          effects)
         outcome (first outcomes)
         injections
@@ -509,11 +523,23 @@
         fresh-mint-assignment?
         (and (= :ontology/assign-task-class (:command/name outcome))
              (true? (:was-fresh-mint? outcome)))
-        convergence-capture (first convergence-captures)]
+        convergence-capture (first convergence-captures)
+        ;; RS-3: the domain-child mint and the domain-axis deferral.
+        assignment? (= :ontology/assign-task-class (:command/name outcome))
+        domain-mint-assignment?
+        (and assignment?
+             (contains? domain-mint-assignment-vias (:assigned-via outcome)))
+        mints (filterv #(= :ontology/mint-domain-child (:command/name %)) effects)
+        mint (first mints)
+        domain-deferrals (filterv domain-axis-deferral? effects)
+        domain-deferral (first domain-deferrals)
+        bound-to-campaign?
+        (fn [effect]
+          (and (= sheet-id (:source-sheet-id effect))
+               (= tick-id (:source-tick-id effect))
+               (= node-id (:source-node-id effect))))]
     (and (= 1 (count outcomes))
-         (= sheet-id (:source-sheet-id outcome))
-         (= tick-id (:source-tick-id outcome))
-         (= node-id (:source-node-id outcome))
+         (bound-to-campaign? outcome)
          (= ownership-epoch (:researcher-ownership-epoch outcome))
          (<= (count injections) 1)
          (every? #(and (= sheet-id (:sheet-id %))
@@ -525,7 +551,23 @@
                 (= :tree-class (:granularity convergence-capture))
                 (= (:assigned-tree-id outcome)
                    (:target-identifier convergence-capture)))
-           (empty? convergence-captures)))))
+           (empty? convergence-captures))
+         ;; A domain-mint assignment carries exactly one mint naming the same
+         ;; child (the concept + edge exist before the classification refers
+         ;; to them — MintDomainChild); any other outcome carries none.
+         (if domain-mint-assignment?
+           (and (= 1 (count mints))
+                (bound-to-campaign? mint)
+                (= (:assigned-tree-id outcome) (:child-tree-id mint)))
+           (empty? mints))
+         ;; At most one domain-axis deferral, only beside an assignment, bound
+         ;; to the same campaign epoch (DeferralIsVisible on the domain axis).
+         (<= (count domain-deferrals) 1)
+         (or (nil? domain-deferral)
+             (and assignment?
+                  (bound-to-campaign? domain-deferral)
+                  (= ownership-epoch
+                     (:researcher-ownership-epoch domain-deferral)))))))
 
 (defschemas commands
   {;; -------------------------------------------------------------------------

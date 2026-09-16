@@ -673,17 +673,47 @@
                   (some? (:ranked-candidates result))
                   (assoc :ranked-candidates (:ranked-candidates result))
                   (some? (:assigned-via result))
-                  (assoc :assigned-via (:assigned-via result)))]
+                  (assoc :assigned-via (:assigned-via result))
+                  ;; RS-3: the domain-child facts RS-2's assign-domain-child
+                  ;; produced — all optional (omit-not-nil), so a plain
+                  ;; :match/:bundle/:mint result (no domain-child logic ran)
+                  ;; leaves the event byte-shaped exactly as before.
+                  (some? (:domain-verdict result))
+                  (assoc :domain-verdict (:domain-verdict result))
+                  (some? (:domain-label result))
+                  (assoc :domain-label (:domain-label result))
+                  (some? (:domain-children-considered result))
+                  (assoc :domain-children-considered (:domain-children-considered result))
+                  (some? (:domain-deferral result))
+                  (assoc :domain-deferral (:domain-deferral result)))
+                ;; RS-3: on a domain-child MINT (first child or sibling), the
+                ;; child's tree-class concept and its skos:broader edge must
+                ;; exist BEFORE anything references the child — the CV-1
+                ;; claim capture below AND the classified event RS-2 already
+                ;; targets at the child's identity. :land-on-domain-child is
+                ;; NOT a mint (no concept work; the child already exists from
+                ;; an earlier occurrence).
+                domain-mint? (contains? #{:mint-domain-child :mint-sibling-domain-child}
+                                        (:assigned-via result))]
             (ensure-classification-active!)
-            (run-or-defer-classification-effect!
-             context :classification-outcome assignment-command
-             #(cp/process-command (assoc context :command assignment-command)))
-            (println (format "[DEBUG RLM] node '%s' auto-classified → %s (confidence %.2f, was-fresh-mint? %s, behavioral-count %d)"
-                             (or (:name node) (str (:id node)))
-                             (:assigned-tree-id result)
-                             (double (or (:confidence result) 0.0))
-                             (:was-fresh-mint? result)
-                             (count (:behaviors behavioral-result))))
+            (when domain-mint?
+              (let [mint-command {:command/name :ontology/mint-domain-child
+                                  :command/id (random-uuid)
+                                  :command/timestamp (time/now)
+                                  :parent-tree-id (:parent-tree-id result)
+                                  :child-tree-id (:assigned-tree-id result)
+                                  :domain-label (:domain-label result)
+                                  :source-sheet-id (:sheet-id context)
+                                  :source-tick-id (:tick-id context)
+                                  :source-node-id (:id node)}]
+                (run-or-defer-classification-effect!
+                 context :domain-child-mint mint-command
+                 #(cp/process-command (assoc context :command mint-command)))
+                (ensure-classification-active!)
+                (println (format "[DEBUG RLM] node '%s' RS-3 domain-child MINTED under parent %s label %s"
+                                 (or (:name node) (str (:id node)))
+                                 (:parent-tree-id result)
+                                 (:domain-label result)))))
             ;; CV-1 (ADR 0017) Part 1 — CONVERGENCE CAPTURE. On a fresh-mint
             ;; (and only then — we are already past the :uncertain guard), ALSO
             ;; capture the task `signature` (the same instruction-aware text
@@ -712,7 +742,61 @@
             ;; occurrence must not count as post-guard evidence (CC-7). So this
             ;; claim is VISIBLE and can never enforce until the reflection
             ;; corroborates it from occurrences a judge actually scored.
-            (when (:was-fresh-mint? result)
+            ;;
+            ;; RS-3: on a domain-child mint, the capture happens HERE — BEFORE
+            ;; :ontology/assign-task-class dispatches below — so the concept
+            ;; and edge RS-3's mint just created exist first. Every other
+            ;; fresh-mint (top-level :novel, walk-down's own :mint) keeps the
+            ;; ORIGINAL order (assign, then capture) unchanged.
+            (when (and domain-mint? (:was-fresh-mint? result))
+              (ensure-classification-active!)
+              (capture-classification-signature! context (:assigned-tree-id result) signature)
+              (ensure-classification-active!)
+              (println (format "[DEBUG RLM] node '%s' CONVERGENCE-CAPTURE recorded signature claim for :tree-class %s"
+                               (or (:name node) (str (:id node)))
+                               (:assigned-tree-id result))))
+            (run-or-defer-classification-effect!
+             context :classification-outcome assignment-command
+             #(cp/process-command (assoc context :command assignment-command)))
+            (println (format "[DEBUG RLM] node '%s' auto-classified → %s (confidence %.2f, was-fresh-mint? %s, behavioral-count %d)"
+                             (or (:name node) (str (:id node)))
+                             (:assigned-tree-id result)
+                             (double (or (:confidence result) 0.0))
+                             (:was-fresh-mint? result)
+                             (count (:behaviors behavioral-result))))
+            ;; RS-3 (DeferralIsVisible): the domain axis deferred while the
+            ;; structural axis matched — the structural assignment above
+            ;; stands; ALSO record the domain-axis deferral through the
+            ;; existing deferral command, naming the domain axis and the
+            ;; reason. Never mutually exclusive with the assign-task-class
+            ;; dispatch above — both facts are true and both are recorded.
+            (when-let [deferral (:domain-deferral result)]
+              (ensure-classification-active!)
+              (let [domain-deferral-command
+                    (cond-> {:command/name :ontology/record-task-classification-deferral
+                             :command/id (random-uuid)
+                             :command/timestamp (time/now)
+                             :source-sheet-id (:sheet-id context)
+                             :source-tick-id (:tick-id context)
+                             :source-node-id (:id node)
+                             :fallback-source :domain-coverage
+                             :ranked-candidates (vec (:ranked-candidates result))
+                             :reasoning (format "Domain classification deferred: axis=%s reason=%s"
+                                                (name (:axis deferral))
+                                                (name (:reason deferral)))}
+                      (some? (:researcher-ownership-epoch context))
+                      (assoc :researcher-ownership-epoch
+                             (:researcher-ownership-epoch context)))]
+                (run-or-defer-classification-effect!
+                 context :domain-classification-deferral domain-deferral-command
+                 #(cp/process-command (assoc context :command domain-deferral-command)))
+                (ensure-classification-active!)
+                (println (format "[DEBUG RLM] node '%s' RS-3 domain-axis DEFERRED (reason=%s) — deferral event recorded alongside the structural assignment"
+                                 (or (:name node) (str (:id node)))
+                                 (:reason deferral)))))
+            ;; Every non-domain-mint fresh-mint (top-level :novel, walk-down's
+            ;; own :mint) keeps the ORIGINAL order: assign, then capture.
+            (when (and (not domain-mint?) (:was-fresh-mint? result))
               (ensure-classification-active!)
               (capture-classification-signature! context (:assigned-tree-id result) signature)
               (ensure-classification-active!)
@@ -2694,8 +2778,16 @@
                                      :tick-id tick-id
                                      :node-id node-id}))))
                               effect-priority
-                              {:convergence-capture 10
+                              {;; RS-3: the domain child's concept + skos:broader
+                               ;; edge must exist before anything references it —
+                               ;; earliest of the prep effects.
+                               :domain-child-mint 5
+                               :convergence-capture 10
                                :injection-record 20
+                               ;; RS-3: the domain-axis deferral is its own
+                               ;; durable fact, prepared alongside the outcome
+                               ;; but ordered just before it commits.
+                               :domain-classification-deferral 90
                                ;; The externally visible classification fact
                                ;; commits last.  A timeout anywhere in prompt or
                                ;; convergence preparation therefore cannot leave
