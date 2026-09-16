@@ -131,6 +131,8 @@
               child-id (:assigned-tree-id event)]
           (testing "the classified event"
             (is (= 1 (count classified)) "exactly one classification event")
+            (is (= :matched (:outcome event))
+                "RS-6: the three-state outcome is on the event beside the provenance")
             (is (= :mint-domain-child (:assigned-via event)))
             (is (= class-id (:parent-tree-id event)))
             (is (= "marathon-training-plan" (:domain-label event))

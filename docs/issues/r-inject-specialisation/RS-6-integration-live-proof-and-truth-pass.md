@@ -10,10 +10,76 @@ The whole-spec integration slice, orchestrator solo. The classify-only sweep har
 
 ## Acceptance criteria
 
-- [ ] Harness reads outcome, provenance and verdict; both sweep passes recorded with findings
-- [ ] Sanity checks 1.00 and covered; uncovered leaf matches mint children; identical identities across passes
-- [ ] One full-bench observation on three tasks recorded
-- [ ] Docs corrected; `/weed` divergences classified and tended; every `MintDomainChild` and `DomainVerdict` obligation covered; Allium error-free by severity count
+- [x] Harness reads outcome, provenance and verdict; both sweep passes recorded with findings
+- [x] Sanity checks 1.00 and covered; uncovered leaf matches mint children; identical identities across passes (18 of 21; the three that moved are itemised in the findings)
+- [x] One full-bench observation on three tasks recorded
+- [x] Docs corrected; `/weed` divergences classified and tended; every `MintDomainChild` and `DomainVerdict` obligation covered; Allium error-free by severity count
+
+## Verification
+
+The whole-spec integration slice, orchestrator solo. A new sweep harness drives every corpus task through the live
+auto-classify wedge and the live R-Inject render with a fresh sheet and tick, so a mint is durable and the second
+pass on the same store must land on the child the first pass minted; per task it records the classified or deferred
+event body (the three-state outcome, the provenance, the verdict, the label, the children considered, any
+deferral), the payload's domain map and the rendered block, and aggregates them beside the June-era flags. The
+three-state outcome was not on the classified event, only in memory; it is now recorded as an optional field the
+wedge forwards, applied with its assertion in one pass rather than red-first (the assertion fails on the pre-change
+event by construction) and reported here.
+
+Weed check mode over the arc's constructs, run read-only against the code, reported seventeen divergences. One was a
+code bug that the arc's own decision D7 depends on: the reranker's candidate schema and instruction accept a
+class's existing domain-child labels for reuse, and nothing in production filled that field, so label reuse was
+coincidence and a variant label minted a sibling. The labels are now read from the class's narrower concepts at
+candidate enrichment, red-first (two guards, including the string-form identifier retrieval hands back; the first
+green was blocked by a wrong keyword comparison against a helper that returns a string name, caught by the red run).
+Two latent code gaps were closed red-first: a domain-axis deferral could be recorded twice for one occurrence, and
+the checkpointed commit ordered the domain deferral before the assignment while the wedge dispatches it after; both
+paths now agree and the deferral is once per occurrence. The remaining divergences were tended in the spec: the
+three domain rules trigger on the decision-time shape match, read the class's domain children and the canonical
+label through named black-box functions, ensure the child concept and its edge, and assign the task in all three
+cases; the verdict's fields are optional; the search result carries the verdict; the outcome enum carries the three
+domain provenances; the description body carries the harvested label and the recommended pattern; the classifier's
+thresholds are in the config block; the invariants describe the per-axis deferral rate, the same-occurrence domain
+axis, the deferral carve-out and the recorded outcome; and the orc-service spec gains an invariant stating the
+atomic classification-effects set. The obligation plan grew from eighteen to twenty domain obligations; the two new
+ones (the child concept's declared fields) have their birth-suite assertions. Convergence: every one of the twenty
+is covered by a named suite (`specs/COVERAGE.md`), and Allium holds at 0 errors on both specs with unchanged
+warning and information counts.
+
+Two live sweep passes, twice. Run A, before the outcome was recorded on the event: pass 1 minted fifteen domain
+children (five first, ten siblings) and pass 2 landed on the identical child for twelve, identity stable on fifteen
+of twenty-one; two ticks were withheld by a fitness-axis reranker fallback, visible as deferrals. Run B, on the final
+tree: pass 1 minted fifteen (five first, ten siblings), pass 2 landed on the identical child for fourteen of them
+and on fifteen in all, identity stable on eighteen of twenty-one; both sanity checks matched their seeded class at
+1.00 and `covered` in both passes; with children present the reranker called the parent `covered` on seventeen of
+twenty-one (the D7b finding, live), and the judged label decided. The three that did not converge are itemised in
+the findings: one label variant coined despite the shown sibling, one bundle-to-walk-down move with no domain axis,
+and one novel task fresh-minted in both passes. The shape-broad corpus still absorbs the off-domain tasks as
+confident shape matches; each now lands on its own labelled child under that shape with an edge, a label and its
+signature as first evidence.
+
+One bounded full-bench observation, three off-domain tasks through the real bench runner with auto-classify on:
+all three campaigns succeeded (43 to 66 seconds, 57 to 104 thousand tokens); each was classified as a first domain
+child under the shape that absorbed it with a partial verdict, the child was minted before the render, the prepend
+carried the parent's entry and the child line, and the campaign's terminal verdict was recorded as an occurrence on
+the child — its first evidence. Two observations are recorded for the roadmap rather than fixed: a newborn child is
+retrievable at zero occurrences as if curated (the marathon task matched the recipe-scaling child minted one task
+earlier and minted a grandchild under it), and the observation harness reads claims by sheet where they are tagged
+by target. A first attempt failed before any task ran on an inconsistent on-disk retrieval index left by the
+previous JVM (the known two-rebuilder artifact); the index is derived data and was rebuilt.
+
+Docs truth pass: the RLM guide describes the domain-coverage verdict, domain children and the waterfall render, and
+both guides describe the injection record in place of the retired trace sidecar; the self-improving-loop status no
+longer calls the off-domain symptom resolved by the emergence loop, and states what that loop fixed, what the later
+sweep still showed, and how classification-time domain children now handle it. Two harness defects were found and
+fixed along the way: the birth suite's dispatch helper appended every event twice (RS-5's inspection), and the
+sweep harness read the mint event by the wrong tag (the mint is tagged by the child, not the tick).
+
+On the final tree the ontology brick passes in each owning project graph as its own JVM (83 namespaces, 709 tests /
+3991 assertions each, 0 failures) and the complete two-project `orc-service` brick passes with exit 0 in 69 minutes
+45 seconds under a 3 GB heap cap (132 namespaces per graph, 2142 tests / 11972 assertions across both, 0 failures,
+0 errors). Allium: ontology spec 0 errors, 8 warnings, 43 information diagnostics, 0 analyse findings; orc-service
+spec 0 errors, 2 warnings, 0 analyse findings — both unchanged from before the arc.
 
 ## Spec obligations covered
 

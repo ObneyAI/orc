@@ -1,0 +1,405 @@
+{:assigned-tree-id #uuid "1466189a-628f-3709-a3a2-f5639ac93c0d",
+ :tick-id #uuid "9c3e9ba6-daad-4d37-9090-e9b31d9f4aa5",
+ :slug "domain-001-game-balance",
+ :parent-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+ :domain-label "game-balance-simulation",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "game-balance-simulation",
+  :domain-reasoning
+  "The candidate explicitly lists 'game-balance-simulation' as an existing domain child, which perfectly matches the subject matter and material of this task."},
+ :node-id #uuid "61997dc1-f895-415f-b942-edc7c4824626",
+ :top-1
+ {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :fitness-score 1.0,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "game-balance-simulation"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "1466189a-628f-3709-a3a2-f5639ac93c0d",
+  :parent-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :domain-label "game-balance-simulation",
+  :classified-at "2026-09-16T05:49:33.812217-05:00",
+  :reasoning
+  "This task is a canonical producer/validator loop. The 'producer' hypothesizes balance adjustments, and the 'validator' (the simulation) checks against the formal win-rate window [45%, 55%]. The recommended pattern of passing issues (outlier pairs) back to the producer for retry directly matches the task's iterative flow.",
+  :outcome :matched,
+  :source-node-id #uuid "61997dc1-f895-415f-b942-edc7c4824626",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "ed8fac34-ba1d-3855-9fc7-7f9d0205190a",
+    :confidence 0.85,
+    :was-fresh-mint? false,
+    :reasoning
+    "This candidate's structural pattern — a 'measure-then-change-then-re-measure loop' — perfectly matches the iterative simulation and adjustment loop required to balance the card game. The specific recommended-pattern of 'measure to find the hot path BEFORE editing' aligns with the instruction to simulate matches to identify win-rate outliers before adjusting parameters. While the domain is 'code performance', the behavioral core of using a measurement signal (win-rates) to guide surgical edits (HP/cost adjustments) to meet a specific target window (45-55%) is an exact fit for the iterative balancing loop described.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "9c3e9ba6-daad-4d37-9090-e9b31d9f4aa5",
+  :event/tags
+  #{[:description-target #uuid "1466189a-628f-3709-a3a2-f5639ac93c0d"]
+    [:tick #uuid "9c3e9ba6-daad-4d37-9090-e9b31d9f4aa5"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:49:33.812450Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "game-balance-simulation",
+   :domain-reasoning
+   "The candidate explicitly lists 'game-balance-simulation' as an existing domain child, which perfectly matches the subject matter and material of this task."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :existing-domain-children
+    ["game-balance-simulation" "software-architecture-recommendation"],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.989512-05:00"},
+    :domain-label "game-balance-simulation",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :covered,
+    :rank 10,
+    :reasoning
+    "This task is a canonical producer/validator loop. The 'producer' hypothesizes balance adjustments, and the 'validator' (the simulation) checks against the formal win-rate window [45%, 55%]. The recommended pattern of passing issues (outlier pairs) back to the producer for retry directly matches the task's iterative flow.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The candidate explicitly lists 'game-balance-simulation' as an existing domain child, which perfectly matches the subject matter and material of this task.",
+    :cos-good 0.994789943009988,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9919080864588291,
+    :score 434.2922712191858,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.994789943009988,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.974326-05:00"},
+    :domain-label "game-balance-simulation",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :covered,
+    :rank 9,
+    :reasoning
+    "Matches the structural loop of hypothesis -> simulation -> validation -> adjustment. The strength regarding a :code validator providing a 'correctness oracle' is highly relevant here, as the simulation results are deterministic data points used to drive LLM adjustments.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "Matches the 'game-balance-simulation' child listed in the class definition, covering the specific task of balancing card game classes via iteration.",
+    :cos-good 0.994789943009988,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9919080864588291,
+    :score 434.2922712191858,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.95,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.994789943009988,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "stage-by-stage chaining matches problems with explicit ordered dependencies",
+      :good-when
+      "the work has 2-3 distinct phases AND each phase consumes the previous phase's specific output AND each phase is non-trivial",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:input] :writes [:extracted]}] [:llm {:reads [:extracted] :writes [:enriched]}] [:llm {:reads [:enriched] :writes [:formatted]}] [:final {:keys [:formatted]}]]"}],
+    :avoid-when
+    ["stages are independent — use :parallel"
+     "the work is per-item over a collection — use :map-each"
+     "the chain is 3+ small :llm steps — consolidate into a single :llm with multi-step instruction"
+     "the chain has 3+ :llm children doing successive small transformations on the same data AND each transformation is simple"
+     "two or more stages in the pipeline could run independently"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:SequentialPipeline",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.984171-05:00"},
+    :domain-label "game-balance-simulation",
+    :content
+    "SequentialPipeline is a :sequence of 2+ :llm/:code nodes where each step consumes the previous step's output. Natural for ETL (extract → enrich → format) and iterative refinement (draft → critique → revise). Avoid when stages are independent (use :parallel) or when 3+ small :llm steps could be one larger :llm — small successive :llm calls burn tokens that a single multi-step instruction would cover.",
+    :domain-coverage :uncovered,
+    :rank 4,
+    :reasoning
+    "While the task involves a sequence (Hypothesize -> Simulate -> Identify), it is inherently iterative rather than a linear ETL flow. SequentialPipeline is suitable for the internal steps of one round, but less fitting for the overall convergence goal compared to Producer/Validator.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "3+ small :llm steps burns sub-LLM tokens that could be a single larger :llm call with a multi-step instruction",
+      :avoid-when
+      "the chain has 3+ :llm children doing successive small transformations on the same data AND each transformation is simple",
+      :recommended-alternative
+      "consolidate into ONE :llm with a longer multi-step instruction; OR use :code for any deterministic intermediate stages (formatting, joining, regex extraction)"}
+     {:trait
+      "no parallelism — total wall-time is the sum of all children's durations",
+      :avoid-when
+      "two or more stages in the pipeline could run independently",
+      :recommended-alternative
+      "use :parallel for the independent stages, then :sequence around the genuinely-dependent ones; OR restructure as :parallel + final synthesis"}],
+    :domain-reasoning
+    "No representative uses mention game design or simulation; the domain is typically data transformation (ETL).",
+    :cos-good 0.9922623872641251,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9953683307966844,
+    :score 434.6216300995574,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.6,
+    :document-id ":tree-class:\"seed:tree:SequentialPipeline\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9922623872641251,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "stage-by-stage chaining matches problems with explicit ordered dependencies",
+      :good-when
+      "the work has 2-3 distinct phases AND each phase consumes the previous phase's specific output AND each phase is non-trivial",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:input] :writes [:extracted]}] [:llm {:reads [:extracted] :writes [:enriched]}] [:llm {:reads [:enriched] :writes [:formatted]}] [:final {:keys [:formatted]}]]"}],
+    :avoid-when
+    ["stages are independent — use :parallel"
+     "the work is per-item over a collection — use :map-each"
+     "the chain is 3+ small :llm steps — consolidate into a single :llm with multi-step instruction"
+     "the chain has 3+ :llm children doing successive small transformations on the same data AND each transformation is simple"
+     "two or more stages in the pipeline could run independently"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:SequentialPipeline",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.971121-05:00"},
+    :domain-label "game-balance-simulation",
+    :content
+    "SequentialPipeline is a :sequence of 2+ :llm/:code nodes where each step consumes the previous step's output. Natural for ETL (extract → enrich → format) and iterative refinement (draft → critique → revise). Avoid when stages are independent (use :parallel) or when 3+ small :llm steps could be one larger :llm — small successive :llm calls burn tokens that a single multi-step instruction would cover.",
+    :domain-coverage :uncovered,
+    :rank 3,
+    :reasoning
+    "The structural shape of 'each step consumes the previous step's output' fits a single iteration, but the pattern fails to capture the 'Repeat until' loop condition which is central to this task.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "3+ small :llm steps burns sub-LLM tokens that could be a single larger :llm call with a multi-step instruction",
+      :avoid-when
+      "the chain has 3+ :llm children doing successive small transformations on the same data AND each transformation is simple",
+      :recommended-alternative
+      "consolidate into ONE :llm with a longer multi-step instruction; OR use :code for any deterministic intermediate stages (formatting, joining, regex extraction)"}
+     {:trait
+      "no parallelism — total wall-time is the sum of all children's durations",
+      :avoid-when
+      "two or more stages in the pipeline could run independently",
+      :recommended-alternative
+      "use :parallel for the independent stages, then :sequence around the genuinely-dependent ones; OR restructure as :parallel + final synthesis"}],
+    :domain-reasoning
+    "The declared uses focus on ETL and iterative refinement of text, not statistical balance or simulation.",
+    :cos-good 0.9922623872641251,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9953683307966844,
+    :score 434.6216300995574,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.58,
+    :document-id ":tree-fingerprint:\"seed:tree:SequentialPipeline\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9922623872641251,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :existing-domain-children
+    ["backend-middleware-refactoring"
+     "data-warehouse-etl-design"
+     "database-migration-runbook"
+     "jvm-service-diagnosis"
+     "recipe-scaling-and-logistics"
+     "security-audit-haikus"
+     "sql-query-optimization"
+     "streaming-etl-design"],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.988167-05:00"},
+    :domain-label "game-balance-simulation",
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :domain-coverage :uncovered,
+    :rank 7,
+    :reasoning
+    "The ETL pipeline class is designed for multi-stage transformations. The task does have intermediates (win-rate matrix), but the 'avoid-when' for 'individual stages are 1-2 sentence transformations' might apply if the adjustments are simple, and it lacks the explicit retry/validation logic needed for balance convergence.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :domain-reasoning
+    "The domain is centered on backend middleware and data warehousing, which is unrelated to game balance.",
+    :cos-good 0.9951786468845806,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.995176980548194,
+    :score 434.35360641496885,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.5,
+    :document-id
+    ":tree-class:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9951786468845806,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered
+  ["software-architecture-recommendation" "game-balance-simulation"],
+  :event/id #uuid "01a0a9d6-1174-7027-82c4-ee6e3253022b",
+  :confidence 1.0,
+  :source-sheet-id #uuid "3a26ff6f-ac06-4229-9b38-e95ff85005a4",
+  :ranked-candidates
+  [{:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 434.2922712191858}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.95,
+    :score 434.2922712191858}
+   {:target-id "seed:tree:SequentialPipeline",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.6,
+    :score 434.6216300995574}
+   {:target-id "seed:tree:SequentialPipeline",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.58,
+    :score 434.6216300995574}
+   {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.5,
+    :score 434.35360641496885}],
+  :was-fresh-mint? false,
+  :assigned-via :land-on-domain-child},
+ :deferred-events [],
+ :domain-children-considered
+ ["software-architecture-recommendation" "game-balance-simulation"],
+ :sheet-id #uuid "3a26ff6f-ac06-4229-9b38-e95ff85005a4",
+ :payload-domain
+ {:assigned-via :land-on-domain-child,
+  :parent-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :child-tree-id #uuid "1466189a-628f-3709-a3a2-f5639ac93c0d",
+  :domain-label "game-balance-simulation"},
+ :pass 2,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: game-balance-simulation); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 3 from corpus retrieval)\n#### Top match — Producer/validator (confidence: 1.00)\nWhy this fits: This task is a canonical producer/validator loop. The 'producer' hypothesizes balance adjustments, and the 'validator' (the simulation) checks against the formal win-rate window [45%, 55%]. The recommended pattern of passing issues (outlier pairs) back to the producer for retry directly matches the task's iterative flow.\n\nPattern guidance (seed `:summary`):\nProducer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).\n\nCapabilities:\n  - :sequence with a producer :llm + a validator :code (or :llm with structured :output-schemas) + an explicit retry budget\n  - natural for any 'generate-then-check' work: code generation + type-check, JSON output + schema validation, claim + grounding check\n  - outputs typically include the validated artifact, the validation result (pass/fail with reasons), and the retry count consumed\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted (confidence 1.00, evidence-count 1)\n    - Good when: the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]\n      ```\n\n  - **Trait:** always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again (confidence 1.00, evidence-count 1)\n    - Good when: the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint) (confidence 1.00, evidence-count 1)\n    - Avoid when: :max-retries is not set OR is set above ~5 AND the producer is :llm-driven\n    - Recommended fix: always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate\n\n  - **Failure mode:** using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw (confidence 1.00, evidence-count 1)\n    - Avoid when: the validation rules can be expressed in code AND the validator is being implemented as another :llm node\n    - Recommended fix: always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - JSON output generation + schema validation: produce JSON → parse + validate against Malli → retry with errors\n  - code generation + compile check: produce Clojure expression → eval in sandbox → retry with stack trace\n  - regex/grammar generation + sample-input parse: produce regex → run on test inputs → retry with mismatch sample\n\n#### Alternative #1 — Producer/validator (confidence: 0.95)\nWhy this fits: Matches the structural loop of hypothesis -> simulation -> validation -> adjustment. The strength regarding a :code validator providing a 'correctness oracle' is highly relevant here, as the simulation results are deterministic data points used to drive LLM adjustments.\n\nPattern guidance (seed `:summary`):\nProducer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).\n\nCapabilities:\n  - :sequence with a producer :llm + a validator :code (or :llm with structured :output-schemas) + an explicit retry budget\n  - natural for any 'generate-then-check' work: code generation + type-check, JSON output + schema validation, claim + grounding check\n  - outputs typically include the validated artifact, the validation result (pass/fail with reasons), and the retry count consumed\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted (confidence 1.00, evidence-count 1)\n    - Good when: the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]\n      ```\n\n  - **Trait:** always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again (confidence 1.00, evidence-count 1)\n    - Good when: the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint) (confidence 1.00, evidence-count 1)\n    - Avoid when: :max-retries is not set OR is set above ~5 AND the producer is :llm-driven\n    - Recommended fix: always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate\n\n  - **Failure mode:** using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw (confidence 1.00, evidence-count 1)\n    - Avoid when: the validation rules can be expressed in code AND the validator is being implemented as another :llm node\n    - Recommended fix: always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - JSON output generation + schema validation: produce JSON → parse + validate against Malli → retry with errors\n  - code generation + compile check: produce Clojure expression → eval in sandbox → retry with stack trace\n  - regex/grammar generation + sample-input parse: produce regex → run on test inputs → retry with mismatch sample\n\n#### Alternative #2 — SequentialPipeline (confidence: 0.60)\nWhy this fits: While the task involves a sequence (Hypothesize -> Simulate -> Identify), it is inherently iterative rather than a linear ETL flow. SequentialPipeline is suitable for the internal steps of one round, but less fitting for the overall convergence goal compared to Producer/Validator.\n\nPattern guidance (seed `:summary`):\nSequentialPipeline is a :sequence of 2+ :llm/:code nodes where each step consumes the previous step's output. Natural for ETL (extract → enrich → format) and iterative refinement (draft → critique → revise). Avoid when stages are independent (use :parallel) or when 3+ small :llm steps could be one larger :llm — small successive :llm calls burn tokens that a single multi-step instruction would cover.\n\n\nAssigned to domain child 1466189a-628f-3709-a3a2-f5639ac93c0d (label: game-balance-simulation) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 1 from corpus retrieval)\n1. Behavioral suggestion (confidence: 0.85)\n   Why this fits: This candidate's structural pattern — a 'measure-then-change-then-re-measure loop' — perfectly matches the iterative simulation and adjustment loop required to balance the card game. The specific recommended-pattern of 'measure to find the hot path BEFORE editing' aligns with the instruction to simulate matches to identify win-rate outliers before adjusting parameters. While the domain is 'code performance', the behavioral core of using a measurement signal (win-rates) to guide surgical edits (HP/cost adjustments) to meet a specific target window (45-55%) is an exact fit for the iterative balancing loop described.\n\n   Guidance (seed `:summary`):\n   Performance-optimization makes existing code faster WITHOUT changing what it produces — a measure-then-change-then-re-measure loop (really Investigation to find the hot path, then Code-building to optimize) under an output-invariance constraint. The load-bearing traits are profiling to locate the real bottleneck BEFORE editing (never guess from reading the code) and pinning output-invariance with a before/after comparison (a speedup that changes results is a regression). Prefer this over the broad Transformation parent whenever the task pairs a speed target with 'without changing the output': Transformation's one-shot 'reshape in :code' shape ships an unmeasured, possibly output-altering change. Avoid when the task adds new behavior (code-building) or has no correctness constraint (the Transformation parent).\n\nCapabilities:\n  - given code that is too slow + a performance target + an output-invariance constraint, locate the hot path, change it for speed, and prove the output is unchanged\n  - natural fit when the task is 'X is slow, make it faster WITHOUT changing what it produces' — a measure-then-change-then-re-measure loop, not a one-shot reshape\n  - outputs are typically a code edit to the hot path + a before/after measurement + evidence the observable output is byte-for-byte unchanged\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** measure to find the hot path BEFORE editing — optimize what the profile proves is slow, not what looks slow; premature edits to cold code add risk for no gain (confidence 0.70, evidence-count 1)\n    - Good when: the slow region is not obvious AND a profiling/timing signal is available\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:input] :writes [:profile] :fn (fn [{:keys [inputs]}] {:profile :hot-path})}] [:llm {:reads [:profile :src] :writes [:optimized-src]}] [:code {:reads [:optimized-src] :writes [:after-timing]}] [:final {:keys [:optimized-src :after-timing]}]]\n      ```\n\n  - **Trait:** pin output-invariance with a check that compares optimized output to the original on representative inputs — a speedup that changes results is a regression, not an optimization (confidence 0.70, evidence-count 1)\n    - Good when: the task explicitly requires 'without changing the output' (or correctness matters more than speed)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:writes [:optimized-src]}] [:code {:reads [:optimized-src :baseline-output] :writes [:invariance-check] :fn (fn [{:keys [inputs]}] {:invariance-check :outputs-equal})}] [:final {:keys [:optimized-src :invariance-check]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** optimizing by rewriting the logic (the Transformation parent's 'reshape it in :code' instinct) without a baseline measurement OR an invariance check ships a change that may be no faster and may silently alter output (confidence 0.70, evidence-count 1)\n    - Avoid when: the task pairs a speed target with an output-invariance constraint\n    - Recommended fix: measure first (profile/timing), change only the proven hot path, then compare optimized output to the baseline before committing\n\n  - **Failure mode:** guessing the bottleneck from reading the code instead of profiling wastes the edit on the wrong region and often misses the real cost (I/O, N+1, allocation) entirely (confidence 0.70, evidence-count 1)\n    - Avoid when: a profiler or representative-input timing harness is available\n    - Recommended fix: always derive the hot path from a measurement stage; let the profile, not intuition, choose where to edit\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - the report-rendering endpoint is slow on large inputs; profile it and optimize the hot path so a 10k-row report renders under 500ms without changing the output\n  - a nightly aggregation job exceeds its window; find and fix the dominant cost while keeping the produced totals identical\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent ed8fac34-ba1d-3855-9fc7-7f9d0205190a)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nBalance a 4-class deckbuilder card game (Mage / Rogue / Warrior / Cleric)\nso that across simulated head-to-head matches, every pair of classes\nconverges to a win-rate in the [45%, 55%] window.\n\nEach class has a starting kit:\n- Mage:    24 HP, 3 spell-cards (5 dmg @ 4 mana), 1 shield-card (block 2 @ 1 mana)\n- Rogue:   26 HP, 4 quick-cards (2 dmg @ 1 mana), 1 dodge-card (50% block @ 2 mana)\n- Warrior: 30 HP, 2 attack-cards (4 dmg @ 3 mana), 1 armor-card (block 3 @ 2 mana)\n- Cleric:  28 HP, 2 heal-cards (heal 5 @ 3 mana), 2 smite-cards (3 dmg @ 2 mana)\n\nYou are NOT given a baseline win-rate matrix. The work is iterative:\n- Hypothesize a starting balance (which class is over/under-tuned and why)\n- Simulate enough head-to-head matches to estimate the 4x4 win-rate matrix\n- Identify any pair outside [45%, 55%]\n- Adjust class parameters (HP / card damage / card cost) on the outlier classes\n- Re-simulate the affected matchups\n- Repeat until all 6 pairwise matchups converge into [45%, 55%]\n\nProduce:\n- :final-balance — the converged class parameters as a map keyed by class\n- :rounds — vector of {:round-N {:adjustments {...} :winrate-matrix {...}}}\n- :rationale — 2-3 paragraphs explaining iteration strategy + convergence",
+ :june-flags
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 15638,
+ :confidence 1.0,
+ :was-fresh-mint? false,
+ :assigned-via :land-on-domain-child}

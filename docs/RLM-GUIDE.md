@@ -422,6 +422,20 @@ This is a common "apples-to-apples" cost pattern: a high-capability main LM for 
 
 The model sees this block *before* it designs its tree, so its first `emit-tree!` response is informed by patterns that have shipped successfully on similar tasks. The prepend is **examples, not mandates** — the model can adopt, adapt, or design from scratch.
 
+**Domain children and the waterfall.** Beside the fitness score, the reranker gives a discrete *domain coverage*
+verdict (covered / partial / uncovered / unknown) with a short kebab-case domain label. When a task matches a shape
+whose declared domain does not cover it (partial or uncovered), the runtime mints a *domain child* of that shape at
+classification time — a tree-class concept carrying the judged label, a `skos:broader` edge to its parent, and the
+task's signature as its first representative use — and assigns the task to the child; the child's identity is
+derived from the parent and the label, so the same domain under the same shape always lands on the same child, and a
+different label under a parent that already has children mints a sibling. The prepend then renders the waterfall
+top down: while the child has no consolidated body, the structural section shows the **parent's full entry** (the
+shape the task matched) followed by one line naming the child and its label as the assignment whose first evidence
+this campaign will be; once the child has a consolidated body it renders as the primary entry and the parent drops to
+a one-line shape context. The four-move menu's SPECIALIZE bullet then points at that assignment rather than inviting a
+structural mint the runtime already made. An `unknown` verdict defers the domain axis (the structural assignment
+stands and a deferral is recorded naming the axis); nothing is inferred from the fitness number.
+
 For a checkpointed researcher, campaign timing is established and durably
 claimed before automatic classification starts. Structural and behavioral
 classification, convergence capture, corpus-description reads, prompt
@@ -512,9 +526,8 @@ Strengths (proven traits — these patterns have been observed to work):
 ...
 ```
 
-The trace is written to `/tmp/r-inject-trace-<sheet-id>.edn` for every
-auto-classified run — see [Inspecting the classifier](#inspecting-the-classifier)
-in the trace tools section below.
+Every auto-classified render records a durable *injection record* — see
+[Inspecting the classifier](#inspecting-the-classifier) below.
 
 ### Patterns are offered whole, with declared key bindings
 
@@ -605,34 +618,29 @@ different domain (e.g., game-balance → ML hyperparameter tuning).
 
 ### Inspecting the classifier
 
-Every `:auto-classify?` run writes a sidecar trace to
-`/tmp/r-inject-trace-<sheet-id>.edn`:
+Every `:auto-classify?` render is recorded durably as an **injection record** (event
+`:intervention/injection-recorded`, read model `:sheet/injection-records`), keyed by sheet, tick and node:
 
 ```clojure
-{:rendered-at "2026-06-09T..."
- :prepend "## Suggested patterns from corpus..."     ; full text
- :prepend-chars 4186
- :original-instruction-chars 800
- :classifier-payload
- {:structural {:assigned-tree-id #uuid "..."
-               :confidence 1.00
-               :top-candidates [{:document-metadata {:target-id "..."}
-                                  :reasoning "<reranker reasoning>"
-                                  :fitness-score 1.00} ...]
-               :rerank-fallback? false}
-  :behavioral {:behaviors [{:behavior-id #uuid "..."
-                            :confidence 0.95
-                            :reasoning "<reranker reasoning>"} ...]
-               :rerank-fallback? false}}}
+(require '[ai.obney.orc.orc-service.core.read-models :as rm])
+
+(rm/get-injection-record ctx sheet-id tick-id node-id)
+;; => {:arm :treatment                       ; or :holdout / :claim-holdout
+;;     :task-class #uuid "..."               ; the assigned tree-class (a domain child's id when one was assigned)
+;;     :candidates [{:axis :structural :candidate-id "..." :version 4 :score 0.85} ...]
+;;     :candidate-id "..."                   ; the top structural candidate
+;;     :rendered-chars 2121
+;;     :prompt-content-hash "..."
+;;     :model "..." :baseline-policy-id "r-inject/no-injection" :selection-propensity 1.0
+;;     :sheet-id ... :tick-id ... :node-id ... :recorded-at "..."}
 ```
 
-Read this to confirm which pattern was matched, what the reranker
-reasoned, and what the model actually saw. The `:rerank-fallback?` flag
-is the surfacing of reranker failure: when `true`, the classifier fell
-back to pure ColBERT-similarity scoring and the result should be
-treated with caution.
-
----
+`:candidates` is exactly what the render put in front of the model, each at the body version it read; on a newborn
+domain child it names the parent entry that was rendered, on a consolidated child the child itself. The full rendered
+block is not stored by default; set `:injection-capture-rendered-block? true` on the context (or bind
+`*capture-rendered-block?*`) to have `:rendered-block` recorded as well. The classification itself — outcome,
+provenance (`:assigned-via`), the domain verdict, label and any domain-axis deferral — is on the
+`:ontology/task-classified` event for the same tick.
 
 ## Ontology context injection (`:context`) — manual / legacy mode
 

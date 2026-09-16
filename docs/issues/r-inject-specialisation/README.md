@@ -24,6 +24,10 @@ reranker judges uncovered gets its own stable class under that shape, and the lo
 | [RS-5](RS-5-the-chain-reaches-retrieval-and-harvest.md) — The chain reaches retrieval and harvest | AFK | RS-3 |
 | [RS-6](RS-6-integration-live-proof-and-truth-pass.md) — **Integration, live proof and truth pass** | HITL | all |
 
+Landed, in order, each with its `## Verification` ledger in the issue file: RS-1 `ca6e8863`, RS-2 `a21c40e5`, RS-3
+`371d83f4`, RS-4 `5d15b600`, RS-5 `6d7b5d22`. RS-6 is the whole-spec integration slice (weed, obligation convergence,
+the two live sweep passes, the bounded full-bench observation and the docs truth pass).
+
 ## Handoff cadence
 
 A brief is written only after its blocker has landed and been inspected, from real signatures: RS-1 after RS-P1;

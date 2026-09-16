@@ -1,0 +1,399 @@
+{:slug "domain-002-recipe-scaling",
+ :claims [],
+ :generated-tree-raw
+ [:sequence
+  [:llm
+   {:instruction
+    "Scale the provided ratatouille recipe from 6 plates to 60 plates. \n                           1. Provide :scaled-ingredients as a list with quantities. Use non-linear scaling for salt and spices (reduce linear multiplier by 20-30% to avoid over-seasoning).\n                           2. Provide :cost-basis as a list of ingredients with typical restaurant supplier prices (USD) and total cost for that ingredient at the 60-plate scale.",
+    :writes [:scaled-ingredients :cost-basis],
+    :output-schemas
+    {:scaled-ingredients
+     [:vector [:map [:item :string] [:quantity :string]]],
+     :cost-basis
+     [:vector
+      [:map
+       [:item :string]
+       [:unit-price-desc :string]
+       [:total-ingredient-cost :double]]]}}]
+  [:llm
+   {:instruction
+    "Based on the 60-plate ingredient volumes, design the technical production plan. \n                           Address:\n                           1. Revised Technique: Batching strategy (using multiple pans vs. large tilt skillet), moisture control, and how to avoid mashing large volumes.\n                           2. Workflow: Station setup for 60 plates of 1cm dicing (prep vs. cook stations).\n                           3. Timing: Adjusted sweat and simmer times for large thermal masses.\n                           4. Pitfalls: Heat distribution issues in deep pots and service holding/reheating limits.",
+    :reads [:scaled-ingredients],
+    :writes
+    [:revised-technique :workflow :timing :pitfalls-and-mitigations],
+    :output-schemas
+    {:revised-technique :string,
+     :workflow :string,
+     :timing :string,
+     :pitfalls-and-mitigations :string}}]
+  [:code
+   {:fn
+    (fn
+     [{:keys [inputs]}]
+     (let
+      [{:keys
+        [cost-basis
+         scaled-ingredients
+         revised-technique
+         workflow
+         timing
+         pitfalls-and-mitigations]}
+       inputs
+       total-cost
+       (reduce + (map :total-ingredient-cost cost-basis))
+       ingredients-str
+       (clojure.string/join
+        "\n- "
+        (map
+         (fn [i] (str (:quantity i) " " (:item i)))
+         scaled-ingredients))
+       cost-str
+       (clojure.string/join
+        "\n- "
+        (map
+         (fn [i] (str (:item i) ": $" (:total-ingredient-cost i)))
+         cost-basis))]
+      {:result
+       (str
+        "# Catering Plan: Ratatouille for 60\n\n"
+        "## Scaled Ingredients\n- "
+        ingredients-str
+        "\n\n## Revised Technique\n"
+        revised-technique
+        "\n\n## Workflow & Station Setup\n"
+        workflow
+        "\n\n## Timing & Service\n"
+        timing
+        "\n\n## Cost Estimate\n"
+        cost-str
+        "\n\n**Total Estimated Supplier Cost: $"
+        total-cost
+        "**"
+        "\n\n## Pitfalls & Mitigations\n"
+        pitfalls-and-mitigations)})),
+    :reads
+    [:scaled-ingredients
+     :cost-basis
+     :revised-technique
+     :workflow
+     :timing
+     :pitfalls-and-mitigations],
+    :writes [:result],
+    :output-schemas {:result :string}}]
+  [:final {:keys [:result]}]],
+ :occurrences
+ [{:assigned-tree-id #uuid "cd164782-6d0a-32fd-8d89-c72a2e96a857",
+   :verdict :success}],
+ :duration-ms 66347,
+ :deferred [],
+ :usage
+ {:prompt-tokens 97772,
+  :completion-tokens 5769,
+  :total-tokens 103541,
+  :by-node
+  {[{:type :leaf,
+     :node-id #uuid "9cb1c916-2fe5-40a4-8150-1723c0b3030e"}]
+   {:prompt-tokens 97772,
+    :completion-tokens 5769,
+    :total-tokens 103541}}},
+ :render
+ {:arm :treatment,
+  :candidates
+  [{:axis :structural,
+    :candidate-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :version 1,
+    :score 0.9}
+   {:axis :structural,
+    :candidate-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :version 1,
+    :score 0.9}
+   {:axis :behavioral,
+    :candidate-id "b3597aa7-3957-3734-90c6-531d27c08f67",
+    :version 1,
+    :score 0.95}
+   {:axis :behavioral,
+    :candidate-id "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :version 1,
+    :score 0.85}
+   {:axis :behavioral,
+    :candidate-id "760be698-0bb8-3a5a-a2bd-1d45445a5861",
+    :version 1,
+    :score 0.6}],
+  :prepend-chars 31307,
+  :prepend
+  "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: recipe-scaling-and-catering); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 2 from corpus retrieval)\n#### Top match (confidence: 0.90)\nWhy this fits: The task requires a multi-stage transformation: scaling ingredients (math/transformation), revising technique (reasoning), establishing workflow (reasoning), and cost estimation (arithmetic/lookup). The ETL pipeline's sequential :llm stages for content transformation and :code stages for deterministic formatting/math (like the cost estimate) fits the requirement for distinct, dependent outputs (:scaled-ingredients -> :revised-technique -> :cost-estimate).\n\nPattern guidance (seed `:summary`):\nETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).\n\nCapabilities:\n  - ordered chain of typically 2-4 stages where each stage transforms the previous stage's output into a richer form\n  - natural fit for raw-input → normalized → enriched → emit-ready flows\n  - each stage's :reads consume the previous stage's :writes — explicit data dependency tracking\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate (confidence 1.00, evidence-count 1)\n    - Good when: input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]\n      ```\n\n  - **Trait:** use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names (confidence 1.00, evidence-count 1)\n    - Good when: the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage (confidence 1.00, evidence-count 1)\n    - Avoid when: intermediate stages don't declare :output-schemas and downstream stages assume specific keys\n    - Recommended fix: always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer\n\n  - **Failure mode:** 5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short (confidence 1.00, evidence-count 1)\n    - Avoid when: individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates\n    - Recommended fix: collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - customer record normalization: parse → dedupe-fields → enrich-from-CRM → emit-warehouse-row\n  - log line parsing: tokenize → classify-event-type → annotate-with-context → emit-structured-event\n  - translation pipeline: clean-input → translate → polish-style → emit-final-text\n\n#### Alternative #1 (confidence: 0.90)\nWhy this fits: Identical to the tree-class; the ETL sequence of :llm stages for reasoning (technique/workflow) and :code for math (scaling/cost) is the strongest structural match for a complex conversion task with specific output keys.\n\nPattern guidance (seed `:summary`):\nETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).\n\nCapabilities:\n  - ordered chain of typically 2-4 stages where each stage transforms the previous stage's output into a richer form\n  - natural fit for raw-input → normalized → enriched → emit-ready flows\n  - each stage's :reads consume the previous stage's :writes — explicit data dependency tracking\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate (confidence 1.00, evidence-count 1)\n    - Good when: input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]\n      ```\n\n  - **Trait:** use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names (confidence 1.00, evidence-count 1)\n    - Good when: the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage (confidence 1.00, evidence-count 1)\n    - Avoid when: intermediate stages don't declare :output-schemas and downstream stages assume specific keys\n    - Recommended fix: always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer\n\n  - **Failure mode:** 5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short (confidence 1.00, evidence-count 1)\n    - Avoid when: individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates\n    - Recommended fix: collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - customer record normalization: parse → dedupe-fields → enrich-from-CRM → emit-warehouse-row\n  - log line parsing: tokenize → classify-event-type → annotate-with-context → emit-structured-event\n  - translation pipeline: clean-input → translate → polish-style → emit-final-text\n\nAssigned to domain child cd164782-6d0a-32fd-8d89-c72a2e96a857 (label: recipe-scaling-and-catering) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral: Analysis (confidence: 0.95)\n   Why this fits: Analysis is the strongest fit because the task requires reasoning over a set of 'extracted items' (the recipe components) to produce structured findings (revised technique, workflow, pitfalls) with evidence-based reasoning (e.g., heat distribution, scaling physics). The recommended pattern for multi-dimensional analysis fits the task's need to evaluate scaling across orthogonal dimensions like 'knife work', 'cookware capacity', 'heat distribution', and 'seasoning'.\n\n   Guidance (seed `:summary`):\n   Analysis reasons over already-extracted items to produce structured findings (patterns / problems / opportunities) with per-finding evidence. Always tie findings to specific items via :affected-items references for downstream auditability. For multi-dimensional analysis, fan out per-dimension :llm stages via :parallel — each stage gets a tighter focus. NEVER skip the extraction stage: analyzing raw documents conflates extraction and reasoning, degrading both. Composes into comparative-summary (multi-source structured findings), chunked-extraction (per-chunk parallel analysis), and sequential-pipeline (extract → analyze → synthesize). Avoid when the task is summarizing (use synthesis) or generating options (use ideation).\n\nCapabilities:\n  - given a vector/map of pre-extracted items, produce a structured set of findings (patterns / problems / opportunities) with per-finding evidence\n  - natural fit as a mid-tree stage between extraction (upstream) and synthesis/critique/code-building (downstream)\n  - outputs are typically a vector of findings, each with :type / :evidence / :confidence / :affected-items\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** tie each finding to the specific extracted item(s) that triggered it via an :affected-items reference field — downstream stages can audit, drill down, or prioritize findings by evidence weight (confidence 1.00, evidence-count 1)\n    - Good when: downstream stages need to attribute findings to evidence OR rank findings by support\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:extracts] :writes [:findings] :output-schemas {:findings [:vector [:map [:type :string] [:evidence :string] [:confidence :double] [:affected-items [:vector :string]]]]}}]\n      ```\n\n  - **Trait:** for multi-dimensional analysis (e.g., risk / opportunity / blocker across the same items), use :parallel one-:llm-per-dimension stages — each stage has a tight focus and can produce richer per-dimension reasoning (confidence 1.00, evidence-count 1)\n    - Good when: the analysis has 2-4 orthogonal dimensions that benefit from separate prompts\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:parallel [:llm {:reads [:extracts] :writes [:risks]}] [:llm {:reads [:extracts] :writes [:opportunities]}] [:llm {:reads [:extracts] :writes [:blockers]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** analyzing raw documents (skipping extraction) forces the analysis :llm to do BOTH extraction and reasoning — quality degrades on both since the model can't optimize attention for either (confidence 1.00, evidence-count 1)\n    - Avoid when: the input is raw documents AND the analysis needs to attribute findings to specific items\n    - Recommended fix: two-stage: extract structured items first, then analyze over the extracts; preserves analyzability of findings\n\n  - **Failure mode:** single-pass analysis over a long flat list of items loses signal on per-item nuance — findings cluster around the most prominent items (confidence 1.00, evidence-count 1)\n    - Avoid when: item count is high AND each item deserves per-item attention\n    - Recommended fix: use :map-each per-item analysis with bounded :max-concurrency, then aggregate findings — preserves per-item granularity\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - risk analysis over extracted contract clauses: per-clause risk score + reasoning + mitigation\n  - pattern detection across log events: clusters of related events + frequency + suspected cause\n  - gap analysis over a feature list: required-vs-present + missing-items + priority\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent b3597aa7-3957-3734-90c6-531d27c08f67)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Synthesis (confidence: 0.85)\n   Why this fits: Synthesis is a strong fit for the final stage of the task: integrating the various scaling considerations (ingredients, technique, timing, cost) into a single cohesive artifact (the catering plan). The recommended pattern of using a :code-built outline to preserve coverage is highly applicable to ensuring all 6 required output keys are addressed in the final response.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral: Investigation explains WHY a system (confidence: 0.60)\n   Why this fits: Investigation is relevant for the 'pitfalls-and-mitigations' section, as it models 'explaining why a system (the recipe) might misbehave' at scale. However, it is down-ranked because an avoid-when guard fires: 'the task is producing a new spec or design from scratch — that's design (no failure to investigate)'. The task is primarily a creative/technical scaling design, not explaining an existing failure.\n\n   Guidance (seed `:summary`):\n   Investigation explains WHY a system is misbehaving. Best implemented as an explicit hypothesis-then-evidence shape: enumerate candidate causes from the symptom UPFRONT, then collect evidence to rule out alternatives, then converge on the root cause + recommended fix. ALWAYS pass ambient context (logs / code / tests / stack traces) in :reads — context-free investigation produces vacuous output. For large evidence sets (multi-file logs, large codebases), compose into chunked-extraction shells so per-chunk evidence collection parallelizes. Composes into sequential-pipeline (canonical hypothesis chain), fallback-recovery (try-one-path-then-another when initial hypothesis fails), and chunked-extraction (investigating large evidence sets). Distinct from Research (which gathers external material to seed new work, not explain existing breakage) and Analysis (which reasons over already-extracted items, not raw symptoms). Avoid when the task is exploration without a specific failure to explain.\n\nCapabilities:\n  - given symptoms + ambient context (logs, code, test artifacts, stack traces), produce a structured hypothesis with supporting evidence and a recommended fix or next step\n  - natural fit when the goal is to explain WHY something is broken — distinct from Research (gather new material) and Analysis (reason over already-extracted items)\n  - outputs are typically a single root-cause statement + supporting evidence references + a recommended-fix or next-step\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** enumerate candidate hypotheses UPFRONT from the symptom before collecting evidence — separates 'what could be wrong' from 'what is wrong' so evidence rules out rather than confirms the first guess (confidence 1.00, evidence-count 1)\n    - Good when: the failure mode space is bounded AND the model can enumerate likely causes from the symptom alone\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:symptom :context] :writes [:candidate-hypotheses]}] [:llm {:reads [:candidate-hypotheses :context] :writes [:ruled-out :remaining]}] [:llm {:reads [:remaining :context] :writes [:root-cause :recommended-fix]}] [:final {:keys [:root-cause :recommended-fix]}]]\n      ```\n\n  - **Trait:** for investigations over large evidence sets (multi-file logs, large codebases), chunk the evidence and run per-chunk hypothesis-evidence collection via :map-each so per-chunk reasoning parallelizes and the aggregator sees per-chunk findings tagged with their source (confidence 1.00, evidence-count 1)\n    - Good when: evidence is too large to fit in a single :llm context AND per-chunk findings can be aggregated without losing per-chunk attribution\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :evidence-chunks :as :chunk :max-concurrency 3 :writes [:per-chunk-findings]} [:llm {:reads [:chunk :symptom] :writes [:per-chunk-findings] :output-schemas {:per-chunk-findings [:vector [:map [:hypothesis :string] [:supporting-evidence :string] [:chunk-id :string]]]}}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** single-pass investigation on a complex symptom converges on the first plausible hypothesis without ruling out alternatives — produces overconfident root-cause claims that fail when the true cause was the second hypothesis (confidence 1.00, evidence-count 1)\n    - Avoid when: the symptom has multiple plausible causes AND the cost of acting on the wrong root cause is high\n    - Recommended fix: explicit multi-hypothesis enumeration upfront; an intermediate :llm stage must rule out at least ONE candidate hypothesis with evidence before convergence to a root cause is allowed\n\n  - **Failure mode:** investigation without ambient context (just the symptom + nothing else) produces vacuous 'could be X / could be Y' output the consumer can't act on — the model has no evidence to rule anything in or out (confidence 1.00, evidence-count 1)\n    - Avoid when: context (logs / code / tests / stack traces) is available in the system but not passed in :reads\n    - Recommended fix: always pass ambient context explicitly in :reads; if the context is too large for a single :llm node, compose into chunked-extraction via :map-each so per-chunk evidence reaches the hypothesis-evidence stage\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - investigate why an integration test is flaky: enumerate timing / shared-state / environment hypotheses; rule out via test logs + run history; recommend the deterministic fix\n  - generate property-based tests that exercise edge cases — property test generation IS investigation, finding inputs that break invariants\n  - debug a memory leak in a long-running service: enumerate allocator / reference-cycle / cache-bloat hypotheses; rule out via heap snapshots + allocation profiles; recommend the targeted fix\n  - review a post-incident report for missing root-cause analysis: enumerate plausible causes the report didn't address; surface the gap with evidence from the timeline\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 760be698-0bb8-3a5a-a2bd-1d45445a5861)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\n"},
+ :status :success,
+ :outputs
+ {:result
+  "# Catering Plan: Ratatouille for 60\n\n## Scaled Ingredients\n- 20 units Eggplant (large)\n- 30 units Zucchini (medium)\n- 30 units Yellow Squash (medium)\n- 60 units Roma Tomatoes\n- 20 units Red Bell Pepper\n- 20 units Yellow Bell Pepper\n- 10 units Yellow Onion (diced)\n- 20 cloves Garlic (minced)\n- 120 oz Crushed Tomatoes (canned)\n- 40 fl oz Olive Oil\n- 10 sprigs Fresh Thyme\n- 7 tsp Salt\n- 7 tsp Black Pepper\n- 8 tsp Herbes de Provence\n\n## Revised Technique\nTo maintain structural integrity for 60 servings, avoid a single deep pot which leads to bottom-layer crushing and steaming rather than sautéing. Utilize a two-stage batching strategy:\n1. **High-Heat Sear:** Use multiple sheet pans or a large tilt skillet to roast/sear the eggplant, zucchini, and squash in batches. This evaporates excess moisture and develops color without the weight of the veg mashing itself.\n2. **The Marriage:** Combine the seared vegetables with the tomato base in shallow hotel pans rather than a tall stockpot. This ensures even heat distribution and allows for gentle folding.\n3. **Moisture Control:** Salt the eggplant 30 minutes prior to cooking to draw out water; pat dry before searing to prevent a \"spongy\" texture in the final mass.\n\n## Workflow & Station Setup\n**Station A (Prep - 2 person team):**\n- Focused on 1cm precision dicing. Use a \"mandoline-to-knife\" workflow for the squash and eggplant to ensure uniform cubes.\n- Separate bins for high-moisture veg (zucchini/squash) and dense veg (peppers/onions).\n- Tomato station: Concasse the Romas (blanch/shock/peel) to ensure skins don't toughen during service.\n\n**Station B (Cook - 1 person team):**\n- Stage 1: Roast eggplant and squash on oiled parchment-lined sheet pans at 425°F (218°C) until golden (approx. 15-20 mins).\n- Stage 2: Sauté onions, peppers, and garlic in the tilt skillet.\n- Stage 3: Incorporate crushed tomatoes and herbs to create the \"sauce\" base.\n- Stage 4: Combine all elements into 2-inch hotel pans for the final simmer.\n\n## Timing & Service\n- **Prep (Dicing/Mise en place):** 2.5 hours (requires significant labor for 1cm dice across 200+ lbs of produce).\n- **Initial Sear/Roast:** 45 minutes (staggered batches).\n- **Aromatic Sweat (Onions/Peppers):** 20 minutes (longer time needed to soften 10 onions in bulk).\n- **Combined Simmer:** 30–40 minutes. Note: Large thermal mass in hotel pans requires 15 minutes just to reach a simmer; do not rush this, or the flavors won't meld.\n- **Resting:** 20 minutes (allows flavors to settle before service).\n\n## Cost Estimate\nEggplant: $30.0\n- Zucchini: $18.0\n- Yellow Squash: $19.5\n- Roma Tomatoes: $30.0\n- Bell Peppers (Red/Yellow): $50.0\n- Yellow Onion: $4.0\n- Garlic: $2.0\n- Crushed Tomatoes: $9.6\n- Olive Oil: $10.0\n- Salt and Spices: $3.5\n- Fresh Herbs: $5.0\n\n**Total Estimated Supplier Cost: $181.6**\n\n## Pitfalls & Mitigations\n- **Pitfall: The \"Mush\" Factor.** In deep vessels, the weight of 60 portions will pulverize the zucchini.\n  *Mitigation:* Never stir aggressively. Use a folding motion with a large rubber spatula or flat paddle. Limit the depth of the product to 3 inches in any container.\n- **Pitfall: Heat Distribution.** Large batches of tomato sauce can scorch on the bottom of a tilt skillet or pot.\n  *Mitigation:* If using a tilt skillet, maintain a lower temperature once tomatoes are added and stir frequently. If using an oven-finish in hotel pans, cover with foil to retain moisture.\n- **Pitfall: Service Holding.** Ratatouille continues to cook under heat lamps or in steam tables.\n  *Mitigation:* Undercook the zucchini and squash slightly (al dente). The carry-over heat during the holding period will bring them to perfect tenderness by the time the 60th plate is served.",
+  :generated-tree-raw
+  [:sequence
+   [:llm
+    {:instruction
+     "Scale the provided ratatouille recipe from 6 plates to 60 plates. \n                           1. Provide :scaled-ingredients as a list with quantities. Use non-linear scaling for salt and spices (reduce linear multiplier by 20-30% to avoid over-seasoning).\n                           2. Provide :cost-basis as a list of ingredients with typical restaurant supplier prices (USD) and total cost for that ingredient at the 60-plate scale.",
+     :writes [:scaled-ingredients :cost-basis],
+     :output-schemas
+     {:scaled-ingredients
+      [:vector [:map [:item :string] [:quantity :string]]],
+      :cost-basis
+      [:vector
+       [:map
+        [:item :string]
+        [:unit-price-desc :string]
+        [:total-ingredient-cost :double]]]}}]
+   [:llm
+    {:instruction
+     "Based on the 60-plate ingredient volumes, design the technical production plan. \n                           Address:\n                           1. Revised Technique: Batching strategy (using multiple pans vs. large tilt skillet), moisture control, and how to avoid mashing large volumes.\n                           2. Workflow: Station setup for 60 plates of 1cm dicing (prep vs. cook stations).\n                           3. Timing: Adjusted sweat and simmer times for large thermal masses.\n                           4. Pitfalls: Heat distribution issues in deep pots and service holding/reheating limits.",
+     :reads [:scaled-ingredients],
+     :writes
+     [:revised-technique :workflow :timing :pitfalls-and-mitigations],
+     :output-schemas
+     {:revised-technique :string,
+      :workflow :string,
+      :timing :string,
+      :pitfalls-and-mitigations :string}}]
+   [:code
+    {:fn
+     (fn
+      [{:keys [inputs]}]
+      (let
+       [{:keys
+         [cost-basis
+          scaled-ingredients
+          revised-technique
+          workflow
+          timing
+          pitfalls-and-mitigations]}
+        inputs
+        total-cost
+        (reduce + (map :total-ingredient-cost cost-basis))
+        ingredients-str
+        (clojure.string/join
+         "\n- "
+         (map
+          (fn [i] (str (:quantity i) " " (:item i)))
+          scaled-ingredients))
+        cost-str
+        (clojure.string/join
+         "\n- "
+         (map
+          (fn [i] (str (:item i) ": $" (:total-ingredient-cost i)))
+          cost-basis))]
+       {:result
+        (str
+         "# Catering Plan: Ratatouille for 60\n\n"
+         "## Scaled Ingredients\n- "
+         ingredients-str
+         "\n\n## Revised Technique\n"
+         revised-technique
+         "\n\n## Workflow & Station Setup\n"
+         workflow
+         "\n\n## Timing & Service\n"
+         timing
+         "\n\n## Cost Estimate\n"
+         cost-str
+         "\n\n**Total Estimated Supplier Cost: $"
+         total-cost
+         "**"
+         "\n\n## Pitfalls & Mitigations\n"
+         pitfalls-and-mitigations)})),
+     :reads
+     [:scaled-ingredients
+      :cost-basis
+      :revised-technique
+      :workflow
+      :timing
+      :pitfalls-and-mitigations],
+     :writes [:result],
+     :output-schemas {:result :string}}]
+   [:final {:keys [:result]}]],
+  :generated-tree-source
+  "[:sequence [:llm {:instruction \"Scale the provided ratatouille recipe from 6 plates to 60 plates. \\n                           1. Provide :scaled-ingredients as a list with quantities. Use non-linear scaling for salt and spices (reduce linear multiplier by 20-30% to avoid over-seasoning).\\n                           2. Provide :cost-basis as a list of ingredients with typical restaurant supplier prices (USD) and total cost for that ingredient at the 60-plate scale.\", :writes [:scaled-ingredients :cost-basis], :output-schemas {:scaled-ingredients [:vector [:map [:item :string] [:quantity :string]]], :cost-basis [:vector [:map [:item :string] [:unit-price-desc :string] [:total-ingredient-cost :double]]]}}] [:llm {:instruction \"Based on the 60-plate ingredient volumes, design the technical production plan. \\n                           Address:\\n                           1. Revised Technique: Batching strategy (using multiple pans vs. large tilt skillet), moisture control, and how to avoid mashing large volumes.\\n                           2. Workflow: Station setup for 60 plates of 1cm dicing (prep vs. cook stations).\\n                           3. Timing: Adjusted sweat and simmer times for large thermal masses.\\n                           4. Pitfalls: Heat distribution issues in deep pots and service holding/reheating limits.\", :reads [:scaled-ingredients], :writes [:revised-technique :workflow :timing :pitfalls-and-mitigations], :output-schemas {:revised-technique :string, :workflow :string, :timing :string, :pitfalls-and-mitigations :string}}] [:code {:fn (fn [{:keys [inputs]}] (let [{:keys [cost-basis scaled-ingredients revised-technique workflow timing pitfalls-and-mitigations]} inputs total-cost (reduce + (map :total-ingredient-cost cost-basis)) ingredients-str (clojure.string/join \"\\n- \" (map (fn [i] (str (:quantity i) \" \" (:item i))) scaled-ingredients)) cost-str (clojure.string/join \"\\n- \" (map (fn [i] (str (:item i) \": $\" (:total-ingredient-cost i))) cost-basis))] {:result (str \"# Catering Plan: Ratatouille for 60\\n\\n\" \"## Scaled Ingredients\\n- \" ingredients-str \"\\n\\n## Revised Technique\\n\" revised-technique \"\\n\\n## Workflow & Station Setup\\n\" workflow \"\\n\\n## Timing & Service\\n\" timing \"\\n\\n## Cost Estimate\\n\" cost-str \"\\n\\n**Total Estimated Supplier Cost: $\" total-cost \"**\" \"\\n\\n## Pitfalls & Mitigations\\n\" pitfalls-and-mitigations)})), :reads [:scaled-ingredients :cost-basis :revised-technique :workflow :timing :pitfalls-and-mitigations], :writes [:result], :output-schemas {:result :string}}] [:final {:keys [:result]}]]",
+  :iteration-reasonings
+  ["To solve this recipe scaling and catering planning task, I am adopting an ETL pipeline pattern as suggested by the corpus. This task requires a multi-stage transformation where mathematical scaling (ingredients and cost) is combined with complex technical reasoning (revised technique, workflow, and pitfalls). \n\nI chose a sequential tree shape because:\n1. **Dependency Chain**: The cost estimate and revised technique depend on the scaled ingredient volumes.\n2. **Specialized Nodes**: I'm using `:llm` for the technical reasoning stages (technique, workflow, timing, pitfalls) where nuanced culinary knowledge is required, and a `:code` node for the deterministic final assembly of the cost estimate and the full catering plan.\n3. **Structured Intermediates**: By splitting the work into three logical stages (scaling, operational planning, and synthesis), I ensure that the model doesn't lose detail across the six distinct required output keys.\n\nI am skipping the `:parallel` pattern for analysis because the dimensions of catering (workflow, timing, pitfalls) are tightly coupled by the shared culinary physics of large-batch cooking (e.g., pan capacity directly influences both timing and workflow).\n\nI will also SPECIALIZE the structural pattern by minting a new behavior `recipe-scaling-and-catering` under the ETL parent, as this task represents a distinct domain requiring both arithmetic and technical reasoning."
+   "The previous attempt failed because the `mint-behavior!` call missed the required `:avoid-when` key in the body map. I am correcting the schema by adding the `:avoid-when` vector. \n\nFor the task, I am proceeding with the ETL pipeline pattern. This design is driven by the logical flow of catering planning: first, establish the quantities and raw costs (:llm), then use those volumes to reason about operational technique, workflow, and timing (:llm), and finally synthesize the results into the required formatted output (:code). Using an ETL sequence ensures that the technical advice (like batch size and stirring frequency) is grounded in the specific ingredient volumes calculated in the first step. I considered a parallel approach for cost and technique, but since large-scale technique is directly dictated by the specific volume of vegetables being processed, a sequential dependency is more robust."
+   "The previous attempt failed because the `:code` node's `:fn` was provided as an evaluated anonymous function instead of a quoted S-expression. The RLM framework requires quoted source for durability in `emit-tree!`. I am fixing this by quoting the entire tree structure.\n\nI am adhering to the ETL pipeline pattern (Analysis -> Synthesis) because the task involves multi-stage reasoning:\n1. **Extraction/Scaling**: Calculating raw ingredient volumes and costs based on the 10x multiplier but adjusted for catering scale (seasoning ratios).\n2. **Analysis/Operations**: Using the scaled volumes to analyze kitchen throughput, station setup, and batch cooking physics (heat distribution/texture).\n3. **Synthesis**: Using a `:code` node to deterministically assemble the final catering plan, ensuring all required keys are formatted correctly.\n\nI am also successfully minting the `recipe-scaling-and-catering` behavior as a specialized child of the ETL parent, including all required keys like `:avoid-when` in the behavior contract."
+   "The behavior tree has successfully executed, generating all required catering plan components (scaled ingredients, revised technique, workflow, timing, cost estimate, and pitfalls/mitigations) and synthesizing them into the final `:result` string via a `:code` node. I have verified that the `:result` variable is present in the sandbox memory and follows the requested structure, including the non-linear scaling of seasonings and the detailed operational workflow for a 60-plate service. I am now finalizing the task by returning the synthesized `:result`."],
+  :iterations
+  [{:variable-delta
+    {:created-keys [], :updated-keys [], :removed-keys []},
+    :attempt-ordinal 0,
+    :started-at "2026-09-16T10:55:07.029Z",
+    :emitted-tree-recorded? false,
+    :reasoning
+    "To solve this recipe scaling and catering planning task, I am adopting an ETL pipeline pattern as suggested by the corpus. This task requires a multi-stage transformation where mathematical scaling (ingredients and cost) is combined with complex technical reasoning (revised technique, workflow, and pitfalls). \n\nI chose a sequential tree shape because:\n1. **Dependency Chain**: The cost estimate and revised technique depend on the scale",
+    :stdout-profile
+    {:type :string, :length 0, :word-count 1, :line-count 1},
+    :error-class "clojure.lang.ExceptionInfo",
+    :duration-ms 10694,
+    :status :failure,
+    :code
+    "(do\n  (mint-behavior! \"recipe-scaling-and-catering\"\n    {:capabilities [\"scale recipes for large-batch catering\" \"design commercial kitchen workflows\" \"calculate catering cost estimates\"]\n     :strengths [{:trait \"Sequential scaling before operational design\"\n                  :good-when \"recipe requires both volume adjustment and technique revision\"\n                  :recommended-pattern \"[:sequence [:llm scaling] [:llm operations] [:code synthesis]]\"\n                  :confidence 0.9\n                  :evidence-count 1}]\n     :weaknesses [{:trait \"Linear scaling of seasonings\"\n                   :avoid-when \"scaling aromatics or salt beyond 4x\"\n                   :recommended-alternative \"Use non-linear seasoning ratios in LLM instructions\"\n                   :confidence 0.8\n                   :evidence-count 1}]\n     :representative-uses [\"Scaling restaurant recipes for 50+ covers\" \"Catering event planning\"]\n     :summary \"An ETL pipeline specialized for culinary production, prioritizing non-linear ingredient scaling and commercial kitchen operational constraints.\"\n     :version 1\n     :consolidated-from-event-count 0}\n    :parent \"cd164782-6d0a-32fd-8d89-c72a2e96a857\")\n\n  (emit-tree!\n    [:sequence\n     [:llm {:instruction \"Scale the provided ratatouille recipe (6 to 60 plates). \n                         Provide :scaled-ingredients as a list with quantities. \n                         Apply non-linear scaling for salt and spices (usually 60-80% of linear scale). \n                         Also provide :cost-basis as a list of items and their typical restaurant supplier prices.\"\n            :writes [:scaled-ingredients :cost-basis]\n            :output-schemas {:scaled-ingredients [:vector [:map [:item :string] [:quantity :string]]]\n                             :cost-basis [:vector [:map [:item :string] [:unit-price :double] [:quantity-needed :double]]]}}]\n     \n     [:llm {:instruction \"Based on the scaled ingredients, design the technical plan for a 60-plate service. \n                         Address:\n                         1. Revised Technique: How to cook in large batches without mashing (texture).\n                         2. Workflow: Station setup for 60 plates worth of 1cm dicing.\n                         3. Timing: Sauté times vs simmer times for large volumes.\n                         4. Pitfalls: Heat distribution in large pots and service holding times.\"\n            :reads [:scaled-ingredients]\n            :writes [:revised-technique :workflow :timing :pitfalls-and-mitigations]\n            :output-schemas {:revised-technique :string\n                             :workflow :string\n                             :timing :string\n                             :pitfalls-and-mitigations :string}}]\n     \n     [:code {:fn (fn [{:keys [inputs]}]\n                   (let [{:keys [cost-basis scaled-ingredients revised-technique workflow timing pitfalls-and-mitigations]} inputs\n                         total-cost (reduce + (map (fn [i] (* (:unit-price i) (:quantity-needed i))) cost-basis))\n                         ingredients-str (clojure.string/join \"\\n\" (map #(str (:quantity %) \" \" (:item %)) scaled-ingredients))]\n                     {:result (str \"### Scaled Ingredients\\n\" ingredients-str \n                                   \"\\n\\n### Revised Technique\\n\" revised-technique\n                                   \"\\n\\n### Workflow & Station Setup\\n\" workflow\n                                   \"\\n\\n### Timing & Service\\n\" timing\n                                   \"\\n\\n### Cost Estimate\\nTotal estimated supplier cost: $\" (format \"%.2f\" total-cost)\n                                   \"\\n\\n### Pitfalls & Mitigations\\n\" pitfalls-and-mitigations)}))\n             :reads [:scaled-ingredients :cost-basis :revised-technique :workflow :timing :pitfalls-and-mitigations]\n             :writes [:result]\n             :output-schemas {:result :string}}]\n     \n     [:final {:keys [:result]}]]))",
+    :completed-at "2026-09-16T10:55:17.723Z",
+    :generated-code-recorded? true,
+    :error-excerpt
+    "mint-behavior! command rejected: Invalid Command: Failed Schema Validation — explain: {:body {:avoid-when [\"missing required key\"]}}\nAvailable variables: :result, :iteration-r",
+    :iteration-index 0}
+   {:variable-delta
+    {:created-keys [], :updated-keys [], :removed-keys []},
+    :attempt-ordinal 0,
+    :started-at "2026-09-16T10:55:17.736Z",
+    :emitted-tree-recorded? false,
+    :reasoning
+    "The previous attempt failed because the `mint-behavior!` call missed the required `:avoid-when` key in the body map. I am correcting the schema by adding the `:avoid-when` vector. \n\nFor the task, I am proceeding with the ETL pipeline pattern. This design is driven by the logical flow of catering planning: first, establish the quantities and raw costs (:llm), then use those volumes to reason about operational technique, workflow, and t",
+    :stdout-profile
+    {:type :string, :length 0, :word-count 1, :line-count 1},
+    :error-class "clojure.lang.ExceptionInfo",
+    :duration-ms 9643,
+    :status :failure,
+    :code
+    "(do\n  (mint-behavior! \"recipe-scaling-and-catering\"\n    {:capabilities [\"scale recipes for large-batch catering\" \"design commercial kitchen workflows\" \"calculate catering cost estimates\"]\n     :strengths [{:trait \"Sequential scaling before operational design\"\n                  :good-when \"recipe requires both volume adjustment and technique revision\"\n                  :recommended-pattern \"[:sequence [:llm scaling] [:llm operations] [:code synthesis]]\"\n                  :confidence 0.9\n                  :evidence-count 1}]\n     :weaknesses [{:trait \"Linear scaling of seasonings\"\n                   :avoid-when \"scaling aromatics or salt beyond 4x\"\n                   :recommended-alternative \"Use non-linear seasoning ratios in LLM instructions\"\n                   :confidence 0.8\n                   :evidence-count 1}]\n     :representative-uses [\"Scaling restaurant recipes for 50+ covers\" \"Catering event planning\"]\n     :avoid-when [\"single-serving home cooking tasks\" \"non-culinary scaling\"]\n     :summary \"An ETL pipeline specialized for culinary production, prioritizing non-linear ingredient scaling and commercial kitchen operational constraints.\"\n     :version 1\n     :consolidated-from-event-count 0}\n    :parent \"cd164782-6d0a-32fd-8d89-c72a2e96a857\")\n\n  (emit-tree!\n    [:sequence\n     [:llm {:instruction \"Scale the provided ratatouille recipe from 6 plates to 60 plates. \n                         1. Provide :scaled-ingredients as a list with quantities. Use non-linear scaling for salt and spices (reduce linear multiplier by 20-30% to avoid over-seasoning).\n                         2. Provide :cost-basis as a list of ingredients with typical restaurant supplier prices (USD) and total cost for that ingredient at the 60-plate scale.\"\n            :writes [:scaled-ingredients :cost-basis]\n            :output-schemas {:scaled-ingredients [:vector [:map [:item :string] [:quantity :string]]]\n                             :cost-basis [:vector [:map [:item :string] [:unit-price-desc :string] [:total-ingredient-cost :double]]]}}]\n     \n     [:llm {:instruction \"Based on the 60-plate ingredient volumes, design the technical production plan. \n                         Address:\n                         1. Revised Technique: Batching strategy (using multiple pans vs. large tilt skillet), moisture control, and how to avoid mashing large volumes.\n                         2. Workflow: Station setup for 60 plates of 1cm dicing (prep vs. cook stations).\n                         3. Timing: Adjusted sweat and simmer times for large thermal masses.\n                         4. Pitfalls: Heat distribution issues in deep pots and service holding/reheating limits.\"\n            :reads [:scaled-ingredients]\n            :writes [:revised-technique :workflow :timing :pitfalls-and-mitigations]\n            :output-schemas {:revised-technique :string\n                             :workflow :string\n                             :timing :string\n                             :pitfalls-and-mitigations :string}}]\n     \n     [:code {:fn (fn [{:keys [inputs]}]\n                   (let [{:keys [cost-basis scaled-ingredients revised-technique workflow timing pitfalls-and-mitigations]} inputs\n                         total-cost (reduce + (map :total-ingredient-cost cost-basis))\n                         ingredients-str (clojure.string/join \"\\n- \" (map #(str (:quantity %) \" \" (:item %)) scaled-ingredients))\n                         cost-str (clojure.string/join \"\\n- \" (map #(str (:item %) \": $\" (:total-ingredient-cost %)) cost-basis))]\n                     {:result (str \"# Catering Plan: Ratatouille for 60\\n\\n\"\n                                   \"## Scaled Ingredients\\n- \" ingredients-str \n                                   \"\\n\\n## Revised Technique\\n\" revised-technique\n                                   \"\\n\\n## Workflow & Station Setup\\n\" workflow\n                                   \"\\n\\n## Timing & Service\\n\" timing\n                                   \"\\n\\n## Cost Estimate\\n\" cost-str\n                                   \"\\n\\n**Total Estimated Supplier Cost: $\" (str total-cost) \"**\"\n                                   \"\\n\\n## Pitfalls & Mitigations\\n\" pitfalls-and-mitigations)}))\n             :reads [:scaled-ingredients :cost-basis :revised-technique :workflow :timing :pitfalls-and-mitigations]\n             :writes [:result]\n             :output-schemas {:result :string}}]\n     \n     [:final {:keys [:result]}]\n     ]))",
+    :completed-at "2026-09-16T10:55:27.379Z",
+    :generated-code-recorded? true,
+    :error-excerpt
+    "Durable emit-tree! code nodes require quoted (fn ...) source; an already-evaluated closure cannot be recorded as durable source\nAvailable variables: :result, :iteration-reason",
+    :iteration-index 1}
+   {:result-profile {:type :vector, :length 5},
+    :variable-delta
+    {:created-keys [:result],
+     :updated-keys [:iteration-reasonings],
+     :removed-keys []},
+    :attempt-ordinal 0,
+    :started-at "2026-09-16T10:55:27.392Z",
+    :emitted-tree-recorded? true,
+    :reasoning
+    "The previous attempt failed because the `:code` node's `:fn` was provided as an evaluated anonymous function instead of a quoted S-expression. The RLM framework requires quoted source for durability in `emit-tree!`. I am fixing this by quoting the entire tree structure.\n\nI am adhering to the ETL pipeline pattern (Analysis -> Synthesis) because the task involves multi-stage reasoning:\n1. **Extraction/Scaling**: Calculating raw ingredie",
+    :stdout-profile
+    {:type :string, :length 0, :word-count 1, :line-count 1},
+    :tree-fingerprint "-1425714952",
+    :duration-ms 24856,
+    :status :success,
+    :code
+    "(do\n  (mint-behavior! \"recipe-scaling-and-catering\"\n    {:capabilities [\"scale recipes for large-batch catering\" \"design commercial kitchen workflows\" \"calculate catering cost estimates\"]\n     :strengths [{:trait \"Sequential scaling before operational design\"\n                  :good-when \"recipe requires both volume adjustment and technique revision\"\n                  :recommended-pattern \"[:sequence [:llm scaling] [:llm operations] [:code synthesis]]\"\n                  :confidence 0.9\n                  :evidence-count 1}]\n     :weaknesses [{:trait \"Linear scaling of seasonings\"\n                   :avoid-when \"scaling aromatics or salt beyond 4x\"\n                   :recommended-alternative \"Use non-linear seasoning ratios in LLM instructions\"\n                   :confidence 0.8\n                   :evidence-count 1}]\n     :representative-uses [\"Scaling restaurant recipes for 50+ covers\" \"Catering event planning\"]\n     :avoid-when [\"single-serving home cooking tasks\" \"non-culinary scaling\"]\n     :summary \"An ETL pipeline specialized for culinary production, prioritizing non-linear ingredient scaling and commercial kitchen operational constraints.\"\n     :version 1\n     :consolidated-from-event-count 0}\n    :parent \"cd164782-6d0a-32fd-8d89-c72a2e96a857\")\n\n  (emit-tree!\n    (quote\n      [:sequence\n       [:llm {:instruction \"Scale the provided ratatouille recipe from 6 plates to 60 plates. \n                           1. Provide :scaled-ingredients as a list with quantities. Use non-linear scaling for salt and spices (reduce linear multiplier by 20-30% to avoid over-seasoning).\n                           2. Provide :cost-basis as a list of ingredients with typical restaurant supplier prices (USD) and total cost for that ingredient at the 60-plate scale.\"\n              :writes [:scaled-ingredients :cost-basis]\n              :output-schemas {:scaled-ingredients [:vector [:map [:item :string] [:quantity :string]]]\n                               :cost-basis [:vector [:map [:item :string] [:unit-price-desc :string] [:total-ingredient-cost :double]]]}}]\n       \n       [:llm {:instruction \"Based on the 60-plate ingredient volumes, design the technical production plan. \n                           Address:\n                           1. Revised Technique: Batching strategy (using multiple pans vs. large tilt skillet), moisture control, and how to avoid mashing large volumes.\n                           2. Workflow: Station setup for 60 plates of 1cm dicing (prep vs. cook stations).\n                           3. Timing: Adjusted sweat and simmer times for large thermal masses.\n                           4. Pitfalls: Heat distribution issues in deep pots and service holding/reheating limits.\"\n              :reads [:scaled-ingredients]\n              :writes [:revised-technique :workflow :timing :pitfalls-and-mitigations]\n              :output-schemas {:revised-technique :string\n                               :workflow :string\n                               :timing :string\n                               :pitfalls-and-mitigations :string}}]\n       \n       [:code {:fn (fn [{:keys [inputs]}]\n                     (let [{:keys [cost-basis scaled-ingredients revised-technique workflow timing pitfalls-and-mitigations]} inputs\n                           total-cost (reduce + (map :total-ingredient-cost cost-basis))\n                           ingredients-str (clojure.string/join \"\\n- \" (map (fn [i] (str (:quantity i) \" \" (:item i))) scaled-ingredients))\n                           cost-str (clojure.string/join \"\\n- \" (map (fn [i] (str (:item i) \": $\" (:total-ingredient-cost i))) cost-basis))]\n                       {:result (str \"# Catering Plan: Ratatouille for 60\\n\\n\"\n                                     \"## Scaled Ingredients\\n- \" ingredients-str \n                                     \"\\n\\n## Revised Technique\\n\" revised-technique\n                                     \"\\n\\n## Workflow & Station Setup\\n\" workflow\n                                     \"\\n\\n## Timing & Service\\n\" timing\n                                     \"\\n\\n## Cost Estimate\\n\" cost-str\n                                     \"\\n\\n**Total Estimated Supplier Cost: $\" total-cost \"**\"\n                                     \"\\n\\n## Pitfalls & Mitigations\\n\" pitfalls-and-mitigations)}))\n               :reads [:scaled-ingredients :cost-basis :revised-technique :workflow :timing :pitfalls-and-mitigations]\n               :writes [:result]\n               :output-schemas {:result :string}}]\n       \n       [:final {:keys [:result]}]\n       ])))",
+    :emitted-tree-source
+    "[:sequence [:llm {:instruction \"Scale the provided ratatouille recipe from 6 plates to 60 plates. \\n                           1. Provide :scaled-ingredients as a list with quantities. Use non-linear scaling for salt and spices (reduce linear multiplier by 20-30% to avoid over-seasoning).\\n                           2. Provide :cost-basis as a list of ingredients with typical restaurant supplier prices (USD) and total cost for that ingredient at the 60-plate scale.\", :writes [:scaled-ingredients :cost-basis], :output-schemas {:scaled-ingredients [:vector [:map [:item :string] [:quantity :string]]], :cost-basis [:vector [:map [:item :string] [:unit-price-desc :string] [:total-ingredient-cost :double]]]}}] [:llm {:instruction \"Based on the 60-plate ingredient volumes, design the technical production plan. \\n                           Address:\\n                           1. Revised Technique: Batching strategy (using multiple pans vs. large tilt skillet), moisture control, and how to avoid mashing large volumes.\\n                           2. Workflow: Station setup for 60 plates of 1cm dicing (prep vs. cook stations).\\n                           3. Timing: Adjusted sweat and simmer times for large thermal masses.\\n                           4. Pitfalls: Heat distribution issues in deep pots and service holding/reheating limits.\", :reads [:scaled-ingredients], :writes [:revised-technique :workflow :timing :pitfalls-and-mitigations], :output-schemas {:revised-technique :string, :workflow :string, :timing :string, :pitfalls-and-mitigations :string}}] [:code {:fn (fn [{:keys [inputs]}] (let [{:keys [cost-basis scaled-ingredients revised-technique workflow timing pitfalls-and-mitigations]} inputs total-cost (reduce + (map :total-ingredient-cost cost-basis)) ingredients-str (clojure.string/join \"\\n- \" (map (fn [i] (str (:quantity i) \" \" (:item i))) scaled-ingredients)) cost-str (clojure.string/join \"\\n- \" (map (fn [i] (str (:item i) \": $\" (:total-ingredient-cost i))) cost-basis))] {:result (str \"# Catering Plan: Ratatouille for 60\\n\\n\" \"## Scaled Ingredients\\n- \" ingredients-str \"\\n\\n## Revised Technique\\n\" revised-technique \"\\n\\n## Workflow & Station Setup\\n\" workflow \"\\n\\n## Timing & Service\\n\" timing \"\\n\\n## Cost Estimate\\n\" cost-str \"\\n\\n**Total Estimated Supplier Cost: $\" total-cost \"**\" \"\\n\\n## Pitfalls & Mitigations\\n\" pitfalls-and-mitigations)})), :reads [:scaled-ingredients :cost-basis :revised-technique :workflow :timing :pitfalls-and-mitigations], :writes [:result], :output-schemas {:result :string}}] [:final {:keys [:result]}]]",
+    :completed-at "2026-09-16T10:55:52.248Z",
+    :generated-code-recorded? true,
+    :iteration-index 2,
+    :emitted-tree
+    [:sequence
+     [:llm
+      {:instruction
+       "Scale the provided ratatouille recipe from 6 plates to 60 plates. \n                           1. Provide :scaled-ingredients as a list with quantities. Use non-linear scaling for salt and spices (reduce linear multiplier by 20-30% to avoid over-seasoning).\n                           2. Provide :cost-basis as a list of ingredients with typical restaurant supplier prices (USD) and total cost for that ingredient at the 60-plate scale.",
+       :writes [:scaled-ingredients :cost-basis],
+       :output-schemas
+       {:scaled-ingredients
+        [:vector [:map [:item :string] [:quantity :string]]],
+        :cost-basis
+        [:vector
+         [:map
+          [:item :string]
+          [:unit-price-desc :string]
+          [:total-ingredient-cost :double]]]}}]
+     [:llm
+      {:instruction
+       "Based on the 60-plate ingredient volumes, design the technical production plan. \n                           Address:\n                           1. Revised Technique: Batching strategy (using multiple pans vs. large tilt skillet), moisture control, and how to avoid mashing large volumes.\n                           2. Workflow: Station setup for 60 plates of 1cm dicing (prep vs. cook stations).\n                           3. Timing: Adjusted sweat and simmer times for large thermal masses.\n                           4. Pitfalls: Heat distribution issues in deep pots and service holding/reheating limits.",
+       :reads [:scaled-ingredients],
+       :writes
+       [:revised-technique
+        :workflow
+        :timing
+        :pitfalls-and-mitigations],
+       :output-schemas
+       {:revised-technique :string,
+        :workflow :string,
+        :timing :string,
+        :pitfalls-and-mitigations :string}}]
+     [:code
+      {:fn
+       (fn
+        [{:keys [inputs]}]
+        (let
+         [{:keys
+           [cost-basis
+            scaled-ingredients
+            revised-technique
+            workflow
+            timing
+            pitfalls-and-mitigations]}
+          inputs
+          total-cost
+          (reduce + (map :total-ingredient-cost cost-basis))
+          ingredients-str
+          (clojure.string/join
+           "\n- "
+           (map
+            (fn [i] (str (:quantity i) " " (:item i)))
+            scaled-ingredients))
+          cost-str
+          (clojure.string/join
+           "\n- "
+           (map
+            (fn [i] (str (:item i) ": $" (:total-ingredient-cost i)))
+            cost-basis))]
+         {:result
+          (str
+           "# Catering Plan: Ratatouille for 60\n\n"
+           "## Scaled Ingredients\n- "
+           ingredients-str
+           "\n\n## Revised Technique\n"
+           revised-technique
+           "\n\n## Workflow & Station Setup\n"
+           workflow
+           "\n\n## Timing & Service\n"
+           timing
+           "\n\n## Cost Estimate\n"
+           cost-str
+           "\n\n**Total Estimated Supplier Cost: $"
+           total-cost
+           "**"
+           "\n\n## Pitfalls & Mitigations\n"
+           pitfalls-and-mitigations)})),
+       :reads
+       [:scaled-ingredients
+        :cost-basis
+        :revised-technique
+        :workflow
+        :timing
+        :pitfalls-and-mitigations],
+       :writes [:result],
+       :output-schemas {:result :string}}]
+     [:final {:keys [:result]}]]}
+   {:result-profile {:type :map, :length 1},
+    :vars-updated [:iteration-reasonings],
+    :vars-created [],
+    :provider-latency-ms 2703,
+    :reasoning
+    "The behavior tree has successfully executed, generating all required catering plan components (scaled ingredients, revised technique, workflow, timing, cost estimate, and pitfalls/mitigations) and synthesizing them into the final `:result` string via a `:code` node. I have verified that the `:result` variable is present in the sandbox memory and follows the requested structure, including the non-linear scaling of seasonings and the detailed operational workflow for a 60-plate service. I am now finalizing the task by returning the synthesized `:result`.",
+    :stdout-profile
+    {:type :string, :length 0, :word-count 1, :line-count 1},
+    :error-class nil,
+    :provider-usage
+    {:prompt-tokens 27602,
+     :completion-tokens 137,
+     :total-tokens 27739},
+    :result
+    "\"FINAL_ANSWER: {:result \\\"# Catering Plan: Ratatouille for 60\\\\n\\\\n## Scaled Ingredients\\\\n- 20 units Eggplant (large)\\\\n- 30 units Zucchini (medium)\\\\n- 30 units Yellow Squash (medium)\\\\n- 60 units Roma Tomatoes\\\\n- 20 units Red Bell Pepper\\\\n- 20 units Yellow Bell Pepper\\\\n- 10 units Yellow Onion (diced)\\\\n- 20 cloves Garlic (minced)\\\\n- 120 oz Crushed Tomatoes (canned)\\\\n- 40 fl oz Olive Oil\\\\n- 10 sprigs Fresh Thyme\\\\n- 7 tsp Salt\\\\n- 7 tsp Black Pepper\\\\n- 8 tsp Herbes de Provence\\\\n\\\\n## Revised Technique\\\\nTo maintain structural integrity for 60 servings, avoid a single deep pot which leads to bottom-layer crushing and steaming rather than sautéing. Utilize a two-stage batching strategy:\\\\n1. **High-Heat Sear:** Use multiple sheet pans or a large tilt skillet to roast/sear the eggplant, zucchini, and squash in batches. This evaporates excess moisture and develops color without the weight of the veg mashing itself.\\\\n2. **The Marriage:** Combine the seared vegetables with the tomato base in shallow hotel pans rather than a tall stockpot. This ensures even heat distribution and allows for gentle folding.\\\\n3. **Moisture Control:** Salt the eggplant 30 minutes prior to cooking to draw out water; pat dry before searing to prevent a \\\\\\\"spongy\\\\\\\" texture in the final mass.\\\\n\\\\n## Workflow & Station Setup\\\\n**Station A (Prep - 2 person team):**\\\\n- Focused on 1cm precision dicing. Use a \\\\\\\"mandoline-to-knife\\\\\\\" workflow for the squash and eggplant to ensure uniform cubes.\\\\n- Separate bins for high-moisture veg (zucchini/squash) and dense veg (peppers/onions).\\\\n- Tomato station: Concasse the Romas (blanch/shock/peel) to ensure skins don't toughen during service.\\\\n\\\\n**Station B (Cook - 1 person team):**\\\\n- Stage 1: Roast eggplant and squash on oiled parchment-lined sheet pans at 425°F (218°C) until golden (approx. 15-20 mins).\\\\n- Stage 2: Sauté onions, peppers, and garlic in the tilt skillet.\\\\n- Stage 3: Incorporate crushed tomatoes and herbs to create the \\\\\\\"sauce\\\\\\\" base.\\\\n- Stage 4: Combine all elements into 2-inch hotel pans for the final simmer.\\\\n\\\\n## Timing & Service\\\\n- **Prep (Dicing/Mise en place):** 2.5 hours (requires significant labor for 1cm dice across 200+ lbs of produce).\\\\n- **Initial Sear/Roast:** 45 minutes (staggered batches).\\\\n- **Aromatic Sweat (Onions/Peppers):** 20 minutes (longer time needed to soften 10 onions in bulk).\\\\n- **Combined Simmer:** 30–40 minutes. Note: Large thermal mass in hotel pans requires 15 minutes just to reach a simmer; do not rush this, or the flavors won't meld.\\\\n- **Resting:** 20 minutes (allows flavors to settle before service).\\\\n\\\\n## Cost Estimate\\\\nEggplant: $30.0\\\\n- Zucchini: $18.0\\\\n- Yellow Squash: $19.5\\\\n- Roma Tomatoes: $30.0\\\\n- Bell Peppers (Red/Yellow): $50.0\\\\n- Yellow Onion: $4.0\\\\n- Garlic: $2.0\\\\n- Crushed Tomatoes: $9.6\\\\n- Olive Oil: $10.0\\\\n- Salt and Spices: $3.5\\\\n- Fresh Herbs: $5.0\\\\n\\\\n**Total Estimated Supplier Cost: $181.6**\\\\n\\\\n## Pitfalls & Mitigations\\\\n- **Pitfall: The \\\\\\\"Mush\\\\\\\" Factor.** In deep vessels, the weight of 60 portions will pulverize the zucchini.\\\\n  *Mitigation:* Never stir aggressively. Use a folding motion with a large rubber spatula or flat paddle. Limit the depth of the product to 3 inches in any container.\\\\n- **Pitfall: Heat Distribution.** Large batches of tomato sauce can scorch on the bottom of a tilt skillet or pot.\\\\n  *Mitigation:* If using a tilt skillet, maintain a lower temperature once tomatoes are added and stir frequently. If using an oven-finish in hotel pans, cover with foil to retain moisture.\\\\n- **Pitfall: Service Holding.** Ratatouille continues to cook under heat lamps or in steam tables.\\\\n  *Mitigation:* Undercook the zucchini and squash slightly (al dente). The carry-over heat during the holding period will bring them to perfect tenderness by the time the 60th plate is served.\\\"}\"",
+    :code "(final! {:result (get-var :result)})",
+    :error nil,
+    :stdout ""}]},
+ :error nil,
+ :sheet-id #uuid "6a50edda-448d-4d97-b8a4-3cbc134a122f",
+ :classified
+ {:assigned-tree-id #uuid "cd164782-6d0a-32fd-8d89-c72a2e96a857",
+  :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :domain-label "recipe-scaling-and-catering",
+  :outcome :matched,
+  :domain-verdict
+  {:domain-coverage :uncovered,
+   :domain-label "recipe-scaling-and-catering",
+   :domain-reasoning
+   "While the candidate does not explicitly mention culinary scaling, its focus on multi-stage transformation with intermediate states matches the task's requirement to process a single recipe through several analytical lenses (scaling, workflow, cost)."},
+  :domain-children-considered [],
+  :confidence 0.9,
+  :was-fresh-mint? true,
+  :assigned-via :mint-domain-child},
+ :minted
+ [{:parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+   :child-tree-id #uuid "cd164782-6d0a-32fd-8d89-c72a2e96a857",
+   :domain-label "recipe-scaling-and-catering"}]}

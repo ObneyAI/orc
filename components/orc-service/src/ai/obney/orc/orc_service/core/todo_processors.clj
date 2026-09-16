@@ -674,6 +674,9 @@
                   (assoc :ranked-candidates (:ranked-candidates result))
                   (some? (:assigned-via result))
                   (assoc :assigned-via (:assigned-via result))
+                  ;; RS-6: the three-state outcome the classifier decided.
+                  (some? (:outcome result))
+                  (assoc :outcome (:outcome result))
                   ;; RS-3: the domain-child facts RS-2's assign-domain-child
                   ;; produced — all optional (omit-not-nil), so a plain
                   ;; :match/:bundle/:mint result (no domain-child logic ran)
@@ -2944,15 +2947,18 @@
                                :domain-child-mint 5
                                :convergence-capture 10
                                :injection-record 20
-                               ;; RS-3: the domain-axis deferral is its own
-                               ;; durable fact, prepared alongside the outcome
-                               ;; but ordered just before it commits.
-                               :domain-classification-deferral 90
                                ;; The externally visible classification fact
-                               ;; commits last.  A timeout anywhere in prompt or
-                               ;; convergence preparation therefore cannot leave
-                               ;; a partially prepared assignment behind.
-                               :classification-outcome 100}]
+                               ;; commits after every preparation effect.  A
+                               ;; timeout anywhere in prompt or convergence
+                               ;; preparation therefore cannot leave a
+                               ;; partially prepared assignment behind.
+                               :classification-outcome 100
+                               ;; RS-3 / RS-6 weed: the domain-axis deferral is
+                               ;; the same occurrence's second axis, recorded
+                               ;; AFTER the assignment it rides — the order the
+                               ;; non-checkpointed wedge dispatches (spec
+                               ;; ClassificationEffectsCommitAsOneBoundedSet).
+                               :domain-classification-deferral 110}]
                           (reset! classification-prepared-node prepared-node)
                           (ensure-active!)
                           (let [ordered-effects

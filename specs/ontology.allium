@@ -63,6 +63,13 @@ value DescriptionBody {
     version: Integer
     consolidated_event_count: Integer
     behavioral_subtree_identifiers: List<String>
+    -- RR-20: the best worked pattern among the strengths, carried at body level
+    -- so an offered pattern is usable whole (OfferedPatternsAreUsable).
+    recommended_pattern: String?
+    -- R-Inject specialisation RS-5: a body promoted from a domain child carries
+    -- the judged domain label the child was minted with. The label lives on the
+    -- child's concept, so the harvest reads it there and stamps it here.
+    domain_label: String?
 }
 
 -- One proposed change to a claim set. A consolidation emits a list of these
@@ -90,6 +97,12 @@ value SearchResult {
     colbert_score: Decimal?
     fitness_score: Decimal?
     reasoning: String?
+    -- R-Inject specialisation RS-1: the reranker's domain verdict rides on every
+    -- reranked result beside its fitness (value DomainVerdict); absent on a
+    -- result that was not reranked.
+    domain_coverage: DomainCoverage?
+    domain_label: String?
+    domain_reasoning: String?
 }
 
 value BuildConfiguration {
@@ -247,26 +260,36 @@ contract ParentInferenceQuery {
 -- R-Inject specialisation grill D4: what the reranker says about a candidate's
 -- DOMAIN, beside its fitness. Reason before verdict; the reasoning names the
 -- representative use or guard matched, or the gap found.
+-- Every field is optional because the verdict is what the model SAID: a
+-- missing or malformed coverage reads as unknown, a blank label as no label,
+-- and the classification defers on the domain axis rather than inferring.
 value DomainVerdict {
-    coverage: DomainCoverage
-    domain_label: String
-    reasoning: String
+    coverage: DomainCoverage?
+    domain_label: String?
+    reasoning: String?
 }
 
 contract TaskClassification {
     classify: (task_signature: String) -> ClassificationOutcome
-    judge_domain_coverage: (task_signature: String, candidate: Concept) -> DomainVerdict
+    -- The candidate judged is the described class (its representative uses and
+    -- guards), in the one rerank pass that also scores fitness; the top match's
+    -- verdict is the one the classification consumes.
+    judge_domain_coverage: (task_signature: String, candidate: LivingDescription) -> DomainVerdict
 
     @invariant DeferralIsVisible
-        -- A classification that defers — the semantic reranker fell back on
-        -- EITHER axis (structural task classification or behavioral-subtree
-        -- classification; the wedge withholds assignment on both), so
-        -- fitness is unknown — leaves a durable deferral event carrying the
-        -- source occurrence, the fallback source, and the bounded ranking
-        -- snapshot; the recorded reasoning names the axis that deferred.
-        -- "Uncertain" and "nothing happened" are different facts; the
-        -- deferral rate is a measured number, never an inference from
-        -- missing events.
+        -- A classification that defers on an axis leaves a durable deferral
+        -- event carrying the source occurrence, the fallback source, and the
+        -- bounded ranking snapshot; the recorded reasoning names the axis that
+        -- deferred. On the fitness axes (structural task classification or
+        -- behavioral-subtree classification) a deferral means the semantic
+        -- reranker fell back, fitness is unknown, and the wedge withholds
+        -- assignment on both. On the domain axis (fallback source
+        -- domain_coverage) a deferral means the verdict could not be resolved
+        -- — the structural assignment STANDS and the deferral rides beside it
+        -- for the same occurrence. "Uncertain" and "nothing happened" are
+        -- different facts; the deferral rate is a measured number PER AXIS,
+        -- partitioned by fallback source, never an inference from missing
+        -- events and never a count that mixes the axes.
 
     @invariant ClassificationIsOnePerCampaign
         -- A task is classified once for the campaign that carries it out. The
@@ -277,7 +300,10 @@ contract TaskClassification {
         -- however many quanta, resumes or restarts it took, and a repeated
         -- assignment for the same occurrence does not become a second
         -- occurrence. Cancelled and abandoned campaigns retain their evidence
-        -- but produce no occurrence.
+        -- but produce no occurrence. A domain-axis deferral recorded beside the
+        -- structural assignment is the same occurrence's second axis, not a
+        -- second classification; at most one such deferral exists per
+        -- occurrence.
 
     @invariant DecidedRankingIsRecorded
         -- The classified event records the PRE-GATE ranking the decision ran
@@ -286,7 +312,12 @@ contract TaskClassification {
         -- content (measured: candidate content was 59.4% of the tree-class
         -- evidence payload). The gated surfaced view rides alongside for its
         -- consumers, and the assigned identity's provenance — match, bundle,
-        -- walk-down, or mint — is explicit on the event.
+        -- walk-down, mint, or the three domain-child outcomes (first mint,
+        -- landing, sibling mint) — is explicit on the event, beside the
+        -- three-state outcome the classification decided. On a tree-class
+        -- match the event also records the raw domain verdict, the labels of
+        -- the domain children considered, and the domain-axis deferral when
+        -- one was taken, so the domain decision is auditable from the event.
 
     @invariant DomainCoverageIsJudgedNotInferred
         -- Whether a matched class covers the task's DOMAIN is a discrete verdict
@@ -294,9 +325,12 @@ contract TaskClassification {
         -- representative use or guard it matched or the gap it found — never a
         -- threshold over a similarity score, and never read off the fitness
         -- number, which keeps meaning shape-and-intent fit. An unknown, missing
-        -- or malformed verdict defers on the domain axis: the shape class is
-        -- assigned, no child is minted, and the deferral is recorded naming the
-        -- domain axis.
+        -- or malformed verdict, a blank label where a child would be minted, or
+        -- a failed lookup of the class's existing children (a store failure is
+        -- not "no children"; reading it so would mint a sibling for a domain
+        -- that already has a child) defers on the domain axis: the shape class
+        -- is assigned, no child is minted, and the deferral is recorded naming
+        -- the domain axis and the reason.
 
     @invariant DomainChildIdentityIsStable
         -- A domain child minted under a shape class resolves to one identity
@@ -314,10 +348,15 @@ contract TaskClassification {
 
     @invariant DomainChildrenAreAlwaysConsidered
         -- A matched shape class that has domain children is not treated as a
-        -- leaf: the walk-down considers its children whatever the top match's
-        -- fitness, so a repeat of a domain lands on its child even when the
-        -- coverage verdict does not repeat. Convergence never depends on the
-        -- reranker giving the same verdict twice (grill D7).
+        -- leaf: after EVERY tree-class match, whatever the top match's fitness
+        -- (the specificity threshold that lets a confident match skip the
+        -- walk-down does not skip this), the classification compares the judged
+        -- label against the class's existing domain children, so a repeat of a
+        -- domain lands on its child even when the coverage verdict does not
+        -- repeat. Convergence never depends on the reranker giving the same
+        -- verdict twice (grill D7). The one carve-out is the deferral above: a
+        -- blank label or a failed children lookup leaves the task on the shape
+        -- class with the deferral recorded, rather than guessing a child.
 }
 
 contract OntologyExtraction {
@@ -395,7 +434,13 @@ enum ConceptScope {
 -- assigned_via provenance; uncertain is the deferral outcome (its own event,
 -- never an assignment). Contract return types here are NOMINAL — the code
 -- returns richer maps carrying these outcomes, not bare enum values.
-enum ClassificationOutcome { matched | bundled | walked_down | minted | uncertain }
+-- R-Inject specialisation: the three domain-child provenances a tree-class
+-- match can widen into (rules MintDomainChild, LandOnDomainChild,
+-- MintSiblingDomainChild).
+enum ClassificationOutcome {
+    matched | bundled | walked_down | minted | uncertain
+    | domain_child_minted | landed_on_domain_child | sibling_domain_child_minted
+}
 -- R-Inject specialisation grill D4: the reranker's DISCRETE verdict on whether
 -- the candidate's declared domain (its representative uses and guards) covers
 -- the task's domain. A verdict, never a number: fitness keeps meaning
@@ -561,6 +606,23 @@ config {
     -- axis, where a per-occurrence mean across J judges need not be dyadic.
     -- It is not dead code.
     floor_comparison_tolerance: Decimal = 0.000000001
+
+    -- R-Inject specialisation weed: the classifier's own thresholds, aligned to
+    -- the code's defaults. specificity_threshold is the fitness above which a
+    -- confident top match skips the walk-down (it never skips the domain-child
+    -- comparison — DomainChildrenAreAlwaysConsidered); bundle_threshold is the
+    -- floor below which a non-match bundles onto its nearest class rather than
+    -- minting; retrieval_gate is the occurrence count a recurring tree-class
+    -- needs before it is surfaced again (a curated or newborn class at zero is
+    -- surfaced); classify_retrieval_k bounds the ranking DecidedRankingIsRecorded
+    -- records; the rerank timeout and its retry count are what produce the
+    -- timeout fallback deferral.
+    specificity_threshold: Decimal = 0.9
+    bundle_threshold: Decimal = 0.6
+    retrieval_gate: Integer = 3
+    classify_retrieval_k: Integer = 5
+    rerank_timeout_ms: Integer = 900000
+    rerank_timeout_retries: Integer = 1
 }
 
 entity Ontology {
@@ -863,60 +925,123 @@ rule SeedBaselineDescriptions {
 -- consulted for it: the judged label decides — a sibling's label lands the
 -- task on that child (LandOnDomainChild), a new label mints a sibling
 -- (MintSiblingDomainChild). Convergence never depends on the verdict repeating.
+-- The trigger is the classify contract's DECISION-TIME fact: a tree-class
+-- match, with the top match's domain verdict, BEFORE the domain axis is
+-- applied and before the classified event is recorded — the classified event
+-- then carries whichever assignment these rules decide (the shape class or a
+-- domain child), its provenance, the verdict, the children considered and any
+-- deferral (DecidedRankingIsRecorded). shape_class is the matched tree-class
+-- concept; domain_children(shape_class) are its narrower concepts carrying a
+-- judged domain label (black box: a narrower concept whose label is non-blank
+-- and not its own identifier — every other tree-class concept carries its
+-- identifier as its label); canonical_domain_label(label) is the formatting
+-- rule (trim, lower-case, whitespace to hyphen; null when blank — never a
+-- synonym list or a match over prose); domain_child_identity(shape_class,
+-- canonical_label) is the stable derivation (DomainChildIdentityIsStable).
 rule MintDomainChild {
-    when: TaskClassified(occurrence, outcome, assigned_class, coverage, domain_label)
-    requires: outcome = matched
-    requires: assigned_class.children.count = 0
+    when: LeafShapeMatched(occurrence, shape_class, coverage, domain_label)
+    let children = domain_children(shape_class)
+    let canonical_label = canonical_domain_label(domain_label)
+    requires: children.count = 0
     requires: coverage in {partial, uncovered}
-    let child_identity = stable_domain_child_identity(assigned_class, domain_label)
+    requires: canonical_label != null
+    let child_identity = domain_child_identity(shape_class, canonical_label)
+    let child_uri = tree_class_uri(child_identity)
 
+    -- The child concept and its parent edge are born together, before anything
+    -- references the child; minting the same identity again creates nothing.
+    ensures: Concept.created(
+        ontology: shape_class.ontology,
+        uri: child_uri,
+        label: canonical_label,
+        description: domain_child_description(shape_class),
+        scope: tree_class,
+        provenance: agent_authored_provenance(occurrence),
+        broader_uris: [shape_class.uri],
+        indicators: [],
+        embedding: null,
+        created_at: now,
+        updated_at: null
+    )
+    ensures: ConceptRelationship.created(
+        source: Concept with uri = child_uri,
+        target: shape_class,
+        predicate: "skos:broader",
+        metadata: null,
+        created_at: now
+    )
     ensures: DomainChildMinted(
-        parent: assigned_class,
-        label: domain_label,
+        parent: shape_class,
+        label: canonical_label,
         identity: child_identity,
         minted_by: occurrence
     )
-    ensures: ConceptRelationship.created(
-        source: child_identity,
-        target: assigned_class,
-        predicate: "skos:broader",
-        metadata: {},
-        created_at: now
+    ensures: TaskAssignedToDomainChild(
+        child: child_identity,
+        provenance: domain_child_minted,
+        minted_by: occurrence
     )
 }
 
 rule LandOnDomainChild {
-    when: TaskClassified(occurrence, outcome, assigned_class, coverage, domain_label)
-    requires: outcome = matched
-    requires: assigned_class.children.count > 0
-    requires: assigned_class.children.any(child => child.domain_label = domain_label)
-    let child = assigned_class.children.find(child => child.domain_label = domain_label)
+    when: LeafShapeMatched(occurrence, shape_class, coverage, domain_label)
+    let children = domain_children(shape_class)
+    let canonical_label = canonical_domain_label(domain_label)
+    requires: children.count > 0
+    requires: canonical_label != null
+    requires: children.any(child => canonical_domain_label(child.label) = canonical_label)
+    let child = children.find(child => canonical_domain_label(child.label) = canonical_label)
 
+    -- The classified event's assignment IS the landing: the child's identity,
+    -- the landing provenance and the landed label; no concept work, no second
+    -- occurrence, no new signature claim (the child already describes itself).
     ensures: TaskAssignedToDomainChild(
         child: child,
+        provenance: landed_on_domain_child,
         minted_by: occurrence
     )
 }
 
 rule MintSiblingDomainChild {
-    when: TaskClassified(occurrence, outcome, assigned_class, coverage, domain_label)
-    requires: outcome = matched
-    requires: assigned_class.children.count > 0
-    requires: assigned_class.children.none(child => child.domain_label = domain_label)
-    let child_identity = stable_domain_child_identity(assigned_class, domain_label)
+    when: LeafShapeMatched(occurrence, shape_class, coverage, domain_label)
+    let children = domain_children(shape_class)
+    let canonical_label = canonical_domain_label(domain_label)
+    requires: children.count > 0
+    requires: canonical_label != null
+    requires: children.none(child => canonical_domain_label(child.label) = canonical_label)
+    let child_identity = domain_child_identity(shape_class, canonical_label)
+    let child_uri = tree_class_uri(child_identity)
 
+    ensures: Concept.created(
+        ontology: shape_class.ontology,
+        uri: child_uri,
+        label: canonical_label,
+        description: domain_child_description(shape_class),
+        scope: tree_class,
+        provenance: agent_authored_provenance(occurrence),
+        broader_uris: [shape_class.uri],
+        indicators: [],
+        embedding: null,
+        created_at: now,
+        updated_at: null
+    )
+    ensures: ConceptRelationship.created(
+        source: Concept with uri = child_uri,
+        target: shape_class,
+        predicate: "skos:broader",
+        metadata: null,
+        created_at: now
+    )
     ensures: DomainChildMinted(
-        parent: assigned_class,
-        label: domain_label,
+        parent: shape_class,
+        label: canonical_label,
         identity: child_identity,
         minted_by: occurrence
     )
-    ensures: ConceptRelationship.created(
-        source: child_identity,
-        target: assigned_class,
-        predicate: "skos:broader",
-        metadata: {},
-        created_at: now
+    ensures: TaskAssignedToDomainChild(
+        child: child_identity,
+        provenance: sibling_domain_child_minted,
+        minted_by: occurrence
     )
 }
 

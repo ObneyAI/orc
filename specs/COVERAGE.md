@@ -952,3 +952,43 @@ assembly into a second creation fact. DET-E2E-258 verifies creation, stale,
 duplicate and advancing publications through command, event and projection
 read-back. Its named `TraceRefreshNeverRegresses` obligation is covered (one
 obligation, one covered, zero uncovered).
+
+## Domain children are minted at classification from a judged coverage verdict
+
+The R-Inject specialisation arc (ADR 0006; issues RS-1 … RS-6) adds twenty obligations to `specs/ontology.allium`
+and one invariant to `specs/orc-service.allium`. Every obligation is covered by a durable suite that asserts on
+structured data the runtime emits — typed reranker fields, event bodies, identities and concept-graph edges — never
+on a parse of model prose:
+
+| Obligation | Suite |
+|---|---|
+| `value-equality.DomainVerdict`, `entity-fields.DomainVerdict`, `enum-comparable.DomainCoverage`, `contract-signature.TaskClassification.judge_domain_coverage` | `rs1_domain_verdict_test` (parse canonicalises the verdict; the candidate schema accepts existing domain children; the instruction carries the coverage section byte-for-byte around the shipped text) |
+| `rule-success` / `rule-failure.1-3` for `MintDomainChild`, `LandOnDomainChild`, `MintSiblingDomainChild` | `rs2_domain_child_classifier_test` (twelve rule branches: first mint on partial or uncovered, covered stays on the leaf, unknown and blank labels defer, landing by canonical label, sibling on a new label, failed lookup defers) |
+| `rule-entity-creation.MintDomainChild.1`, `rule-entity-creation.MintSiblingDomainChild.1` (the parent edge) | `rs3_domain_child_birth_test`, `rs3_domain_child_durable_test` (edge read back from the concepts read-model after the mint, and after a sibling mint) |
+| `rule-entity-creation.MintDomainChild.2`, `rule-entity-creation.MintSiblingDomainChild.2` (the child concept: label, scope, provenance, parent) | `rs3_domain_child_birth_test` |
+| `ClassificationEffectsCommitAsOneBoundedSet` (orc-service) | `rs3_domain_child_durable_test` (three store-backed checkpointed commits: mint + capture + assignment, assignment + domain deferral, and the boundary rules) |
+| `DeferralIsVisible` on the domain axis, `ClassificationIsOnePerCampaign` for the domain axis | `rs3_domain_child_durable_test`, `rs6_weed_test` (one domain deferral per occurrence) |
+| `DomainChildIdentityIsStable` (the reranker is shown existing children) | `rs6_weed_test`, `rs1_domain_verdict_test` |
+| `DomainChildrenAreAlwaysConsidered` | `rs2_domain_child_classifier_test` (children consulted whatever the top match's fitness) |
+| consumer surfaces — the waterfall render, the retrieval feed, walk-down scope, the harvested label | `rs4_waterfall_render_test`, `rs5_domain_child_chain_test` |
+
+Weed check mode over the arc's constructs reported seventeen divergences; one was a code bug (the reranker's
+existing-children seam was never filled in production) and two were latent code gaps (a domain-axis deferral could
+be recorded twice for one occurrence; the checkpointed commit ordered the domain deferral differently from the
+wedge), all three fixed red-first. The rest were spec bugs or intentional gaps, tended: the rules now trigger on the
+decision-time shape match and name the child concept's creation, the canonical label and the assignment; the
+verdict's fields are optional; the search result carries the verdict; the outcome enum carries the three domain
+provenances; the description body carries the harvested label and the recommended pattern; the classifier's
+thresholds live in the config block; the invariants describe the per-axis deferral and its carve-out. Allium on the
+ontology spec: 0 errors, 8 warnings, 43 information diagnostics, 0 analyse findings (unchanged counts); the
+orc-service spec: 0 errors, 2 warnings (unchanged).
+
+Live proof (orchestrator solo): two sweep passes over the 21-task off-domain corpus through the real wedge and
+render, twice. On the final tree pass 1 minted fifteen domain children under the shapes that absorbed them (five
+first children, ten siblings) and pass 2 landed on the identical child for fourteen of them, identity stable on
+eighteen of twenty-one; both sanity checks matched their seeded class at 1.00 and `covered` in both passes; with
+children present the reranker called the parent `covered` on seventeen of twenty-one and the judged label decided.
+One bounded full-bench run took three off-domain tasks end to end: each minted its child before the render, the
+prepend carried the parent's entry and the child line, the campaign succeeded, and its verdict occurrence landed on
+the child. Findings and per-task envelopes live under `development/bench/ood-stress-results/2026-09-16_05*-rs6-*`.
+The classify-only sweeps of June and September, which recorded the unresolved absorption, remain beside them.

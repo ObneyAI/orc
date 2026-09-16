@@ -58,6 +58,11 @@
             "the child's tree-class concept exists")
         (is (= "marathon-training-plan" (:label child-concept))
             "the child concept's :label is the domain label")
+        (is (= :tree-class (:scope child-concept)) "born in the tree-class scope")
+        (is (= :agent-authored (get-in child-concept [:provenance :kind]))
+            "provenance names the agent-authored kind")
+        (is (contains? (set (:broader child-concept)) (tree-class-uri parent-id))
+            "the child's broader set names its parent from birth")
         (is (contains? (ontology/get-narrower-concepts ctx (tree-class-uri parent-id))
                        (tree-class-uri child-id))
             "the parent's narrower set contains the child — the same edge

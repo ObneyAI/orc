@@ -782,6 +782,11 @@
     ;; :mint-sibling-domain-child widen a :tree-class :match with the
     ;; domain-child outcome (spec rules MintDomainChild / LandOnDomainChild
     ;; / MintSiblingDomainChild).
+    ;; RS-6: the classifier's three-state outcome (matched / novel /
+    ;; uncertain — an uncertain classification records a deferral, never an
+    ;; assignment, so only the first two appear here) beside the provenance.
+    ;; Optional, omit-not-nil: every pre-RS-6 event stays byte-shaped.
+    [:outcome {:optional true} [:enum :matched :novel :uncertain]]
     [:assigned-via {:optional true}
      [:enum :match :bundle :walk-down :mint
       :mint-domain-child :land-on-domain-child :mint-sibling-domain-child]]
@@ -1652,6 +1657,11 @@
     ;; wedge from the classify-task result. Optional so pre-CC-23 callers
     ;; (and replayed tooling) stay valid; new producers always attach them.
     [:ranked-candidates {:optional true} ranked-candidates]
+    ;; RS-6: the classifier's three-state outcome (matched / novel /
+    ;; uncertain — an uncertain classification records a deferral, never an
+    ;; assignment, so only the first two appear here) beside the provenance.
+    ;; Optional, omit-not-nil: every pre-RS-6 event stays byte-shaped.
+    [:outcome {:optional true} [:enum :matched :novel :uncertain]]
     [:assigned-via {:optional true}
      [:enum :match :bundle :walk-down :mint
       :mint-domain-child :land-on-domain-child :mint-sibling-domain-child]]

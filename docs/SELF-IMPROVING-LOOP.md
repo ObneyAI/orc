@@ -273,20 +273,27 @@ of `:repl-researcher` as a node inside a larger tree, see
 ## Honest status today — solid vs rough
 
 The self-improving loop is **alpha-stage**. The components that compose
-the loop work as documented. The earlier OOD symptom — a "mint fires on
-1 of 21 deliberately-OOD tasks" reluctance, and an OOD task force-fitting
-the structurally-closest pattern — is the **resolved** symptom that the
-emergence loop addresses (ADRs 0014,
-0015,
-0016); it is no
-longer the runtime's behavior. The framing below is what's solid vs.
-rough on the current loop.
+the loop work as documented. The earlier OOD symptom had two parts. The
+"mint fires on 1 of 21 deliberately-OOD tasks" reluctance was addressed
+by the emergence loop's detect-and-defer outcome (ADRs 0014, 0015, 0016):
+an off-domain task is no longer force-minted into a fabricated behavior.
+The second part — a shape-broad corpus absorbing domain-diverse tasks as
+confident structural matches — was NOT closed by that loop: a later
+classify-only sweep over the same 21 tasks still matched 20 of them at
+fitness 0.85–1.00, and the judge-grounded domain guard could not fire
+because the seed guards are written in terms of tree shape, not domain.
+The runtime now handles that part at classification time: the reranker
+gives a discrete domain-coverage verdict beside fitness, and a partial or
+uncovered leaf match mints a domain child of the matched shape (stable
+identity from parent plus label; siblings for new labels; landing for
+known ones) that accrues its own evidence under the parent's shape. The
+framing below is what's solid vs. rough on the current loop.
 
 | **Solid** (use without hesitation) | **Rough** (know before you commit) |
 |---|---|
 | In-distribution classification — tasks resembling shipped seed patterns (legal-issue-detection, contract-comparison, risk-analysis, chunked-extraction) match at confidence 1.00; prepend carries the full worked-example DSL | Hierarchical seed gaps — the abstract behavioral seeds describe shape; domain-specialized children accrue from evidence rather than shipping pre-authored |
 | Recursive RLM with drill-down — `(tree-detail)`, `(tree-failures)`, `(node-output node-id)` all work; model recovers mid-tree failures via focused single-node resume trees without rebuilding the whole pipeline | Harvest (durable promotion) is live — a class's recurrence is counted at verdict, never at intent, and coherence over winning shapes is measured and reported per verdict occurrence; a calibrated blocking threshold on that measure remains a later, data-driven decision |
-| Detect-and-defer + grounded domain rank — `classify-task` retrieves on the instruction-aware `:tree-class` axis, an OOD task is classified *novel*/*uncertain* (not force-minted), and the reranker reads + a deterministic contrastive penalty enforces each candidate's judge-grounded `:avoid-when` | |
+| Detect-and-defer + domain children — `classify-task` retrieves on the instruction-aware `:tree-class` axis, an OOD task is classified *novel*/*uncertain* (not force-minted), and a confident shape match whose declared domain does not cover the task is assigned to a domain child minted under that shape from the reranker's discrete coverage verdict | The judge-grounded `:avoid-when` guard and its contrastive penalty exist but rarely fire on off-domain tasks, because seed guards describe shape rather than domain; domain specialisation therefore rests on the coverage verdict, whose calibration is lenient (partial is common, covered is rare) |
 | Consolidator-driven body evolution — repeated traffic on a pattern increments the body version with new strengths grounded in observed execution; history is append-only | |
 
 ### How the emergence loop closes the OOD gap
@@ -300,11 +307,21 @@ evidence-grounded loop** (ADR 0015):
   reranker fallback is *uncertain* and skips assignment; a confident
   no-match is *novel* and either bundles onto a near tree-class or
   records a provisional one — never a fabricated durable behavior.
-- **Grounded domain rank.** The reranker now READS each candidate's
+- **Grounded domain rank.** The reranker READS each candidate's
   judge-grounded `:avoid-when` and a deterministic contrastive penalty
-  ENFORCES it after the rerank, so a strong shape match no longer
-  overrides a firing domain guard (ADR 0016). See
+  ENFORCES it after the rerank (ADR 0016). In practice the shipped seed
+  guards name tree shapes, not domains, so the penalty stays near zero on
+  off-domain tasks; it is a guard, not the specialisation mechanism. See
   [How novelty is handled](#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop).
+- **Domain coverage verdict and domain children.** Beside fitness the
+  reranker judges whether the candidate's declared domain covers the
+  task (covered / partial / uncovered / unknown, with a domain label). A
+  partial or uncovered leaf match mints a domain child of that shape at
+  classification time — its identity derived from the parent and the
+  label, so recurrence lands on the same child and a new label mints a
+  sibling — and the task's outcome becomes the child's evidence. An
+  unknown verdict defers the domain axis and records why; nothing is
+  read off the fitness number.
 
 ### What this means for your workflow
 
@@ -622,33 +639,27 @@ For deeper detail on the recursive loop, see [`RLM-GUIDE.md`](RLM-GUIDE.md).
 
 ## Inspecting what the system is doing
 
-### Where the classifier dropped its trace
+### Where the classifier left its record
 
-Every R-Inject prepend leaves a sidecar file at
-`/tmp/r-inject-trace-<sheet-id>.edn` containing:
+Every R-Inject prepend records a durable **injection record** (event
+`:intervention/injection-recorded`, read model `:sheet/injection-records`)
+for its sheet, tick and node:
 
 ```clojure
-{:rendered-at "2026-06-09T..."
- :prepend "## Suggested patterns from corpus..."   ; the full block prepended
- :prepend-chars 4186
- :original-instruction-chars 800
- :classifier-payload
- {:structural {:assigned-tree-id #uuid "..."
-               :confidence 1.00
-               :top-candidates [{:document-metadata {:target-id "..."}
-                                  :reasoning "..."
-                                  :fitness-score 1.00} ...]
-               :rerank-fallback? false}
-  :behavioral {:behaviors [{:behavior-id #uuid "..."
-                            :confidence 0.95
-                            :reasoning "..."} ...]
-               :rerank-fallback? false}}}
+(require '[ai.obney.orc.orc-service.core.read-models :as rm])
+(rm/get-injection-record ctx sheet-id tick-id node-id)
+;; => {:arm :treatment
+;;     :task-class #uuid "..."          ; the assigned class (a domain child's id when one was assigned)
+;;     :candidates [{:axis :structural :candidate-id "..." :version 4 :score 0.85} ...]
+;;     :rendered-chars 2121 :prompt-content-hash "..." :model "..." ...}
 ```
 
-Read this to confirm:
-- Which pattern was matched
-- The reranker's reasoning verbatim
-- What the model actually saw in its prompt
+Read this to confirm which pattern was rendered (each candidate at the
+body version the render read), and the classified event on the same tick
+(`:ontology/task-classified`: outcome, `:assigned-via`, the domain verdict,
+label and any domain-axis deferral) for why. The full rendered block is
+recorded as `:rendered-block` only when `:injection-capture-rendered-block?
+true` is set on the context.
 
 ### Where the execution outputs are
 
@@ -663,7 +674,7 @@ the runner). Contents include:
  :generated-tree-raw [:sequence [...]]  ; the tree the model actually emitted
  :outputs {...}                         ; the final values
  :usage {:total-tokens 28000 ...}
- :r-inject-trace {...}}                 ; classifier-payload + prepend
+ :r-inject-trace {...}}                 ; the run's injection records, read from the event store
 ```
 
 For debugging deeper, the event store has every node-execution-completed
@@ -888,10 +899,11 @@ missing or empty.
    seeding. Without a built index, `search-descriptions` returns `[]` and
    the prepend is silently skipped — the researcher still runs, just
    without a corpus prepend.
-4. Check the R-Inject trace file at
-   `/tmp/r-inject-trace-<sheet-id>.edn`. It records which pattern was
-   matched, the reranker's reasoning verbatim, and the full prepend block
-   actually sent to the model.
+4. Read the injection record for the tick
+   (`rm/get-injection-record ctx sheet-id tick-id node-id`) and the
+   `:ontology/task-classified` event on the same tick. Together they record
+   which pattern was rendered, the classification outcome and provenance,
+   the domain verdict, and the reranker's reasoning verbatim.
 
 ```clojure
 (require '[ai.obney.orc.ontology.interface :as ontology])

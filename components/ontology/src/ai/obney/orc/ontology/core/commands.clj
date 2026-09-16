@@ -1567,7 +1567,7 @@
   [{{:keys [source-sheet-id source-tick-id source-node-id
             assigned-tree-id confidence top-candidates reasoning
             was-fresh-mint? parent-tree-id rerank-failed?
-            behavioral-subtrees ranked-candidates assigned-via
+            behavioral-subtrees ranked-candidates assigned-via outcome
             researcher-ownership-epoch classification-context
             domain-verdict domain-label domain-children-considered
             domain-deferral]} :command
@@ -1613,6 +1613,9 @@
                   (assoc :ranked-candidates ranked-candidates)
                   (some? assigned-via)
                   (assoc :assigned-via assigned-via)
+                  ;; RS-6: the three-state outcome, when the caller supplied it.
+                  (some? outcome)
+                  (assoc :outcome outcome)
                   ;; RS-3: the domain-child facts — all optional
                   ;; (omit-not-nil), forwarded from the wedge onto the
                   ;; classified event.
@@ -1863,24 +1866,54 @@
 ;; CC-23 (contract TaskClassification) — deferral is a positive fact
 ;; =============================================================================
 
+(defn- domain-deferral-recorded-for-occurrence?
+  "RS-6 weed (ClassificationIsOnePerCampaign): true when the stream already
+   carries a domain-axis deferral for this campaign occurrence. Command ids
+   are not part of the identity: a retried tick carries a fresh one."
+  [events source-sheet-id source-tick-id]
+  (boolean
+   (some (fn [event]
+           (and (= :ontology/task-classification-deferred (:event/type event))
+                (= :domain-coverage (:fallback-source event))
+                (= source-sheet-id (:source-sheet-id event))
+                (= source-tick-id (:source-tick-id event))))
+         events)))
+
 (defcommand :ontology record-task-classification-deferral
   "CC-23, the spec's DeferralIsVisible: record a classification that
-   DEFERRED — the semantic reranker fell back, so fitness is unknown.
-   'Uncertain' and 'nothing happened' are different facts; counting
-   :ontology/task-classification-deferred events IS the deferral rate,
-   never an inference from missing :ontology/task-classified events.
+   DEFERRED on an axis. On the fitness axes (:colbert-fallback,
+   :timeout-fallback) the semantic reranker fell back, fitness is unknown,
+   and the wedge withholds assignment. On the domain axis
+   (:domain-coverage, RS-3) the verdict could not be resolved: the
+   structural assignment STANDS and this deferral rides beside it for the
+   same occurrence — at most once per occurrence (a retried tick emits
+   nothing new). 'Uncertain' and 'nothing happened' are different facts;
+   counting :ontology/task-classification-deferred events PARTITIONED BY
+   :fallback-source is the per-axis deferral rate, never an inference from
+   missing :ontology/task-classified events and never a count that mixes
+   the axes.
 
-   ONE command per deferred classification, dispatched by the classify
-   CALL SITE (the C-2c-2 wedge) — the classify fn itself stays a pure
-   decision fn. A deferral structurally cannot ride
-   :ontology/assign-task-class (it REQUIRES an :assigned-tree-id), which
-   is why this is its own command + event.
+   ONE command per deferred axis, dispatched by the classify CALL SITE (the
+   C-2c-2 wedge) — the classify fn itself stays a pure decision fn. A
+   fitness-axis deferral structurally cannot ride
+   :ontology/assign-task-class (it REQUIRES an :assigned-tree-id), which is
+   why this is its own command + event.
 
    The [:tick source-tick-id] tag mirrors :ontology/task-classified so a
-   tick's outcome — assigned OR deferred — is one tag-query away."
+   tick's outcome is one tag-query away — a tick may carry an assignment
+   AND a domain-axis deferral."
   [{{:keys [source-sheet-id source-tick-id source-node-id
             fallback-source ranked-candidates reasoning
-            researcher-ownership-epoch classification-context]} :command}]
+            researcher-ownership-epoch classification-context]} :command
+    :keys [event-store tenant-id]}]
+  (if (and (= :domain-coverage fallback-source)
+           (domain-deferral-recorded-for-occurrence?
+            (into [] (es/read event-store
+                              {:tenant-id tenant-id
+                               :types #{:ontology/task-classification-deferred}
+                               :tags #{[:tick source-tick-id]}}))
+            source-sheet-id source-tick-id))
+    {:command-result/events []}
   (cond->
    {:command-result/events
     [(->event
@@ -1900,7 +1933,7 @@
    (some? researcher-ownership-epoch)
    (assoc :command-result/cas
           (active-researcher-classification-cas
-           source-tick-id source-node-id researcher-ownership-epoch))))
+           source-tick-id source-node-id researcher-ownership-epoch)))))
 
 ;; =============================================================================
 ;; R05c — Mint a new behavioral-subtree concept

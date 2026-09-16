@@ -2781,9 +2781,12 @@
        (= :domain-coverage (:fallback-source effect))))
 
 (defn- researcher-classification-effect-order
+  "One order on both paths (spec ClassificationEffectsCommitAsOneBoundedSet):
+   mint, capture, injection, assignment, then the domain-axis deferral that
+   rides the assignment."
   [effect]
   (if (domain-axis-deferral? effect)
-    90
+    110
     (get researcher-classification-effect-priority (:command/name effect) 50)))
 
 (defn- researcher-classification-commit-error

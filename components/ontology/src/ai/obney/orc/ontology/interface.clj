@@ -15,7 +15,8 @@
    - TTL/SKOS/OWL serialization for graph database export
    - Embedding generation and semantic search (Phase 4)
    - Hybrid search combining graph BFS + embeddings via RRF"
-  (:require [ai.obney.orc.ontology.core.static-ontology :as static]
+  (:require [clojure.string]
+            [ai.obney.orc.ontology.core.static-ontology :as static]
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.serialization :as serialization]
             [ai.obney.orc.ontology.core.classifier :as classifier]
@@ -737,6 +738,32 @@
                 (distinct))
           (get-enforcing-claims ctx granularity target-id))))
 
+(defn- existing-domain-child-labels
+  "R-Inject specialisation (weed 1.1, DomainChildIdentityIsStable): the labels
+   of a tree-class candidate's existing domain children — its narrower
+   concepts whose :label is a judged domain label (non-blank and not the
+   concept's own identifier; every other tree-class concept carries its
+   identifier as its label). Shown to the reranker so a repeat of a known
+   domain REUSES the label instead of coining a variant that would mint a
+   sibling. Best-effort: a failed read yields nil (the reranker simply is not
+   shown children; RS-2's own lookup still defers on failure)."
+  [ctx target-id]
+  (try
+    (let [parent-uri (str "tree-class:" target-id)
+          child-uris (or (rm/get-narrower-concepts ctx parent-uri) #{})]
+      (->> child-uris
+           (keep (fn [uri]
+                   (let [label (:label (rm/get-concept-by-uri ctx uri))
+                         bare (subs uri (min (count uri) (count "tree-class:")))]
+                     (when (and (string? label)
+                                (not (clojure.string/blank? label))
+                                (not= label bare))
+                       label))))
+           sort
+           vec
+           not-empty))
+    (catch Exception _ nil)))
+
 (defn- enrich-candidate-evidence
   "Add :avoid-when (top-level body guards + per-weakness guards) and compact
    :strengths/:weaknesses from the candidate's body to the candidate map.
@@ -758,8 +785,11 @@
         per-weakness-guards (into [] (keep :avoid-when) weaknesses)
         avoid-when (vec (distinct (concat (:avoid-when body) per-weakness-guards)))
         enforcing (when source
-                    (enforcing-avoid-strings ctx (:granularity source) (:target-id source)))]
+                    (enforcing-avoid-strings ctx (:granularity source) (:target-id source)))
+        existing-children (when (= "tree-class" (granularity-name granularity))
+                            (existing-domain-child-labels ctx target-id))]
     (cond-> c
+      (seq existing-children) (assoc :existing-domain-children existing-children)
       (some? enforcing) (assoc ::domain-penalty/enforcing-avoid-when enforcing)
       (seq avoid-when)        (assoc :avoid-when avoid-when)
       (seq (:strengths body)) (assoc :strengths (compact-strengths (:strengths body)))
