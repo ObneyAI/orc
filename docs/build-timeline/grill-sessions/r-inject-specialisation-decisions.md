@@ -97,6 +97,17 @@ label is chosen among the parent's existing children before a new one is coined.
 new `DomainChildrenAreAlwaysConsidered` (a matched class with domain children is not a leaf for the walk-down).
 Glossary: **Domain child** covers partial. (The Grain PR #22 pause is over: the RR arc merged to main as d1f9ae76.)
 
+## D7b — the verdict decides only the first child; after that the judged label decides
+
+RS-P1b (`development/bench/ood-stress-results/rs-p1b2-sibling-reuse-separated-probe/FINDINGS.md`): judged label reuse
+converges (16/17, refusals correct; label agreement 19/21) and the tightened `covered` definition calibrates the first
+mint (partial 13 / uncovered 5 / covered 3, the covered three genuinely in-domain). But once a candidate carries children
+the model calls it `covered` 20/21, unmoved by instruction. Decision: coverage (partial/uncovered → mint, covered →
+leaf) applies only to a class with no domain children; for a class with children the label decides — sibling label →
+that child (`rule LandOnDomainChild`), new label → a new sibling child (`rule MintSiblingDomainChild`, verdict not
+consulted). Over-minting under a specialising class is accepted as cheap (D7) and is the waterfall forming. Rejected: a
+second verdict call without the sibling list (Q4's cost and second home for the shape bias).
+
 ## Slices
 
 RS-P1, RS-P2, RS-1…RS-6 in `docs/issues/r-inject-specialisation/`; RS-P1b (sibling-label reuse probe) added after D7.

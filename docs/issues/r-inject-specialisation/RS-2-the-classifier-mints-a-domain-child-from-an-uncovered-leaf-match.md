@@ -18,7 +18,7 @@ After the existing match, bundle, walk-down and deferral logic has produced an o
 
 ## Spec obligations covered
 
-`rule-success.MintDomainChild`, `rule-failure.MintDomainChild.1/.2/.3`, `enum-comparable.DomainCoverage` (already covered by RS-1, stays green).
+`rule-success.MintDomainChild`, `rule-failure.MintDomainChild.1/.2/.3`, and after D7b also `rule-success.LandOnDomainChild`, `rule-failure.LandOnDomainChild.1/.2/.3`, `rule-success.MintSiblingDomainChild`, `rule-failure.MintSiblingDomainChild.1/.2/.3`; `enum-comparable.DomainCoverage` (covered by RS-1, stays green). D7b: the coverage verdict decides only a class's FIRST child; with children present the judged label decides (sibling → that child; new → new sibling).
 
 ## Test seams
 

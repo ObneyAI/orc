@@ -857,11 +857,52 @@ rule SeedBaselineDescriptions {
 -- `covered` stays on the leaf. The label is chosen among the leaf's EXISTING
 -- domain children before a new one is coined (a judged choice, never a
 -- string rule), and the identity derives from parent + that canonical label.
+-- Grill D7b (RS-P1b evidence): the coverage verdict decides only a class's
+-- FIRST domain child. Once a class carries children the reranker calls it
+-- covered regardless (20/21, unmoved by instruction), so the verdict is not
+-- consulted for it: the judged label decides — a sibling's label lands the
+-- task on that child (LandOnDomainChild), a new label mints a sibling
+-- (MintSiblingDomainChild). Convergence never depends on the verdict repeating.
 rule MintDomainChild {
     when: TaskClassified(occurrence, outcome, assigned_class, coverage, domain_label)
     requires: outcome = matched
     requires: assigned_class.children.count = 0
     requires: coverage in {partial, uncovered}
+    let child_identity = stable_domain_child_identity(assigned_class, domain_label)
+
+    ensures: DomainChildMinted(
+        parent: assigned_class,
+        label: domain_label,
+        identity: child_identity,
+        minted_by: occurrence
+    )
+    ensures: ConceptRelationship.created(
+        source: child_identity,
+        target: assigned_class,
+        predicate: "skos:broader",
+        metadata: {},
+        created_at: now
+    )
+}
+
+rule LandOnDomainChild {
+    when: TaskClassified(occurrence, outcome, assigned_class, coverage, domain_label)
+    requires: outcome = matched
+    requires: assigned_class.children.count > 0
+    requires: assigned_class.children.any(child => child.domain_label = domain_label)
+    let child = assigned_class.children.find(child => child.domain_label = domain_label)
+
+    ensures: TaskAssignedToDomainChild(
+        child: child,
+        minted_by: occurrence
+    )
+}
+
+rule MintSiblingDomainChild {
+    when: TaskClassified(occurrence, outcome, assigned_class, coverage, domain_label)
+    requires: outcome = matched
+    requires: assigned_class.children.count > 0
+    requires: assigned_class.children.none(child => child.domain_label = domain_label)
     let child_identity = stable_domain_child_identity(assigned_class, domain_label)
 
     ensures: DomainChildMinted(
