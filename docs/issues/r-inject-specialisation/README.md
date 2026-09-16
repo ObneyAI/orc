@@ -31,3 +31,12 @@ RS-2 after RS-1; RS-3 after RS-2 and RS-P2; RS-4 and RS-5 together after RS-3, d
 orchestrator solo. Before each brief the orchestrator runs `/propagate` scoped to the slice's obligations and confirms
 the generated tests are red. Implementers are Sonnet 5, one at a time; every slice gets `/inspect-orc` before its
 ledger and commit.
+
+## CI hygiene carried on this branch (from the RR arc's merge)
+
+Two main-identical tests failed on the hosted runner after the arc merged (never locally, and a different one on each
+re-run): `det-e2e-205-recovery-while-child-running` (its settle now reports the last recovery scan and the abandoned
+tick's events on failure) and `det-e2e-066-streaming-preserves-engine-result` (a read-timing race on the asynchronous
+trace-refresh event; the test now waits for both ticks to be projected before comparing). Both changes ride this
+branch; neither weakens an assertion. The GEPA metric-budget overrun under live variance (RR-34, third finding) remains
+a GEPA follow-up.
