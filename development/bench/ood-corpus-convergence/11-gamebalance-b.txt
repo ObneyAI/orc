@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: gamebalance (off-domain); variant b of 3 — the same domain re-asked with a different concrete instance.
+Balance a multiplayer shooter's four weapon classes (SMG, rifle, shotgun, sniper) whose pick rates are 47%, 29%, 9% and 15% and whose kill/death ratios are 1.4, 1.0, 0.7 and 1.1. Propose changes to damage, rate of fire, range fall-off and reload, simulate the expected effect on pick rate and K/D over 50,000 matches, iterate until no class exceeds 35% pick rate, and report the final tuning. Output: {:adjustments [...] :pick-rate-matrix ... :rationale ...}

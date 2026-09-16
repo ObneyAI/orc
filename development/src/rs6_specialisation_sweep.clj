@@ -289,6 +289,84 @@
      (println "\nObservations saved to" dir)
      {:dir dir :results results})))
 
+;; =============================================================================
+;; The convergence sweep: does the runtime OVER-mint? Eight domain groups,
+;; three paraphrases each, interleaved. Expected: an off-domain group yields
+;; exactly ONE child (first mints, the rest land by label); an in-domain group
+;; matches its seeded class every time with no child; the behavioral axis
+;; matches existing behaviors rather than fresh-minting.
+;; =============================================================================
+
+(def convergence-corpus-dir "development/bench/ood-corpus-convergence")
+
+(defn- group-of [slug]
+  ;; "09-marathon-b" -> "marathon"
+  (second (re-matches #"\d+-([a-z]+)-[a-z]" slug)))
+
+(defn convergence-analysis [results]
+  (let [by-group (group-by (comp group-of :slug) results)]
+    {:groups
+     (into (sorted-map)
+           (for [[g rs] by-group
+                 :let [ids (map :assigned-tree-id rs)
+                       distinct-ids (count (distinct (remove nil? ids)))]]
+             [g {:members (mapv :slug rs)
+                 :vias (mapv :assigned-via rs)
+                 :labels (mapv :domain-label rs)
+                 :parents (vec (distinct (remove nil? (map :parent-tree-id rs))))
+                 :distinct-assigned-ids distinct-ids
+                 :mints (count (filter #(contains? #{:mint-domain-child :mint-sibling-domain-child} (:assigned-via %)) rs))
+                 :landings (count (filter #(= :land-on-domain-child (:assigned-via %)) rs))
+                 :plain-matches (count (filter #(= :match (:assigned-via %)) rs))
+                 :coverage (mapv #(get-in % [:domain-verdict :domain-coverage]) rs)
+                 :converged? (= 1 distinct-ids)}]))
+     :behavioral
+     (let [entries (mapcat #(get-in % [:classified-event :behavioral-subtrees]) results)]
+       {:entries (count entries)
+        :fresh-mint-markers (count (filter :was-fresh-mint? entries))
+        :matched (count (remove :was-fresh-mint? entries))
+        :distinct-behaviors (count (distinct (keep :behavior-id (remove :was-fresh-mint? entries))))
+        :tasks-with-no-behavior (count (remove #(seq (get-in % [:classified-event :behavioral-subtrees])) results))})}))
+
+(defn convergence-md [results analysis]
+  (str "# RS-6 convergence sweep — do paraphrases of one domain converge on one child?\n\n"
+       "## Per group\n\n"
+       (md-table ["group" "mints" "landings" "plain matches" "distinct assigned ids" "converged?" "labels" "coverage"]
+                 (for [[g a] (:groups analysis)]
+                   [g (:mints a) (:landings a) (:plain-matches a) (:distinct-assigned-ids a) (:converged? a)
+                    (:labels a) (:coverage a)]))
+       "\n## Behavioral axis\n\n"
+       (md-table ["entries" "matched" "fresh-mint markers" "distinct behaviors matched" "tasks with no behavior"]
+                 [(map (:behavioral analysis) [:entries :matched :fresh-mint-markers :distinct-behaviors :tasks-with-no-behavior])])
+       "\n## Per instruction\n\n"
+       (md-table ["slug" "outcome" "via" "top-1 fitness" "coverage" "label" "assigned" "parent"]
+                 (for [r results]
+                   [(:slug r) (:outcome r) (:assigned-via r)
+                    (some-> (get-in r [:top-1 :fitness-score]) double (as-> f (format "%.2f" f)))
+                    (get-in r [:domain-verdict :domain-coverage]) (:domain-label r)
+                    (:assigned-tree-id r) (:parent-tree-id r)]))))
+
+(defn run-convergence!
+  ([ctx] (run-convergence! ctx {}))
+  ([ctx {:keys [corpus-path dir-suffix] :or {corpus-path convergence-corpus-dir dir-suffix "-rs6-convergence-sweep"}}]
+   (let [corpus (ood/load-corpus corpus-path)
+         dir (str results-root "/" (now-stamp) dir-suffix)
+         _ (.mkdirs (io/file dir))
+         results (vec (for [[i entry] (map-indexed vector corpus)]
+                        (do (println (format "  [%d/%d] %s" (inc i) (count corpus) (:slug entry)))
+                            (let [r (classify-one! ctx 1 entry)]
+                              (println (format "    via=%s coverage=%s label=%s assigned=%s"
+                                               (:assigned-via r) (get-in r [:domain-verdict :domain-coverage])
+                                               (:domain-label r) (:assigned-tree-id r)))
+                              r))))
+         analysis (convergence-analysis results)]
+     (persist-pass! dir 1 results)
+     (spit (str dir "/analysis.edn") (with-out-str (pp/pprint analysis)))
+     (spit (str dir "/CONVERGENCE.md") (convergence-md results analysis))
+     (pp/pprint analysis)
+     (println "\nResults saved to" dir)
+     {:dir dir :results results :analysis analysis})))
+
 (comment
   ;; Launcher (from the worktree root, OPENROUTER_API_KEY in the environment):
   ;; clojure -J-Djava.awt.headless=true -J-Xmx4g -M:dev:test -e "(require 'runner) (runner/start!) (Thread/sleep 45000) (require 'rs6-specialisation-sweep) (let [ctx (deref @(requiring-resolve 'runner/system-state))] (rs6-specialisation-sweep/run-two-pass! ctx)) (runner/stop!) (shutdown-agents) (System/exit 0)"

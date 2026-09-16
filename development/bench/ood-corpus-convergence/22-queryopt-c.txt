@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: queryopt (off-domain); variant c of 3 — the same domain re-asked with a different concrete instance.
+A SQL Server stored procedure that computes customer lifetime value has regressed from 2 seconds to 3 minutes after a data growth spurt. Using the actual execution plan, the wait statistics and the table statistics, identify the regression (parameter sniffing, implicit conversion, spill), propose indexing and query changes, estimate the improvement and provide the corrected procedure. Output: {:diagnosis ... :indexes [...] :rewritten-query ... :expected-plan ...}

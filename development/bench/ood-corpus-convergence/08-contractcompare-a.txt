@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: contractcompare (in-domain sanity); variant a of 3 — the same domain re-asked with a different concrete instance.
+Compare two versions of a SaaS subscription agreement (v2 and v3) and produce: an executive summary of what changed, a section-by-section diff with the exact changed language, an impact analysis for the customer (pricing, liability caps, data handling, termination), and a recommendation on whether to accept v3. Output: {:summary ... :diffs [...] :impact ... :recommendation ...}

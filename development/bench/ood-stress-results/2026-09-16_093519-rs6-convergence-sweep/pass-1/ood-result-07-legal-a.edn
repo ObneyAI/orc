@@ -1,0 +1,384 @@
+{:assigned-tree-id #uuid "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+ :tick-id #uuid "fa0771ab-2ac1-4c20-8003-9fed2ee6829a",
+ :slug "07-legal-a",
+ :parent-tree-id nil,
+ :domain-label nil,
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "legal-issue-detection",
+  :domain-reasoning
+  "The content explicitly names 'legal-issue-detection' and 'flag legal concerns in a document', which matches the task's subject matter (non-compete clause) and output kind (finding legal concerns)."},
+ :node-id #uuid "4409295b-cb6f-410e-a8f0-c270e382844f",
+ :top-1
+ {:target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+  :fitness-score 1.0,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "legal-issue-detection"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+  :classified-at "2026-09-16T09:37:39.013648-05:00",
+  :reasoning
+  "This candidate perfectly matches the task's requirement for structured legal issue detection, specifically calling for fields like severity, area-of-law, citation, and recommendation. The recommended-pattern uses :output-schemas to enforce the exact fields requested in the prompt.",
+  :outcome :matched,
+  :source-node-id #uuid "4409295b-cb6f-410e-a8f0-c270e382844f",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "0f11dba5-c331-3cdf-81fa-8ee114fc224f",
+    :confidence 0.95,
+    :was-fresh-mint? false,
+    :reasoning
+    "This task is a qualitative evaluation of an artifact (a legal clause) against implicit quality criteria (legal concerns). The candidate's recommended-pattern for 'issues' includes 'location', 'severity', 'problem', and 'suggested-fix', which perfectly maps to the query's requirements for 'direct citation', 'severity', 'statement', and 'suggested revision'. The adversarial framing (skeptical reviewer) is also highly appropriate for identifying legal vulnerabilities.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "1361eafc-6a90-391a-97a9-b558118f1f57",
+    :confidence 0.7,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task involves checking against rules (legal standards). The candidate's strength in structuring failure output as '{:rule :reason :location}' aligns with the task's need for citations and justifications. However, the task requires 'judgment-requiring rules' (semantic legal concerns) which the candidate flags as better suited for Critique, and it lacks the 'suggested revision' and 'severity' components core to the query.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "b3597aa7-3957-3734-90c6-531d27c08f67",
+    :confidence 0.6,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task asks to identify 'legal concerns', which are 'structured findings' derived from 'reasoning over items'. The candidate's recommendation to tie findings to ':affected-items' matches the citation requirement. However, it misses the 'suggested revision' aspect, as Analysis focuses on reasoning over findings rather than refining the original artifact.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "fa0771ab-2ac1-4c20-8003-9fed2ee6829a",
+  :event/tags
+  #{[:description-target #uuid "00000000-c1c1-4001-b004-d0c0a0a0a0a4"]
+    [:tick #uuid "fa0771ab-2ac1-4c20-8003-9fed2ee6829a"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T14:37:39.013877Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "legal-issue-detection",
+   :domain-reasoning
+   "The content explicitly names 'legal-issue-detection' and 'flag legal concerns in a document', which matches the task's subject matter (non-compete clause) and output kind (finding legal concerns)."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured :output-schemas reliably surfaces issues with consistent severity + citation shape",
+      :good-when
+      "document has natural sections (paragraphs, clauses) AND each section can be independently scanned for issues",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:section-issues] :output-schemas {:section-issues [:vector [:map [:concern :string] [:severity [:enum :high :medium :low]] [:area-of-law :string] [:citation :string] [:recommendation :string]]]}}]] [:aggregate {:from :results :writes [:issues]}] [:code {:reads [:issues] :writes [:severity-summary] :fn (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))})}] [:final {:keys [:issues :severity-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section structure — chunk-by-size + tolerate boundary-straddling issues"
+     "the task is general risk identification (no legal-specific requirements like citations) — use risk-analysis instead"
+     "the per-section :llm's :output-schemas does NOT include a :citation field"
+     "the severity-summary step is a separate :llm call instead of a :code transform"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.729481-05:00"},
+    :domain-label "legal-issue-detection",
+    :content
+    "Legal-issue-detection trees flag legal concerns in a document with per-issue severity, area-of-law, source citation, and recommendation. The proven shape mirrors risk-analysis but with citation as a first-class output: per-section :map-each with :output-schemas requiring :citation field, then :code (NOT :llm) for the severity-summary rollup. Always require citation in the schema so users can verify the model's flags against the source.",
+    :domain-coverage :covered,
+    :rank 9,
+    :reasoning
+    "This candidate perfectly matches the task's requirement for structured legal issue detection, specifically calling for fields like severity, area-of-law, citation, and recommendation. The recommended-pattern uses :output-schemas to enforce the exact fields requested in the prompt.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "issues without citation fields become 'recommendations the user can't verify' — model needs to be explicitly required to cite",
+      :avoid-when
+      "the per-section :llm's :output-schemas does NOT include a :citation field",
+      :recommended-alternative
+      "always include :citation in the :output-schemas + word the instruction to require quoting the source phrase that triggered the issue"}
+     {:trait
+      "severity-summary computed via :llm wastes tokens — it's pure :code work (frequencies over a vector)",
+      :avoid-when
+      "the severity-summary step is a separate :llm call instead of a :code transform",
+      :recommended-alternative
+      "use a :code node with (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))}) — deterministic, fast, zero tokens"}],
+    :domain-reasoning
+    "The content explicitly names 'legal-issue-detection' and 'flag legal concerns in a document', which matches the task's subject matter (non-compete clause) and output kind (finding legal concerns).",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9950654517333163,
+    :score 444.3188046183055,
+    :cos-avoid-sans-content 0.9984594859763626,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-class:#uuid \"00000000-c1c1-4001-b004-d0c0a0a0a0a4\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9984594859763626}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured :output-schemas reliably surfaces issues with consistent severity + citation shape",
+      :good-when
+      "document has natural sections (paragraphs, clauses) AND each section can be independently scanned for issues",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:section-issues] :output-schemas {:section-issues [:vector [:map [:concern :string] [:severity [:enum :high :medium :low]] [:area-of-law :string] [:citation :string] [:recommendation :string]]]}}]] [:aggregate {:from :results :writes [:issues]}] [:code {:reads [:issues] :writes [:severity-summary] :fn (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))})}] [:final {:keys [:issues :severity-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section structure — chunk-by-size + tolerate boundary-straddling issues"
+     "the task is general risk identification (no legal-specific requirements like citations) — use risk-analysis instead"
+     "the per-section :llm's :output-schemas does NOT include a :citation field"
+     "the severity-summary step is a separate :llm call instead of a :code transform"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.712755-05:00"},
+    :domain-label "legal-issue-detection",
+    :content
+    "Legal-issue-detection trees flag legal concerns in a document with per-issue severity, area-of-law, source citation, and recommendation. The proven shape mirrors risk-analysis but with citation as a first-class output: per-section :map-each with :output-schemas requiring :citation field, then :code (NOT :llm) for the severity-summary rollup. Always require citation in the schema so users can verify the model's flags against the source.",
+    :domain-coverage :covered,
+    :rank 10,
+    :reasoning
+    "Matches the structural requirements and domain perfectly, providing a schema-driven approach for identifying legal concerns with citations.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "issues without citation fields become 'recommendations the user can't verify' — model needs to be explicitly required to cite",
+      :avoid-when
+      "the per-section :llm's :output-schemas does NOT include a :citation field",
+      :recommended-alternative
+      "always include :citation in the :output-schemas + word the instruction to require quoting the source phrase that triggered the issue"}
+     {:trait
+      "severity-summary computed via :llm wastes tokens — it's pure :code work (frequencies over a vector)",
+      :avoid-when
+      "the severity-summary step is a separate :llm call instead of a :code transform",
+      :recommended-alternative
+      "use a :code node with (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))}) — deterministic, fast, zero tokens"}],
+    :domain-reasoning
+    "The content explicitly names 'legal-issue-detection' and 'flag legal concerns in a document', which matches the task's subject matter (non-compete clause) and output kind (finding legal concerns).",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9950654517333163,
+    :score 444.3188046183055,
+    :cos-avoid-sans-content 0.9984594859763626,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b004-d0c0a0a0a0a4\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9984594859763626}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured output schema reliably classifies risks across long documents",
+      :good-when
+      "document has natural sections (clauses, paragraphs) AND each section can be independently classified",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:risks] :output-schemas {:risks [:vector [:map [:obligation :string] [:severity [:enum :high :medium :low]] [:justification :string]]]}}]] [:aggregate {:from :results :writes [:risk-matrix]}] [:llm {:reads [:document :risk-matrix] :writes [:executive-summary]}] [:final {:keys [:risk-matrix :executive-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section boundaries — chunk-by-size and tolerate that some obligations straddle boundaries"
+     "output doesn't need per-item categorization — use simpler entity-extraction patterns instead"
+     "document is >5KB AND tree is a single :llm without per-section chunking"
+     "the per-section :llm writes severity as a free-form string"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.728656-05:00"},
+    :domain-label "legal-issue-detection",
+    :content
+    "Risk-analysis trees identify and categorize risks/obligations from a document into a per-item :risk-matrix (HIGH/MEDIUM/LOW + justification) plus an :executive-summary. The proven shape is per-section :map-each with structured :output-schemas: split by section delimiter, classify each section under bounded concurrency, aggregate the matrix, then synthesize the executive summary. Always use :output-schemas to constrain severity to an enum — free-form strings drift across iterations and break aggregation.",
+    :domain-coverage :partial,
+    :rank 5,
+    :reasoning
+    "Strong structural fit for risk identification and severity classification, but lacks the specific legal citation and recommendation fields prioritized in the legal-issue-detection class.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "single :llm classification on a long document misses many obligations because of attention-budget exhaustion",
+      :avoid-when
+      "document is >5KB AND tree is a single :llm without per-section chunking",
+      :recommended-alternative
+      "split into sections (use :chunk-document with :delimiter) and run per-section :map-each :llm with bounded concurrency"}
+     {:trait
+      "without :output-schemas, severity classifications drift to inconsistent strings ('high', 'HIGH', 'High', 'critical') across iterations — downstream aggregation breaks",
+      :avoid-when
+      "the per-section :llm writes severity as a free-form string",
+      :recommended-alternative
+      "always declare :output-schemas with severity as [:enum :high :medium :low] so the model is constrained to consistent values"}],
+    :domain-reasoning
+    "The content covers 'risk-analysis' and 'categorize risks/obligations from a document', which partially overlaps with legal concern detection in an employment agreement.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9951438193051527,
+    :score 444.3951105424226,
+    :cos-avoid-sans-content 0.9986462074705622,
+    :fitness-score 0.85,
+    :document-id
+    ":tree-class:#uuid \"00000000-c1c1-4001-b002-d0c0a0a0a0a2\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9986462074705622}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured output schema reliably classifies risks across long documents",
+      :good-when
+      "document has natural sections (clauses, paragraphs) AND each section can be independently classified",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:risks] :output-schemas {:risks [:vector [:map [:obligation :string] [:severity [:enum :high :medium :low]] [:justification :string]]]}}]] [:aggregate {:from :results :writes [:risk-matrix]}] [:llm {:reads [:document :risk-matrix] :writes [:executive-summary]}] [:final {:keys [:risk-matrix :executive-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section boundaries — chunk-by-size and tolerate that some obligations straddle boundaries"
+     "output doesn't need per-item categorization — use simpler entity-extraction patterns instead"
+     "document is >5KB AND tree is a single :llm without per-section chunking"
+     "the per-section :llm writes severity as a free-form string"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.712113-05:00"},
+    :domain-label "legal-issue-detection",
+    :content
+    "Risk-analysis trees identify and categorize risks/obligations from a document into a per-item :risk-matrix (HIGH/MEDIUM/LOW + justification) plus an :executive-summary. The proven shape is per-section :map-each with structured :output-schemas: split by section delimiter, classify each section under bounded concurrency, aggregate the matrix, then synthesize the executive summary. Always use :output-schemas to constrain severity to an enum — free-form strings drift across iterations and break aggregation.",
+    :domain-coverage :partial,
+    :rank 4,
+    :reasoning
+    "Strong structural fit for risk identification and severity classification, but lacks the specific legal citation and recommendation fields prioritized in the legal-issue-detection class.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "single :llm classification on a long document misses many obligations because of attention-budget exhaustion",
+      :avoid-when
+      "document is >5KB AND tree is a single :llm without per-section chunking",
+      :recommended-alternative
+      "split into sections (use :chunk-document with :delimiter) and run per-section :map-each :llm with bounded concurrency"}
+     {:trait
+      "without :output-schemas, severity classifications drift to inconsistent strings ('high', 'HIGH', 'High', 'critical') across iterations — downstream aggregation breaks",
+      :avoid-when
+      "the per-section :llm writes severity as a free-form string",
+      :recommended-alternative
+      "always declare :output-schemas with severity as [:enum :high :medium :low] so the model is constrained to consistent values"}],
+    :domain-reasoning
+    "The content covers 'risk-analysis' and 'categorize risks/obligations from a document', which partially overlaps with legal concern detection in an employment agreement.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9951438193051527,
+    :score 444.3951105424226,
+    :cos-avoid-sans-content 0.9986462074705622,
+    :fitness-score 0.85,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b002-d0c0a0a0a0a2\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9986462074705622}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the synthesis stage's :llm has access to ALL per-chunk extracted material in :reads — produces a narrative that reasons across chunks rather than concatenating per-chunk summaries",
+      :good-when
+      "the briefing needs to identify cross-chunk patterns (recurring themes, contradictions, progression of an argument)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :source :size 4000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :extracts :max-concurrency 3} [:llm {:reads [:chunk] :writes [:key-points :quotes]}]] [:aggregate {:from :extracts :writes [:all-points :all-quotes]}] [:llm {:reads [:all-points :all-quotes :briefing-prompt] :writes [:briefing]}] [:final {:keys [:briefing]}]]"}
+     {:trait
+      "extract specific QUOTES alongside summaries in the per-chunk step — the synthesis stage can then ground claims to source quotes, supporting traceability",
+      :good-when
+      "the briefing audience may verify claims against source material AND traceability matters",
+      :recommended-pattern
+      "[:llm {:reads [:chunk] :writes [:key-points :supporting-quotes] :output-schemas {:key-points [:vector :string] :supporting-quotes [:vector :string]}}]"}],
+    :avoid-when
+    ["the output is a structured triple (summary + entities + dates) — use document-analysis (chunked-extraction-as-task-class) instead"
+     "no cross-chunk reasoning needed — use chunked-extraction (terminal :aggregate without synthesis)"
+     "the source fits in a single :llm context — direct :llm without chunking is simpler"
+     "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15"
+     "the briefing is going to a decision-maker AND no grounding check is wired downstream"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.739286-05:00"},
+    :domain-label "legal-issue-detection",
+    :content
+    "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+    :domain-coverage :uncovered,
+    :rank 7,
+    :reasoning
+    "Matches the 'ResearchThenSynthesize' pattern and mentions extracting quotes for traceability, but is less suited for the per-item structured classification required here compared to the risk/legal analysis classes.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "the synthesis stage's context can overflow when per-chunk extracts are too rich AND the chunk count is high — synthesizer truncates or hallucinates connections",
+      :avoid-when
+      "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15",
+      :recommended-alternative
+      "either reduce per-chunk extraction granularity (key-points-only, no quotes) OR add an intermediate :code stage that selects top-K per-chunk extracts before synthesis"}
+     {:trait
+      "without a grounding judge, the synthesis stage can fabricate connections between per-chunk extracts that aren't actually in the source — a 'plausible narrative' that doesn't survive verification",
+      :avoid-when
+      "the briefing is going to a decision-maker AND no grounding check is wired downstream",
+      :recommended-alternative
+      "wire a grounding judge on the briefing output that checks each claim against the source quotes — catches fabricated connections before the briefing ships"}],
+    :domain-reasoning
+    "Mentions 'briefing generation' and 'document-analysis', but these are general summaries rather than the specific legal risk detection requested.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9957413058134403,
+    :score 444.32493288095026,
+    :cos-avoid-sans-content 0.9999553022812394,
+    :fitness-score 0.6,
+    :document-id
+    ":tree-class:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9999553022812394}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered [],
+  :event/id #uuid "01a0aaa6-e345-703f-9d81-35addb28d672",
+  :confidence 1.0,
+  :source-sheet-id #uuid "1bbf3c22-6ba1-434e-8050-c7fef0d8936d",
+  :ranked-candidates
+  [{:target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 444.3188046183055}
+   {:target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 444.3188046183055}
+   {:target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.85,
+    :score 444.3951105424226}
+   {:target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.85,
+    :score 444.3951105424226}
+   {:target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.6,
+    :score 444.32493288095026}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :deferred-events [],
+ :domain-children-considered [],
+ :sheet-id #uuid "1bbf3c22-6ba1-434e-8050-c7fef0d8936d",
+ :payload-domain nil,
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 5 from corpus retrieval)\n#### Top match — Legal-issue-detection (confidence: 1.00)\nWhy this fits: This candidate perfectly matches the task's requirement for structured legal issue detection, specifically calling for fields like severity, area-of-law, citation, and recommendation. The recommended-pattern uses :output-schemas to enforce the exact fields requested in the prompt.\n\nPattern guidance (seed `:summary`):\nLegal-issue-detection trees flag legal concerns in a document with per-issue severity, area-of-law, source citation, and recommendation. The proven shape mirrors risk-analysis but with citation as a first-class output: per-section :map-each with :output-schemas requiring :citation field, then :code (NOT :llm) for the severity-summary rollup. Always require citation in the schema so users can verify the model's flags against the source.\n\nCapabilities:\n  - flags legal concerns in a document — per-issue severity + area-of-law + source citation + recommendation\n  - produces :issues (vector with per-item structure) + :severity-summary (rolled-up counts by severity)\n  - FLAG-LOUDER variant of risk-analysis: citations back to source AND recommendations are first-class outputs\n  - natural decomposition: per-section issue identification, then aggregation, then severity rollup\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** per-section :map-each with structured :output-schemas reliably surfaces issues with consistent severity + citation shape (confidence 1.00, evidence-count 1)\n    - Good when: document has natural sections (paragraphs, clauses) AND each section can be independently scanned for issues\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:section-issues] :output-schemas {:section-issues [:vector [:map [:concern :string] [:severity [:enum :high :medium :low]] [:area-of-law :string] [:citation :string] [:recommendation :string]]]}}]] [:aggregate {:from :results :writes [:issues]}] [:code {:reads [:issues] :writes [:severity-summary] :fn (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))})}] [:final {:keys [:issues :severity-summary]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** issues without citation fields become 'recommendations the user can't verify' — model needs to be explicitly required to cite (confidence 1.00, evidence-count 1)\n    - Avoid when: the per-section :llm's :output-schemas does NOT include a :citation field\n    - Recommended fix: always include :citation in the :output-schemas + word the instruction to require quoting the source phrase that triggered the issue\n\n  - **Failure mode:** severity-summary computed via :llm wastes tokens — it's pure :code work (frequencies over a vector) (confidence 1.00, evidence-count 1)\n    - Avoid when: the severity-summary step is a separate :llm call instead of a :code transform\n    - Recommended fix: use a :code node with (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))}) — deterministic, fast, zero tokens\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - compliance review of a draft regulation or policy\n  - legal due diligence of a contract or agreement\n  - audit of a corporate document for liability exposure\n\n#### Alternative #1 — Legal-issue-detection (confidence: 1.00)\nWhy this fits: Matches the structural requirements and domain perfectly, providing a schema-driven approach for identifying legal concerns with citations.\n\nPattern guidance (seed `:summary`):\nLegal-issue-detection trees flag legal concerns in a document with per-issue severity, area-of-law, source citation, and recommendation. The proven shape mirrors risk-analysis but with citation as a first-class output: per-section :map-each with :output-schemas requiring :citation field, then :code (NOT :llm) for the severity-summary rollup. Always require citation in the schema so users can verify the model's flags against the source.\n\nCapabilities:\n  - flags legal concerns in a document — per-issue severity + area-of-law + source citation + recommendation\n  - produces :issues (vector with per-item structure) + :severity-summary (rolled-up counts by severity)\n  - FLAG-LOUDER variant of risk-analysis: citations back to source AND recommendations are first-class outputs\n  - natural decomposition: per-section issue identification, then aggregation, then severity rollup\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** per-section :map-each with structured :output-schemas reliably surfaces issues with consistent severity + citation shape (confidence 1.00, evidence-count 1)\n    - Good when: document has natural sections (paragraphs, clauses) AND each section can be independently scanned for issues\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:section-issues] :output-schemas {:section-issues [:vector [:map [:concern :string] [:severity [:enum :high :medium :low]] [:area-of-law :string] [:citation :string] [:recommendation :string]]]}}]] [:aggregate {:from :results :writes [:issues]}] [:code {:reads [:issues] :writes [:severity-summary] :fn (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))})}] [:final {:keys [:issues :severity-summary]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** issues without citation fields become 'recommendations the user can't verify' — model needs to be explicitly required to cite (confidence 1.00, evidence-count 1)\n    - Avoid when: the per-section :llm's :output-schemas does NOT include a :citation field\n    - Recommended fix: always include :citation in the :output-schemas + word the instruction to require quoting the source phrase that triggered the issue\n\n  - **Failure mode:** severity-summary computed via :llm wastes tokens — it's pure :code work (frequencies over a vector) (confidence 1.00, evidence-count 1)\n    - Avoid when: the severity-summary step is a separate :llm call instead of a :code transform\n    - Recommended fix: use a :code node with (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))}) — deterministic, fast, zero tokens\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - compliance review of a draft regulation or policy\n  - legal due diligence of a contract or agreement\n  - audit of a corporate document for liability exposure\n\n#### Alternative #2 — Risk-analysis (confidence: 0.85)\nWhy this fits: Strong structural fit for risk identification and severity classification, but lacks the specific legal citation and recommendation fields prioritized in the legal-issue-detection class.\n\nPattern guidance (seed `:summary`):\nRisk-analysis trees identify and categorize risks/obligations from a document into a per-item :risk-matrix (HIGH/MEDIUM/LOW + justification) plus an :executive-summary. The proven shape is per-section :map-each with structured :output-schemas: split by section delimiter, classify each section under bounded concurrency, aggregate the matrix, then synthesize the executive summary. Always use :output-schemas to constrain severity to an enum — free-form strings drift across iterations and break aggregation.\n\nCapabilities:\n  - identifies and categorizes risks/obligations in a document with severity ratings\n  - produces a risk-matrix (per-obligation HIGH/MEDIUM/LOW classification + justification) + executive-summary\n  - classification-flavored extraction; per-clause/per-section processing is the natural decomposition\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** per-section :map-each with structured output schema reliably classifies risks across long documents (confidence 1.00, evidence-count 1)\n    - Good when: document has natural sections (clauses, paragraphs) AND each section can be independently classified\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:risks] :output-schemas {:risks [:vector [:map [:obligation :string] [:severity [:enum :high :medium :low]] [:justification :string]]]}}]] [:aggregate {:from :results :writes [:risk-matrix]}] [:llm {:reads [:document :risk-matrix] :writes [:executive-summary]}] [:final {:keys [:risk-matrix :executive-summary]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** single :llm classification on a long document misses many obligations because of attention-budget exhaustion (confidence 1.00, evidence-count 1)\n    - Avoid when: document is >5KB AND tree is a single :llm without per-section chunking\n    - Recommended fix: split into sections (use :chunk-document with :delimiter) and run per-section :map-each :llm with bounded concurrency\n\n  - **Failure mode:** without :output-schemas, severity classifications drift to inconsistent strings ('high', 'HIGH', 'High', 'critical') across iterations — downstream aggregation breaks (confidence 1.00, evidence-count 1)\n    - Avoid when: the per-section :llm writes severity as a free-form string\n    - Recommended fix: always declare :output-schemas with severity as [:enum :high :medium :low] so the model is constrained to consistent values\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - contract risk assessment (per-clause obligation extraction)\n  - regulatory-document risk inventory (per-section compliance review)\n  - any classification-heavy extraction where consistent enum values matter\n\n#### Alternative #3 — Risk-analysis (confidence: 0.85)\nWhy this fits: Strong structural fit for risk identification and severity classification, but lacks the specific legal citation and recommendation fields prioritized in the legal-issue-detection class.\n\nPattern guidance (seed `:summary`):\nRisk-analysis trees identify and categorize risks/obligations from a document into a per-item :risk-matrix (HIGH/MEDIUM/LOW + justification) plus an :executive-summary. The proven shape is per-section :map-each with structured :output-schemas: split by section delimiter, classify each section under bounded concurrency, aggregate the matrix, then synthesize the executive summary. Always use :output-schemas to constrain severity to an enum — free-form strings drift across iterations and break aggregation.\n\nCapabilities:\n  - identifies and categorizes risks/obligations in a document with severity ratings\n  - produces a risk-matrix (per-obligation HIGH/MEDIUM/LOW classification + justification) + executive-summary\n  - classification-flavored extraction; per-clause/per-section processing is the natural decomposition\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** per-section :map-each with structured output schema reliably classifies risks across long documents (confidence 1.00, evidence-count 1)\n    - Good when: document has natural sections (clauses, paragraphs) AND each section can be independently classified\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:risks] :output-schemas {:risks [:vector [:map [:obligation :string] [:severity [:enum :high :medium :low]] [:justification :string]]]}}]] [:aggregate {:from :results :writes [:risk-matrix]}] [:llm {:reads [:document :risk-matrix] :writes [:executive-summary]}] [:final {:keys [:risk-matrix :executive-summary]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** single :llm classification on a long document misses many obligations because of attention-budget exhaustion (confidence 1.00, evidence-count 1)\n    - Avoid when: document is >5KB AND tree is a single :llm without per-section chunking\n    - Recommended fix: split into sections (use :chunk-document with :delimiter) and run per-section :map-each :llm with bounded concurrency\n\n  - **Failure mode:** without :output-schemas, severity classifications drift to inconsistent strings ('high', 'HIGH', 'High', 'critical') across iterations — downstream aggregation breaks (confidence 1.00, evidence-count 1)\n    - Avoid when: the per-section :llm writes severity as a free-form string\n    - Recommended fix: always declare :output-schemas with severity as [:enum :high :medium :low] so the model is constrained to consistent values\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - contract risk assessment (per-clause obligation extraction)\n  - regulatory-document risk inventory (per-section compliance review)\n  - any classification-heavy extraction where consistent enum values matter\n\n#### Alternative #4 — Briefing generation (confidence: 0.60)\nWhy this fits: Matches the 'ResearchThenSynthesize' pattern and mentions extracting quotes for traceability, but is less suited for the per-item structured classification required here compared to the risk/legal analysis classes.\n\nPattern guidance (seed `:summary`):\nBriefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.\n\nCapabilities:\n  - :sequence of :chunk-document → :map-each :llm (per-chunk extraction) → :aggregate (merged material) → :llm synthesizer (cohesive narrative)\n  - natural for any 'read X long material and produce a Y-paragraph briefing' work — executive briefings, research summaries, situation reports\n  - outputs are typically a single coherent text artifact organized by topic/section, not a structured key-value extraction\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the synthesis stage's :llm has access to ALL per-chunk extracted material in :reads — produces a narrative that reasons across chunks rather than concatenating per-chunk summaries (confidence 1.00, evidence-count 1)\n    - Good when: the briefing needs to identify cross-chunk patterns (recurring themes, contradictions, progression of an argument)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:chunk-document {:from :source :size 4000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :extracts :max-concurrency 3} [:llm {:reads [:chunk] :writes [:key-points :quotes]}]] [:aggregate {:from :extracts :writes [:all-points :all-quotes]}] [:llm {:reads [:all-points :all-quotes :briefing-prompt] :writes [:briefing]}] [:final {:keys [:briefing]}]]\n      ```\n\n  - **Trait:** extract specific QUOTES alongside summaries in the per-chunk step — the synthesis stage can then ground claims to source quotes, supporting traceability (confidence 1.00, evidence-count 1)\n    - Good when: the briefing audience may verify claims against source material AND traceability matters\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:chunk] :writes [:key-points :supporting-quotes] :output-schemas {:key-points [:vector :string] :supporting-quotes [:vector :string]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** the synthesis stage's context can overflow when per-chunk extracts are too rich AND the chunk count is high — synthesizer truncates or hallucinates connections (confidence 1.00, evidence-count 1)\n    - Avoid when: per-chunk extraction emits >500 tokens per chunk AND chunk count is >15\n    - Recommended fix: either reduce per-chunk extraction granularity (key-points-only, no quotes) OR add an intermediate :code stage that selects top-K per-chunk extracts before synthesis\n\n  - **Failure mode:** without a grounding judge, the synthesis stage can fabricate connections between per-chunk extracts that aren't actually in the source — a 'plausible narrative' that doesn't survive verification (confidence 1.00, evidence-count 1)\n    - Avoid when: the briefing is going to a decision-maker AND no grounding check is wired downstream\n    - Recommended fix: wire a grounding judge on the briefing output that checks each claim against the source quotes — catches fabricated connections before the briefing ships\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - executive briefing from a long research report: chunked extraction → final cohesive 3-paragraph briefing\n  - situation-report generation from a stream of incident logs: per-incident extraction → final narrative summary\n  - literature review summary: chunked paper extraction → final synthesized review section\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral: Critique (confidence: 0.95)\n   Why this fits: This task is a qualitative evaluation of an artifact (a legal clause) against implicit quality criteria (legal concerns). The candidate's recommended-pattern for 'issues' includes 'location', 'severity', 'problem', and 'suggested-fix', which perfectly maps to the query's requirements for 'direct citation', 'severity', 'statement', and 'suggested revision'. The adversarial framing (skeptical reviewer) is also highly appropriate for identifying legal vulnerabilities.\n\n   Guidance (seed `:summary`):\n   Critique evaluates an artifact against quality criteria, producing per-criterion grades + located issues + suggested fixes. Always require per-issue location references AND per-issue :suggested-fix — vague critiques produce vague refinements. Score against an explicit per-dimension rubric, NOT a single overall grade, so refinement knows where to focus. NEVER use the same prompt persona for critique as for the original producer — self-critique ratifies. Use adversarial framing (skeptical reviewer / safety auditor) or an explicit checklist. Composes into draft-critique (validation-loop child) and iterative-refinement (sequential-pipeline child) shells; also into validation-loop pattern when paired with a producer. Avoid for formal rule-checking (use validation) or for orphan critiques with no downstream consumer.\n\nCapabilities:\n  - given an artifact + quality criteria, produce a structured critique — per-criterion grade + list of specific issues + suggested fixes\n  - natural fit downstream of synthesis/design/code-building, upstream of refinement loops or human review\n  - outputs are typically a map with per-criterion scores + a vector of specific issues with locations + a vector of suggested improvements\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** require per-issue location references (line number / section name / item id) so the downstream refinement stage knows exactly what to address — vague issues produce vague fixes (confidence 1.00, evidence-count 1)\n    - Good when: the artifact is structured and references are addressable\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:artifact :criteria] :writes [:issues] :output-schemas {:issues [:vector [:map [:location :string] [:problem :string] [:severity :string] [:suggested-fix :string]]]}}]\n      ```\n\n  - **Trait:** score against an explicit per-criterion rubric (not a single overall grade) so the refinement stage knows which dimension needs work — overall-grade-only critiques produce regressions in unscored dimensions (confidence 1.00, evidence-count 1)\n    - Good when: quality has multiple distinct dimensions (correctness / clarity / completeness / efficiency)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:artifact :rubric] :writes [:scores] :output-schemas {:scores [:map-of :string :double]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** self-critique on the same model (no prompt-framing change) tends to ratify the original artifact — the model is biased toward consistency with its prior output (confidence 1.00, evidence-count 1)\n    - Avoid when: the critique stage uses the same :llm with the same role framing as the producer\n    - Recommended fix: use a different prompt persona (skeptical reviewer / safety auditor) OR a different model OR an explicit checklist that forces specific question forms — adversarial framing improves catch rate\n\n  - **Failure mode:** critiques that don't produce actionable per-issue fixes leave the refinement stage with nothing to act on — issues phrased as 'unclear' don't tell the writer what to do (confidence 1.00, evidence-count 1)\n    - Avoid when: the critique feeds a refinement stage\n    - Recommended fix: every issue must include a :suggested-fix — explicit phrasing of how to address it; not 'consider revising' but 'replace X with Y because Z'\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - draft review: per-section grade + specific issues + suggested rewrites\n  - code review: per-file findings + severity + suggested fix\n  - design review: per-decision check + risks + open questions\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 0f11dba5-c331-3cdf-81fa-8ee114fc224f)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Validation (confidence: 0.70)\n   Why this fits: The task involves checking against rules (legal standards). The candidate's strength in structuring failure output as '{:rule :reason :location}' aligns with the task's need for citations and justifications. However, the task requires 'judgment-requiring rules' (semantic legal concerns) which the candidate flags as better suited for Critique, and it lacks the 'suggested revision' and 'severity' components core to the query.\n\n   Guidance (seed `:summary`):\n   Validation checks an artifact against formal rules, producing pass/fail + per-rule reasons. ALWAYS implement mechanical rules (schema / regex / field presence) in :code — deterministic and cheap. Only use :llm for judgment-requiring rules (semantic-fit / policy-intent). Structure failures as {:rule :reason :location} entries so the upstream producer in a validation-loop gets actionable retry signal. Wrap external rule sources in :fallback when the gate is on the critical path — silent failure of validation blocks the tree. Composes into producer-validator (validation-loop child), validation-loop pattern (with producer), and fallback-recovery shells (primary + backup validators). Avoid for judgment-based quality assessment (use critique) or for option selection (use convergent stage).\n\nCapabilities:\n  - given an artifact + a formal rule set (schema / spec / policy), produce a pass/fail decision per rule + reasons for any failures\n  - natural fit as a gate node before downstream commitment (publish / merge / execute)\n  - outputs are typically {:passed? boolean :violations [...]} or a per-rule pass-fail map with reasons\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** implement the rule check itself in :code when the rule is mechanical (schema validation / regex match / field presence) — :code is deterministic and cheap; only fall back to :llm for rules that need judgment (confidence 1.00, evidence-count 1)\n    - Good when: the rules are objective and machine-checkable\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:artifact :schema] :writes [:result] :fn (fn [{:keys [inputs]}] {:result {:passed? true :violations []}})}]\n      ```\n\n  - **Trait:** structure the failure output as a vector of {:rule :reason :affected-location} entries — gives the upstream producer (validation-loop) actionable retry signal (confidence 1.00, evidence-count 1)\n    - Good when: validation feeds a retry/refinement loop where the producer needs to know what to fix\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:artifact :rules] :writes [:result] :output-schemas {:result [:map [:passed? :boolean] [:violations [:vector [:map [:rule :string] [:reason :string] [:location :string]]]]]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** single :llm-based validation on a mechanical rule (schema match / field presence) is non-deterministic AND wastes tokens — the same artifact gets different pass/fail across runs (confidence 1.00, evidence-count 1)\n    - Avoid when: the rule is fully expressible as code\n    - Recommended fix: implement mechanical rules in :code; use :llm only for judgment-requiring rules (semantic-fit / policy-intent / tone)\n\n  - **Failure mode:** validation without a fallback path silently blocks the tree when external rule sources fail — the gate never opens (confidence 1.00, evidence-count 1)\n    - Avoid when: validation depends on an external service (policy API, schema registry) AND the rest of the tree can't degrade\n    - Recommended fix: wrap external validation in :fallback with a local cached rule set OR a 'human review queue' branch — gate fails gracefully\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - schema validation against a JSON Schema / Malli spec\n  - policy compliance check against an org's content rules\n  - completeness check: required sections present, required fields populated\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 1361eafc-6a90-391a-97a9-b558118f1f57)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral: Analysis (confidence: 0.60)\n   Why this fits: The task asks to identify 'legal concerns', which are 'structured findings' derived from 'reasoning over items'. The candidate's recommendation to tie findings to ':affected-items' matches the citation requirement. However, it misses the 'suggested revision' aspect, as Analysis focuses on reasoning over findings rather than refining the original artifact.\n\n   Guidance (seed `:summary`):\n   Analysis reasons over already-extracted items to produce structured findings (patterns / problems / opportunities) with per-finding evidence. Always tie findings to specific items via :affected-items references for downstream auditability. For multi-dimensional analysis, fan out per-dimension :llm stages via :parallel — each stage gets a tighter focus. NEVER skip the extraction stage: analyzing raw documents conflates extraction and reasoning, degrading both. Composes into comparative-summary (multi-source structured findings), chunked-extraction (per-chunk parallel analysis), and sequential-pipeline (extract → analyze → synthesize). Avoid when the task is summarizing (use synthesis) or generating options (use ideation).\n\nCapabilities:\n  - given a vector/map of pre-extracted items, produce a structured set of findings (patterns / problems / opportunities) with per-finding evidence\n  - natural fit as a mid-tree stage between extraction (upstream) and synthesis/critique/code-building (downstream)\n  - outputs are typically a vector of findings, each with :type / :evidence / :confidence / :affected-items\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** tie each finding to the specific extracted item(s) that triggered it via an :affected-items reference field — downstream stages can audit, drill down, or prioritize findings by evidence weight (confidence 1.00, evidence-count 1)\n    - Good when: downstream stages need to attribute findings to evidence OR rank findings by support\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:extracts] :writes [:findings] :output-schemas {:findings [:vector [:map [:type :string] [:evidence :string] [:confidence :double] [:affected-items [:vector :string]]]]}}]\n      ```\n\n  - **Trait:** for multi-dimensional analysis (e.g., risk / opportunity / blocker across the same items), use :parallel one-:llm-per-dimension stages — each stage has a tight focus and can produce richer per-dimension reasoning (confidence 1.00, evidence-count 1)\n    - Good when: the analysis has 2-4 orthogonal dimensions that benefit from separate prompts\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:parallel [:llm {:reads [:extracts] :writes [:risks]}] [:llm {:reads [:extracts] :writes [:opportunities]}] [:llm {:reads [:extracts] :writes [:blockers]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** analyzing raw documents (skipping extraction) forces the analysis :llm to do BOTH extraction and reasoning — quality degrades on both since the model can't optimize attention for either (confidence 1.00, evidence-count 1)\n    - Avoid when: the input is raw documents AND the analysis needs to attribute findings to specific items\n    - Recommended fix: two-stage: extract structured items first, then analyze over the extracts; preserves analyzability of findings\n\n  - **Failure mode:** single-pass analysis over a long flat list of items loses signal on per-item nuance — findings cluster around the most prominent items (confidence 1.00, evidence-count 1)\n    - Avoid when: item count is high AND each item deserves per-item attention\n    - Recommended fix: use :map-each per-item analysis with bounded :max-concurrency, then aggregate findings — preserves per-item granularity\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - risk analysis over extracted contract clauses: per-clause risk score + reasoning + mitigation\n  - pattern detection across log events: clusters of related events + frequency + suspected cause\n  - gap analysis over a feature list: required-vs-present + missing-items + priority\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent b3597aa7-3957-3734-90c6-531d27c08f67)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nReview the following non-compete clause from a software engineer's employment agreement and identify all legal concerns. Each finding must include a concise statement, severity (high/medium/low) with justification, area of law, a direct citation of the clause text, and a suggested revision. Clause: 'Employee shall not, for 24 months after termination for any reason, engage in any business anywhere in the world that competes with the Company or any affiliate, nor solicit any person who was a customer or employee at any time during Employee's tenure.'",
+ :june-flags
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 22843,
+ :confidence 1.0,
+ :was-fresh-mint? false,
+ :assigned-via :match}

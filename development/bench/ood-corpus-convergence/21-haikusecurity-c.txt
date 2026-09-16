@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: haikusecurity (off-domain); variant c of 3 — the same domain re-asked with a different concrete instance.
+Four cloud misconfiguration findings (public S3 bucket with backups, IAM role with wildcard permissions, security group open on port 22 to the world, unencrypted RDS snapshots). For each, compose a haiku in strict 5-7-5 form that makes the reader feel the exposure while keeping every technical detail accurate, without naming the category. Return a vector of 4 maps {:finding "a" :haiku "..."}.

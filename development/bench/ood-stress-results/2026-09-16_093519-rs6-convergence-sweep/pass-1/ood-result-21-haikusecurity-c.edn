@@ -1,0 +1,176 @@
+{:assigned-tree-id #uuid "0bde72ea-5790-4eb0-bc5f-459d85354d04",
+ :tick-id #uuid "091b8104-9d1e-4cca-ace2-89c2194201cb",
+ :slug "21-haikusecurity-c",
+ :parent-tree-id nil,
+ :domain-label nil,
+ :outcome :novel,
+ :domain-deferral nil,
+ :domain-verdict nil,
+ :node-id #uuid "81b19f39-9a9b-4a3d-8935-9423478f81dd",
+ :top-1
+ {:target-id "seed:tree:ChunkedExtraction",
+  :fitness-score 0.1,
+  :rerank-source :reranker,
+  :domain-coverage :uncovered,
+  :domain-label "cloud-security-misconfiguration-haiku"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "0bde72ea-5790-4eb0-bc5f-459d85354d04",
+  :classified-at "2026-09-16T09:41:36.013769-05:00",
+  :reasoning
+  "This candidate is a poor fit because the task is content generation (haikus) rather than extraction, and it lacks a large document to chunk. Its avoid-when explicitly states 'the work is content generation, not extraction', which directly matches this haiku-writing task.",
+  :outcome :novel,
+  :source-node-id #uuid "81b19f39-9a9b-4a3d-8935-9423478f81dd",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "86275302-0c3d-35ae-b74e-abd4f27984eb",
+    :confidence 0.9,
+    :was-fresh-mint? false,
+    :reasoning
+    "This task is a 'style shift / domain shift' transformation (from technical finding to haiku). The candidate recommends using :llm for transformations that need judgment (semantic rephrasing) rather than deterministic :code. Its recommended-pattern for :map-each perfectly fits the 'Four findings' input structure to isolate per-item haiku generation.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.8,
+    :was-fresh-mint? false,
+    :reasoning
+    "Synthesis is a strong structural match for taking multiple structured inputs (the four findings) and producing a single cohesive artifact (the vector of maps). The strength 'attribute claims to sources' is relevant here for maintaining the link between the finding 'a' and its specific haiku.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "01f78800-c0e7-34b3-bb09-a7a6a95a022d",
+    :confidence 0.6,
+    :was-fresh-mint? false,
+    :reasoning
+    "While the task doesn't categorize, the :map-each pattern here for 'independent items' where 'per-item accuracy matters' is a highly relevant structural fit for ensuring each of the 4 haikus follows the strict 5-7-5 form without cross-contamination.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "091b8104-9d1e-4cca-ace2-89c2194201cb",
+  :event/tags
+  #{[:description-target #uuid "0bde72ea-5790-4eb0-bc5f-459d85354d04"]
+    [:tick #uuid "091b8104-9d1e-4cca-ace2-89c2194201cb"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T14:41:36.014064Z",
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the 4-stage skeleton is the proven shape for any large-document extraction",
+      :good-when
+      "the input is a document larger than ~5KB AND extraction is per-chunk independent AND the output schema is uniform across chunks",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:per-chunk-data]}]] [:aggregate {:from :results :writes [:all-data]}] [:final {:keys [:all-data]}]]"}],
+    :avoid-when
+    ["the document is small enough to fit in a single :llm context — chunking adds overhead with no win"
+     "extraction requires cross-chunk reasoning (trend detection, entity co-reference across the whole document)"
+     "the work is content generation, not extraction"
+     "the extraction depends on cumulative state (e.g. tracking entity mentions across the document) OR requires comparing data across chunks"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ChunkedExtraction",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.730345-05:00"},
+    :domain-label "cloud-security-misconfiguration-haiku",
+    :content
+    "ChunkedExtraction is the canonical 4-stage shape for processing large documents: :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Reusable across any domain where the input is a large document and the work is per-chunk independent. Always bound :max-concurrency on the :map-each to avoid sub-LLM rate-limit exhaustion. Skip the pattern for documents <5KB or when cross-chunk reasoning is required.",
+    :domain-coverage :uncovered,
+    :rank 9,
+    :reasoning
+    "This candidate is a poor fit because the task is content generation (haikus) rather than extraction, and it lacks a large document to chunk. Its avoid-when explicitly states 'the work is content generation, not extraction', which directly matches this haiku-writing task.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "the skeleton assumes per-chunk independence — fails when extraction needs cross-chunk context",
+      :avoid-when
+      "the extraction depends on cumulative state (e.g. tracking entity mentions across the document) OR requires comparing data across chunks",
+      :recommended-alternative
+      "two-pass approach — chunked-extraction first, then a second pass that cross-references results; OR use a non-chunked single-pass :llm if the document fits the context window"}],
+    :domain-reasoning
+    "The candidate is focused on large document processing and extraction; it does not mention cloud security, misconfigurations, or creative writing (haikus).",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9939278157032547,
+    :score 444.3322228807919,
+    :cos-avoid-sans-content 0.999584758954393,
+    :fitness-score 0.1,
+    :document-id ":tree-class:\"seed:tree:ChunkedExtraction\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.999584758954393}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the 4-stage skeleton is the proven shape for any large-document extraction",
+      :good-when
+      "the input is a document larger than ~5KB AND extraction is per-chunk independent AND the output schema is uniform across chunks",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:per-chunk-data]}]] [:aggregate {:from :results :writes [:all-data]}] [:final {:keys [:all-data]}]]"}],
+    :avoid-when
+    ["the document is small enough to fit in a single :llm context — chunking adds overhead with no win"
+     "extraction requires cross-chunk reasoning (trend detection, entity co-reference across the whole document)"
+     "the work is content generation, not extraction"
+     "the extraction depends on cumulative state (e.g. tracking entity mentions across the document) OR requires comparing data across chunks"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ChunkedExtraction",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.713403-05:00"},
+    :domain-label "cloud-security-misconfiguration-haiku",
+    :content
+    "ChunkedExtraction is the canonical 4-stage shape for processing large documents: :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Reusable across any domain where the input is a large document and the work is per-chunk independent. Always bound :max-concurrency on the :map-each to avoid sub-LLM rate-limit exhaustion. Skip the pattern for documents <5KB or when cross-chunk reasoning is required.",
+    :domain-coverage :uncovered,
+    :rank 8,
+    :reasoning
+    "This candidate is a poor fit for the same reasons as the tree-class: the task matches the avoid-when criteria ('the work is content generation, not extraction') and there is no large document requiring the 4-stage chunk/map/aggregate skeleton.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "the skeleton assumes per-chunk independence — fails when extraction needs cross-chunk context",
+      :avoid-when
+      "the extraction depends on cumulative state (e.g. tracking entity mentions across the document) OR requires comparing data across chunks",
+      :recommended-alternative
+      "two-pass approach — chunked-extraction first, then a second pass that cross-references results; OR use a non-chunked single-pass :llm if the document fits the context window"}],
+    :domain-reasoning
+    "The candidate's representative uses are centered on large-scale document extraction, which has no overlap with security findings or haiku generation.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9939278157032547,
+    :score 444.3322228807919,
+    :cos-avoid-sans-content 0.999584758954393,
+    :fitness-score 0.1,
+    :document-id ":tree-fingerprint:\"seed:tree:ChunkedExtraction\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.999584758954393}],
+  :event/type :ontology/task-classified,
+  :event/id #uuid "01a0aaaa-810e-7071-a949-00709aff45e5",
+  :confidence 0.1,
+  :source-sheet-id #uuid "52f890b6-9007-49c0-83ee-ff5f65b4bcb8",
+  :ranked-candidates
+  [{:target-id "seed:tree:ChunkedExtraction",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.1,
+    :score 444.3322228807919}
+   {:target-id "seed:tree:ChunkedExtraction",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.1,
+    :score 444.3322228807919}],
+  :was-fresh-mint? true,
+  :assigned-via :mint},
+ :deferred-events [],
+ :domain-children-considered nil,
+ :sheet-id #uuid "52f890b6-9007-49c0-83ee-ff5f65b4bcb8",
+ :payload-domain nil,
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns\nNo high-confidence structural match was returned by the classifier. Design at the abstract pattern level — the structural shape is the primary signal you have. The behavioral suggestions below reflect what the task ACCOMPLISHES.\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral: Transformation (confidence: 0.90)\n   Why this fits: This task is a 'style shift / domain shift' transformation (from technical finding to haiku). The candidate recommends using :llm for transformations that need judgment (semantic rephrasing) rather than deterministic :code. Its recommended-pattern for :map-each perfectly fits the 'Four findings' input structure to isolate per-item haiku generation.\n\n   Guidance (seed `:summary`):\n   Transformation is mechanical reshape of data between deterministic shapes. ALWAYS use :code (not :llm) for deterministic transformations — preserves fidelity, costs nothing, runs in ms; :llm for transformation produces non-deterministic output. For per-item independent transformations, :map-each isolates per-item failures. ALWAYS declare :output-schemas on transformation output and :input-schemas on downstream :reads so shape mismatch fails at the boundary, not deep in the consumer. Composes into etl-pipeline (sequential transform chain), parallel-sum (map-reduce transformation), sequential-pipeline shells, and map-reduce shells. Avoid for transformations that need judgment (semantic rephrasing / style shift — use :llm) or for unstructured input (extract first).\n\nCapabilities:\n  - given input data + a target shape spec, emit the input restructured to the target shape\n  - natural fit anywhere a tree needs to change data shape without semantic interpretation\n  - outputs are typically a single restructured value or a vector of per-item transformations\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** implement transformations in :code (NOT :llm) when the mapping is deterministic — preserves byte-for-byte fidelity, costs zero tokens, runs in milliseconds (confidence 1.00, evidence-count 1)\n    - Good when: the transformation rule can be expressed as a pure function over the input\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:input] :writes [:output] :fn (fn [{:keys [inputs]}] {:output (mapv (fn [r] (select-keys r [:a :b])) (:input inputs))})}]\n      ```\n\n  - **Trait:** for per-item independent transformations over a vector, use :map-each rather than a single batch :code call when the per-item work is non-trivial — supports per-item failure isolation (confidence 1.00, evidence-count 1)\n    - Good when: items can fail independently AND partial success has value\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :records :as :record :writes [:transformed]} [:code {:reads [:record] :writes [:transformed] :fn (fn [{:keys [inputs]}] {:transformed (assoc (:record inputs) :stamp \"x\")})}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** using :llm for a deterministic transformation (CSV → JSON, snake_case → camelCase) produces non-deterministic output AND wastes tokens (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation rule is fully specifiable\n    - Recommended fix: always :code for deterministic transformations; reserve :llm for transformations that need judgment (semantic-rephrasing / style-shift / domain-translation)\n\n  - **Failure mode:** transformations without :output-schemas on the downstream :reads break silently when an upstream change shifts the output shape — the consumer gets garbage instead of an error (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation feeds another stage that binds on specific fields\n    - Recommended fix: declare :output-schemas on the transformation output AND :input-schemas on the downstream :reads — shape mismatch fails loudly at the boundary, not deep in the consumer\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - CSV row → JSON object mapping per-field\n  - extracted entity records → DB-row shape with derived fields\n  - input list → output list with N filters / projections applied\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 86275302-0c3d-35ae-b74e-abd4f27984eb)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Synthesis (confidence: 0.80)\n   Why this fits: Synthesis is a strong structural match for taking multiple structured inputs (the four findings) and producing a single cohesive artifact (the vector of maps). The strength 'attribute claims to sources' is relevant here for maintaining the link between the finding 'a' and its specific haiku.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral suggestion (confidence: 0.60)\n   Why this fits: While the task doesn't categorize, the :map-each pattern here for 'independent items' where 'per-item accuracy matters' is a highly relevant structural fit for ensuring each of the 4 haikus follows the strict 5-7-5 form without cross-contamination.\n\n   Guidance (seed `:summary`):\n   Classification assigns each item from a set to one or more predefined categories. ALWAYS include the closed-set vocabulary in :reads AND constrain output via :output-schemas with [:enum ...] of allowed categories — open-ended output drifts across runs and breaks downstream aggregation. Prefer :map-each per-item (with bounded :max-concurrency) over batch classification for >20 items — preserves per-item attention. Composes into parallel-classify-aggregate (map-reduce variant), map-reduce shells, and parallel-independent shells (multi-axis classification with per-axis classifier). Avoid for open-ended labels (clustering), for rule-based assignments (use :code), or for category set generation (use ideation).\n\nCapabilities:\n  - given a set of items + a category vocabulary, emit per-item category assignments (optionally multi-label with confidence)\n  - natural fit when downstream stages branch or aggregate by category\n  - outputs are typically a vector of {:item-id :category :confidence} or a map from item-id to category\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** fan out per-item classification via :map-each with bounded :max-concurrency — per-item LLM calls give richer per-item reasoning than a single batch classifier prompt (confidence 1.00, evidence-count 1)\n    - Good when: items are independent AND per-item context matters for accuracy\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :items :as :item :max-concurrency 3 :writes [:classifications]} [:llm {:reads [:item :vocabulary] :writes [:classification] :output-schemas {:classification [:map [:category :string] [:confidence :double]]}}]]\n      ```\n\n  - **Trait:** include the category vocabulary in :reads of each per-item classifier — anchors the model to the closed-set output and prevents drift to free-form labels (confidence 1.00, evidence-count 1)\n    - Good when: the category set is closed and stable\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:item :vocabulary] :writes [:classification] :output-schemas {:classification [:enum :a :b :c]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** classifying without the vocabulary in the prompt produces free-form labels that drift across runs — downstream aggregation over categories breaks (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages aggregate / branch on category equality\n    - Recommended fix: always include the closed-set vocabulary in :reads AND constrain output via :output-schemas with [:enum ...] of the allowed categories\n\n  - **Failure mode:** single batch classification of N>20 items in one :llm call loses per-item attention — accuracy degrades at the tail of the batch (confidence 1.00, evidence-count 1)\n    - Avoid when: item count >20 AND per-item accuracy matters\n    - Recommended fix: :map-each per-item with bounded :max-concurrency — wall-time stays low and per-item attention is preserved\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - per-document topic classification: each document → topic label + confidence\n  - per-issue triage: each support ticket → category from a fixed taxonomy\n  - per-clause risk-class assignment: each contract clause → risk level + reasoning\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 01f78800-c0e7-34b3-bb09-a7a6a95a022d)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nFour cloud misconfiguration findings (public S3 bucket with backups, IAM role with wildcard permissions, security group open on port 22 to the world, unencrypted RDS snapshots). For each, compose a haiku in strict 5-7-5 form that makes the reader feel the exposure while keeping every technical detail accurate, without naming the category. Return a vector of 4 maps {:finding \"a\" :haiku \"...\"}.",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? false},
+ :elapsed-ms 12528,
+ :confidence 0.1,
+ :was-fresh-mint? true,
+ :assigned-via :mint}

@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: marathon (off-domain); variant c of 3 — the same domain re-asked with a different concrete instance.
+Create a 20-week first-marathon plan for a 45-year-old beginner currently running 10 miles/week, goal simply to finish under 5 hours, with a knee arthroscopy two years ago and a busy travel schedule (two weeks with hotel treadmills only). Include a gradual volume ramp, walk-run options, long-run progression, deload weeks, a taper and injury warning signs. Output: {:week-by-week [...] :paces {...} :red-flags ...}
