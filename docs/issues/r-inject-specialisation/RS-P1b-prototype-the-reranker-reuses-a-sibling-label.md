@@ -16,11 +16,20 @@ and report the verdict distribution beside RS-P1's. Record the findings beside R
 
 ## Acceptance criteria
 
-- [ ] Pass one and pass two persisted, pass two with sibling labels supplied per candidate
-- [ ] Sibling-reuse rate over eligible tasks, verdict distribution under the tightened definition, and any remaining
+- [x] Pass one and pass two persisted, pass two with sibling labels supplied per candidate
+- [x] Sibling-reuse rate over eligible tasks, verdict distribution under the tightened definition, and any remaining
       flips recorded in a findings file
-- [ ] A written verdict on whether a judged choice converges labels well enough for D3's derived identity, and what
+- [x] A written verdict on whether a judged choice converges labels well enough for D3's derived identity, and what
       RS-1 / RS-2 must carry if not
+
+## Verdict
+
+See `development/bench/ood-stress-results/rs-p1b2-sibling-reuse-separated-probe/FINDINGS.md`. Judged label reuse
+converges (16 / 17 eligible, refusals correct; label agreement 19 / 21). The tightened `covered` definition calibrates
+(pass one: partial 13 / uncovered 5 / covered 3, the covered three being the two sanity checks and a genuinely
+in-domain ETL design). The coverage verdict is NOT usable once a class carries children — the model calls such a parent
+`covered` 20 / 21 regardless of instruction — so D7b: the verdict decides only a class's first child; after that the
+judged label decides (sibling → that child, new → new child).
 
 ## Spec obligations covered
 
