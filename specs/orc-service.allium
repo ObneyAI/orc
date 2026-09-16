@@ -405,6 +405,23 @@ contract CheckpointedResearcherExecution {
         -- same claim is the record that makes an effect's outcome knowable
         -- afterwards.
 
+    @invariant ClassificationEffectsCommitAsOneBoundedSet
+        -- A checkpointed campaign's classification is prepared as a set of
+        -- effects and published in one atomic append under the campaign epoch:
+        -- exactly one outcome (an assignment or a fitness-axis deferral), at
+        -- most one injection record, at most one convergence capture (required
+        -- by, and only allowed with, a fresh-mint assignment naming the same
+        -- class), at most one domain-child mint (required by, and only allowed
+        -- with, a domain-child assignment naming the same child — the concept
+        -- and its parent edge exist before anything references the child), and
+        -- at most one domain-axis deferral, which is not an outcome but the
+        -- same occurrence's domain axis and may only ride an assignment under
+        -- the same campaign epoch. The set commits in one order — mint, capture,
+        -- injection, assignment, then the domain-axis deferral — the same order
+        -- the non-checkpointed wedge dispatches them, so an effect that
+        -- references another never lands before it. A timeout anywhere in
+        -- preparation leaves no partial set behind.
+
     @invariant CheckpointSafeToolsShareIdempotencyKeys
         -- A checkpointed researcher may invoke an effectful inline tool only
         -- when its bound contract explicitly declares checkpoint safety. ORC

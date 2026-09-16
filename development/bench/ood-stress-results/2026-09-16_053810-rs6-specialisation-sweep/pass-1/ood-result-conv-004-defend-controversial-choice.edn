@@ -1,0 +1,427 @@
+{:assigned-tree-id #uuid "23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9",
+ :tick-id #uuid "307f986f-0ae5-46ec-9e0f-69d241871c01",
+ :slug "conv-004-defend-controversial-choice",
+ :parent-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+ :domain-label "software-architecture-recommendation",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "software-architecture-recommendation",
+  :domain-reasoning
+  "The candidate has a pre-existing child 'software-architecture-recommendation', which directly aligns with a memo defending a PaaS migration decision for an engineering team."},
+ :node-id #uuid "500eb0af-18a9-4b89-bc0f-24f46ea9a619",
+ :top-1
+ {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :fitness-score 0.9,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "software-architecture-recommendation"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9",
+  :parent-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :domain-label "software-architecture-recommendation",
+  :classified-at "2026-09-16T05:41:24.232400-05:00",
+  :reasoning
+  "The task requires a complex memo that must satisfy multiple formal requirements (paragraph count, specific objection types, data inclusion, and a clear next-step outcome). The Producer/Validator pattern is the best fit because it allows for an LLM to generate the 'candidate' memo while a :code validator (or a secondary LLM node acting as a correctness oracle) ensures all structural constraints—like the 5-7 paragraph range and the specific key-value output format—are strictly met before final delivery.",
+  :outcome :matched,
+  :source-node-id #uuid "500eb0af-18a9-4b89-bc0f-24f46ea9a619",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.95,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task requires integrating multiple skeptical concerns (hiring, risk, lock-in) and situational context (headcount, traffic) into a single, cohesive 5-7 paragraph memo. The Synthesis pattern's strength in 'integrating multiple structured inputs into a single cohesive artifact' directly matches this, and the recommended-pattern for long artifacts (scaffolding via a structured outline) fits the specific multi-paragraph requirement perfectly.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "0f11dba5-c331-3cdf-81fa-8ee114fc224f",
+    :confidence 0.7346402198889687,
+    :was-fresh-mint? false,
+    :reasoning
+    "The prompt specifically asks to 'address each of the PM concerns directly' and includes a requirement to 'acknowledge what could go wrong.' This mirrors the Critique pattern's 'adversarial framing' (skeptical reviewer) and its focus on locating issues and suggesting fixes, although the primary output here is a memo rather than a grade. It provides the behavioral logic for the 'skeptical' side of the memo.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "760be698-0bb8-3a5a-a2bd-1d45445a5861",
+    :confidence 0.65,
+    :was-fresh-mint? false,
+    :reasoning
+    "The memo must defend a decision by explaining why the new system is a fit for the team's specific context (small headcount, predictable traffic). The Investigation pattern's focus on 'hypothesis-then-evidence' and using 'ambient context' to rule out alternatives (like staying on K8s) provides a strong behavioral framework for the memo's argument structure.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "307f986f-0ae5-46ec-9e0f-69d241871c01",
+  :event/tags
+  #{[:tick #uuid "307f986f-0ae5-46ec-9e0f-69d241871c01"]
+    [:description-target
+     #uuid "23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:41:24.232572Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "software-architecture-recommendation",
+   :domain-reasoning
+   "The candidate has a pre-existing child 'software-architecture-recommendation', which directly aligns with a memo defending a PaaS migration decision for an engineering team."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :existing-domain-children ["software-architecture-recommendation"],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.989512-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :covered,
+    :rank 2,
+    :reasoning
+    "The task requires a complex memo that must satisfy multiple formal requirements (paragraph count, specific objection types, data inclusion, and a clear next-step outcome). The Producer/Validator pattern is the best fit because it allows for an LLM to generate the 'candidate' memo while a :code validator (or a secondary LLM node acting as a correctness oracle) ensures all structural constraints—like the 5-7 paragraph range and the specific key-value output format—are strictly met before final delivery.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The candidate has a pre-existing child 'software-architecture-recommendation', which directly aligns with a memo defending a PaaS migration decision for an engineering team.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9909645709864139,
+    :score 437.44199113736386,
+    :cos-avoid-sans-content 0.9991489443977366,
+    :fitness-score 0.9,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9991489443977366}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.974326-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :uncovered,
+    :rank 1,
+    :reasoning
+    "This fingerprint shares the same Producer/Validator logic as the class, which is highly effective for tasks with formal constraints (like the specific paragraph count and the structured output format required for this memo). The explicit retry budget helps ensure the final output is syntactically correct and includes all required fields.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "Matches the 'Producer/Validator' shape which is excellent for instruction-heavy prompts with specific constraints, though it lacks the specific domain child label of the class version.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9909645709864139,
+    :score 437.44199113736386,
+    :cos-avoid-sans-content 0.9991489443977366,
+    :fitness-score 0.85,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9991489443977366}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the synthesis stage's :llm has access to ALL per-chunk extracted material in :reads — produces a narrative that reasons across chunks rather than concatenating per-chunk summaries",
+      :good-when
+      "the briefing needs to identify cross-chunk patterns (recurring themes, contradictions, progression of an argument)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :source :size 4000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :extracts :max-concurrency 3} [:llm {:reads [:chunk] :writes [:key-points :quotes]}]] [:aggregate {:from :extracts :writes [:all-points :all-quotes]}] [:llm {:reads [:all-points :all-quotes :briefing-prompt] :writes [:briefing]}] [:final {:keys [:briefing]}]]"}
+     {:trait
+      "extract specific QUOTES alongside summaries in the per-chunk step — the synthesis stage can then ground claims to source quotes, supporting traceability",
+      :good-when
+      "the briefing audience may verify claims against source material AND traceability matters",
+      :recommended-pattern
+      "[:llm {:reads [:chunk] :writes [:key-points :supporting-quotes] :output-schemas {:key-points [:vector :string] :supporting-quotes [:vector :string]}}]"}],
+    :avoid-when
+    ["the output is a structured triple (summary + entities + dates) — use document-analysis (chunked-extraction-as-task-class) instead"
+     "no cross-chunk reasoning needed — use chunked-extraction (terminal :aggregate without synthesis)"
+     "the source fits in a single :llm context — direct :llm without chunking is simpler"
+     "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15"
+     "the briefing is going to a decision-maker AND no grounding check is wired downstream"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.993926-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+    :domain-coverage :uncovered,
+    :rank 4,
+    :reasoning
+    "While the task involves synthesizing arguments into a memo, the input provided is a prompt, not a set of large documents requiring chunking. The 'Briefing generation' pattern is overkill here as the context easily fits in a single prompt. However, its 'synthesis' trait for decision-makers is conceptually relevant to a memo for PMs.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "the synthesis stage's context can overflow when per-chunk extracts are too rich AND the chunk count is high — synthesizer truncates or hallucinates connections",
+      :avoid-when
+      "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15",
+      :recommended-alternative
+      "either reduce per-chunk extraction granularity (key-points-only, no quotes) OR add an intermediate :code stage that selects top-K per-chunk extracts before synthesis"}
+     {:trait
+      "without a grounding judge, the synthesis stage can fabricate connections between per-chunk extracts that aren't actually in the source — a 'plausible narrative' that doesn't survive verification",
+      :avoid-when
+      "the briefing is going to a decision-maker AND no grounding check is wired downstream",
+      :recommended-alternative
+      "wire a grounding judge on the briefing output that checks each claim against the source quotes — catches fabricated connections before the briefing ships"}],
+    :domain-reasoning
+    "The 'avoid-when' guard 'the source fits in a single :llm context — direct :llm without chunking is simpler' fires here, as the task description and instructions are short and do not require chunked processing.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9911987053012483,
+    :score 437.3303675276832,
+    :cos-avoid-sans-content 0.9969128334676636,
+    :fitness-score 0.4,
+    :document-id
+    ":tree-class:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9969128334676636}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the synthesis stage's :llm has access to ALL per-chunk extracted material in :reads — produces a narrative that reasons across chunks rather than concatenating per-chunk summaries",
+      :good-when
+      "the briefing needs to identify cross-chunk patterns (recurring themes, contradictions, progression of an argument)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :source :size 4000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :extracts :max-concurrency 3} [:llm {:reads [:chunk] :writes [:key-points :quotes]}]] [:aggregate {:from :extracts :writes [:all-points :all-quotes]}] [:llm {:reads [:all-points :all-quotes :briefing-prompt] :writes [:briefing]}] [:final {:keys [:briefing]}]]"}
+     {:trait
+      "extract specific QUOTES alongside summaries in the per-chunk step — the synthesis stage can then ground claims to source quotes, supporting traceability",
+      :good-when
+      "the briefing audience may verify claims against source material AND traceability matters",
+      :recommended-pattern
+      "[:llm {:reads [:chunk] :writes [:key-points :supporting-quotes] :output-schemas {:key-points [:vector :string] :supporting-quotes [:vector :string]}}]"}],
+    :avoid-when
+    ["the output is a structured triple (summary + entities + dates) — use document-analysis (chunked-extraction-as-task-class) instead"
+     "no cross-chunk reasoning needed — use chunked-extraction (terminal :aggregate without synthesis)"
+     "the source fits in a single :llm context — direct :llm without chunking is simpler"
+     "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15"
+     "the briefing is going to a decision-maker AND no grounding check is wired downstream"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.976531-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+    :domain-coverage :uncovered,
+    :rank 5,
+    :reasoning
+    "Similar to its class, this fingerprint focuses on ResearchThenSynthesize. The task at hand is a creative writing/argumentation task based on a short prompt, making the chunking/aggregation overhead unnecessary and potentially detrimental to the flow of a single memo.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "the synthesis stage's context can overflow when per-chunk extracts are too rich AND the chunk count is high — synthesizer truncates or hallucinates connections",
+      :avoid-when
+      "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15",
+      :recommended-alternative
+      "either reduce per-chunk extraction granularity (key-points-only, no quotes) OR add an intermediate :code stage that selects top-K per-chunk extracts before synthesis"}
+     {:trait
+      "without a grounding judge, the synthesis stage can fabricate connections between per-chunk extracts that aren't actually in the source — a 'plausible narrative' that doesn't survive verification",
+      :avoid-when
+      "the briefing is going to a decision-maker AND no grounding check is wired downstream",
+      :recommended-alternative
+      "wire a grounding judge on the briefing output that checks each claim against the source quotes — catches fabricated connections before the briefing ships"}],
+    :domain-reasoning
+    "The guard regarding source material fitting in a single context applies, making this pattern less efficient than a direct generation or a validator loop.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9911987053012483,
+    :score 437.3303675276832,
+    :cos-avoid-sans-content 0.9969128334676636,
+    :fitness-score 0.4,
+    :document-id
+    ":tree-fingerprint:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9969128334676636}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "separating per-chunk research from cross-chunk synthesis lets each :llm focus on a narrower job",
+      :good-when
+      "the input is a large document AND the answer requires reasoning across the whole document AND the final answer is a narrative/recommendation (not a flat extraction)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Extract anything relevant to the research question in this chunk.\"}]] [:aggregate {:from :per-chunk-notes :writes [:all-notes]}] [:llm {:reads [:all-notes] :writes [:synthesis] :instruction \"Integrate the per-chunk notes into a cohesive answer to the research question.\"}] [:final {:keys [:synthesis]}]]"}
+     {:trait
+      "the synthesis :llm sees the aggregated notes rather than the raw document — fits long documents into a single final context",
+      :good-when
+      "the raw document would exceed the synthesis :llm's context window AND the aggregated per-chunk notes are concise enough to fit",
+      :recommended-pattern
+      "[:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Summarize this chunk in <300 tokens, retaining only material relevant to the research question.\"}]]"}],
+    :avoid-when
+    ["the cross-chunk combine is mechanical — use MapReduce (:code reducer) instead"
+     "the :aggregate alone is the answer (flat extraction across chunks) — use ChunkedExtraction instead"
+     "the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win"
+     "the answer must be strictly traceable to source material AND no grounding judge follows — synthesis :llm can hallucinate at the integration step"
+     "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks"
+     "the answer must be strictly traceable to source material AND no grounding judge / citation step follows"
+     "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.987739-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :domain-coverage :uncovered,
+    :rank 8,
+    :reasoning
+    "This general class is designed for processing long documents into synthesis. The task is a specific instruction-following generation. The structural shape of chunking and mapping extracts does not match the need to produce a single, cohesive 5-7 paragraph memo from a short list of constraints.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "if per-chunk extraction is too aggressive, the aggregated material can itself exceed the synthesis :llm's context window",
+      :avoid-when
+      "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks",
+      :recommended-alternative
+      "constrain the per-chunk :llm via :output-schemas + a token-budget instruction ('summarize in <300 tokens'); OR add an intermediate :map-each [:llm] compression pass before final synthesis; OR split the synthesis into a 2-stage reduce-tree"}
+     {:trait
+      "the synthesis :llm can introduce claims not grounded in any per-chunk note — hallucination risk at the integration step",
+      :avoid-when
+      "the answer must be strictly traceable to source material AND no grounding judge / citation step follows",
+      :recommended-alternative
+      "add :output-schemas requiring per-claim citations on the synthesis :llm; OR add a downstream grounding judge that scores synthesis claims against the aggregated notes; OR ask the synthesis :llm to quote source notes verbatim for each claim"}
+     {:trait
+      "two :llm passes per chunk's worth of work (per-chunk extract + final synthesize) costs more than a single :llm or a :code reducer",
+      :avoid-when
+      "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill",
+      :recommended-alternative
+      "use MapReduce instead (:code reducer for mechanical aggregation); OR use ChunkedExtraction if the :aggregate merge alone is enough"}],
+    :domain-reasoning
+    "Fires the 'avoid-when' for 'the document fits in a single :llm context'. The memo is a synthesis of ideas, but the material provided is a prompt, not a large document.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9919794534625773,
+    :score 436.9634841887488,
+    :cos-avoid-sans-content 0.9982053104043657,
+    :fitness-score 0.3,
+    :document-id ":tree-class:\"seed:tree:ResearchThenSynthesize\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9982053104043657}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered ["software-architecture-recommendation"],
+  :event/id #uuid "01a0a9ce-9908-7042-8e7a-e5505bd69a39",
+  :confidence 0.9,
+  :source-sheet-id #uuid "461d7dcf-2566-4d64-9133-c7c815dc4a31",
+  :ranked-candidates
+  [{:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.9,
+    :score 437.44199113736386}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.85,
+    :score 437.44199113736386}
+   {:target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.4,
+    :score 437.3303675276832}
+   {:target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.4,
+    :score 437.3303675276832}
+   {:target-id "seed:tree:ResearchThenSynthesize",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 436.9634841887488}],
+  :was-fresh-mint? false,
+  :assigned-via :land-on-domain-child},
+ :deferred-events [],
+ :domain-children-considered ["software-architecture-recommendation"],
+ :sheet-id #uuid "461d7dcf-2566-4d64-9133-c7c815dc4a31",
+ :payload-domain
+ {:assigned-via :land-on-domain-child,
+  :parent-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :child-tree-id #uuid "23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9",
+  :domain-label "software-architecture-recommendation"},
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: software-architecture-recommendation); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 2 from corpus retrieval)\n#### Top match — Producer/validator (confidence: 0.90)\nWhy this fits: The task requires a complex memo that must satisfy multiple formal requirements (paragraph count, specific objection types, data inclusion, and a clear next-step outcome). The Producer/Validator pattern is the best fit because it allows for an LLM to generate the 'candidate' memo while a :code validator (or a secondary LLM node acting as a correctness oracle) ensures all structural constraints—like the 5-7 paragraph range and the specific key-value output format—are strictly met before final delivery.\n\nPattern guidance (seed `:summary`):\nProducer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).\n\nCapabilities:\n  - :sequence with a producer :llm + a validator :code (or :llm with structured :output-schemas) + an explicit retry budget\n  - natural for any 'generate-then-check' work: code generation + type-check, JSON output + schema validation, claim + grounding check\n  - outputs typically include the validated artifact, the validation result (pass/fail with reasons), and the retry count consumed\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted (confidence 1.00, evidence-count 1)\n    - Good when: the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]\n      ```\n\n  - **Trait:** always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again (confidence 1.00, evidence-count 1)\n    - Good when: the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint) (confidence 1.00, evidence-count 1)\n    - Avoid when: :max-retries is not set OR is set above ~5 AND the producer is :llm-driven\n    - Recommended fix: always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate\n\n  - **Failure mode:** using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw (confidence 1.00, evidence-count 1)\n    - Avoid when: the validation rules can be expressed in code AND the validator is being implemented as another :llm node\n    - Recommended fix: always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - JSON output generation + schema validation: produce JSON → parse + validate against Malli → retry with errors\n  - code generation + compile check: produce Clojure expression → eval in sandbox → retry with stack trace\n  - regex/grammar generation + sample-input parse: produce regex → run on test inputs → retry with mismatch sample\n\n#### Alternative #1 — Producer/validator (confidence: 0.85)\nWhy this fits: This fingerprint shares the same Producer/Validator logic as the class, which is highly effective for tasks with formal constraints (like the specific paragraph count and the structured output format required for this memo). The explicit retry budget helps ensure the final output is syntactically correct and includes all required fields.\n\nPattern guidance (seed `:summary`):\nProducer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).\n\nCapabilities:\n  - :sequence with a producer :llm + a validator :code (or :llm with structured :output-schemas) + an explicit retry budget\n  - natural for any 'generate-then-check' work: code generation + type-check, JSON output + schema validation, claim + grounding check\n  - outputs typically include the validated artifact, the validation result (pass/fail with reasons), and the retry count consumed\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted (confidence 1.00, evidence-count 1)\n    - Good when: the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]\n      ```\n\n  - **Trait:** always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again (confidence 1.00, evidence-count 1)\n    - Good when: the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint) (confidence 1.00, evidence-count 1)\n    - Avoid when: :max-retries is not set OR is set above ~5 AND the producer is :llm-driven\n    - Recommended fix: always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate\n\n  - **Failure mode:** using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw (confidence 1.00, evidence-count 1)\n    - Avoid when: the validation rules can be expressed in code AND the validator is being implemented as another :llm node\n    - Recommended fix: always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - JSON output generation + schema validation: produce JSON → parse + validate against Malli → retry with errors\n  - code generation + compile check: produce Clojure expression → eval in sandbox → retry with stack trace\n  - regex/grammar generation + sample-input parse: produce regex → run on test inputs → retry with mismatch sample\n\nAssigned to domain child 23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9 (label: software-architecture-recommendation) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral: Synthesis (confidence: 0.95)\n   Why this fits: The task requires integrating multiple skeptical concerns (hiring, risk, lock-in) and situational context (headcount, traffic) into a single, cohesive 5-7 paragraph memo. The Synthesis pattern's strength in 'integrating multiple structured inputs into a single cohesive artifact' directly matches this, and the recommended-pattern for long artifacts (scaffolding via a structured outline) fits the specific multi-paragraph requirement perfectly.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Critique (confidence: 0.73)\n   Why this fits: The prompt specifically asks to 'address each of the PM concerns directly' and includes a requirement to 'acknowledge what could go wrong.' This mirrors the Critique pattern's 'adversarial framing' (skeptical reviewer) and its focus on locating issues and suggesting fixes, although the primary output here is a memo rather than a grade. It provides the behavioral logic for the 'skeptical' side of the memo.\n\n   Guidance (seed `:summary`):\n   Critique evaluates an artifact against quality criteria, producing per-criterion grades + located issues + suggested fixes. Always require per-issue location references AND per-issue :suggested-fix — vague critiques produce vague refinements. Score against an explicit per-dimension rubric, NOT a single overall grade, so refinement knows where to focus. NEVER use the same prompt persona for critique as for the original producer — self-critique ratifies. Use adversarial framing (skeptical reviewer / safety auditor) or an explicit checklist. Composes into draft-critique (validation-loop child) and iterative-refinement (sequential-pipeline child) shells; also into validation-loop pattern when paired with a producer. Avoid for formal rule-checking (use validation) or for orphan critiques with no downstream consumer.\n\nCapabilities:\n  - given an artifact + quality criteria, produce a structured critique — per-criterion grade + list of specific issues + suggested fixes\n  - natural fit downstream of synthesis/design/code-building, upstream of refinement loops or human review\n  - outputs are typically a map with per-criterion scores + a vector of specific issues with locations + a vector of suggested improvements\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** require per-issue location references (line number / section name / item id) so the downstream refinement stage knows exactly what to address — vague issues produce vague fixes (confidence 1.00, evidence-count 1)\n    - Good when: the artifact is structured and references are addressable\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:artifact :criteria] :writes [:issues] :output-schemas {:issues [:vector [:map [:location :string] [:problem :string] [:severity :string] [:suggested-fix :string]]]}}]\n      ```\n\n  - **Trait:** score against an explicit per-criterion rubric (not a single overall grade) so the refinement stage knows which dimension needs work — overall-grade-only critiques produce regressions in unscored dimensions (confidence 1.00, evidence-count 1)\n    - Good when: quality has multiple distinct dimensions (correctness / clarity / completeness / efficiency)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:artifact :rubric] :writes [:scores] :output-schemas {:scores [:map-of :string :double]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** self-critique on the same model (no prompt-framing change) tends to ratify the original artifact — the model is biased toward consistency with its prior output (confidence 1.00, evidence-count 1)\n    - Avoid when: the critique stage uses the same :llm with the same role framing as the producer\n    - Recommended fix: use a different prompt persona (skeptical reviewer / safety auditor) OR a different model OR an explicit checklist that forces specific question forms — adversarial framing improves catch rate\n\n  - **Failure mode:** critiques that don't produce actionable per-issue fixes leave the refinement stage with nothing to act on — issues phrased as 'unclear' don't tell the writer what to do (confidence 1.00, evidence-count 1)\n    - Avoid when: the critique feeds a refinement stage\n    - Recommended fix: every issue must include a :suggested-fix — explicit phrasing of how to address it; not 'consider revising' but 'replace X with Y because Z'\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - draft review: per-section grade + specific issues + suggested rewrites\n  - code review: per-file findings + severity + suggested fix\n  - design review: per-decision check + risks + open questions\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 0f11dba5-c331-3cdf-81fa-8ee114fc224f)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral: Investigation explains WHY a system (confidence: 0.65)\n   Why this fits: The memo must defend a decision by explaining why the new system is a fit for the team's specific context (small headcount, predictable traffic). The Investigation pattern's focus on 'hypothesis-then-evidence' and using 'ambient context' to rule out alternatives (like staying on K8s) provides a strong behavioral framework for the memo's argument structure.\n\n   Guidance (seed `:summary`):\n   Investigation explains WHY a system is misbehaving. Best implemented as an explicit hypothesis-then-evidence shape: enumerate candidate causes from the symptom UPFRONT, then collect evidence to rule out alternatives, then converge on the root cause + recommended fix. ALWAYS pass ambient context (logs / code / tests / stack traces) in :reads — context-free investigation produces vacuous output. For large evidence sets (multi-file logs, large codebases), compose into chunked-extraction shells so per-chunk evidence collection parallelizes. Composes into sequential-pipeline (canonical hypothesis chain), fallback-recovery (try-one-path-then-another when initial hypothesis fails), and chunked-extraction (investigating large evidence sets). Distinct from Research (which gathers external material to seed new work, not explain existing breakage) and Analysis (which reasons over already-extracted items, not raw symptoms). Avoid when the task is exploration without a specific failure to explain.\n\nCapabilities:\n  - given symptoms + ambient context (logs, code, test artifacts, stack traces), produce a structured hypothesis with supporting evidence and a recommended fix or next step\n  - natural fit when the goal is to explain WHY something is broken — distinct from Research (gather new material) and Analysis (reason over already-extracted items)\n  - outputs are typically a single root-cause statement + supporting evidence references + a recommended-fix or next-step\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** enumerate candidate hypotheses UPFRONT from the symptom before collecting evidence — separates 'what could be wrong' from 'what is wrong' so evidence rules out rather than confirms the first guess (confidence 1.00, evidence-count 1)\n    - Good when: the failure mode space is bounded AND the model can enumerate likely causes from the symptom alone\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:symptom :context] :writes [:candidate-hypotheses]}] [:llm {:reads [:candidate-hypotheses :context] :writes [:ruled-out :remaining]}] [:llm {:reads [:remaining :context] :writes [:root-cause :recommended-fix]}] [:final {:keys [:root-cause :recommended-fix]}]]\n      ```\n\n  - **Trait:** for investigations over large evidence sets (multi-file logs, large codebases), chunk the evidence and run per-chunk hypothesis-evidence collection via :map-each so per-chunk reasoning parallelizes and the aggregator sees per-chunk findings tagged with their source (confidence 1.00, evidence-count 1)\n    - Good when: evidence is too large to fit in a single :llm context AND per-chunk findings can be aggregated without losing per-chunk attribution\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :evidence-chunks :as :chunk :max-concurrency 3 :writes [:per-chunk-findings]} [:llm {:reads [:chunk :symptom] :writes [:per-chunk-findings] :output-schemas {:per-chunk-findings [:vector [:map [:hypothesis :string] [:supporting-evidence :string] [:chunk-id :string]]]}}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** single-pass investigation on a complex symptom converges on the first plausible hypothesis without ruling out alternatives — produces overconfident root-cause claims that fail when the true cause was the second hypothesis (confidence 1.00, evidence-count 1)\n    - Avoid when: the symptom has multiple plausible causes AND the cost of acting on the wrong root cause is high\n    - Recommended fix: explicit multi-hypothesis enumeration upfront; an intermediate :llm stage must rule out at least ONE candidate hypothesis with evidence before convergence to a root cause is allowed\n\n  - **Failure mode:** investigation without ambient context (just the symptom + nothing else) produces vacuous 'could be X / could be Y' output the consumer can't act on — the model has no evidence to rule anything in or out (confidence 1.00, evidence-count 1)\n    - Avoid when: context (logs / code / tests / stack traces) is available in the system but not passed in :reads\n    - Recommended fix: always pass ambient context explicitly in :reads; if the context is too large for a single :llm node, compose into chunked-extraction via :map-each so per-chunk evidence reaches the hypothesis-evidence stage\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - investigate why an integration test is flaky: enumerate timing / shared-state / environment hypotheses; rule out via test logs + run history; recommend the deterministic fix\n  - generate property-based tests that exercise edge cases — property test generation IS investigation, finding inputs that break invariants\n  - debug a memory leak in a long-running service: enumerate allocator / reference-cycle / cache-bloat hypotheses; rule out via heap snapshots + allocation profiles; recommend the targeted fix\n  - review a post-incident report for missing root-cause analysis: enumerate plausible causes the report didn't address; surface the gap with evidence from the timeline\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 760be698-0bb8-3a5a-a2bd-1d45445a5861)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nYou are the engineering lead on a team that just chose to migrate from\nKubernetes to a single-binary self-hosted PaaS (e.g., Fly.io / Render /\nCoolify-style) for your 50-person SaaS. The PM team is skeptical — they've\nheard \"everyone uses k8s\" and worry about hiring, ecosystem risk, and\nvendor lock-in.\n\nCompose a 5-7 paragraph internal memo defending the decision. Address each\nof the PM concerns directly. Use ONLY arguments grounded in the team's\nactual situation (small ops headcount, predictable traffic, no\nmulti-region requirement). Avoid generic \"k8s is complicated\" rants —\nPMs have heard those and discounted them.\n\nThe memo must:\n- Open with a one-sentence position statement\n- Quote (or paraphrase) at least 3 specific PM objections you've heard\n- Provide concrete data (or describe what data would resolve the objection)\n- Acknowledge what could go wrong (don't sweep risks under the rug — PMs\n  will sniff this out and lose trust)\n- End with a clear next step (decision point, trial period boundary, or\n  validation milestone)\n\nOutput: `{:memo-title :paragraphs [<paragraph-text>] :next-step}`",
+ :june-flags
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 19564,
+ :confidence 0.9,
+ :was-fresh-mint? false,
+ :assigned-via :land-on-domain-child}

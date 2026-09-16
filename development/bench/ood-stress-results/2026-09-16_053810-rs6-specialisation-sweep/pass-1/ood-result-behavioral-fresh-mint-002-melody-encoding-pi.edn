@@ -1,0 +1,423 @@
+{:assigned-tree-id #uuid "85d9b29b-0b9d-3c98-a88c-1a153d00e8f9",
+ :tick-id #uuid "d281e67d-b923-41f3-85f5-c80493cdddca",
+ :slug "behavioral-fresh-mint-002-melody-encoding-pi",
+ :parent-tree-id #uuid "aef71f08-76bf-373c-862a-1250ef23f450",
+ :domain-label "algorithmic-melody-generation",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :uncovered,
+  :domain-label "algorithmic-melody-generation",
+  :domain-reasoning
+  "The candidate describes refinement of nuanced outputs but does not explicitly mention music theory, melody generation, or mathematical constants like pi."},
+ :node-id #uuid "595b81d6-451e-4cbb-a4c6-b51b40fc15c5",
+ :top-1
+ {:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+  :fitness-score 0.85,
+  :rerank-source :reranker,
+  :domain-coverage :uncovered,
+  :domain-label "algorithmic-melody-generation"},
+ :minted-events
+ [{:parent-tree-id #uuid "aef71f08-76bf-373c-862a-1250ef23f450",
+   :child-tree-id #uuid "85d9b29b-0b9d-3c98-a88c-1a153d00e8f9",
+   :domain-label "algorithmic-melody-generation"}],
+ :classified-event
+ {:assigned-tree-id #uuid "85d9b29b-0b9d-3c98-a88c-1a153d00e8f9",
+  :parent-tree-id #uuid "aef71f08-76bf-373c-862a-1250ef23f450",
+  :domain-label "algorithmic-melody-generation",
+  :classified-at "2026-09-16T05:38:40.115158-05:00",
+  :reasoning
+  "The task involves a highly complex mapping of digits to musical theory (scales, octaves, rhythms) and a stylistic narrative explanation. This requires 'nuance' and 'stylistic care'. The iterative-refinement pattern is ideal because the critique stage can verify the strict mapping constraints (e.g., digit 8 to octave-up) which a single-pass LLM often misses in creative tasks.",
+  :outcome :matched,
+  :source-node-id #uuid "595b81d6-451e-4cbb-a4c6-b51b40fc15c5",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "86275302-0c3d-35ae-b74e-abd4f27984eb",
+    :confidence 0.95,
+    :was-fresh-mint? false,
+    :reasoning
+    "The core of the task is a deterministic mapping from digits to music theory constants (scale degrees and octaves). This matches the 'Transformation' competency, which recommends using :code for deterministic transformations to preserve fidelity and minimize cost. The 7-note mapping and octave logic are rule-based, not semantic.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "01f78800-c0e7-34b3-bb09-a7a6a95a022d",
+    :confidence 0.65,
+    :was-fresh-mint? false,
+    :reasoning
+    "The mapping of digits to a closed set of 7 scale degrees plus rests resembles classification into a closed-set vocabulary. The recommendation to use :output-schemas with [:enum ...] matches the constraint of mapping to specific notes (do, re, mi, etc.). However, since the mapping is purely rule-based (digit X = note Y), it is better suited for :code transformation.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "d281e67d-b923-41f3-85f5-c80493cdddca",
+  :event/tags
+  #{[:tick #uuid "d281e67d-b923-41f3-85f5-c80493cdddca"]
+    [:description-target
+     #uuid "85d9b29b-0b9d-3c98-a88c-1a153d00e8f9"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:38:40.115303Z",
+  :domain-verdict
+  {:domain-coverage :uncovered,
+   :domain-label "algorithmic-melody-generation",
+   :domain-reasoning
+   "The candidate describes refinement of nuanced outputs but does not explicitly mention music theory, melody generation, or mathematical constants like pi."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit",
+      :good-when
+      "the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]"}
+     {:trait
+      "pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique",
+      :good-when
+      "the critique stage tends to focus on style/issues and might lose sight of the original requirement",
+      :recommended-pattern
+      "[:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]"}],
+    :avoid-when
+    ["the output is short and direct — single :llm with a careful instruction wins"
+     "the task needs unbounded iteration until convergence — use validation-loop"
+     "the work has clear validation rules (formal/syntactic) — use validation-loop with a code-based validator"
+     "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough"
+     "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.988553-05:00"},
+    :domain-label "algorithmic-melody-generation",
+    :content
+    "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+    :domain-coverage :uncovered,
+    :rank 1,
+    :reasoning
+    "The task involves a highly complex mapping of digits to musical theory (scales, octaves, rhythms) and a stylistic narrative explanation. This requires 'nuance' and 'stylistic care'. The iterative-refinement pattern is ideal because the critique stage can verify the strict mapping constraints (e.g., digit 8 to octave-up) which a single-pass LLM often misses in creative tasks.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward",
+      :avoid-when
+      "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough",
+      :recommended-alternative
+      "use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality"}
+     {:trait
+      "open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's",
+      :avoid-when
+      "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics",
+      :recommended-alternative
+      "use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes"}],
+    :domain-reasoning
+    "The candidate describes refinement of nuanced outputs but does not explicitly mention music theory, melody generation, or mathematical constants like pi.",
+    :cos-good 0.9966619895289485,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9991605842710387,
+    :score 442.08715550432987,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.85,
+    :document-id
+    ":tree-class:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9966619895289485,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit",
+      :good-when
+      "the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]"}
+     {:trait
+      "pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique",
+      :good-when
+      "the critique stage tends to focus on style/issues and might lose sight of the original requirement",
+      :recommended-pattern
+      "[:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]"}],
+    :avoid-when
+    ["the output is short and direct — single :llm with a careful instruction wins"
+     "the task needs unbounded iteration until convergence — use validation-loop"
+     "the work has clear validation rules (formal/syntactic) — use validation-loop with a code-based validator"
+     "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough"
+     "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.973621-05:00"},
+    :domain-label "algorithmic-melody-generation",
+    :content
+    "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+    :domain-coverage :uncovered,
+    :rank 2,
+    :reasoning
+    "Identical to the tree-class; the fixed-N refinement sequence provides a structured way to handle the translation of digits to musical maps followed by a reflective narrative pass.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward",
+      :avoid-when
+      "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough",
+      :recommended-alternative
+      "use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality"}
+     {:trait
+      "open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's",
+      :avoid-when
+      "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics",
+      :recommended-alternative
+      "use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes"}],
+    :domain-reasoning
+    "The candidate describes refinement of nuanced outputs but does not explicitly mention music theory, melody generation, or mathematical constants like pi.",
+    :cos-good 0.9966619895289485,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9991605842710387,
+    :score 442.08715550432987,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.84,
+    :document-id
+    ":tree-fingerprint:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9966619895289485,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "wall-time equals the slowest child instead of the sum of all children",
+      :good-when
+      "the same source data needs 2-3+ independent transformations AND children's latencies are similar AND children's :writes don't overlap",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:document] :writes [:summary]}] [:llm {:reads [:document] :writes [:entities]}] [:llm {:reads [:document] :writes [:key-dates]}]] [:final {:keys [:summary :entities :key-dates]}]]"}],
+    :avoid-when
+    ["the work is per-item over a collection — use :map-each (collection iteration), not :parallel (independent transformations)"
+     "any child depends on any other child's output — use :sequence"
+     "only one child exists — drop the :parallel wrapper"
+     "any two children declare the same key in their :writes"
+     "one child is dramatically slower than the others AND a downstream node needs all children's results"
+     "a child's :reads include a key another sibling writes to"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ParallelIndependent",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.984614-05:00"},
+    :domain-label "algorithmic-melody-generation",
+    :content
+    "ParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.",
+    :domain-coverage :uncovered,
+    :rank 5,
+    :reasoning
+    "The task requires two distinct outputs: a vector of musical maps and a text explanation. These are 'independent transformations' on the same input (pi). Parallel execution of the data encoding and the narrative drafting could be efficient, though the narrative usually benefits from seeing the data.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "two children with overlapping :writes race — the surviving value is non-deterministic",
+      :avoid-when
+      "any two children declare the same key in their :writes",
+      :recommended-alternative
+      "give each child a distinct :writes key; OR use :sequence so writes happen in order; OR aggregate via :code after the :parallel"}
+     {:trait
+      "uneven child latencies mean the parallel speedup is bottlenecked by the slowest",
+      :avoid-when
+      "one child is dramatically slower than the others AND a downstream node needs all children's results",
+      :recommended-alternative
+      "split the slow child into smaller pieces via :map-each so its work parallelizes too; OR restructure so the slow child runs in :sequence with a downstream node that doesn't need siblings' results"}
+     {:trait
+      "children cannot read each other's outputs — they execute concurrently",
+      :avoid-when
+      "a child's :reads include a key another sibling writes to",
+      :recommended-alternative
+      "use :sequence to chain dependent computations; OR ensure each child reads only from blackboard keys set BEFORE the :parallel"}],
+    :domain-reasoning
+    "The task requires multiple independent transformations of one input, but the candidate does not mention music or data-to-art encoding.",
+    :cos-good 0.9976534466611462,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9933041770232973,
+    :score 442.04862009853804,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.5,
+    :document-id ":tree-class:\"seed:tree:ParallelIndependent\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9976534466611462,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "wall-time equals the slowest child instead of the sum of all children",
+      :good-when
+      "the same source data needs 2-3+ independent transformations AND children's latencies are similar AND children's :writes don't overlap",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:document] :writes [:summary]}] [:llm {:reads [:document] :writes [:entities]}] [:llm {:reads [:document] :writes [:key-dates]}]] [:final {:keys [:summary :entities :key-dates]}]]"}],
+    :avoid-when
+    ["the work is per-item over a collection — use :map-each (collection iteration), not :parallel (independent transformations)"
+     "any child depends on any other child's output — use :sequence"
+     "only one child exists — drop the :parallel wrapper"
+     "any two children declare the same key in their :writes"
+     "one child is dramatically slower than the others AND a downstream node needs all children's results"
+     "a child's :reads include a key another sibling writes to"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ParallelIndependent",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.971632-05:00"},
+    :domain-label "algorithmic-melody-generation",
+    :content
+    "ParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.",
+    :domain-coverage :uncovered,
+    :rank 6,
+    :reasoning
+    "Similar to the class, this fits the structural shape of generating a data structure and a narrative simultaneously from the same prompt.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "two children with overlapping :writes race — the surviving value is non-deterministic",
+      :avoid-when
+      "any two children declare the same key in their :writes",
+      :recommended-alternative
+      "give each child a distinct :writes key; OR use :sequence so writes happen in order; OR aggregate via :code after the :parallel"}
+     {:trait
+      "uneven child latencies mean the parallel speedup is bottlenecked by the slowest",
+      :avoid-when
+      "one child is dramatically slower than the others AND a downstream node needs all children's results",
+      :recommended-alternative
+      "split the slow child into smaller pieces via :map-each so its work parallelizes too; OR restructure so the slow child runs in :sequence with a downstream node that doesn't need siblings' results"}
+     {:trait
+      "children cannot read each other's outputs — they execute concurrently",
+      :avoid-when
+      "a child's :reads include a key another sibling writes to",
+      :recommended-alternative
+      "use :sequence to chain dependent computations; OR ensure each child reads only from blackboard keys set BEFORE the :parallel"}],
+    :domain-reasoning
+    "The task requires multiple independent transformations of one input, but the candidate does not mention music or data-to-art encoding.",
+    :cos-good 0.9976534466611462,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9933041770232973,
+    :score 442.04862009853804,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.49,
+    :document-id ":tree-fingerprint:\"seed:tree:ParallelIndependent\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9976534466611462,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "separating per-chunk research from cross-chunk synthesis lets each :llm focus on a narrower job",
+      :good-when
+      "the input is a large document AND the answer requires reasoning across the whole document AND the final answer is a narrative/recommendation (not a flat extraction)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Extract anything relevant to the research question in this chunk.\"}]] [:aggregate {:from :per-chunk-notes :writes [:all-notes]}] [:llm {:reads [:all-notes] :writes [:synthesis] :instruction \"Integrate the per-chunk notes into a cohesive answer to the research question.\"}] [:final {:keys [:synthesis]}]]"}
+     {:trait
+      "the synthesis :llm sees the aggregated notes rather than the raw document — fits long documents into a single final context",
+      :good-when
+      "the raw document would exceed the synthesis :llm's context window AND the aggregated per-chunk notes are concise enough to fit",
+      :recommended-pattern
+      "[:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Summarize this chunk in <300 tokens, retaining only material relevant to the research question.\"}]]"}],
+    :avoid-when
+    ["the cross-chunk combine is mechanical — use MapReduce (:code reducer) instead"
+     "the :aggregate alone is the answer (flat extraction across chunks) — use ChunkedExtraction instead"
+     "the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win"
+     "the answer must be strictly traceable to source material AND no grounding judge follows — synthesis :llm can hallucinate at the integration step"
+     "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks"
+     "the answer must be strictly traceable to source material AND no grounding judge / citation step follows"
+     "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.987739-05:00"},
+    :domain-label "algorithmic-melody-generation",
+    :content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :domain-coverage :uncovered,
+    :rank 3,
+    :reasoning
+    "This pattern is a poor fit. The task involves a short, specific input (20 digits) and does not require chunking or cross-document reasoning. The avoid-when guard 'the document fits in a single :llm context' fires here as 20 digits is trivial in length.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "if per-chunk extraction is too aggressive, the aggregated material can itself exceed the synthesis :llm's context window",
+      :avoid-when
+      "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks",
+      :recommended-alternative
+      "constrain the per-chunk :llm via :output-schemas + a token-budget instruction ('summarize in <300 tokens'); OR add an intermediate :map-each [:llm] compression pass before final synthesis; OR split the synthesis into a 2-stage reduce-tree"}
+     {:trait
+      "the synthesis :llm can introduce claims not grounded in any per-chunk note — hallucination risk at the integration step",
+      :avoid-when
+      "the answer must be strictly traceable to source material AND no grounding judge / citation step follows",
+      :recommended-alternative
+      "add :output-schemas requiring per-claim citations on the synthesis :llm; OR add a downstream grounding judge that scores synthesis claims against the aggregated notes; OR ask the synthesis :llm to quote source notes verbatim for each claim"}
+     {:trait
+      "two :llm passes per chunk's worth of work (per-chunk extract + final synthesize) costs more than a single :llm or a :code reducer",
+      :avoid-when
+      "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill",
+      :recommended-alternative
+      "use MapReduce instead (:code reducer for mechanical aggregation); OR use ChunkedExtraction if the :aggregate merge alone is enough"}],
+    :domain-reasoning
+    "Matches avoid-when guard: 'the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win'.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9959678857888628,
+    :score 442.04904032299584,
+    :cos-avoid-sans-content 0.9995842064121278,
+    :fitness-score 0.1,
+    :document-id ":tree-class:\"seed:tree:ResearchThenSynthesize\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9995842064121278}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered [],
+  :event/id #uuid "01a0a9cc-17f3-707f-8fa0-ad4442586991",
+  :confidence 0.85,
+  :source-sheet-id #uuid "dc7c39bc-c8e6-4fde-b416-68c11cfb1ee4",
+  :ranked-candidates
+  [{:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.85,
+    :score 442.08715550432987}
+   {:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.84,
+    :score 442.08715550432987}
+   {:target-id "seed:tree:ParallelIndependent",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.5,
+    :score 442.04862009853804}
+   {:target-id "seed:tree:ParallelIndependent",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.49,
+    :score 442.04862009853804}
+   {:target-id "seed:tree:ResearchThenSynthesize",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.1,
+    :score 442.04904032299584}],
+  :was-fresh-mint? true,
+  :assigned-via :mint-domain-child},
+ :deferred-events [],
+ :domain-children-considered [],
+ :sheet-id #uuid "dc7c39bc-c8e6-4fde-b416-68c11cfb1ee4",
+ :payload-domain
+ {:assigned-via :mint-domain-child,
+  :parent-tree-id #uuid "aef71f08-76bf-373c-862a-1250ef23f450",
+  :child-tree-id #uuid "85d9b29b-0b9d-3c98-a88c-1a153d00e8f9",
+  :domain-label "algorithmic-melody-generation"},
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: algorithmic-melody-generation); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 2 from corpus retrieval)\n#### Top match — Iterative refinement (confidence: 0.85)\nWhy this fits: The task involves a highly complex mapping of digits to musical theory (scales, octaves, rhythms) and a stylistic narrative explanation. This requires 'nuance' and 'stylistic care'. The iterative-refinement pattern is ideal because the critique stage can verify the strict mapping constraints (e.g., digit 8 to octave-up) which a single-pass LLM often misses in creative tasks.\n\nPattern guidance (seed `:summary`):\nIterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.\n\nCapabilities:\n  - :sequence of typically 3 stages: initial draft → critic feedback → revised draft (sometimes repeated for a fixed N)\n  - natural for content quality improvement where each pass identifies and addresses specific defects from the previous pass\n  - stages share the same content key but transform it forward — :draft → :critique → :revised-draft\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit (confidence 1.00, evidence-count 1)\n    - Good when: the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]\n      ```\n\n  - **Trait:** pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique (confidence 1.00, evidence-count 1)\n    - Good when: the critique stage tends to focus on style/issues and might lose sight of the original requirement\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward (confidence 1.00, evidence-count 1)\n    - Avoid when: output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough\n    - Recommended fix: use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality\n\n  - **Failure mode:** open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's (confidence 1.00, evidence-count 1)\n    - Avoid when: the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics\n    - Recommended fix: use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical writing improvement: draft documentation → critique for clarity/missing-context → revise\n  - creative writing polish: draft scene → critique for pacing/voice → revise\n  - executive summary tightening: draft summary → critique for jargon/specificity → revise\n\n#### Alternative #1 — Iterative refinement (confidence: 0.84)\nWhy this fits: Identical to the tree-class; the fixed-N refinement sequence provides a structured way to handle the translation of digits to musical maps followed by a reflective narrative pass.\n\nPattern guidance (seed `:summary`):\nIterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.\n\nCapabilities:\n  - :sequence of typically 3 stages: initial draft → critic feedback → revised draft (sometimes repeated for a fixed N)\n  - natural for content quality improvement where each pass identifies and addresses specific defects from the previous pass\n  - stages share the same content key but transform it forward — :draft → :critique → :revised-draft\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit (confidence 1.00, evidence-count 1)\n    - Good when: the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]\n      ```\n\n  - **Trait:** pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique (confidence 1.00, evidence-count 1)\n    - Good when: the critique stage tends to focus on style/issues and might lose sight of the original requirement\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward (confidence 1.00, evidence-count 1)\n    - Avoid when: output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough\n    - Recommended fix: use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality\n\n  - **Failure mode:** open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's (confidence 1.00, evidence-count 1)\n    - Avoid when: the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics\n    - Recommended fix: use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical writing improvement: draft documentation → critique for clarity/missing-context → revise\n  - creative writing polish: draft scene → critique for pacing/voice → revise\n  - executive summary tightening: draft summary → critique for jargon/specificity → revise\n\nAssigned to domain child 85d9b29b-0b9d-3c98-a88c-1a153d00e8f9 (label: algorithmic-melody-generation) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 2 from corpus retrieval)\n1. Behavioral: Transformation (confidence: 0.95)\n   Why this fits: The core of the task is a deterministic mapping from digits to music theory constants (scale degrees and octaves). This matches the 'Transformation' competency, which recommends using :code for deterministic transformations to preserve fidelity and minimize cost. The 7-note mapping and octave logic are rule-based, not semantic.\n\n   Guidance (seed `:summary`):\n   Transformation is mechanical reshape of data between deterministic shapes. ALWAYS use :code (not :llm) for deterministic transformations — preserves fidelity, costs nothing, runs in ms; :llm for transformation produces non-deterministic output. For per-item independent transformations, :map-each isolates per-item failures. ALWAYS declare :output-schemas on transformation output and :input-schemas on downstream :reads so shape mismatch fails at the boundary, not deep in the consumer. Composes into etl-pipeline (sequential transform chain), parallel-sum (map-reduce transformation), sequential-pipeline shells, and map-reduce shells. Avoid for transformations that need judgment (semantic rephrasing / style shift — use :llm) or for unstructured input (extract first).\n\nCapabilities:\n  - given input data + a target shape spec, emit the input restructured to the target shape\n  - natural fit anywhere a tree needs to change data shape without semantic interpretation\n  - outputs are typically a single restructured value or a vector of per-item transformations\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** implement transformations in :code (NOT :llm) when the mapping is deterministic — preserves byte-for-byte fidelity, costs zero tokens, runs in milliseconds (confidence 1.00, evidence-count 1)\n    - Good when: the transformation rule can be expressed as a pure function over the input\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:input] :writes [:output] :fn (fn [{:keys [inputs]}] {:output (mapv (fn [r] (select-keys r [:a :b])) (:input inputs))})}]\n      ```\n\n  - **Trait:** for per-item independent transformations over a vector, use :map-each rather than a single batch :code call when the per-item work is non-trivial — supports per-item failure isolation (confidence 1.00, evidence-count 1)\n    - Good when: items can fail independently AND partial success has value\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :records :as :record :writes [:transformed]} [:code {:reads [:record] :writes [:transformed] :fn (fn [{:keys [inputs]}] {:transformed (assoc (:record inputs) :stamp \"x\")})}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** using :llm for a deterministic transformation (CSV → JSON, snake_case → camelCase) produces non-deterministic output AND wastes tokens (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation rule is fully specifiable\n    - Recommended fix: always :code for deterministic transformations; reserve :llm for transformations that need judgment (semantic-rephrasing / style-shift / domain-translation)\n\n  - **Failure mode:** transformations without :output-schemas on the downstream :reads break silently when an upstream change shifts the output shape — the consumer gets garbage instead of an error (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation feeds another stage that binds on specific fields\n    - Recommended fix: declare :output-schemas on the transformation output AND :input-schemas on the downstream :reads — shape mismatch fails loudly at the boundary, not deep in the consumer\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - CSV row → JSON object mapping per-field\n  - extracted entity records → DB-row shape with derived fields\n  - input list → output list with N filters / projections applied\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 86275302-0c3d-35ae-b74e-abd4f27984eb)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral suggestion (confidence: 0.65)\n   Why this fits: The mapping of digits to a closed set of 7 scale degrees plus rests resembles classification into a closed-set vocabulary. The recommendation to use :output-schemas with [:enum ...] matches the constraint of mapping to specific notes (do, re, mi, etc.). However, since the mapping is purely rule-based (digit X = note Y), it is better suited for :code transformation.\n\n   Guidance (seed `:summary`):\n   Classification assigns each item from a set to one or more predefined categories. ALWAYS include the closed-set vocabulary in :reads AND constrain output via :output-schemas with [:enum ...] of allowed categories — open-ended output drifts across runs and breaks downstream aggregation. Prefer :map-each per-item (with bounded :max-concurrency) over batch classification for >20 items — preserves per-item attention. Composes into parallel-classify-aggregate (map-reduce variant), map-reduce shells, and parallel-independent shells (multi-axis classification with per-axis classifier). Avoid for open-ended labels (clustering), for rule-based assignments (use :code), or for category set generation (use ideation).\n\nCapabilities:\n  - given a set of items + a category vocabulary, emit per-item category assignments (optionally multi-label with confidence)\n  - natural fit when downstream stages branch or aggregate by category\n  - outputs are typically a vector of {:item-id :category :confidence} or a map from item-id to category\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** fan out per-item classification via :map-each with bounded :max-concurrency — per-item LLM calls give richer per-item reasoning than a single batch classifier prompt (confidence 1.00, evidence-count 1)\n    - Good when: items are independent AND per-item context matters for accuracy\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :items :as :item :max-concurrency 3 :writes [:classifications]} [:llm {:reads [:item :vocabulary] :writes [:classification] :output-schemas {:classification [:map [:category :string] [:confidence :double]]}}]]\n      ```\n\n  - **Trait:** include the category vocabulary in :reads of each per-item classifier — anchors the model to the closed-set output and prevents drift to free-form labels (confidence 1.00, evidence-count 1)\n    - Good when: the category set is closed and stable\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:item :vocabulary] :writes [:classification] :output-schemas {:classification [:enum :a :b :c]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** classifying without the vocabulary in the prompt produces free-form labels that drift across runs — downstream aggregation over categories breaks (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages aggregate / branch on category equality\n    - Recommended fix: always include the closed-set vocabulary in :reads AND constrain output via :output-schemas with [:enum ...] of the allowed categories\n\n  - **Failure mode:** single batch classification of N>20 items in one :llm call loses per-item attention — accuracy degrades at the tail of the batch (confidence 1.00, evidence-count 1)\n    - Avoid when: item count >20 AND per-item accuracy matters\n    - Recommended fix: :map-each per-item with bounded :max-concurrency — wall-time stays low and per-item attention is preserved\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - per-document topic classification: each document → topic label + confidence\n  - per-issue triage: each support ticket → category from a fixed taxonomy\n  - per-clause risk-class assignment: each contract clause → risk level + reasoning\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 01f78800-c0e7-34b3-bb09-a7a6a95a022d)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nEncode the first 20 digits of pi (3.14159265358979323846) as a melody.\n\nConstraints:\n- 7-note scale: map digit 0 to rest, digits 1-7 to scale degrees (do, re, mi, fa,\n  sol, la, ti), digits 8-9 to octave-up of degrees 1-2.\n- Output the melody as a vector of 20 maps `{:digit N :note \"...\" :octave O\n  :duration \"quarter|half|whole\"}` where duration is chosen to give the\n  melody a singable rhythm (not all quarter notes).\n- Add a brief explanation (3-5 sentences) of the musical decisions: which key\n  you chose, how rhythm choices shape the phrase, whether the melody resolves.\n- Bonus: name a famous tune that the resulting melody RESEMBLES, if any.",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? false},
+ :elapsed-ms 13776,
+ :confidence 0.85,
+ :was-fresh-mint? true,
+ :assigned-via :mint-domain-child}

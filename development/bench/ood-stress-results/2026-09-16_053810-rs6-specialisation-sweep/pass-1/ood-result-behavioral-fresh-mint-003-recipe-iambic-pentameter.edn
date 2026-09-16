@@ -1,0 +1,409 @@
+{:assigned-tree-id #uuid "e2281910-609b-3df9-ab7a-a4a8e9d3dc83",
+ :tick-id #uuid "1249995f-5eb2-44f1-8054-f703ca6ada95",
+ :slug "behavioral-fresh-mint-003-recipe-iambic-pentameter",
+ :parent-tree-id #uuid "2ead65e6-6373-38de-81c4-ef7bf067afc9",
+ :domain-label "iambic-pentameter-recipe",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :partial,
+  :domain-label "iambic-pentameter-recipe",
+  :domain-reasoning
+  "The candidate's representative use 'iterative refinement (draft → critique → revise)' covers the process of drafting a recipe then revising it into a specific poetic meter, though 'recipe' is not explicitly named."},
+ :node-id #uuid "515ba3b5-fb09-432c-af12-a1f5be0ca24a",
+ :top-1
+ {:target-id "seed:tree:SequentialPipeline",
+  :fitness-score 0.9,
+  :rerank-source :reranker,
+  :domain-coverage :partial,
+  :domain-label "iambic-pentameter-recipe"},
+ :minted-events
+ [{:parent-tree-id #uuid "2ead65e6-6373-38de-81c4-ef7bf067afc9",
+   :child-tree-id #uuid "e2281910-609b-3df9-ab7a-a4a8e9d3dc83",
+   :domain-label "iambic-pentameter-recipe"}],
+ :classified-event
+ {:assigned-tree-id #uuid "e2281910-609b-3df9-ab7a-a4a8e9d3dc83",
+  :parent-tree-id #uuid "2ead65e6-6373-38de-81c4-ef7bf067afc9",
+  :domain-label "iambic-pentameter-recipe",
+  :classified-at "2026-09-16T05:38:55.189517-05:00",
+  :reasoning
+  "The task requires a specific sequence: drafting a recipe and then transforming instructions into iambic pentameter. This matches SequentialPipeline's 'iterative refinement (draft → critique → revise)' pattern. Chaining an initial recipe draft :llm to a second :llm for poetic constraints ensures the complex meter doesn't degrade the accuracy of the cooking instructions.",
+  :outcome :matched,
+  :source-node-id #uuid "515ba3b5-fb09-432c-af12-a1f5be0ca24a",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.8,
+    :was-fresh-mint? false,
+    :reasoning
+    "This task requires integrating two distinct structured modes (a prose ingredient list and a metered instructional sequence) into a single cohesive artifact (a recipe map). The candidate's recommended pattern for scaffolded synthesis via a code-built outline matches the need to preserve the recipe's correctness (accuracy constraint) while filling in the creative metered content section-by-section.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "bf47c816-2833-320e-9fbd-6ae109275ab0",
+    :confidence 0.7,
+    :was-fresh-mint? false,
+    :reasoning
+    "While the output is a data structure, it is not 'executable code' in the sense of scripts or config. However, the requirement for a specific meter (iambic pentameter) acts as a strict technical 'spec' for the text generation. The recommended pattern of 'draft -> critique -> refined' is highly relevant here because the meter constraint (10 syllables, unstressed-stressed) is difficult to hit in a single pass without compromising accuracy.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "1249995f-5eb2-44f1-8054-f703ca6ada95",
+  :event/tags
+  #{[:description-target #uuid "e2281910-609b-3df9-ab7a-a4a8e9d3dc83"]
+    [:tick #uuid "1249995f-5eb2-44f1-8054-f703ca6ada95"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:38:55.189682Z",
+  :domain-verdict
+  {:domain-coverage :partial,
+   :domain-label "iambic-pentameter-recipe",
+   :domain-reasoning
+   "The candidate's representative use 'iterative refinement (draft → critique → revise)' covers the process of drafting a recipe then revising it into a specific poetic meter, though 'recipe' is not explicitly named."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "stage-by-stage chaining matches problems with explicit ordered dependencies",
+      :good-when
+      "the work has 2-3 distinct phases AND each phase consumes the previous phase's specific output AND each phase is non-trivial",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:input] :writes [:extracted]}] [:llm {:reads [:extracted] :writes [:enriched]}] [:llm {:reads [:enriched] :writes [:formatted]}] [:final {:keys [:formatted]}]]"}],
+    :avoid-when
+    ["stages are independent — use :parallel"
+     "the work is per-item over a collection — use :map-each"
+     "the chain is 3+ small :llm steps — consolidate into a single :llm with multi-step instruction"
+     "the chain has 3+ :llm children doing successive small transformations on the same data AND each transformation is simple"
+     "two or more stages in the pipeline could run independently"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:SequentialPipeline",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.984171-05:00"},
+    :domain-label "iambic-pentameter-recipe",
+    :content
+    "SequentialPipeline is a :sequence of 2+ :llm/:code nodes where each step consumes the previous step's output. Natural for ETL (extract → enrich → format) and iterative refinement (draft → critique → revise). Avoid when stages are independent (use :parallel) or when 3+ small :llm steps could be one larger :llm — small successive :llm calls burn tokens that a single multi-step instruction would cover.",
+    :domain-coverage :partial,
+    :rank 3,
+    :reasoning
+    "The task requires a specific sequence: drafting a recipe and then transforming instructions into iambic pentameter. This matches SequentialPipeline's 'iterative refinement (draft → critique → revise)' pattern. Chaining an initial recipe draft :llm to a second :llm for poetic constraints ensures the complex meter doesn't degrade the accuracy of the cooking instructions.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "3+ small :llm steps burns sub-LLM tokens that could be a single larger :llm call with a multi-step instruction",
+      :avoid-when
+      "the chain has 3+ :llm children doing successive small transformations on the same data AND each transformation is simple",
+      :recommended-alternative
+      "consolidate into ONE :llm with a longer multi-step instruction; OR use :code for any deterministic intermediate stages (formatting, joining, regex extraction)"}
+     {:trait
+      "no parallelism — total wall-time is the sum of all children's durations",
+      :avoid-when
+      "two or more stages in the pipeline could run independently",
+      :recommended-alternative
+      "use :parallel for the independent stages, then :sequence around the genuinely-dependent ones; OR restructure as :parallel + final synthesis"}],
+    :domain-reasoning
+    "The candidate's representative use 'iterative refinement (draft → critique → revise)' covers the process of drafting a recipe then revising it into a specific poetic meter, though 'recipe' is not explicitly named.",
+    :cos-good 0.9984119613883414,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9958989992706903,
+    :score 442.77416432315937,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.9,
+    :document-id ":tree-class:\"seed:tree:SequentialPipeline\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9984119613883414,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "stage-by-stage chaining matches problems with explicit ordered dependencies",
+      :good-when
+      "the work has 2-3 distinct phases AND each phase consumes the previous phase's specific output AND each phase is non-trivial",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:input] :writes [:extracted]}] [:llm {:reads [:extracted] :writes [:enriched]}] [:llm {:reads [:enriched] :writes [:formatted]}] [:final {:keys [:formatted]}]]"}],
+    :avoid-when
+    ["stages are independent — use :parallel"
+     "the work is per-item over a collection — use :map-each"
+     "the chain is 3+ small :llm steps — consolidate into a single :llm with multi-step instruction"
+     "the chain has 3+ :llm children doing successive small transformations on the same data AND each transformation is simple"
+     "two or more stages in the pipeline could run independently"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:SequentialPipeline",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.971121-05:00"},
+    :domain-label "iambic-pentameter-recipe",
+    :content
+    "SequentialPipeline is a :sequence of 2+ :llm/:code nodes where each step consumes the previous step's output. Natural for ETL (extract → enrich → format) and iterative refinement (draft → critique → revise). Avoid when stages are independent (use :parallel) or when 3+ small :llm steps could be one larger :llm — small successive :llm calls burn tokens that a single multi-step instruction would cover.",
+    :domain-coverage :partial,
+    :rank 2,
+    :reasoning
+    "Identical to the tree-class; this sequential approach allows the first stage to focus on the 'ingredients' and 'correctness' constraints while the second stage focuses on the 'iambic pentameter' constraint, fitting the draft-and-revise strength.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "3+ small :llm steps burns sub-LLM tokens that could be a single larger :llm call with a multi-step instruction",
+      :avoid-when
+      "the chain has 3+ :llm children doing successive small transformations on the same data AND each transformation is simple",
+      :recommended-alternative
+      "consolidate into ONE :llm with a longer multi-step instruction; OR use :code for any deterministic intermediate stages (formatting, joining, regex extraction)"}
+     {:trait
+      "no parallelism — total wall-time is the sum of all children's durations",
+      :avoid-when
+      "two or more stages in the pipeline could run independently",
+      :recommended-alternative
+      "use :parallel for the independent stages, then :sequence around the genuinely-dependent ones; OR restructure as :parallel + final synthesis"}],
+    :domain-reasoning
+    "The candidate's representative use 'iterative refinement (draft → critique → revise)' covers the process of drafting a recipe then revising it into a specific poetic meter, though 'recipe' is not explicitly named.",
+    :cos-good 0.9984119613883414,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9958989992706903,
+    :score 442.77416432315937,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.9,
+    :document-id ":tree-fingerprint:\"seed:tree:SequentialPipeline\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9984119613883414,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :existing-domain-children ["security-audit-haikus"],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.988167-05:00"},
+    :domain-label "iambic-pentameter-recipe",
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :domain-coverage :covered,
+    :rank 9,
+    :reasoning
+    "This ETL pattern is effective for the 'ingredients' and 'steps' extraction/transformation. The strength 'use :code (NOT :llm) for the final emit-format stage' is perfect for wrapping the final output in the requested JSON-like map format `{:ingredients [...] :steps [...] :yield \"24 cookies\"}`.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :domain-reasoning
+    "The candidate includes an existing child 'security-audit-haikus', which matches the 'constraint-based creative writing' domain of the current task (recipe in iambic pentameter).",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9951961565418221,
+    :score 442.3581166718527,
+    :cos-avoid-sans-content 0.9998897629106098,
+    :fitness-score 0.85,
+    :document-id
+    ":tree-class:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9998897629106098}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.973273-05:00"},
+    :domain-label "iambic-pentameter-recipe",
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :domain-coverage :covered,
+    :rank 10,
+    :reasoning
+    "Identical to the tree-class; uses sequential stages to manage the transition from raw recipe data to poetic steps, with a final formatting pass.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :domain-reasoning
+    "The candidate includes an existing child 'security-audit-haikus', which matches the 'constraint-based creative writing' domain of the current task.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9951961565418221,
+    :score 442.3581166718527,
+    :cos-avoid-sans-content 0.9998897629106098,
+    :fitness-score 0.85,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9998897629106098}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "separating per-chunk research from cross-chunk synthesis lets each :llm focus on a narrower job",
+      :good-when
+      "the input is a large document AND the answer requires reasoning across the whole document AND the final answer is a narrative/recommendation (not a flat extraction)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Extract anything relevant to the research question in this chunk.\"}]] [:aggregate {:from :per-chunk-notes :writes [:all-notes]}] [:llm {:reads [:all-notes] :writes [:synthesis] :instruction \"Integrate the per-chunk notes into a cohesive answer to the research question.\"}] [:final {:keys [:synthesis]}]]"}
+     {:trait
+      "the synthesis :llm sees the aggregated notes rather than the raw document — fits long documents into a single final context",
+      :good-when
+      "the raw document would exceed the synthesis :llm's context window AND the aggregated per-chunk notes are concise enough to fit",
+      :recommended-pattern
+      "[:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Summarize this chunk in <300 tokens, retaining only material relevant to the research question.\"}]]"}],
+    :avoid-when
+    ["the cross-chunk combine is mechanical — use MapReduce (:code reducer) instead"
+     "the :aggregate alone is the answer (flat extraction across chunks) — use ChunkedExtraction instead"
+     "the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win"
+     "the answer must be strictly traceable to source material AND no grounding judge follows — synthesis :llm can hallucinate at the integration step"
+     "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks"
+     "the answer must be strictly traceable to source material AND no grounding judge / citation step follows"
+     "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.987739-05:00"},
+    :domain-label "iambic-pentameter-recipe",
+    :content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :domain-coverage :uncovered,
+    :rank 4,
+    :reasoning
+    "This is a poor fit because the input is not a 'large document' requiring chunking and aggregation. The task is a creative generation task, not a document research task. Using chunking would break the recipe flow.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "if per-chunk extraction is too aggressive, the aggregated material can itself exceed the synthesis :llm's context window",
+      :avoid-when
+      "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks",
+      :recommended-alternative
+      "constrain the per-chunk :llm via :output-schemas + a token-budget instruction ('summarize in <300 tokens'); OR add an intermediate :map-each [:llm] compression pass before final synthesis; OR split the synthesis into a 2-stage reduce-tree"}
+     {:trait
+      "the synthesis :llm can introduce claims not grounded in any per-chunk note — hallucination risk at the integration step",
+      :avoid-when
+      "the answer must be strictly traceable to source material AND no grounding judge / citation step follows",
+      :recommended-alternative
+      "add :output-schemas requiring per-claim citations on the synthesis :llm; OR add a downstream grounding judge that scores synthesis claims against the aggregated notes; OR ask the synthesis :llm to quote source notes verbatim for each claim"}
+     {:trait
+      "two :llm passes per chunk's worth of work (per-chunk extract + final synthesize) costs more than a single :llm or a :code reducer",
+      :avoid-when
+      "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill",
+      :recommended-alternative
+      "use MapReduce instead (:code reducer for mechanical aggregation); OR use ChunkedExtraction if the :aggregate merge alone is enough"}],
+    :domain-reasoning
+    "The representative uses focus on large document synthesis and briefing, which is unrelated to recipe generation or poetic constraints.",
+    :cos-good 0.9991319990392483,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9959737618470506,
+    :score 442.5030702835912,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.2,
+    :document-id ":tree-class:\"seed:tree:ResearchThenSynthesize\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9991319990392483,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered [],
+  :event/id #uuid "01a0a9cc-52d5-7078-bb24-472ceb495306",
+  :confidence 0.9,
+  :source-sheet-id #uuid "8383307c-fea4-42b7-bb15-680c538b2245",
+  :ranked-candidates
+  [{:target-id "seed:tree:SequentialPipeline",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.9,
+    :score 442.77416432315937}
+   {:target-id "seed:tree:SequentialPipeline",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.9,
+    :score 442.77416432315937}
+   {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.85,
+    :score 442.3581166718527}
+   {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.85,
+    :score 442.3581166718527}
+   {:target-id "seed:tree:ResearchThenSynthesize",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.2,
+    :score 442.5030702835912}],
+  :was-fresh-mint? true,
+  :assigned-via :mint-domain-child},
+ :deferred-events [],
+ :domain-children-considered [],
+ :sheet-id #uuid "8383307c-fea4-42b7-bb15-680c538b2245",
+ :payload-domain
+ {:assigned-via :mint-domain-child,
+  :parent-tree-id #uuid "2ead65e6-6373-38de-81c4-ef7bf067afc9",
+  :child-tree-id #uuid "e2281910-609b-3df9-ab7a-a4a8e9d3dc83",
+  :domain-label "iambic-pentameter-recipe"},
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: iambic-pentameter-recipe); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 4 from corpus retrieval)\n#### Top match — SequentialPipeline (confidence: 0.90)\nWhy this fits: The task requires a specific sequence: drafting a recipe and then transforming instructions into iambic pentameter. This matches SequentialPipeline's 'iterative refinement (draft → critique → revise)' pattern. Chaining an initial recipe draft :llm to a second :llm for poetic constraints ensures the complex meter doesn't degrade the accuracy of the cooking instructions.\n\nPattern guidance (seed `:summary`):\nSequentialPipeline is a :sequence of 2+ :llm/:code nodes where each step consumes the previous step's output. Natural for ETL (extract → enrich → format) and iterative refinement (draft → critique → revise). Avoid when stages are independent (use :parallel) or when 3+ small :llm steps could be one larger :llm — small successive :llm calls burn tokens that a single multi-step instruction would cover.\n\n\n#### Alternative #1 — SequentialPipeline (confidence: 0.90)\nWhy this fits: Identical to the tree-class; this sequential approach allows the first stage to focus on the 'ingredients' and 'correctness' constraints while the second stage focuses on the 'iambic pentameter' constraint, fitting the draft-and-revise strength.\n\nPattern guidance (seed `:summary`):\nSequentialPipeline is a :sequence of 2+ :llm/:code nodes where each step consumes the previous step's output. Natural for ETL (extract → enrich → format) and iterative refinement (draft → critique → revise). Avoid when stages are independent (use :parallel) or when 3+ small :llm steps could be one larger :llm — small successive :llm calls burn tokens that a single multi-step instruction would cover.\n\n\n#### Alternative #2 (confidence: 0.85)\nWhy this fits: This ETL pattern is effective for the 'ingredients' and 'steps' extraction/transformation. The strength 'use :code (NOT :llm) for the final emit-format stage' is perfect for wrapping the final output in the requested JSON-like map format `{:ingredients [...] :steps [...] :yield \"24 cookies\"}`.\n\nPattern guidance (seed `:summary`):\nETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).\n\nCapabilities:\n  - ordered chain of typically 2-4 stages where each stage transforms the previous stage's output into a richer form\n  - natural fit for raw-input → normalized → enriched → emit-ready flows\n  - each stage's :reads consume the previous stage's :writes — explicit data dependency tracking\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate (confidence 1.00, evidence-count 1)\n    - Good when: input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]\n      ```\n\n  - **Trait:** use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names (confidence 1.00, evidence-count 1)\n    - Good when: the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage (confidence 1.00, evidence-count 1)\n    - Avoid when: intermediate stages don't declare :output-schemas and downstream stages assume specific keys\n    - Recommended fix: always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer\n\n  - **Failure mode:** 5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short (confidence 1.00, evidence-count 1)\n    - Avoid when: individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates\n    - Recommended fix: collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - customer record normalization: parse → dedupe-fields → enrich-from-CRM → emit-warehouse-row\n  - log line parsing: tokenize → classify-event-type → annotate-with-context → emit-structured-event\n  - translation pipeline: clean-input → translate → polish-style → emit-final-text\n\n#### Alternative #3 (confidence: 0.85)\nWhy this fits: Identical to the tree-class; uses sequential stages to manage the transition from raw recipe data to poetic steps, with a final formatting pass.\n\nPattern guidance (seed `:summary`):\nETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).\n\nCapabilities:\n  - ordered chain of typically 2-4 stages where each stage transforms the previous stage's output into a richer form\n  - natural fit for raw-input → normalized → enriched → emit-ready flows\n  - each stage's :reads consume the previous stage's :writes — explicit data dependency tracking\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate (confidence 1.00, evidence-count 1)\n    - Good when: input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]\n      ```\n\n  - **Trait:** use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names (confidence 1.00, evidence-count 1)\n    - Good when: the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage (confidence 1.00, evidence-count 1)\n    - Avoid when: intermediate stages don't declare :output-schemas and downstream stages assume specific keys\n    - Recommended fix: always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer\n\n  - **Failure mode:** 5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short (confidence 1.00, evidence-count 1)\n    - Avoid when: individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates\n    - Recommended fix: collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - customer record normalization: parse → dedupe-fields → enrich-from-CRM → emit-warehouse-row\n  - log line parsing: tokenize → classify-event-type → annotate-with-context → emit-structured-event\n  - translation pipeline: clean-input → translate → polish-style → emit-final-text\n\nAssigned to domain child e2281910-609b-3df9-ab7a-a4a8e9d3dc83 (label: iambic-pentameter-recipe) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 2 from corpus retrieval)\n1. Behavioral: Synthesis (confidence: 0.80)\n   Why this fits: This task requires integrating two distinct structured modes (a prose ingredient list and a metered instructional sequence) into a single cohesive artifact (a recipe map). The candidate's recommended pattern for scaffolded synthesis via a code-built outline matches the need to preserve the recipe's correctness (accuracy constraint) while filling in the creative metered content section-by-section.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Code-building (confidence: 0.70)\n   Why this fits: While the output is a data structure, it is not 'executable code' in the sense of scripts or config. However, the requirement for a specific meter (iambic pentameter) acts as a strict technical 'spec' for the text generation. The recommended pattern of 'draft -> critique -> refined' is highly relevant here because the meter constraint (10 syllables, unstressed-stressed) is difficult to hit in a single pass without compromising accuracy.\n\n   Guidance (seed `:summary`):\n   Code-building produces executable code / scripts / config from a spec. Always structure output as :map with :file-path / :language / :imports / :code — downstream automated stages bind on these. For non-trivial code, iterate via draft → critique → refined-code; single-pass produces higher defect rates. NEVER feed code-building a raw goal — always pipe through a design stage first so the input is a spec, not an open-ended ask. For long files (>200 lines), scaffold then :map-each per-section to preserve cross-section consistency. Composes into iterative-refinement (draft → critique → finalize) and sequential-pipeline (design → code → validate) shells. Avoid for mechanical transformation (use transformation) or code review (use critique).\n\nCapabilities:\n  - given a spec + constraints + (optionally) examples, produce executable code / scripts / config as the artifact\n  - natural fit at the tail of a tree after design has produced the spec, before validation gates the result\n  - outputs are typically code strings with :file-path / :language / :imports / :tests so downstream stages can persist or execute\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** structure the code output as :map with :file-path / :language / :imports / :code so downstream stages (validation / persistence / execution) can bind on specific fields rather than re-parse a code blob (confidence 1.00, evidence-count 1)\n    - Good when: the code feeds automated downstream stages (linting, test runs, file writes)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:spec] :writes [:artifact] :output-schemas {:artifact [:map [:file-path :string] [:language :string] [:imports [:vector :string]] [:code :string]]}}]\n      ```\n\n  - **Trait:** iterate code via draft → critique → refined-code when the code is non-trivial — single-pass code has higher defect rates than draft-critique-refine for the same prompt (confidence 1.00, evidence-count 1)\n    - Good when: the code involves multiple interacting decisions (error handling / edge cases / type contracts)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:spec] :writes [:draft-code]}] [:llm {:reads [:draft-code :spec] :writes [:critique]}] [:llm {:reads [:draft-code :critique] :writes [:refined-code]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** code-building without an explicit :spec input (just a goal string) produces code that maps to the model's first guess at what the goal meant — divergence from intent surfaces only at test time (confidence 1.00, evidence-count 1)\n    - Avoid when: the goal is ambiguous OR the consequences of wrong-interpretation are expensive\n    - Recommended fix: always pipe code-building's :reads through a design stage first; the design's :spec field is the input to code-building, not the raw goal\n\n  - **Failure mode:** single-shot generation of a long file (>200 lines) produces code with internal inconsistencies — function signatures mismatch their callers, imports declared but unused (confidence 1.00, evidence-count 1)\n    - Avoid when: the artifact is a long file with multiple cohesive sections\n    - Recommended fix: scaffold via :code-built outline (top-of-file imports / function-declarations / glue), then :map-each per-section generation, then :code-stitched final — preserves consistency across sections\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - function implementation from a typed spec + examples\n  - config file generation from a deployment plan\n  - test case generation from a behavior specification\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent bf47c816-2833-320e-9fbd-6ae109275ab0)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nWrite a recipe for chocolate chip cookies (yield: 24 cookies) where EVERY\ninstruction step is rendered in iambic pentameter (10 syllables per line,\nunstressed-stressed pattern).\n\nConstraints:\n- The ingredient list can stay in normal prose.\n- The numbered steps (8-12 steps) must each be a line of iambic pentameter.\n- Cooking times, temperatures, and physical actions must remain accurate —\n  the meter constraint cannot compromise the recipe's correctness.\n- Output: `{:ingredients [...] :steps [...] :yield \"24 cookies\"}`.\n\nYou may use the natural elasticity of English (contractions, syllabic\nelision) to make the meter work.",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? false},
+ :elapsed-ms 15074,
+ :confidence 0.9,
+ :was-fresh-mint? true,
+ :assigned-via :mint-domain-child}

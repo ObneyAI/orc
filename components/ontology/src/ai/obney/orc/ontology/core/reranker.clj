@@ -21,8 +21,61 @@
 ;; Prompt instruction
 ;; =============================================================================
 
+(def ^:private domain-coverage-section
+  "RS-1 (proven by RS-P1b run 2 — `development/bench/ood-stress-results/rs-p1b2-sibling-reuse-separated-probe/FINDINGS.md`):
+   the domain-coverage section of the reranker instruction, and its
+   replacement six-key output contract. Inserted into `reranker-instruction`
+   VERBATIM, in place of the shipped three-key output-contract paragraph.
+   Kept as its own constant (OUR text, not model prose) so a test can assert
+   the instruction carries it byte-for-byte without matching on anything the
+   model itself produces."
+  "DOMAIN COVERAGE — A SEPARATE VERDICT, NOT A NUMBER.
+fitness_score means how well the candidate's SHAPE and intent fit the task.
+Separately, for each candidate, judge whether the candidate's DECLARED DOMAIN
+— its representative uses and its avoid-when guards — covers the DOMAIN of the
+task (what the task is about: the subject matter, the material, the kind of
+output). Give a discrete verdict:
+  covered    — a representative use names this task's SUBJECT MATTER, its
+               MATERIAL (what is read) and its OUTPUT KIND. A shared kind of
+               processing ('a pipeline', 'a sequence of passes', 'draft then
+               revise') is NOT a domain and never makes a candidate covered.
+  partial    — a representative use shares the subject matter but not the
+               material or the output kind, or the reverse
+  uncovered  — nothing the candidate declares names this task's subject
+               matter, material or output kind; the fit, if any, is shape only
+  unknown    — you cannot tell from what the candidate declares
+A candidate may carry existing-domain-children: labels of domain children
+already minted under it. They serve ONE purpose — label reuse. If one of them
+names THIS task's domain, you MUST reuse that label verbatim as domain_label
+(do not coin a variant); coin a new label only when none of the existing ones
+fits. existing-domain-children MUST NOT influence domain_coverage: coverage is
+judged solely against the candidate's OWN representative uses and content. A
+child naming this task's domain does not make its parent covered — a parent
+with a matching child is exactly the case where the task belongs to the child,
+not to the parent.
+Write domain_reasoning BEFORE choosing the verdict: name the representative use
+or guard you matched, or state the gap. Also give domain_label: a 2-4 word
+kebab-case label of the TASK's own domain (the same label for every candidate
+of this task), e.g. \"marathon-training-plan\", \"recipe-scaling\",
+\"security-findings-haiku\".
+
+PRODUCE a JSON string of a vector, descending by fitness_score. Each
+element is an object with EXACTLY these six keys:
+  {\"document_id\":     \"<echo the candidate's document-id verbatim>\",
+   \"reasoning\":       \"<concrete, actionable; references specific content>\",
+   \"fitness_score\":   <number in [0.0, 1.0]>,
+   \"domain_reasoning\": \"<the representative use / guard matched, or the gap>\",
+   \"domain_coverage\": \"<covered|partial|uncovered|unknown>\",
+   \"domain_label\":    \"<2-4 word kebab-case label of the task's domain>\"}
+
+Example shape:
+  [{\"document_id\":\"a\",\"reasoning\":\"...\",\"fitness_score\":0.91,
+    \"domain_reasoning\":\"...\",\"domain_coverage\":\"covered\",\"domain_label\":\"contract-comparison\"},
+   {\"document_id\":\"b\",\"reasoning\":\"...\",\"fitness_score\":0.42,
+    \"domain_reasoning\":\"...\",\"domain_coverage\":\"uncovered\",\"domain_label\":\"contract-comparison\"}]")
+
 (def ^:private reranker-instruction
-  "You are ranking candidate descriptions by their fitness for a caller's intent.
+  (str "You are ranking candidate descriptions by their fitness for a caller's intent.
 
 INPUTS DESCRIBED
 - query       — the natural-language query the caller wrote
@@ -57,15 +110,9 @@ reasoning MUST quote it and say the task matches it. Prefer a more general
 candidate that has no firing guard over an over-specific one whose avoid-when
 matches the task.
 
-PRODUCE a JSON string of a vector, descending by fitness_score. Each
-element is an object with EXACTLY these three keys:
-  {\"document_id\":   \"<echo the candidate's document-id verbatim>\",
-   \"reasoning\":     \"<concrete, actionable; references specific content>\",
-   \"fitness_score\": <number in [0.0, 1.0]>}
-
-Example shape:
-  [{\"document_id\":\"a\",\"reasoning\":\"...\",\"fitness_score\":0.91},
-   {\"document_id\":\"b\",\"reasoning\":\"...\",\"fitness_score\":0.42}]
+"
+       domain-coverage-section
+       "
 
 The output MUST be a raw JSON string starting with `[` and ending with
 `]`. No surrounding prose, no code fences, no leading/trailing
@@ -94,7 +141,7 @@ concretely, assign a low fitness_score and say WHAT is missing.
 Return ALL candidates — including low-fitness ones, and ones that arrive
 with only content, score and document-id — the caller may want the full
 ranking. Do not drop any. The output vector MUST contain exactly one entry
-per input candidate.")
+per input candidate."))
 
 ;; =============================================================================
 ;; Workflow definition
@@ -193,7 +240,13 @@ per input candidate.")
    ;; advice pair and the weight signal are optional, so BOTH real producers
    ;; (EL-2 compact, and any future full-entry sender) validate.
    [:strengths {:optional true} [:vector compact-principle-entry]]
-   [:weaknesses {:optional true} [:vector compact-principle-entry]]])
+   [:weaknesses {:optional true} [:vector compact-principle-entry]]
+   ;; RS-1: labels of domain children already minted under this candidate,
+   ;; for the reranker's judge_domain_coverage label-reuse step (D7/D7b).
+   ;; RS-2/RS-3 populate this; here it is accepted and rendered into the
+   ;; candidates JSON — it MUST NOT influence :domain-coverage itself (the
+   ;; instruction states that constraint; see `domain-coverage-section`).
+   [:existing-domain-children {:optional true} [:vector :string]]])
 
 (defn- reranker-workflow-name
   "The workflow's sheet-identity is deterministic from its NAME
@@ -316,6 +369,13 @@ per input candidate.")
   [rerank-result]
   (boolean (:rerank-timeout? (meta rerank-result))))
 
+(def ^:private domain-coverage-values
+  "RS-1: the four values of `specs/ontology.allium`'s `enum DomainCoverage`.
+   `parse-reranked-json` reads any `:domain_coverage` outside this set
+   (missing, or a string the model sent that is not one of these four) as
+   `:unknown` rather than coercing it."
+  #{:covered :partial :uncovered :unknown})
+
 (defn- parse-reranked-json
   "Parse + canonicalize + validate the reranker's JSON payload from a
    SUCCESSFUL execution result. Extracted from `rerank!` unchanged when
@@ -350,8 +410,22 @@ per input candidate.")
                                                  (dissoc :document_id))
                           (:fitness_score e) (-> (assoc :fitness-score (:fitness_score e))
                                                  (dissoc :fitness_score))
+                          ;; RS-1 (judge_domain_coverage's DomainVerdict):
+                          ;; canonicalized the same way as the existing keys.
+                          ;; A missing or malformed :domain_coverage DEFERS
+                          ;; to :unknown — never coerced to whatever string
+                          ;; the model sent (DomainCoverageIsJudgedNotInferred).
+                          true (assoc :domain-coverage
+                                      (let [v (some-> (:domain_coverage e) keyword)]
+                                        (if (contains? domain-coverage-values v)
+                                          v
+                                          :unknown)))
+                          true (assoc :domain-label (:domain_label e))
+                          true (assoc :domain-reasoning (:domain_reasoning e))
+                          true (dissoc :domain_coverage :domain_label :domain_reasoning)
                           ;; Keep only the canonical kebab-case keys
-                          true               (select-keys [:document-id :reasoning :fitness-score])))
+                          true (select-keys [:document-id :reasoning :fitness-score
+                                              :domain-coverage :domain-label :domain-reasoning])))
                       parsed))
         valid (when (sequential? canon)
                 (filterv #(m/validate ontology-schemas/reranked-result %) canon))]

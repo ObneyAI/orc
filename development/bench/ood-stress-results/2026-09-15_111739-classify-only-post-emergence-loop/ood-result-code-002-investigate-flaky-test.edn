@@ -1,0 +1,266 @@
+{:slug "code-002-investigate-flaky-test",
+ :envelope
+ {:assigned-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :parent-tree-id nil,
+  :rerank-fallback? false,
+  :reasoning
+  "The task involves a sequence where a candidate (user signup/email) is generated and then verified against a formal rule (email delivery) with a timeout/retry budget. This matches the 'Producer/validator' pattern perfectly. Specifically, the intent calls for a validator that provides a 'true correctness oracle' (checking the email-mock service), which aligns with the recommended :code validator pattern for syntactic or state-based checks.",
+  :outcome :matched,
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.186532-05:00"},
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :rank 7,
+    :reasoning
+    "The task involves a sequence where a candidate (user signup/email) is generated and then verified against a formal rule (email delivery) with a timeout/retry budget. This matches the 'Producer/validator' pattern perfectly. Specifically, the intent calls for a validator that provides a 'true correctness oracle' (checking the email-mock service), which aligns with the recommended :code validator pattern for syntactic or state-based checks.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :cos-good 0.995385880959557,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9899450513475241,
+    :score 429.56935237075686,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.95,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.995385880959557,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.176129-05:00"},
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :rank 6,
+    :reasoning
+    "This fingerprint captures the same 'Producer/validator' loop logic as the tree-class. It is highly relevant because the flaky test is essentially a validation loop that is failing its 'retry budget' (the 30s timeout) due to environment-specific performance issues. The strength of using :code for the validator to avoid 'correlated failure' is applicable here as the email-mock is an external oracle.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :cos-good 0.995385880959557,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9899450513475241,
+    :score 429.56935237075686,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.92,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.995385880959557,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit recovery path captures real-world fragility — primary may fail; backup absorbs",
+      :good-when
+      "the primary approach has a known failure mode AND the backup produces equivalent :writes",
+      :recommended-pattern
+      "[:fallback [:llm {:model \"openai/gpt-5\" :reads [:input] :writes [:result]}] [:llm {:model \"google/gemini-2.5-flash\" :reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["all children would succeed — just use the primary (no recovery needed)"
+     "you want both children's results compared — use :parallel"
+     "you want only one child to run based on a known condition — use :condition (when supported) or upfront branching at the parent level"
+     "designing an emit-tree! pattern AND wanting recovery-style branching"
+     "the primary has high token cost AND fails often"
+     "the primary is the canonical path AND silent fallback would hide degradation"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.184354-05:00"},
+    :content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :rank 10,
+    :reasoning
+    "While the task involves a failure (flaky test), FallbackRecovery is less fit because the intent describes a loop that *should* succeed but is timing out, rather than a primary method failing and needing a distinct backup approach. The avoid-when 'the primary is the canonical path AND silent fallback would hide degradation' is a warning here, as we want to fix the flakiness, not just mask it with a fallback.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "RLM models cannot emit :fallback in emit-tree! today — pattern is canonical-DSL-only",
+      :avoid-when
+      "designing an emit-tree! pattern AND wanting recovery-style branching",
+      :recommended-alternative
+      "use a single :llm with an instruction that includes fallback guidance ('if X cannot be done, instead produce Y'); OR design the pipeline as :sequence with a downstream node that handles the missing-output case"}
+     {:trait
+      "each failed primary still runs to completion before failure is detected — total cost includes the wasted primary attempt",
+      :avoid-when "the primary has high token cost AND fails often",
+      :recommended-alternative
+      "switch the order — put the cheaper backup first; OR use a guard upstream that predicts which approach to try based on input shape"}
+     {:trait
+      "silently masks real bugs — if the primary always fails and the backup always covers, the regression is invisible",
+      :avoid-when
+      "the primary is the canonical path AND silent fallback would hide degradation",
+      :recommended-alternative
+      "add a downstream :code or judge that logs/alerts when the backup fires; OR track per-tree-run which child succeeded so degradation is visible in metrics"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.985707446469323,
+    :score 429.26929272048915,
+    :cos-avoid-sans-content 0.9975302322911698,
+    :fitness-score 0.4,
+    :document-id ":tree-class:\"seed:tree:FallbackRecovery\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9975302322911698}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit recovery path captures real-world fragility — primary may fail; backup absorbs",
+      :good-when
+      "the primary approach has a known failure mode AND the backup produces equivalent :writes",
+      :recommended-pattern
+      "[:fallback [:llm {:model \"openai/gpt-5\" :reads [:input] :writes [:result]}] [:llm {:model \"google/gemini-2.5-flash\" :reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["all children would succeed — just use the primary (no recovery needed)"
+     "you want both children's results compared — use :parallel"
+     "you want only one child to run based on a known condition — use :condition (when supported) or upfront branching at the parent level"
+     "designing an emit-tree! pattern AND wanting recovery-style branching"
+     "the primary has high token cost AND fails often"
+     "the primary is the canonical path AND silent fallback would hide degradation"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.173733-05:00"},
+    :content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :rank 9,
+    :reasoning
+    "Similar to the tree-class, this pattern doesn't directly address the polling/validation logic described in the query. The structural shape of the flaky test is a sequence with a check, not a choice between two distinct implementation strategies (primary vs backup).",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "RLM models cannot emit :fallback in emit-tree! today — pattern is canonical-DSL-only",
+      :avoid-when
+      "designing an emit-tree! pattern AND wanting recovery-style branching",
+      :recommended-alternative
+      "use a single :llm with an instruction that includes fallback guidance ('if X cannot be done, instead produce Y'); OR design the pipeline as :sequence with a downstream node that handles the missing-output case"}
+     {:trait
+      "each failed primary still runs to completion before failure is detected — total cost includes the wasted primary attempt",
+      :avoid-when "the primary has high token cost AND fails often",
+      :recommended-alternative
+      "switch the order — put the cheaper backup first; OR use a guard upstream that predicts which approach to try based on input shape"}
+     {:trait
+      "silently masks real bugs — if the primary always fails and the backup always covers, the regression is invisible",
+      :avoid-when
+      "the primary is the canonical path AND silent fallback would hide degradation",
+      :recommended-alternative
+      "add a downstream :code or judge that logs/alerts when the backup fires; OR track per-tree-run which child succeeded so degradation is visible in metrics"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.985707446469323,
+    :score 429.26929272048915,
+    :cos-avoid-sans-content 0.9975302322911698,
+    :fitness-score 0.35,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9975302322911698}],
+  :confidence 0.95,
+  :ranked-candidates
+  [{:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.95,
+    :score 429.56935237075686}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.92,
+    :score 429.56935237075686}
+   {:target-id "seed:tree:FallbackRecovery",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.4,
+    :score 429.26929272048915}
+   {:target-id "seed:tree:FallbackRecovery",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.35,
+    :score 429.26929272048915}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 5465,
+ :parent-chain []}

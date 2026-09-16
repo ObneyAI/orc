@@ -1,0 +1,345 @@
+{:slug "conv-004-defend-controversial-choice",
+ :envelope
+ {:assigned-tree-id #uuid "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+  :parent-tree-id nil,
+  :rerank-fallback? false,
+  :reasoning
+  "This is the strongest fit because the intent specifically requires generating a 'briefing' (internal memo) that synthesizes multiple specific PM concerns into a cohesive narrative defense. The 'ResearchThenSynthesize' pattern matches the requirement to address specific objections (research/extraction) and integrate them into a 5-7 paragraph memo (synthesis).",
+  :outcome :matched,
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the synthesis stage's :llm has access to ALL per-chunk extracted material in :reads — produces a narrative that reasons across chunks rather than concatenating per-chunk summaries",
+      :good-when
+      "the briefing needs to identify cross-chunk patterns (recurring themes, contradictions, progression of an argument)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :source :size 4000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :extracts :max-concurrency 3} [:llm {:reads [:chunk] :writes [:key-points :quotes]}]] [:aggregate {:from :extracts :writes [:all-points :all-quotes]}] [:llm {:reads [:all-points :all-quotes :briefing-prompt] :writes [:briefing]}] [:final {:keys [:briefing]}]]"}
+     {:trait
+      "extract specific QUOTES alongside summaries in the per-chunk step — the synthesis stage can then ground claims to source quotes, supporting traceability",
+      :good-when
+      "the briefing audience may verify claims against source material AND traceability matters",
+      :recommended-pattern
+      "[:llm {:reads [:chunk] :writes [:key-points :supporting-quotes] :output-schemas {:key-points [:vector :string] :supporting-quotes [:vector :string]}}]"}],
+    :avoid-when
+    ["the output is a structured triple (summary + entities + dates) — use document-analysis (chunked-extraction-as-task-class) instead"
+     "no cross-chunk reasoning needed — use chunked-extraction (terminal :aggregate without synthesis)"
+     "the source fits in a single :llm context — direct :llm without chunking is simpler"
+     "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15"
+     "the briefing is going to a decision-maker AND no grounding check is wired downstream"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.188384-05:00"},
+    :content
+    "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+    :rank 2,
+    :reasoning
+    "This is the strongest fit because the intent specifically requires generating a 'briefing' (internal memo) that synthesizes multiple specific PM concerns into a cohesive narrative defense. The 'ResearchThenSynthesize' pattern matches the requirement to address specific objections (research/extraction) and integrate them into a 5-7 paragraph memo (synthesis).",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "the synthesis stage's context can overflow when per-chunk extracts are too rich AND the chunk count is high — synthesizer truncates or hallucinates connections",
+      :avoid-when
+      "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15",
+      :recommended-alternative
+      "either reduce per-chunk extraction granularity (key-points-only, no quotes) OR add an intermediate :code stage that selects top-K per-chunk extracts before synthesis"}
+     {:trait
+      "without a grounding judge, the synthesis stage can fabricate connections between per-chunk extracts that aren't actually in the source — a 'plausible narrative' that doesn't survive verification",
+      :avoid-when
+      "the briefing is going to a decision-maker AND no grounding check is wired downstream",
+      :recommended-alternative
+      "wire a grounding judge on the briefing output that checks each claim against the source quotes — catches fabricated connections before the briefing ships"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9912415025797453,
+    :score 437.72591055613884,
+    :cos-avoid-sans-content 0.9964560122970005,
+    :fitness-score 0.95,
+    :document-id
+    ":tree-class:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9964560122970005}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the synthesis stage's :llm has access to ALL per-chunk extracted material in :reads — produces a narrative that reasons across chunks rather than concatenating per-chunk summaries",
+      :good-when
+      "the briefing needs to identify cross-chunk patterns (recurring themes, contradictions, progression of an argument)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :source :size 4000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :extracts :max-concurrency 3} [:llm {:reads [:chunk] :writes [:key-points :quotes]}]] [:aggregate {:from :extracts :writes [:all-points :all-quotes]}] [:llm {:reads [:all-points :all-quotes :briefing-prompt] :writes [:briefing]}] [:final {:keys [:briefing]}]]"}
+     {:trait
+      "extract specific QUOTES alongside summaries in the per-chunk step — the synthesis stage can then ground claims to source quotes, supporting traceability",
+      :good-when
+      "the briefing audience may verify claims against source material AND traceability matters",
+      :recommended-pattern
+      "[:llm {:reads [:chunk] :writes [:key-points :supporting-quotes] :output-schemas {:key-points [:vector :string] :supporting-quotes [:vector :string]}}]"}],
+    :avoid-when
+    ["the output is a structured triple (summary + entities + dates) — use document-analysis (chunked-extraction-as-task-class) instead"
+     "no cross-chunk reasoning needed — use chunked-extraction (terminal :aggregate without synthesis)"
+     "the source fits in a single :llm context — direct :llm without chunking is simpler"
+     "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15"
+     "the briefing is going to a decision-maker AND no grounding check is wired downstream"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.178418-05:00"},
+    :content
+    "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+    :rank 3,
+    :reasoning
+    "Identical to the tree-class candidate above; it captures the 'ResearchThenSynthesize' structure which is ideal for transforming a list of PM concerns and technical data points into a narrative briefing.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "the synthesis stage's context can overflow when per-chunk extracts are too rich AND the chunk count is high — synthesizer truncates or hallucinates connections",
+      :avoid-when
+      "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15",
+      :recommended-alternative
+      "either reduce per-chunk extraction granularity (key-points-only, no quotes) OR add an intermediate :code stage that selects top-K per-chunk extracts before synthesis"}
+     {:trait
+      "without a grounding judge, the synthesis stage can fabricate connections between per-chunk extracts that aren't actually in the source — a 'plausible narrative' that doesn't survive verification",
+      :avoid-when
+      "the briefing is going to a decision-maker AND no grounding check is wired downstream",
+      :recommended-alternative
+      "wire a grounding judge on the briefing output that checks each claim against the source quotes — catches fabricated connections before the briefing ships"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9912415025797453,
+    :score 437.72591055613884,
+    :cos-avoid-sans-content 0.9964560122970005,
+    :fitness-score 0.95,
+    :document-id
+    ":tree-fingerprint:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9964560122970005}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "separating per-chunk research from cross-chunk synthesis lets each :llm focus on a narrower job",
+      :good-when
+      "the input is a large document AND the answer requires reasoning across the whole document AND the final answer is a narrative/recommendation (not a flat extraction)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Extract anything relevant to the research question in this chunk.\"}]] [:aggregate {:from :per-chunk-notes :writes [:all-notes]}] [:llm {:reads [:all-notes] :writes [:synthesis] :instruction \"Integrate the per-chunk notes into a cohesive answer to the research question.\"}] [:final {:keys [:synthesis]}]]"}
+     {:trait
+      "the synthesis :llm sees the aggregated notes rather than the raw document — fits long documents into a single final context",
+      :good-when
+      "the raw document would exceed the synthesis :llm's context window AND the aggregated per-chunk notes are concise enough to fit",
+      :recommended-pattern
+      "[:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Summarize this chunk in <300 tokens, retaining only material relevant to the research question.\"}]]"}],
+    :avoid-when
+    ["the cross-chunk combine is mechanical — use MapReduce (:code reducer) instead"
+     "the :aggregate alone is the answer (flat extraction across chunks) — use ChunkedExtraction instead"
+     "the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win"
+     "the answer must be strictly traceable to source material AND no grounding judge follows — synthesis :llm can hallucinate at the integration step"
+     "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks"
+     "the answer must be strictly traceable to source material AND no grounding judge / citation step follows"
+     "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.184982-05:00"},
+    :content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :rank 8,
+    :reasoning
+    "A perfect structural match for the task of integrating distinct research points (PM objections, data, risks) into a single cohesive narrative (the memo). It correctly identifies the output as a synthesis rather than a flat extraction.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "if per-chunk extraction is too aggressive, the aggregated material can itself exceed the synthesis :llm's context window",
+      :avoid-when
+      "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks",
+      :recommended-alternative
+      "constrain the per-chunk :llm via :output-schemas + a token-budget instruction ('summarize in <300 tokens'); OR add an intermediate :map-each [:llm] compression pass before final synthesis; OR split the synthesis into a 2-stage reduce-tree"}
+     {:trait
+      "the synthesis :llm can introduce claims not grounded in any per-chunk note — hallucination risk at the integration step",
+      :avoid-when
+      "the answer must be strictly traceable to source material AND no grounding judge / citation step follows",
+      :recommended-alternative
+      "add :output-schemas requiring per-claim citations on the synthesis :llm; OR add a downstream grounding judge that scores synthesis claims against the aggregated notes; OR ask the synthesis :llm to quote source notes verbatim for each claim"}
+     {:trait
+      "two :llm passes per chunk's worth of work (per-chunk extract + final synthesize) costs more than a single :llm or a :code reducer",
+      :avoid-when
+      "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill",
+      :recommended-alternative
+      "use MapReduce instead (:code reducer for mechanical aggregation); OR use ChunkedExtraction if the :aggregate merge alone is enough"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9927307369946747,
+    :score 437.41976739695065,
+    :cos-avoid-sans-content 0.9988795337997302,
+    :fitness-score 0.9,
+    :document-id ":tree-class:\"seed:tree:ResearchThenSynthesize\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9988795337997302}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "separating per-chunk research from cross-chunk synthesis lets each :llm focus on a narrower job",
+      :good-when
+      "the input is a large document AND the answer requires reasoning across the whole document AND the final answer is a narrative/recommendation (not a flat extraction)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Extract anything relevant to the research question in this chunk.\"}]] [:aggregate {:from :per-chunk-notes :writes [:all-notes]}] [:llm {:reads [:all-notes] :writes [:synthesis] :instruction \"Integrate the per-chunk notes into a cohesive answer to the research question.\"}] [:final {:keys [:synthesis]}]]"}
+     {:trait
+      "the synthesis :llm sees the aggregated notes rather than the raw document — fits long documents into a single final context",
+      :good-when
+      "the raw document would exceed the synthesis :llm's context window AND the aggregated per-chunk notes are concise enough to fit",
+      :recommended-pattern
+      "[:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Summarize this chunk in <300 tokens, retaining only material relevant to the research question.\"}]]"}],
+    :avoid-when
+    ["the cross-chunk combine is mechanical — use MapReduce (:code reducer) instead"
+     "the :aggregate alone is the answer (flat extraction across chunks) — use ChunkedExtraction instead"
+     "the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win"
+     "the answer must be strictly traceable to source material AND no grounding judge follows — synthesis :llm can hallucinate at the integration step"
+     "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks"
+     "the answer must be strictly traceable to source material AND no grounding judge / citation step follows"
+     "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.174422-05:00"},
+    :content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :rank 9,
+    :reasoning
+    "Matches the 'ResearchThenSynthesize' pattern needed to handle the multi-part requirements of the memo (paraphrasing objections, providing data, acknowledging risks).",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "if per-chunk extraction is too aggressive, the aggregated material can itself exceed the synthesis :llm's context window",
+      :avoid-when
+      "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks",
+      :recommended-alternative
+      "constrain the per-chunk :llm via :output-schemas + a token-budget instruction ('summarize in <300 tokens'); OR add an intermediate :map-each [:llm] compression pass before final synthesis; OR split the synthesis into a 2-stage reduce-tree"}
+     {:trait
+      "the synthesis :llm can introduce claims not grounded in any per-chunk note — hallucination risk at the integration step",
+      :avoid-when
+      "the answer must be strictly traceable to source material AND no grounding judge / citation step follows",
+      :recommended-alternative
+      "add :output-schemas requiring per-claim citations on the synthesis :llm; OR add a downstream grounding judge that scores synthesis claims against the aggregated notes; OR ask the synthesis :llm to quote source notes verbatim for each claim"}
+     {:trait
+      "two :llm passes per chunk's worth of work (per-chunk extract + final synthesize) costs more than a single :llm or a :code reducer",
+      :avoid-when
+      "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill",
+      :recommended-alternative
+      "use MapReduce instead (:code reducer for mechanical aggregation); OR use ChunkedExtraction if the :aggregate merge alone is enough"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9927307369946747,
+    :score 437.41976739695065,
+    :cos-avoid-sans-content 0.9988795337997302,
+    :fitness-score 0.9,
+    :document-id
+    ":tree-fingerprint:\"seed:tree:ResearchThenSynthesize\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9988795337997302}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.186532-05:00"},
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :rank 5,
+    :reasoning
+    "While the task has complex constraints (one-sentence position statement, paragraph count, specific content), these are not 'formal/syntactic' rules easily validated by code. Using a Producer/Validator loop is less efficient than a synthesis-based approach for creative narrative writing.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9923663175285998,
+    :score 437.7032198490185,
+    :cos-avoid-sans-content 0.9996282111812752,
+    :fitness-score 0.4,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9996282111812752}],
+  :confidence 0.95,
+  :ranked-candidates
+  [{:target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.95,
+    :score 437.72591055613884}
+   {:target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.95,
+    :score 437.72591055613884}
+   {:target-id "seed:tree:ResearchThenSynthesize",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.9,
+    :score 437.41976739695065}
+   {:target-id "seed:tree:ResearchThenSynthesize",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.9,
+    :score 437.41976739695065}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.4,
+    :score 437.7032198490185}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 5802,
+ :parent-chain []}

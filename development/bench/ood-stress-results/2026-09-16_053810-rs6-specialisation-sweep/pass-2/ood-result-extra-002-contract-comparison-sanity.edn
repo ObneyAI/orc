@@ -1,0 +1,388 @@
+{:assigned-tree-id #uuid "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+ :tick-id #uuid "dc507735-39a4-4fc4-b32d-c11d814a25a6",
+ :slug "extra-002-contract-comparison-sanity",
+ :parent-tree-id nil,
+ :domain-label nil,
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "saas-contract-comparison",
+  :domain-reasoning
+  "The representative use explicitly names 'compare two contracts' for 'key differences, similarities, and a recommendation', which matches the task's subject matter (SaaS contracts), material (two contract snippets), and output kind (structured comparison)."},
+ :node-id #uuid "a9843465-e61c-4966-b33a-151dcc9da870",
+ :top-1
+ {:target-id "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+  :fitness-score 1.0,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "saas-contract-comparison"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+  :classified-at "2026-09-16T05:51:07.784691-05:00",
+  :reasoning
+  "This candidate perfectly matches the task's structure and domain. It explicitly describes a 'Contract-comparison tree' for comparing two contracts to produce key differences, similarities, and recommendations. Its recommended pattern matches the requested output fields (:key-differences, :similarities, :recommendation) and uses parallel structured extraction to avoid hallucinations, which is ideal for the provided contract snippets.",
+  :outcome :matched,
+  :source-node-id #uuid "a9843465-e61c-4966-b33a-151dcc9da870",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "86275302-0c3d-35ae-b74e-abd4f27984eb",
+    :confidence 0.8,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task is a 'mechanical reshape of data between deterministic shapes' (Contract text to structured JSON-like vector). While it requires judgment to extract the provisions, the final output structure is a classic Transformation shape (a vector of maps for key-differences). The avoid-when for 'semantic reasoning' is noted, but the structured comparison requirement makes this the closest behavioral fit for the output generation.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "dc507735-39a4-4fc4-b32d-c11d814a25a6",
+  :event/tags
+  #{[:description-target #uuid "00000000-c1c1-4001-b003-d0c0a0a0a0a3"]
+    [:tick #uuid "dc507735-39a4-4fc4-b32d-c11d814a25a6"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:51:07.784932Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "saas-contract-comparison",
+   :domain-reasoning
+   "The representative use explicitly names 'compare two contracts' for 'key differences, similarities, and a recommendation', which matches the task's subject matter (SaaS contracts), material (two contract snippets), and output kind (structured comparison)."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "parallel per-contract extraction reduces wall-time when both contracts can be processed independently",
+      :good-when
+      "both contracts share a roughly comparable structure AND the per-contract extraction is identical work",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:contract-a] :writes [:provisions-a] :output-schemas {:provisions-a [:vector [:map [:topic :string] [:terms :string]]]}}] [:llm {:reads [:contract-b] :writes [:provisions-b] :output-schemas {:provisions-b [:vector [:map [:topic :string] [:terms :string]]]}}]] [:llm {:reads [:provisions-a :provisions-b] :writes [:key-differences :similarities :recommendation]}] [:final {:keys [:key-differences :similarities :recommendation]}]]"}],
+    :avoid-when
+    ["only one contract is provided — use risk-analysis or single-document extraction instead"
+     "the comparison is purely textual diff (line-by-line) — use a non-LLM diff tool"
+     "more than two contracts — extend with :map-each over a vector of contracts; this seed's pattern doesn't scale beyond two directly"
+     "both contracts are >5KB AND the synthesis :llm receives the full text of both directly"
+     "the synthesis :llm reads raw :contract-a + :contract-b directly without intermediate structured extraction"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.982616-05:00"},
+    :domain-label "saas-contract-comparison",
+    :content
+    "Contract-comparison trees compare two contracts (or two versions) for key differences, similarities, and a recommendation. The proven shape: :parallel per-contract structured-extraction (:output-schemas guaranteeing typed provisions), then sequential synthesis :llm consuming the structured vectors (NOT raw text). Always extract first, then diff — feeding both raw contracts to a single synthesis :llm hits attention limits and induces hallucinated provisions.",
+    :domain-coverage :covered,
+    :rank 2,
+    :reasoning
+    "This candidate perfectly matches the task's structure and domain. It explicitly describes a 'Contract-comparison tree' for comparing two contracts to produce key differences, similarities, and recommendations. Its recommended pattern matches the requested output fields (:key-differences, :similarities, :recommendation) and uses parallel structured extraction to avoid hallucinations, which is ideal for the provided contract snippets.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "diff-synthesis :llm sees TWO large input contexts simultaneously — hits attention/budget limits sooner than single-doc summarization",
+      :avoid-when
+      "both contracts are >5KB AND the synthesis :llm receives the full text of both directly",
+      :recommended-alternative
+      "extract structured per-contract provisions first (compact representations), then feed those CONDENSED structures to the synthesis :llm instead of raw text"}
+     {:trait
+      "without per-contract structured extraction, the synthesis :llm hallucinates provisions that don't exist in either contract",
+      :avoid-when
+      "the synthesis :llm reads raw :contract-a + :contract-b directly without intermediate structured extraction",
+      :recommended-alternative
+      "always have an intermediate :llm with :output-schemas that extracts a typed provisions vector PER contract before the diff step — the diff :llm consumes the structured vectors, not raw text"}],
+    :domain-reasoning
+    "The representative use explicitly names 'compare two contracts' for 'key differences, similarities, and a recommendation', which matches the task's subject matter (SaaS contracts), material (two contract snippets), and output kind (structured comparison).",
+    :cos-good 0.9983481147906609,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9928976086881581,
+    :score 434.6713563827875,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-class:#uuid \"00000000-c1c1-4001-b003-d0c0a0a0a0a3\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9983481147906609,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "parallel per-contract extraction reduces wall-time when both contracts can be processed independently",
+      :good-when
+      "both contracts share a roughly comparable structure AND the per-contract extraction is identical work",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:contract-a] :writes [:provisions-a] :output-schemas {:provisions-a [:vector [:map [:topic :string] [:terms :string]]]}}] [:llm {:reads [:contract-b] :writes [:provisions-b] :output-schemas {:provisions-b [:vector [:map [:topic :string] [:terms :string]]]}}]] [:llm {:reads [:provisions-a :provisions-b] :writes [:key-differences :similarities :recommendation]}] [:final {:keys [:key-differences :similarities :recommendation]}]]"}],
+    :avoid-when
+    ["only one contract is provided — use risk-analysis or single-document extraction instead"
+     "the comparison is purely textual diff (line-by-line) — use a non-LLM diff tool"
+     "more than two contracts — extend with :map-each over a vector of contracts; this seed's pattern doesn't scale beyond two directly"
+     "both contracts are >5KB AND the synthesis :llm receives the full text of both directly"
+     "the synthesis :llm reads raw :contract-a + :contract-b directly without intermediate structured extraction"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.969490-05:00"},
+    :domain-label "saas-contract-comparison",
+    :content
+    "Contract-comparison trees compare two contracts (or two versions) for key differences, similarities, and a recommendation. The proven shape: :parallel per-contract structured-extraction (:output-schemas guaranteeing typed provisions), then sequential synthesis :llm consuming the structured vectors (NOT raw text). Always extract first, then diff — feeding both raw contracts to a single synthesis :llm hits attention limits and induces hallucinated provisions.",
+    :domain-coverage :covered,
+    :rank 1,
+    :reasoning
+    "This fingerprint shares the exact content and recommended pattern as the tree-class, providing a perfect structural and domain match for the multi-stage extraction and synthesis required for contract comparison.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "diff-synthesis :llm sees TWO large input contexts simultaneously — hits attention/budget limits sooner than single-doc summarization",
+      :avoid-when
+      "both contracts are >5KB AND the synthesis :llm receives the full text of both directly",
+      :recommended-alternative
+      "extract structured per-contract provisions first (compact representations), then feed those CONDENSED structures to the synthesis :llm instead of raw text"}
+     {:trait
+      "without per-contract structured extraction, the synthesis :llm hallucinates provisions that don't exist in either contract",
+      :avoid-when
+      "the synthesis :llm reads raw :contract-a + :contract-b directly without intermediate structured extraction",
+      :recommended-alternative
+      "always have an intermediate :llm with :output-schemas that extracts a typed provisions vector PER contract before the diff step — the diff :llm consumes the structured vectors, not raw text"}],
+    :domain-reasoning
+    "The representative use explicitly names 'compare two contracts' for 'key differences, similarities, and a recommendation'.",
+    :cos-good 0.9983481147906609,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9928976086881581,
+    :score 434.6713563827875,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b003-d0c0a0a0a0a3\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9983481147906609,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the synthesis stage's :reads include ALL per-source extractions structured as a per-source map — supports apples-to-apples comparison by source rather than free-form prose",
+      :good-when
+      "the sources are roughly comparable AND a structured comparison is the value (vs free-form narrative)",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]] [:code {:reads [:extract-a :extract-b] :writes [:by-source] :fn (fn [{:keys [extract-a extract-b]}] {:by-source {:a extract-a :b extract-b}})}] [:llm {:reads [:by-source] :writes [:common :differences :recommendation]}] [:final {:keys [:common :differences :recommendation]}]]"}
+     {:trait
+      "use :parallel (NOT :sequence) for the per-source extraction stages when sources are independent — extraction wall-time becomes max(per-source) not sum(per-source)",
+      :good-when
+      "sources are independent (no need to read source B before extracting source A)",
+      :recommended-pattern
+      "[:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]]"}],
+    :avoid-when
+    ["only one source — use chunked-extraction or document-analysis instead"
+     "the comparison should be a free-form narrative — use briefing-generation instead"
+     "the sources are sequentially dependent — use sequential-pipeline instead"
+     "per-source extractions use different schemas OR free-form text"
+     "source count >5 AND each source's extraction is non-trivial"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.994328-05:00"},
+    :domain-label "saas-contract-comparison",
+    :content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :domain-coverage :partial,
+    :rank 3,
+    :reasoning
+    "This is a strong alternative as a 'Comparative summary' for multi-source synthesis. It uses a similar parallel-extraction-then-synthesis pattern. However, the candidate itself notes that 'contract-comparison' is the preferred class when the structure is 'exactly diff-two-versions', making this a slightly less specific fit than the primary candidate.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "free-form per-source extraction (different :output-schemas per source or open-ended free text) makes the synthesizer's apples-to-apples comparison hard — comparable fields drift across sources",
+      :avoid-when
+      "per-source extractions use different schemas OR free-form text",
+      :recommended-alternative
+      "always use IDENTICAL :output-schemas across per-source extraction stages — comparable fields stay aligned, synthesizer can do direct per-field diff"}
+     {:trait
+      "synthesizing more than ~5 sources in a single :llm call exceeds context — the comparison loses fidelity on per-source detail",
+      :avoid-when
+      "source count >5 AND each source's extraction is non-trivial",
+      :recommended-alternative
+      "for >5 sources, hierarchical comparison: cluster sources into 2-3 groups → comparative-summary within each group → final cross-group comparison"}],
+    :domain-reasoning
+    "The representative use covers 'general N-source comparison' and 'structured comparison (common / differences / recommendation)', which matches the task's intent and output shape, though it's broader than the specific contract-domain match of the top choice.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.981261895885629,
+    :score 434.2439963008839,
+    :cos-avoid-sans-content 0.9974494016203197,
+    :fitness-score 0.85,
+    :document-id
+    ":tree-class:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9974494016203197}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the synthesis stage's :reads include ALL per-source extractions structured as a per-source map — supports apples-to-apples comparison by source rather than free-form prose",
+      :good-when
+      "the sources are roughly comparable AND a structured comparison is the value (vs free-form narrative)",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]] [:code {:reads [:extract-a :extract-b] :writes [:by-source] :fn (fn [{:keys [extract-a extract-b]}] {:by-source {:a extract-a :b extract-b}})}] [:llm {:reads [:by-source] :writes [:common :differences :recommendation]}] [:final {:keys [:common :differences :recommendation]}]]"}
+     {:trait
+      "use :parallel (NOT :sequence) for the per-source extraction stages when sources are independent — extraction wall-time becomes max(per-source) not sum(per-source)",
+      :good-when
+      "sources are independent (no need to read source B before extracting source A)",
+      :recommended-pattern
+      "[:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]]"}],
+    :avoid-when
+    ["only one source — use chunked-extraction or document-analysis instead"
+     "the comparison should be a free-form narrative — use briefing-generation instead"
+     "the sources are sequentially dependent — use sequential-pipeline instead"
+     "per-source extractions use different schemas OR free-form text"
+     "source count >5 AND each source's extraction is non-trivial"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.976888-05:00"},
+    :domain-label "saas-contract-comparison",
+    :content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :domain-coverage :partial,
+    :rank 4,
+    :reasoning
+    "Matches the 'Comparative summary' logic. It provides the necessary parallel structure and synthesis for comparing sources, but is secondary to the specialized contract comparison class.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "free-form per-source extraction (different :output-schemas per source or open-ended free text) makes the synthesizer's apples-to-apples comparison hard — comparable fields drift across sources",
+      :avoid-when
+      "per-source extractions use different schemas OR free-form text",
+      :recommended-alternative
+      "always use IDENTICAL :output-schemas across per-source extraction stages — comparable fields stay aligned, synthesizer can do direct per-field diff"}
+     {:trait
+      "synthesizing more than ~5 sources in a single :llm call exceeds context — the comparison loses fidelity on per-source detail",
+      :avoid-when
+      "source count >5 AND each source's extraction is non-trivial",
+      :recommended-alternative
+      "for >5 sources, hierarchical comparison: cluster sources into 2-3 groups → comparative-summary within each group → final cross-group comparison"}],
+    :domain-reasoning
+    "Covers multi-source comparison and structured output of differences/recommendations.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.981261895885629,
+    :score 434.2439963008839,
+    :cos-avoid-sans-content 0.9974494016203197,
+    :fitness-score 0.85,
+    :document-id
+    ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9974494016203197}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the cheap path handles the common case at fractional cost — typical economics are 10-20x cheaper per call than always-expensive",
+      :good-when
+      "the work has a long-tail difficulty distribution AND the expensive model is materially more capable on hard cases",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:model :gemini-flash :max-retries 1}}] [:llm {:reads [:input] :writes [:result] :options {:model :claude-opus :max-retries 2}}]]"}
+     {:trait
+      "wire a confidence-check (validator) between the two LLM tiers to escalate on LOW confidence, not just on outright failure — the cheap model's confident-but-wrong answers are the main risk",
+      :good-when
+      "the cheap model has a measurable tendency to be confidently wrong on hard cases",
+      :recommended-pattern
+      "[:sequence [:llm {:options {:model :gemini-flash} :writes [:result :confidence]}] [:fallback [:condition {:predicate (fn [{:keys [confidence]}] (>= confidence 0.8))}] [:llm {:options {:model :claude-opus} :writes [:result]}]]]"}],
+    :avoid-when
+    ["the backup path is deterministic (regex, template, cache) — use primary-backup instead"
+     "the cheap model is roughly capable of the full distribution — single cheap model with :max-retries is simpler"
+     "you can't measure confidence on cheap-model output — escalation won't fire correctly"
+     "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence"
+     "both tiers use the same upstream provider AND availability is a concern"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.990653-05:00"},
+    :domain-label "saas-contract-comparison",
+    :content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :domain-coverage :uncovered,
+    :rank 6,
+    :reasoning
+    "This is a 'Model cascade' for cost optimization and error recovery. While it could technically be used to process the contracts, its specific content focuses on LLM-to-LLM escalation tiers rather than the logic of comparing documents. It lacks the 'comparison' structural nodes.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "without a confidence-check between tiers, the cheap model's confident-but-wrong outputs ship without ever escalating — :fallback only catches outright failure (:status :failure), not bad answers",
+      :avoid-when
+      "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence",
+      :recommended-alternative
+      "always require a :confidence field on the cheap model's output schema AND escalate to expensive model on confidence < threshold (e.g., 0.7)"}
+     {:trait
+      "cascade with both tiers using the SAME provider correlates failures — when the provider has an outage, both tiers fail together",
+      :avoid-when
+      "both tiers use the same upstream provider AND availability is a concern",
+      :recommended-alternative
+      "use different providers for the two tiers (e.g., gemini for cheap, claude for expensive) so a provider outage degrades one tier but not both"}],
+    :domain-reasoning
+    "The domain focuses on cost economics and failure recovery between model tiers; it does not mention contract analysis, document comparison, or SaaS provisions.",
+    :cos-good 0.9918380576786536,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9887872959621684,
+    :score 434.19624311532004,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.3,
+    :document-id
+    ":tree-class:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9918380576786536,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered [],
+  :event/id #uuid "01a0a9d7-8088-7009-8ced-c2d7dca89fd9",
+  :confidence 1.0,
+  :source-sheet-id #uuid "85d346fb-5902-4fe4-8bb1-75509d68eb9d",
+  :ranked-candidates
+  [{:target-id "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 434.6713563827875}
+   {:target-id "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 434.6713563827875}
+   {:target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.85,
+    :score 434.2439963008839}
+   {:target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.85,
+    :score 434.2439963008839}
+   {:target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 434.19624311532004}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :deferred-events [],
+ :domain-children-considered [],
+ :sheet-id #uuid "85d346fb-5902-4fe4-8bb1-75509d68eb9d",
+ :payload-domain nil,
+ :pass 2,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 4 from corpus retrieval)\n#### Top match — Contract-comparison (confidence: 1.00)\nWhy this fits: This candidate perfectly matches the task's structure and domain. It explicitly describes a 'Contract-comparison tree' for comparing two contracts to produce key differences, similarities, and recommendations. Its recommended pattern matches the requested output fields (:key-differences, :similarities, :recommendation) and uses parallel structured extraction to avoid hallucinations, which is ideal for the provided contract snippets.\n\nPattern guidance (seed `:summary`):\nContract-comparison trees compare two contracts (or two versions) for key differences, similarities, and a recommendation. The proven shape: :parallel per-contract structured-extraction (:output-schemas guaranteeing typed provisions), then sequential synthesis :llm consuming the structured vectors (NOT raw text). Always extract first, then diff — feeding both raw contracts to a single synthesis :llm hits attention limits and induces hallucinated provisions.\n\nCapabilities:\n  - compares two contracts (or two versions of the same contract) for key differences and similarities\n  - produces :key-differences (provision-level diff), :similarities (shared provisions), :recommendation (which version to prefer or what to negotiate)\n  - two-input shape: separate :contract-a and :contract-b blackboard keys, not a single :document\n  - natural fit for :parallel extraction across both contracts followed by sequential diff synthesis\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** parallel per-contract extraction reduces wall-time when both contracts can be processed independently (confidence 1.00, evidence-count 1)\n    - Good when: both contracts share a roughly comparable structure AND the per-contract extraction is identical work\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:parallel [:llm {:reads [:contract-a] :writes [:provisions-a] :output-schemas {:provisions-a [:vector [:map [:topic :string] [:terms :string]]]}}] [:llm {:reads [:contract-b] :writes [:provisions-b] :output-schemas {:provisions-b [:vector [:map [:topic :string] [:terms :string]]]}}]] [:llm {:reads [:provisions-a :provisions-b] :writes [:key-differences :similarities :recommendation]}] [:final {:keys [:key-differences :similarities :recommendation]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** diff-synthesis :llm sees TWO large input contexts simultaneously — hits attention/budget limits sooner than single-doc summarization (confidence 1.00, evidence-count 1)\n    - Avoid when: both contracts are >5KB AND the synthesis :llm receives the full text of both directly\n    - Recommended fix: extract structured per-contract provisions first (compact representations), then feed those CONDENSED structures to the synthesis :llm instead of raw text\n\n  - **Failure mode:** without per-contract structured extraction, the synthesis :llm hallucinates provisions that don't exist in either contract (confidence 1.00, evidence-count 1)\n    - Avoid when: the synthesis :llm reads raw :contract-a + :contract-b directly without intermediate structured extraction\n    - Recommended fix: always have an intermediate :llm with :output-schemas that extracts a typed provisions vector PER contract before the diff step — the diff :llm consumes the structured vectors, not raw text\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - contract version-vs-version diff (e.g. provider contract v2.0 vs v3.1 — produces provision-level differences + recommendation on which to prefer)\n  - vendor-contract negotiation review (compare current draft vs prior version)\n  - any two-document structural comparison where provision-level diff matters\n\n#### Alternative #1 — Contract-comparison (confidence: 1.00)\nWhy this fits: This fingerprint shares the exact content and recommended pattern as the tree-class, providing a perfect structural and domain match for the multi-stage extraction and synthesis required for contract comparison.\n\nPattern guidance (seed `:summary`):\nContract-comparison trees compare two contracts (or two versions) for key differences, similarities, and a recommendation. The proven shape: :parallel per-contract structured-extraction (:output-schemas guaranteeing typed provisions), then sequential synthesis :llm consuming the structured vectors (NOT raw text). Always extract first, then diff — feeding both raw contracts to a single synthesis :llm hits attention limits and induces hallucinated provisions.\n\nCapabilities:\n  - compares two contracts (or two versions of the same contract) for key differences and similarities\n  - produces :key-differences (provision-level diff), :similarities (shared provisions), :recommendation (which version to prefer or what to negotiate)\n  - two-input shape: separate :contract-a and :contract-b blackboard keys, not a single :document\n  - natural fit for :parallel extraction across both contracts followed by sequential diff synthesis\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** parallel per-contract extraction reduces wall-time when both contracts can be processed independently (confidence 1.00, evidence-count 1)\n    - Good when: both contracts share a roughly comparable structure AND the per-contract extraction is identical work\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:parallel [:llm {:reads [:contract-a] :writes [:provisions-a] :output-schemas {:provisions-a [:vector [:map [:topic :string] [:terms :string]]]}}] [:llm {:reads [:contract-b] :writes [:provisions-b] :output-schemas {:provisions-b [:vector [:map [:topic :string] [:terms :string]]]}}]] [:llm {:reads [:provisions-a :provisions-b] :writes [:key-differences :similarities :recommendation]}] [:final {:keys [:key-differences :similarities :recommendation]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** diff-synthesis :llm sees TWO large input contexts simultaneously — hits attention/budget limits sooner than single-doc summarization (confidence 1.00, evidence-count 1)\n    - Avoid when: both contracts are >5KB AND the synthesis :llm receives the full text of both directly\n    - Recommended fix: extract structured per-contract provisions first (compact representations), then feed those CONDENSED structures to the synthesis :llm instead of raw text\n\n  - **Failure mode:** without per-contract structured extraction, the synthesis :llm hallucinates provisions that don't exist in either contract (confidence 1.00, evidence-count 1)\n    - Avoid when: the synthesis :llm reads raw :contract-a + :contract-b directly without intermediate structured extraction\n    - Recommended fix: always have an intermediate :llm with :output-schemas that extracts a typed provisions vector PER contract before the diff step — the diff :llm consumes the structured vectors, not raw text\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - contract version-vs-version diff (e.g. provider contract v2.0 vs v3.1 — produces provision-level differences + recommendation on which to prefer)\n  - vendor-contract negotiation review (compare current draft vs prior version)\n  - any two-document structural comparison where provision-level diff matters\n\n#### Alternative #2 — Comparative summary (confidence: 0.85)\nWhy this fits: This is a strong alternative as a 'Comparative summary' for multi-source synthesis. It uses a similar parallel-extraction-then-synthesis pattern. However, the candidate itself notes that 'contract-comparison' is the preferred class when the structure is 'exactly diff-two-versions', making this a slightly less specific fit than the primary candidate.\n\nPattern guidance (seed `:summary`):\nComparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.\n\nCapabilities:\n  - :sequence of :parallel (or :map-each over sources) per-source :llm extraction → :code aggregator → :llm synthesizer that produces a structured comparison\n  - natural for any 'read N versions/sources and produce a comparison' work — product comparison, contract diff, multi-source fact verification\n  - outputs are typically a structured comparison object (per-source key, common-elements, differences, recommendation)\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the synthesis stage's :reads include ALL per-source extractions structured as a per-source map — supports apples-to-apples comparison by source rather than free-form prose (confidence 1.00, evidence-count 1)\n    - Good when: the sources are roughly comparable AND a structured comparison is the value (vs free-form narrative)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]] [:code {:reads [:extract-a :extract-b] :writes [:by-source] :fn (fn [{:keys [extract-a extract-b]}] {:by-source {:a extract-a :b extract-b}})}] [:llm {:reads [:by-source] :writes [:common :differences :recommendation]}] [:final {:keys [:common :differences :recommendation]}]]\n      ```\n\n  - **Trait:** use :parallel (NOT :sequence) for the per-source extraction stages when sources are independent — extraction wall-time becomes max(per-source) not sum(per-source) (confidence 1.00, evidence-count 1)\n    - Good when: sources are independent (no need to read source B before extracting source A)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** free-form per-source extraction (different :output-schemas per source or open-ended free text) makes the synthesizer's apples-to-apples comparison hard — comparable fields drift across sources (confidence 1.00, evidence-count 1)\n    - Avoid when: per-source extractions use different schemas OR free-form text\n    - Recommended fix: always use IDENTICAL :output-schemas across per-source extraction stages — comparable fields stay aligned, synthesizer can do direct per-field diff\n\n  - **Failure mode:** synthesizing more than ~5 sources in a single :llm call exceeds context — the comparison loses fidelity on per-source detail (confidence 1.00, evidence-count 1)\n    - Avoid when: source count >5 AND each source's extraction is non-trivial\n    - Recommended fix: for >5 sources, hierarchical comparison: cluster sources into 2-3 groups → comparative-summary within each group → final cross-group comparison\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - product-feature comparison across 3-4 vendor docs: per-vendor extraction → side-by-side feature matrix\n  - contract diff across 2 versions: per-version extraction → key-differences + similarities + recommendation\n  - multi-source fact verification: per-source claim extraction → common claims + contradictions + confidence\n\n#### Alternative #3 — Comparative summary (confidence: 0.85)\nWhy this fits: Matches the 'Comparative summary' logic. It provides the necessary parallel structure and synthesis for comparing sources, but is secondary to the specialized contract comparison class.\n\nPattern guidance (seed `:summary`):\nComparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.\n\nCapabilities:\n  - :sequence of :parallel (or :map-each over sources) per-source :llm extraction → :code aggregator → :llm synthesizer that produces a structured comparison\n  - natural for any 'read N versions/sources and produce a comparison' work — product comparison, contract diff, multi-source fact verification\n  - outputs are typically a structured comparison object (per-source key, common-elements, differences, recommendation)\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the synthesis stage's :reads include ALL per-source extractions structured as a per-source map — supports apples-to-apples comparison by source rather than free-form prose (confidence 1.00, evidence-count 1)\n    - Good when: the sources are roughly comparable AND a structured comparison is the value (vs free-form narrative)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]] [:code {:reads [:extract-a :extract-b] :writes [:by-source] :fn (fn [{:keys [extract-a extract-b]}] {:by-source {:a extract-a :b extract-b}})}] [:llm {:reads [:by-source] :writes [:common :differences :recommendation]}] [:final {:keys [:common :differences :recommendation]}]]\n      ```\n\n  - **Trait:** use :parallel (NOT :sequence) for the per-source extraction stages when sources are independent — extraction wall-time becomes max(per-source) not sum(per-source) (confidence 1.00, evidence-count 1)\n    - Good when: sources are independent (no need to read source B before extracting source A)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** free-form per-source extraction (different :output-schemas per source or open-ended free text) makes the synthesizer's apples-to-apples comparison hard — comparable fields drift across sources (confidence 1.00, evidence-count 1)\n    - Avoid when: per-source extractions use different schemas OR free-form text\n    - Recommended fix: always use IDENTICAL :output-schemas across per-source extraction stages — comparable fields stay aligned, synthesizer can do direct per-field diff\n\n  - **Failure mode:** synthesizing more than ~5 sources in a single :llm call exceeds context — the comparison loses fidelity on per-source detail (confidence 1.00, evidence-count 1)\n    - Avoid when: source count >5 AND each source's extraction is non-trivial\n    - Recommended fix: for >5 sources, hierarchical comparison: cluster sources into 2-3 groups → comparative-summary within each group → final cross-group comparison\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - product-feature comparison across 3-4 vendor docs: per-vendor extraction → side-by-side feature matrix\n  - contract diff across 2 versions: per-version extraction → key-differences + similarities + recommendation\n  - multi-source fact verification: per-source claim extraction → common claims + contradictions + confidence\n\n### Behavioral competencies (top 1 from corpus retrieval)\n1. Behavioral: Transformation (confidence: 0.80)\n   Why this fits: The task is a 'mechanical reshape of data between deterministic shapes' (Contract text to structured JSON-like vector). While it requires judgment to extract the provisions, the final output structure is a classic Transformation shape (a vector of maps for key-differences). The avoid-when for 'semantic reasoning' is noted, but the structured comparison requirement makes this the closest behavioral fit for the output generation.\n\n   Guidance (seed `:summary`):\n   Transformation is mechanical reshape of data between deterministic shapes. ALWAYS use :code (not :llm) for deterministic transformations — preserves fidelity, costs nothing, runs in ms; :llm for transformation produces non-deterministic output. For per-item independent transformations, :map-each isolates per-item failures. ALWAYS declare :output-schemas on transformation output and :input-schemas on downstream :reads so shape mismatch fails at the boundary, not deep in the consumer. Composes into etl-pipeline (sequential transform chain), parallel-sum (map-reduce transformation), sequential-pipeline shells, and map-reduce shells. Avoid for transformations that need judgment (semantic rephrasing / style shift — use :llm) or for unstructured input (extract first).\n\nCapabilities:\n  - given input data + a target shape spec, emit the input restructured to the target shape\n  - natural fit anywhere a tree needs to change data shape without semantic interpretation\n  - outputs are typically a single restructured value or a vector of per-item transformations\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** implement transformations in :code (NOT :llm) when the mapping is deterministic — preserves byte-for-byte fidelity, costs zero tokens, runs in milliseconds (confidence 1.00, evidence-count 1)\n    - Good when: the transformation rule can be expressed as a pure function over the input\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:input] :writes [:output] :fn (fn [{:keys [inputs]}] {:output (mapv (fn [r] (select-keys r [:a :b])) (:input inputs))})}]\n      ```\n\n  - **Trait:** for per-item independent transformations over a vector, use :map-each rather than a single batch :code call when the per-item work is non-trivial — supports per-item failure isolation (confidence 1.00, evidence-count 1)\n    - Good when: items can fail independently AND partial success has value\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :records :as :record :writes [:transformed]} [:code {:reads [:record] :writes [:transformed] :fn (fn [{:keys [inputs]}] {:transformed (assoc (:record inputs) :stamp \"x\")})}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** using :llm for a deterministic transformation (CSV → JSON, snake_case → camelCase) produces non-deterministic output AND wastes tokens (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation rule is fully specifiable\n    - Recommended fix: always :code for deterministic transformations; reserve :llm for transformations that need judgment (semantic-rephrasing / style-shift / domain-translation)\n\n  - **Failure mode:** transformations without :output-schemas on the downstream :reads break silently when an upstream change shifts the output shape — the consumer gets garbage instead of an error (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation feeds another stage that binds on specific fields\n    - Recommended fix: declare :output-schemas on the transformation output AND :input-schemas on the downstream :reads — shape mismatch fails loudly at the boundary, not deep in the consumer\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - CSV row → JSON object mapping per-field\n  - extracted entity records → DB-row shape with derived fields\n  - input list → output list with N filters / projections applied\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 86275302-0c3d-35ae-b74e-abd4f27984eb)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nCompare two SaaS subscription contracts and produce a structured\ncomparison highlighting key provisions that differ.\n\nContract A — Enterprise tier, signed by ACME Corp:\n\"Renewal: Annual auto-renewal unless cancelled with 60 days notice.\nPrice escalation capped at 3% per year. Termination for convenience\npermitted with 90 days notice. Service credit of 10% MRR for any month\nwith <99.9% uptime. Data export: full export in JSON within 30 days of\ntermination at no charge.\"\n\nContract B — Enterprise tier, signed by Globex Inc:\n\"Renewal: 3-year auto-renewal unless cancelled with 90 days notice\nprior to the END of the 3-year term (no partial-term termination).\nPrice escalation: indexed to CPI plus 2%, no cap. Termination for\ncause only after 30-day cure period. Service credit of 5% MRR after\nSECOND consecutive month of <99.5% uptime. Data export: structured\nexport available for $50K one-time fee, 90-day timeline.\"\n\nProduce a structured comparison:\n- :key-differences — vector of {:topic :a-provision :b-provision :impact-summary}\n- :similarities — provisions that materially align\n- :recommendation — for a buyer in 2026, which contract structure is more favorable\n  and what changes to request if forced to sign the less-favorable one",
+ :june-flags
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 16162,
+ :confidence 1.0,
+ :was-fresh-mint? false,
+ :assigned-via :match}

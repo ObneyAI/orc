@@ -1,0 +1,379 @@
+{:assigned-tree-id #uuid "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+ :tick-id #uuid "a871318b-f3e3-4ba3-a475-abc1131f384a",
+ :slug "16-contractcompare-b",
+ :parent-tree-id nil,
+ :domain-label nil,
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "contract-comparison",
+  :domain-reasoning
+  "The representative use explicitly covers comparing two versions of a contract for key differences and recommendations."},
+ :node-id #uuid "52a86bc3-4b8b-4175-adfa-c44fcd3a9e19",
+ :top-1
+ {:target-id "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+  :fitness-score 1.0,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "contract-comparison"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+  :classified-at "2026-09-16T09:40:16.723170-05:00",
+  :reasoning
+  "This candidate perfectly matches the task's structural requirement to compare two versions of a contract. Its recommended pattern uses parallel extraction of provisions followed by a synthesis LLM to identify differences and recommendations, which aligns with the request for a summary of changes, impact analysis, and negotiation points.",
+  :outcome :matched,
+  :source-node-id #uuid "52a86bc3-4b8b-4175-adfa-c44fcd3a9e19",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "b3597aa7-3957-3734-90c6-531d27c08f67",
+    :confidence 0.95,
+    :was-fresh-mint? false,
+    :reasoning
+    "This candidate perfectly matches the task's core requirement to reason over specific sections (payment, IP, etc.) to produce 'structured findings' and 'impact' analysis. Its recommended-pattern for multi-dimensional analysis (using :parallel for risks/opportunities) is a direct fit for the buyer's need to analyze orthogonal dimensions like 'payment terms' and 'indemnities' simultaneously. It also emphasizes tying findings to specific items, which supports the task's requirement to quote old and new text.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.85,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task requires a final 'executive summary' and 'recommendation' integrated from the analysis, which is the definition of synthesis. The recommended-pattern of scaffolding long artifacts via a :code-built outline is highly relevant for a multi-section report (summary, diffs, impact, recommendation) to ensure coverage of both document versions.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "0f11dba5-c331-3cdf-81fa-8ee114fc224f",
+    :confidence 0.6,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task asks for a 'recommendation with negotiation points', which functions as a critique of the 2025 version's impact on the buyer. The strength of requiring 'suggested-fix' (negotiation points) tied to 'located issues' (specific sections) aligns with the task's goal of actionable buyer advice.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "a871318b-f3e3-4ba3-a475-abc1131f384a",
+  :event/tags
+  #{[:description-target #uuid "00000000-c1c1-4001-b003-d0c0a0a0a0a3"]
+    [:tick #uuid "a871318b-f3e3-4ba3-a475-abc1131f384a"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T14:40:16.723369Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "contract-comparison",
+   :domain-reasoning
+   "The representative use explicitly covers comparing two versions of a contract for key differences and recommendations."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "parallel per-contract extraction reduces wall-time when both contracts can be processed independently",
+      :good-when
+      "both contracts share a roughly comparable structure AND the per-contract extraction is identical work",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:contract-a] :writes [:provisions-a] :output-schemas {:provisions-a [:vector [:map [:topic :string] [:terms :string]]]}}] [:llm {:reads [:contract-b] :writes [:provisions-b] :output-schemas {:provisions-b [:vector [:map [:topic :string] [:terms :string]]]}}]] [:llm {:reads [:provisions-a :provisions-b] :writes [:key-differences :similarities :recommendation]}] [:final {:keys [:key-differences :similarities :recommendation]}]]"}],
+    :avoid-when
+    ["only one contract is provided — use risk-analysis or single-document extraction instead"
+     "the comparison is purely textual diff (line-by-line) — use a non-LLM diff tool"
+     "more than two contracts — extend with :map-each over a vector of contracts; this seed's pattern doesn't scale beyond two directly"
+     "both contracts are >5KB AND the synthesis :llm receives the full text of both directly"
+     "the synthesis :llm reads raw :contract-a + :contract-b directly without intermediate structured extraction"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.729068-05:00"},
+    :domain-label "contract-comparison",
+    :content
+    "Contract-comparison trees compare two contracts (or two versions) for key differences, similarities, and a recommendation. The proven shape: :parallel per-contract structured-extraction (:output-schemas guaranteeing typed provisions), then sequential synthesis :llm consuming the structured vectors (NOT raw text). Always extract first, then diff — feeding both raw contracts to a single synthesis :llm hits attention limits and induces hallucinated provisions.",
+    :domain-coverage :covered,
+    :rank 6,
+    :reasoning
+    "This candidate perfectly matches the task's structural requirement to compare two versions of a contract. Its recommended pattern uses parallel extraction of provisions followed by a synthesis LLM to identify differences and recommendations, which aligns with the request for a summary of changes, impact analysis, and negotiation points.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "diff-synthesis :llm sees TWO large input contexts simultaneously — hits attention/budget limits sooner than single-doc summarization",
+      :avoid-when
+      "both contracts are >5KB AND the synthesis :llm receives the full text of both directly",
+      :recommended-alternative
+      "extract structured per-contract provisions first (compact representations), then feed those CONDENSED structures to the synthesis :llm instead of raw text"}
+     {:trait
+      "without per-contract structured extraction, the synthesis :llm hallucinates provisions that don't exist in either contract",
+      :avoid-when
+      "the synthesis :llm reads raw :contract-a + :contract-b directly without intermediate structured extraction",
+      :recommended-alternative
+      "always have an intermediate :llm with :output-schemas that extracts a typed provisions vector PER contract before the diff step — the diff :llm consumes the structured vectors, not raw text"}],
+    :domain-reasoning
+    "The representative use explicitly covers comparing two versions of a contract for key differences and recommendations.",
+    :cos-good 0.9966373128523094,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9946565553538281,
+    :score 446.2578591182074,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-class:#uuid \"00000000-c1c1-4001-b003-d0c0a0a0a0a3\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9966373128523094,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "parallel per-contract extraction reduces wall-time when both contracts can be processed independently",
+      :good-when
+      "both contracts share a roughly comparable structure AND the per-contract extraction is identical work",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:contract-a] :writes [:provisions-a] :output-schemas {:provisions-a [:vector [:map [:topic :string] [:terms :string]]]}}] [:llm {:reads [:contract-b] :writes [:provisions-b] :output-schemas {:provisions-b [:vector [:map [:topic :string] [:terms :string]]]}}]] [:llm {:reads [:provisions-a :provisions-b] :writes [:key-differences :similarities :recommendation]}] [:final {:keys [:key-differences :similarities :recommendation]}]]"}],
+    :avoid-when
+    ["only one contract is provided — use risk-analysis or single-document extraction instead"
+     "the comparison is purely textual diff (line-by-line) — use a non-LLM diff tool"
+     "more than two contracts — extend with :map-each over a vector of contracts; this seed's pattern doesn't scale beyond two directly"
+     "both contracts are >5KB AND the synthesis :llm receives the full text of both directly"
+     "the synthesis :llm reads raw :contract-a + :contract-b directly without intermediate structured extraction"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.712435-05:00"},
+    :domain-label "contract-comparison",
+    :content
+    "Contract-comparison trees compare two contracts (or two versions) for key differences, similarities, and a recommendation. The proven shape: :parallel per-contract structured-extraction (:output-schemas guaranteeing typed provisions), then sequential synthesis :llm consuming the structured vectors (NOT raw text). Always extract first, then diff — feeding both raw contracts to a single synthesis :llm hits attention limits and induces hallucinated provisions.",
+    :domain-coverage :covered,
+    :rank 5,
+    :reasoning
+    "Identical content to the top choice, providing the correct parallel-extraction-then-diff-synthesis shape required for a two-document contract analysis.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "diff-synthesis :llm sees TWO large input contexts simultaneously — hits attention/budget limits sooner than single-doc summarization",
+      :avoid-when
+      "both contracts are >5KB AND the synthesis :llm receives the full text of both directly",
+      :recommended-alternative
+      "extract structured per-contract provisions first (compact representations), then feed those CONDENSED structures to the synthesis :llm instead of raw text"}
+     {:trait
+      "without per-contract structured extraction, the synthesis :llm hallucinates provisions that don't exist in either contract",
+      :avoid-when
+      "the synthesis :llm reads raw :contract-a + :contract-b directly without intermediate structured extraction",
+      :recommended-alternative
+      "always have an intermediate :llm with :output-schemas that extracts a typed provisions vector PER contract before the diff step — the diff :llm consumes the structured vectors, not raw text"}],
+    :domain-reasoning
+    "The representative use explicitly covers comparing two versions of a contract for key differences and recommendations.",
+    :cos-good 0.9966373128523094,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9946565553538281,
+    :score 446.2578591182074,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b003-d0c0a0a0a0a3\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9966373128523094,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured :output-schemas reliably surfaces issues with consistent severity + citation shape",
+      :good-when
+      "document has natural sections (paragraphs, clauses) AND each section can be independently scanned for issues",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:section-issues] :output-schemas {:section-issues [:vector [:map [:concern :string] [:severity [:enum :high :medium :low]] [:area-of-law :string] [:citation :string] [:recommendation :string]]]}}]] [:aggregate {:from :results :writes [:issues]}] [:code {:reads [:issues] :writes [:severity-summary] :fn (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))})}] [:final {:keys [:issues :severity-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section structure — chunk-by-size + tolerate boundary-straddling issues"
+     "the task is general risk identification (no legal-specific requirements like citations) — use risk-analysis instead"
+     "the per-section :llm's :output-schemas does NOT include a :citation field"
+     "the severity-summary step is a separate :llm call instead of a :code transform"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.729481-05:00"},
+    :domain-label "contract-comparison",
+    :content
+    "Legal-issue-detection trees flag legal concerns in a document with per-issue severity, area-of-law, source citation, and recommendation. The proven shape mirrors risk-analysis but with citation as a first-class output: per-section :map-each with :output-schemas requiring :citation field, then :code (NOT :llm) for the severity-summary rollup. Always require citation in the schema so users can verify the model's flags against the source.",
+    :domain-coverage :partial,
+    :rank 1,
+    :reasoning
+    "While primarily for issue detection, this candidate's focus on per-section mapping with :citation as a first-class output is highly relevant for the requirement to quote old and new text for each changed section. It provides a more granular look than general risk analysis.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "issues without citation fields become 'recommendations the user can't verify' — model needs to be explicitly required to cite",
+      :avoid-when
+      "the per-section :llm's :output-schemas does NOT include a :citation field",
+      :recommended-alternative
+      "always include :citation in the :output-schemas + word the instruction to require quoting the source phrase that triggered the issue"}
+     {:trait
+      "severity-summary computed via :llm wastes tokens — it's pure :code work (frequencies over a vector)",
+      :avoid-when
+      "the severity-summary step is a separate :llm call instead of a :code transform",
+      :recommended-alternative
+      "use a :code node with (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))}) — deterministic, fast, zero tokens"}],
+    :domain-reasoning
+    "Matches the legal document analysis subject matter and the requirement for source citation/quotes, though focus is on 'issue detection' rather than 'comparison'.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9932975211351173,
+    :score 446.4230408427063,
+    :cos-avoid-sans-content 0.9988455128548156,
+    :fitness-score 0.8,
+    :document-id
+    ":tree-class:#uuid \"00000000-c1c1-4001-b004-d0c0a0a0a0a4\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9988455128548156}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured :output-schemas reliably surfaces issues with consistent severity + citation shape",
+      :good-when
+      "document has natural sections (paragraphs, clauses) AND each section can be independently scanned for issues",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:section-issues] :output-schemas {:section-issues [:vector [:map [:concern :string] [:severity [:enum :high :medium :low]] [:area-of-law :string] [:citation :string] [:recommendation :string]]]}}]] [:aggregate {:from :results :writes [:issues]}] [:code {:reads [:issues] :writes [:severity-summary] :fn (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))})}] [:final {:keys [:issues :severity-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section structure — chunk-by-size + tolerate boundary-straddling issues"
+     "the task is general risk identification (no legal-specific requirements like citations) — use risk-analysis instead"
+     "the per-section :llm's :output-schemas does NOT include a :citation field"
+     "the severity-summary step is a separate :llm call instead of a :code transform"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.712755-05:00"},
+    :domain-label "contract-comparison",
+    :content
+    "Legal-issue-detection trees flag legal concerns in a document with per-issue severity, area-of-law, source citation, and recommendation. The proven shape mirrors risk-analysis but with citation as a first-class output: per-section :map-each with :output-schemas requiring :citation field, then :code (NOT :llm) for the severity-summary rollup. Always require citation in the schema so users can verify the model's flags against the source.",
+    :domain-coverage :partial,
+    :rank 2,
+    :reasoning
+    "Same as the tree-class version; strong fit for the requirement to quote specific text via the :citation field in the :output-schemas, which ensures the 'old and new text' quotes are captured reliably.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "issues without citation fields become 'recommendations the user can't verify' — model needs to be explicitly required to cite",
+      :avoid-when
+      "the per-section :llm's :output-schemas does NOT include a :citation field",
+      :recommended-alternative
+      "always include :citation in the :output-schemas + word the instruction to require quoting the source phrase that triggered the issue"}
+     {:trait
+      "severity-summary computed via :llm wastes tokens — it's pure :code work (frequencies over a vector)",
+      :avoid-when
+      "the severity-summary step is a separate :llm call instead of a :code transform",
+      :recommended-alternative
+      "use a :code node with (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))}) — deterministic, fast, zero tokens"}],
+    :domain-reasoning
+    "Matches the legal document analysis subject matter and the requirement for source citation/quotes, though focus is on 'issue detection' rather than 'comparison'.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9932975211351173,
+    :score 446.4230408427063,
+    :cos-avoid-sans-content 0.9988455128548156,
+    :fitness-score 0.8,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b004-d0c0a0a0a0a4\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9988455128548156}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured output schema reliably classifies risks across long documents",
+      :good-when
+      "document has natural sections (clauses, paragraphs) AND each section can be independently classified",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:risks] :output-schemas {:risks [:vector [:map [:obligation :string] [:severity [:enum :high :medium :low]] [:justification :string]]]}}]] [:aggregate {:from :results :writes [:risk-matrix]}] [:llm {:reads [:document :risk-matrix] :writes [:executive-summary]}] [:final {:keys [:risk-matrix :executive-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section boundaries — chunk-by-size and tolerate that some obligations straddle boundaries"
+     "output doesn't need per-item categorization — use simpler entity-extraction patterns instead"
+     "document is >5KB AND tree is a single :llm without per-section chunking"
+     "the per-section :llm writes severity as a free-form string"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.728656-05:00"},
+    :domain-label "contract-comparison",
+    :content
+    "Risk-analysis trees identify and categorize risks/obligations from a document into a per-item :risk-matrix (HIGH/MEDIUM/LOW + justification) plus an :executive-summary. The proven shape is per-section :map-each with structured :output-schemas: split by section delimiter, classify each section under bounded concurrency, aggregate the matrix, then synthesize the executive summary. Always use :output-schemas to constrain severity to an enum — free-form strings drift across iterations and break aggregation.",
+    :domain-coverage :partial,
+    :rank 4,
+    :reasoning
+    "Fits the analytical part of the task (impact on payment terms, IP, audit rights) using per-section classification. However, it lacks the specific two-document comparison logic found in the contract-comparison class.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "single :llm classification on a long document misses many obligations because of attention-budget exhaustion",
+      :avoid-when
+      "document is >5KB AND tree is a single :llm without per-section chunking",
+      :recommended-alternative
+      "split into sections (use :chunk-document with :delimiter) and run per-section :map-each :llm with bounded concurrency"}
+     {:trait
+      "without :output-schemas, severity classifications drift to inconsistent strings ('high', 'HIGH', 'High', 'critical') across iterations — downstream aggregation breaks",
+      :avoid-when
+      "the per-section :llm writes severity as a free-form string",
+      :recommended-alternative
+      "always declare :output-schemas with severity as [:enum :high :medium :low] so the model is constrained to consistent values"}],
+    :domain-reasoning
+    "Covers identifying risks/obligations in legal documents but lacks the specific 'comparison' material/output kind.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9930873062062795,
+    :score 446.28059926454097,
+    :cos-avoid-sans-content 0.9982966267155728,
+    :fitness-score 0.7,
+    :document-id
+    ":tree-class:#uuid \"00000000-c1c1-4001-b002-d0c0a0a0a0a2\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9982966267155728}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered [],
+  :event/id #uuid "01a0aaa9-4b53-70af-9b98-0b3a09915e49",
+  :confidence 1.0,
+  :source-sheet-id #uuid "a82a0e53-129d-4398-9fc1-272076190c53",
+  :ranked-candidates
+  [{:target-id "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 446.2578591182074}
+   {:target-id "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 446.2578591182074}
+   {:target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.8,
+    :score 446.4230408427063}
+   {:target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.8,
+    :score 446.4230408427063}
+   {:target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.7,
+    :score 446.28059926454097}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :deferred-events [],
+ :domain-children-considered [],
+ :sheet-id #uuid "a82a0e53-129d-4398-9fc1-272076190c53",
+ :payload-domain nil,
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 5 from corpus retrieval)\n#### Top match — Contract-comparison (confidence: 1.00)\nWhy this fits: This candidate perfectly matches the task's structural requirement to compare two versions of a contract. Its recommended pattern uses parallel extraction of provisions followed by a synthesis LLM to identify differences and recommendations, which aligns with the request for a summary of changes, impact analysis, and negotiation points.\n\nPattern guidance (seed `:summary`):\nContract-comparison trees compare two contracts (or two versions) for key differences, similarities, and a recommendation. The proven shape: :parallel per-contract structured-extraction (:output-schemas guaranteeing typed provisions), then sequential synthesis :llm consuming the structured vectors (NOT raw text). Always extract first, then diff — feeding both raw contracts to a single synthesis :llm hits attention limits and induces hallucinated provisions.\n\nCapabilities:\n  - compares two contracts (or two versions of the same contract) for key differences and similarities\n  - produces :key-differences (provision-level diff), :similarities (shared provisions), :recommendation (which version to prefer or what to negotiate)\n  - two-input shape: separate :contract-a and :contract-b blackboard keys, not a single :document\n  - natural fit for :parallel extraction across both contracts followed by sequential diff synthesis\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** parallel per-contract extraction reduces wall-time when both contracts can be processed independently (confidence 1.00, evidence-count 1)\n    - Good when: both contracts share a roughly comparable structure AND the per-contract extraction is identical work\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:parallel [:llm {:reads [:contract-a] :writes [:provisions-a] :output-schemas {:provisions-a [:vector [:map [:topic :string] [:terms :string]]]}}] [:llm {:reads [:contract-b] :writes [:provisions-b] :output-schemas {:provisions-b [:vector [:map [:topic :string] [:terms :string]]]}}]] [:llm {:reads [:provisions-a :provisions-b] :writes [:key-differences :similarities :recommendation]}] [:final {:keys [:key-differences :similarities :recommendation]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** diff-synthesis :llm sees TWO large input contexts simultaneously — hits attention/budget limits sooner than single-doc summarization (confidence 1.00, evidence-count 1)\n    - Avoid when: both contracts are >5KB AND the synthesis :llm receives the full text of both directly\n    - Recommended fix: extract structured per-contract provisions first (compact representations), then feed those CONDENSED structures to the synthesis :llm instead of raw text\n\n  - **Failure mode:** without per-contract structured extraction, the synthesis :llm hallucinates provisions that don't exist in either contract (confidence 1.00, evidence-count 1)\n    - Avoid when: the synthesis :llm reads raw :contract-a + :contract-b directly without intermediate structured extraction\n    - Recommended fix: always have an intermediate :llm with :output-schemas that extracts a typed provisions vector PER contract before the diff step — the diff :llm consumes the structured vectors, not raw text\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - contract version-vs-version diff (e.g. provider contract v2.0 vs v3.1 — produces provision-level differences + recommendation on which to prefer)\n  - vendor-contract negotiation review (compare current draft vs prior version)\n  - any two-document structural comparison where provision-level diff matters\n\n#### Alternative #1 — Contract-comparison (confidence: 1.00)\nWhy this fits: Identical content to the top choice, providing the correct parallel-extraction-then-diff-synthesis shape required for a two-document contract analysis.\n\nPattern guidance (seed `:summary`):\nContract-comparison trees compare two contracts (or two versions) for key differences, similarities, and a recommendation. The proven shape: :parallel per-contract structured-extraction (:output-schemas guaranteeing typed provisions), then sequential synthesis :llm consuming the structured vectors (NOT raw text). Always extract first, then diff — feeding both raw contracts to a single synthesis :llm hits attention limits and induces hallucinated provisions.\n\nCapabilities:\n  - compares two contracts (or two versions of the same contract) for key differences and similarities\n  - produces :key-differences (provision-level diff), :similarities (shared provisions), :recommendation (which version to prefer or what to negotiate)\n  - two-input shape: separate :contract-a and :contract-b blackboard keys, not a single :document\n  - natural fit for :parallel extraction across both contracts followed by sequential diff synthesis\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** parallel per-contract extraction reduces wall-time when both contracts can be processed independently (confidence 1.00, evidence-count 1)\n    - Good when: both contracts share a roughly comparable structure AND the per-contract extraction is identical work\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:parallel [:llm {:reads [:contract-a] :writes [:provisions-a] :output-schemas {:provisions-a [:vector [:map [:topic :string] [:terms :string]]]}}] [:llm {:reads [:contract-b] :writes [:provisions-b] :output-schemas {:provisions-b [:vector [:map [:topic :string] [:terms :string]]]}}]] [:llm {:reads [:provisions-a :provisions-b] :writes [:key-differences :similarities :recommendation]}] [:final {:keys [:key-differences :similarities :recommendation]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** diff-synthesis :llm sees TWO large input contexts simultaneously — hits attention/budget limits sooner than single-doc summarization (confidence 1.00, evidence-count 1)\n    - Avoid when: both contracts are >5KB AND the synthesis :llm receives the full text of both directly\n    - Recommended fix: extract structured per-contract provisions first (compact representations), then feed those CONDENSED structures to the synthesis :llm instead of raw text\n\n  - **Failure mode:** without per-contract structured extraction, the synthesis :llm hallucinates provisions that don't exist in either contract (confidence 1.00, evidence-count 1)\n    - Avoid when: the synthesis :llm reads raw :contract-a + :contract-b directly without intermediate structured extraction\n    - Recommended fix: always have an intermediate :llm with :output-schemas that extracts a typed provisions vector PER contract before the diff step — the diff :llm consumes the structured vectors, not raw text\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - contract version-vs-version diff (e.g. provider contract v2.0 vs v3.1 — produces provision-level differences + recommendation on which to prefer)\n  - vendor-contract negotiation review (compare current draft vs prior version)\n  - any two-document structural comparison where provision-level diff matters\n\n#### Alternative #2 — Legal-issue-detection (confidence: 0.80)\nWhy this fits: While primarily for issue detection, this candidate's focus on per-section mapping with :citation as a first-class output is highly relevant for the requirement to quote old and new text for each changed section. It provides a more granular look than general risk analysis.\n\nPattern guidance (seed `:summary`):\nLegal-issue-detection trees flag legal concerns in a document with per-issue severity, area-of-law, source citation, and recommendation. The proven shape mirrors risk-analysis but with citation as a first-class output: per-section :map-each with :output-schemas requiring :citation field, then :code (NOT :llm) for the severity-summary rollup. Always require citation in the schema so users can verify the model's flags against the source.\n\nCapabilities:\n  - flags legal concerns in a document — per-issue severity + area-of-law + source citation + recommendation\n  - produces :issues (vector with per-item structure) + :severity-summary (rolled-up counts by severity)\n  - FLAG-LOUDER variant of risk-analysis: citations back to source AND recommendations are first-class outputs\n  - natural decomposition: per-section issue identification, then aggregation, then severity rollup\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** per-section :map-each with structured :output-schemas reliably surfaces issues with consistent severity + citation shape (confidence 1.00, evidence-count 1)\n    - Good when: document has natural sections (paragraphs, clauses) AND each section can be independently scanned for issues\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:section-issues] :output-schemas {:section-issues [:vector [:map [:concern :string] [:severity [:enum :high :medium :low]] [:area-of-law :string] [:citation :string] [:recommendation :string]]]}}]] [:aggregate {:from :results :writes [:issues]}] [:code {:reads [:issues] :writes [:severity-summary] :fn (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))})}] [:final {:keys [:issues :severity-summary]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** issues without citation fields become 'recommendations the user can't verify' — model needs to be explicitly required to cite (confidence 1.00, evidence-count 1)\n    - Avoid when: the per-section :llm's :output-schemas does NOT include a :citation field\n    - Recommended fix: always include :citation in the :output-schemas + word the instruction to require quoting the source phrase that triggered the issue\n\n  - **Failure mode:** severity-summary computed via :llm wastes tokens — it's pure :code work (frequencies over a vector) (confidence 1.00, evidence-count 1)\n    - Avoid when: the severity-summary step is a separate :llm call instead of a :code transform\n    - Recommended fix: use a :code node with (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))}) — deterministic, fast, zero tokens\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - compliance review of a draft regulation or policy\n  - legal due diligence of a contract or agreement\n  - audit of a corporate document for liability exposure\n\n#### Alternative #3 — Legal-issue-detection (confidence: 0.80)\nWhy this fits: Same as the tree-class version; strong fit for the requirement to quote specific text via the :citation field in the :output-schemas, which ensures the 'old and new text' quotes are captured reliably.\n\nPattern guidance (seed `:summary`):\nLegal-issue-detection trees flag legal concerns in a document with per-issue severity, area-of-law, source citation, and recommendation. The proven shape mirrors risk-analysis but with citation as a first-class output: per-section :map-each with :output-schemas requiring :citation field, then :code (NOT :llm) for the severity-summary rollup. Always require citation in the schema so users can verify the model's flags against the source.\n\nCapabilities:\n  - flags legal concerns in a document — per-issue severity + area-of-law + source citation + recommendation\n  - produces :issues (vector with per-item structure) + :severity-summary (rolled-up counts by severity)\n  - FLAG-LOUDER variant of risk-analysis: citations back to source AND recommendations are first-class outputs\n  - natural decomposition: per-section issue identification, then aggregation, then severity rollup\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** per-section :map-each with structured :output-schemas reliably surfaces issues with consistent severity + citation shape (confidence 1.00, evidence-count 1)\n    - Good when: document has natural sections (paragraphs, clauses) AND each section can be independently scanned for issues\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:section-issues] :output-schemas {:section-issues [:vector [:map [:concern :string] [:severity [:enum :high :medium :low]] [:area-of-law :string] [:citation :string] [:recommendation :string]]]}}]] [:aggregate {:from :results :writes [:issues]}] [:code {:reads [:issues] :writes [:severity-summary] :fn (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))})}] [:final {:keys [:issues :severity-summary]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** issues without citation fields become 'recommendations the user can't verify' — model needs to be explicitly required to cite (confidence 1.00, evidence-count 1)\n    - Avoid when: the per-section :llm's :output-schemas does NOT include a :citation field\n    - Recommended fix: always include :citation in the :output-schemas + word the instruction to require quoting the source phrase that triggered the issue\n\n  - **Failure mode:** severity-summary computed via :llm wastes tokens — it's pure :code work (frequencies over a vector) (confidence 1.00, evidence-count 1)\n    - Avoid when: the severity-summary step is a separate :llm call instead of a :code transform\n    - Recommended fix: use a :code node with (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))}) — deterministic, fast, zero tokens\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - compliance review of a draft regulation or policy\n  - legal due diligence of a contract or agreement\n  - audit of a corporate document for liability exposure\n\n#### Alternative #4 — Risk-analysis (confidence: 0.70)\nWhy this fits: Fits the analytical part of the task (impact on payment terms, IP, audit rights) using per-section classification. However, it lacks the specific two-document comparison logic found in the contract-comparison class.\n\nPattern guidance (seed `:summary`):\nRisk-analysis trees identify and categorize risks/obligations from a document into a per-item :risk-matrix (HIGH/MEDIUM/LOW + justification) plus an :executive-summary. The proven shape is per-section :map-each with structured :output-schemas: split by section delimiter, classify each section under bounded concurrency, aggregate the matrix, then synthesize the executive summary. Always use :output-schemas to constrain severity to an enum — free-form strings drift across iterations and break aggregation.\n\nCapabilities:\n  - identifies and categorizes risks/obligations in a document with severity ratings\n  - produces a risk-matrix (per-obligation HIGH/MEDIUM/LOW classification + justification) + executive-summary\n  - classification-flavored extraction; per-clause/per-section processing is the natural decomposition\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** per-section :map-each with structured output schema reliably classifies risks across long documents (confidence 1.00, evidence-count 1)\n    - Good when: document has natural sections (clauses, paragraphs) AND each section can be independently classified\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:risks] :output-schemas {:risks [:vector [:map [:obligation :string] [:severity [:enum :high :medium :low]] [:justification :string]]]}}]] [:aggregate {:from :results :writes [:risk-matrix]}] [:llm {:reads [:document :risk-matrix] :writes [:executive-summary]}] [:final {:keys [:risk-matrix :executive-summary]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** single :llm classification on a long document misses many obligations because of attention-budget exhaustion (confidence 1.00, evidence-count 1)\n    - Avoid when: document is >5KB AND tree is a single :llm without per-section chunking\n    - Recommended fix: split into sections (use :chunk-document with :delimiter) and run per-section :map-each :llm with bounded concurrency\n\n  - **Failure mode:** without :output-schemas, severity classifications drift to inconsistent strings ('high', 'HIGH', 'High', 'critical') across iterations — downstream aggregation breaks (confidence 1.00, evidence-count 1)\n    - Avoid when: the per-section :llm writes severity as a free-form string\n    - Recommended fix: always declare :output-schemas with severity as [:enum :high :medium :low] so the model is constrained to consistent values\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - contract risk assessment (per-clause obligation extraction)\n  - regulatory-document risk inventory (per-section compliance review)\n  - any classification-heavy extraction where consistent enum values matter\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral: Analysis (confidence: 0.95)\n   Why this fits: This candidate perfectly matches the task's core requirement to reason over specific sections (payment, IP, etc.) to produce 'structured findings' and 'impact' analysis. Its recommended-pattern for multi-dimensional analysis (using :parallel for risks/opportunities) is a direct fit for the buyer's need to analyze orthogonal dimensions like 'payment terms' and 'indemnities' simultaneously. It also emphasizes tying findings to specific items, which supports the task's requirement to quote old and new text.\n\n   Guidance (seed `:summary`):\n   Analysis reasons over already-extracted items to produce structured findings (patterns / problems / opportunities) with per-finding evidence. Always tie findings to specific items via :affected-items references for downstream auditability. For multi-dimensional analysis, fan out per-dimension :llm stages via :parallel — each stage gets a tighter focus. NEVER skip the extraction stage: analyzing raw documents conflates extraction and reasoning, degrading both. Composes into comparative-summary (multi-source structured findings), chunked-extraction (per-chunk parallel analysis), and sequential-pipeline (extract → analyze → synthesize). Avoid when the task is summarizing (use synthesis) or generating options (use ideation).\n\nCapabilities:\n  - given a vector/map of pre-extracted items, produce a structured set of findings (patterns / problems / opportunities) with per-finding evidence\n  - natural fit as a mid-tree stage between extraction (upstream) and synthesis/critique/code-building (downstream)\n  - outputs are typically a vector of findings, each with :type / :evidence / :confidence / :affected-items\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** tie each finding to the specific extracted item(s) that triggered it via an :affected-items reference field — downstream stages can audit, drill down, or prioritize findings by evidence weight (confidence 1.00, evidence-count 1)\n    - Good when: downstream stages need to attribute findings to evidence OR rank findings by support\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:extracts] :writes [:findings] :output-schemas {:findings [:vector [:map [:type :string] [:evidence :string] [:confidence :double] [:affected-items [:vector :string]]]]}}]\n      ```\n\n  - **Trait:** for multi-dimensional analysis (e.g., risk / opportunity / blocker across the same items), use :parallel one-:llm-per-dimension stages — each stage has a tight focus and can produce richer per-dimension reasoning (confidence 1.00, evidence-count 1)\n    - Good when: the analysis has 2-4 orthogonal dimensions that benefit from separate prompts\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:parallel [:llm {:reads [:extracts] :writes [:risks]}] [:llm {:reads [:extracts] :writes [:opportunities]}] [:llm {:reads [:extracts] :writes [:blockers]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** analyzing raw documents (skipping extraction) forces the analysis :llm to do BOTH extraction and reasoning — quality degrades on both since the model can't optimize attention for either (confidence 1.00, evidence-count 1)\n    - Avoid when: the input is raw documents AND the analysis needs to attribute findings to specific items\n    - Recommended fix: two-stage: extract structured items first, then analyze over the extracts; preserves analyzability of findings\n\n  - **Failure mode:** single-pass analysis over a long flat list of items loses signal on per-item nuance — findings cluster around the most prominent items (confidence 1.00, evidence-count 1)\n    - Avoid when: item count is high AND each item deserves per-item attention\n    - Recommended fix: use :map-each per-item analysis with bounded :max-concurrency, then aggregate findings — preserves per-item granularity\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - risk analysis over extracted contract clauses: per-clause risk score + reasoning + mitigation\n  - pattern detection across log events: clusters of related events + frequency + suspected cause\n  - gap analysis over a feature list: required-vs-present + missing-items + priority\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent b3597aa7-3957-3734-90c6-531d27c08f67)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Synthesis (confidence: 0.85)\n   Why this fits: The task requires a final 'executive summary' and 'recommendation' integrated from the analysis, which is the definition of synthesis. The recommended-pattern of scaffolding long artifacts via a :code-built outline is highly relevant for a multi-section report (summary, diffs, impact, recommendation) to ensure coverage of both document versions.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral: Critique (confidence: 0.60)\n   Why this fits: The task asks for a 'recommendation with negotiation points', which functions as a critique of the 2025 version's impact on the buyer. The strength of requiring 'suggested-fix' (negotiation points) tied to 'located issues' (specific sections) aligns with the task's goal of actionable buyer advice.\n\n   Guidance (seed `:summary`):\n   Critique evaluates an artifact against quality criteria, producing per-criterion grades + located issues + suggested fixes. Always require per-issue location references AND per-issue :suggested-fix — vague critiques produce vague refinements. Score against an explicit per-dimension rubric, NOT a single overall grade, so refinement knows where to focus. NEVER use the same prompt persona for critique as for the original producer — self-critique ratifies. Use adversarial framing (skeptical reviewer / safety auditor) or an explicit checklist. Composes into draft-critique (validation-loop child) and iterative-refinement (sequential-pipeline child) shells; also into validation-loop pattern when paired with a producer. Avoid for formal rule-checking (use validation) or for orphan critiques with no downstream consumer.\n\nCapabilities:\n  - given an artifact + quality criteria, produce a structured critique — per-criterion grade + list of specific issues + suggested fixes\n  - natural fit downstream of synthesis/design/code-building, upstream of refinement loops or human review\n  - outputs are typically a map with per-criterion scores + a vector of specific issues with locations + a vector of suggested improvements\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** require per-issue location references (line number / section name / item id) so the downstream refinement stage knows exactly what to address — vague issues produce vague fixes (confidence 1.00, evidence-count 1)\n    - Good when: the artifact is structured and references are addressable\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:artifact :criteria] :writes [:issues] :output-schemas {:issues [:vector [:map [:location :string] [:problem :string] [:severity :string] [:suggested-fix :string]]]}}]\n      ```\n\n  - **Trait:** score against an explicit per-criterion rubric (not a single overall grade) so the refinement stage knows which dimension needs work — overall-grade-only critiques produce regressions in unscored dimensions (confidence 1.00, evidence-count 1)\n    - Good when: quality has multiple distinct dimensions (correctness / clarity / completeness / efficiency)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:artifact :rubric] :writes [:scores] :output-schemas {:scores [:map-of :string :double]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** self-critique on the same model (no prompt-framing change) tends to ratify the original artifact — the model is biased toward consistency with its prior output (confidence 1.00, evidence-count 1)\n    - Avoid when: the critique stage uses the same :llm with the same role framing as the producer\n    - Recommended fix: use a different prompt persona (skeptical reviewer / safety auditor) OR a different model OR an explicit checklist that forces specific question forms — adversarial framing improves catch rate\n\n  - **Failure mode:** critiques that don't produce actionable per-issue fixes leave the refinement stage with nothing to act on — issues phrased as 'unclear' don't tell the writer what to do (confidence 1.00, evidence-count 1)\n    - Avoid when: the critique feeds a refinement stage\n    - Recommended fix: every issue must include a :suggested-fix — explicit phrasing of how to address it; not 'consider revising' but 'replace X with Y because Z'\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - draft review: per-section grade + specific issues + suggested rewrites\n  - code review: per-file findings + severity + suggested fix\n  - design review: per-decision check + risks + open questions\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 0f11dba5-c331-3cdf-81fa-8ee114fc224f)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nCompare the 2024 and 2025 versions of a supplier's master services agreement and report: an executive summary of the changes, each changed section with the old and new text quoted, an analysis of what the changes mean for the buyer (payment terms, service levels, indemnities, IP ownership, audit rights), and a recommendation with negotiation points. Output: {:summary ... :diffs [...] :impact ... :recommendation ...}",
+ :june-flags
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 21285,
+ :confidence 1.0,
+ :was-fresh-mint? false,
+ :assigned-via :match}

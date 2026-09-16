@@ -1,0 +1,283 @@
+{:assigned-tree-id #uuid "b10e360a-12c7-3f09-bb4e-855c7fb6fd95",
+ :tick-id #uuid "b2ce99cc-a37c-4701-9b2b-b1acd705738e",
+ :slug "behavioral-fresh-mint-001-haiku-audit",
+ :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+ :domain-label "security-audit-haikus",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :partial,
+  :domain-label "security-audit-haikus",
+  :domain-reasoning
+  "The candidate describes sequential transformation pipelines (ETL). While it doesn't mention security audits or haikus specifically, it covers the material (list of inputs) and the output kind (structured format)."},
+ :node-id #uuid "6078a16e-c238-4b81-849c-fd13b24703ae",
+ :top-1
+ {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :fitness-score 0.9,
+  :rerank-source :reranker,
+  :domain-coverage :partial,
+  :domain-label "security-audit-haikus"},
+ :minted-events
+ [{:parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+   :child-tree-id #uuid "b10e360a-12c7-3f09-bb4e-855c7fb6fd95",
+   :domain-label "security-audit-haikus"}],
+ :classified-event
+ {:assigned-tree-id #uuid "b10e360a-12c7-3f09-bb4e-855c7fb6fd95",
+  :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :domain-label "security-audit-haikus",
+  :classified-at "2026-09-16T05:38:26.333418-05:00",
+  :reasoning
+  "The task involves a sequence of transformations: first generating content (haikus) from a list of inputs (findings), and then formatting that output into a specific data structure (a vector of 5 maps). The ETL pattern's recommended use of :llm for content transformation followed by :code for 'deterministic formatting/aggregation at the tail' perfectly matches the requirement to produce a structured vector of maps after the creative haiku generation.",
+  :outcome :matched,
+  :source-node-id #uuid "6078a16e-c238-4b81-849c-fd13b24703ae",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "0f11dba5-c331-3cdf-81fa-8ee114fc224f",
+    :confidence 0.8,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task requires evaluating 5 security findings (artifacts) and producing creative output (haikus) that captures their 'essence' and 'seriousness'. Critique is the best fit because it involves evaluating artifacts against quality/safety criteria. The recommended-pattern of requiring per-issue suggested-fixes (in this case, the haiku representing the fix/essence) aligns well with the map-based output requested.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "01f78800-c0e7-34b3-bb09-a7a6a95a022d",
+    :confidence 0.6,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task involves a set of 5 distinct items (Findings A-E) that need to be processed independently into a structured vector of maps. Classification's recommended-pattern of using :map-each for independent items to preserve attention is a strong structural fit for the 5-finding requirement.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "b2ce99cc-a37c-4701-9b2b-b1acd705738e",
+  :event/tags
+  #{[:description-target #uuid "b10e360a-12c7-3f09-bb4e-855c7fb6fd95"]
+    [:tick #uuid "b2ce99cc-a37c-4701-9b2b-b1acd705738e"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:38:26.333866Z",
+  :domain-verdict
+  {:domain-coverage :partial,
+   :domain-label "security-audit-haikus",
+   :domain-reasoning
+   "The candidate describes sequential transformation pipelines (ETL). While it doesn't mention security audits or haikus specifically, it covers the material (list of inputs) and the output kind (structured format)."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.988167-05:00"},
+    :domain-label "security-audit-haikus",
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :domain-coverage :partial,
+    :rank 10,
+    :reasoning
+    "The task involves a sequence of transformations: first generating content (haikus) from a list of inputs (findings), and then formatting that output into a specific data structure (a vector of 5 maps). The ETL pattern's recommended use of :llm for content transformation followed by :code for 'deterministic formatting/aggregation at the tail' perfectly matches the requirement to produce a structured vector of maps after the creative haiku generation.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :domain-reasoning
+    "The candidate describes sequential transformation pipelines (ETL). While it doesn't mention security audits or haikus specifically, it covers the material (list of inputs) and the output kind (structured format).",
+    :cos-good 0.9997785877077435,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9940795470871688,
+    :score 437.3423859996749,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.9,
+    :document-id
+    ":tree-class:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9997785877077435,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.989512-05:00"},
+    :domain-label "security-audit-haikus",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :uncovered,
+    :rank 8,
+    :reasoning
+    "This task is a creative generation task with a fixed structure (5-7-5 syllables). While it has 'formal rules' in a literary sense, the candidate's avoid-when explicitly states to avoid this pattern when 'validation requires deep judgment (taste)'. Evaluating the 'essence of the vulnerability' and 'evocative imagery' in a haiku is a matter of taste and judgment, not syntactic code validation.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The candidate focuses on formal/syntactic validation (schema, regex). This task involves creative writing and thematic accuracy, which the candidate warns should use 'LLM evaluation/judge instead'.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9932024644889692,
+    :score 437.4647036282358,
+    :cos-avoid-sans-content 0.9975737254373249,
+    :fitness-score 0.3,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9975737254373249}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.974326-05:00"},
+    :domain-label "security-audit-haikus",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :uncovered,
+    :rank 7,
+    :reasoning
+    "Same as the tree-class for Producer/validator: the task requires creative judgment for 'evocative imagery' and 'capturing essence', which conflicts with the candidate's instruction to avoid this pattern when validation requires deep judgment or taste.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The candidate focuses on formal/syntactic validation (schema, regex). This task involves creative writing and thematic accuracy, which the candidate warns should use 'LLM evaluation/judge instead'.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9932024644889692,
+    :score 437.4647036282358,
+    :cos-avoid-sans-content 0.9975737254373249,
+    :fitness-score 0.3,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9975737254373249}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered [],
+  :event/id #uuid "01a0a9cb-e21d-7065-940b-d432efcc218c",
+  :confidence 0.9,
+  :source-sheet-id #uuid "3969210b-8f3b-42f8-93d4-308adfcd0eb6",
+  :ranked-candidates
+  [{:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.9,
+    :score 437.3423859996749}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 437.4647036282358}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 437.4647036282358}],
+  :was-fresh-mint? true,
+  :assigned-via :mint-domain-child},
+ :deferred-events [],
+ :domain-children-considered [],
+ :sheet-id #uuid "3969210b-8f3b-42f8-93d4-308adfcd0eb6",
+ :payload-domain
+ {:assigned-via :mint-domain-child,
+  :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :child-tree-id #uuid "b10e360a-12c7-3f09-bb4e-855c7fb6fd95",
+  :domain-label "security-audit-haikus"},
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: security-audit-haikus); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 1 from corpus retrieval)\n#### Top match (confidence: 0.90)\nWhy this fits: The task involves a sequence of transformations: first generating content (haikus) from a list of inputs (findings), and then formatting that output into a specific data structure (a vector of 5 maps). The ETL pattern's recommended use of :llm for content transformation followed by :code for 'deterministic formatting/aggregation at the tail' perfectly matches the requirement to produce a structured vector of maps after the creative haiku generation.\n\nPattern guidance (seed `:summary`):\nETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).\n\nCapabilities:\n  - ordered chain of typically 2-4 stages where each stage transforms the previous stage's output into a richer form\n  - natural fit for raw-input → normalized → enriched → emit-ready flows\n  - each stage's :reads consume the previous stage's :writes — explicit data dependency tracking\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate (confidence 1.00, evidence-count 1)\n    - Good when: input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]\n      ```\n\n  - **Trait:** use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names (confidence 1.00, evidence-count 1)\n    - Good when: the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage (confidence 1.00, evidence-count 1)\n    - Avoid when: intermediate stages don't declare :output-schemas and downstream stages assume specific keys\n    - Recommended fix: always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer\n\n  - **Failure mode:** 5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short (confidence 1.00, evidence-count 1)\n    - Avoid when: individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates\n    - Recommended fix: collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - customer record normalization: parse → dedupe-fields → enrich-from-CRM → emit-warehouse-row\n  - log line parsing: tokenize → classify-event-type → annotate-with-context → emit-structured-event\n  - translation pipeline: clean-input → translate → polish-style → emit-final-text\n\nAssigned to domain child b10e360a-12c7-3f09-bb4e-855c7fb6fd95 (label: security-audit-haikus) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 2 from corpus retrieval)\n1. Behavioral: Critique (confidence: 0.80)\n   Why this fits: The task requires evaluating 5 security findings (artifacts) and producing creative output (haikus) that captures their 'essence' and 'seriousness'. Critique is the best fit because it involves evaluating artifacts against quality/safety criteria. The recommended-pattern of requiring per-issue suggested-fixes (in this case, the haiku representing the fix/essence) aligns well with the map-based output requested.\n\n   Guidance (seed `:summary`):\n   Critique evaluates an artifact against quality criteria, producing per-criterion grades + located issues + suggested fixes. Always require per-issue location references AND per-issue :suggested-fix — vague critiques produce vague refinements. Score against an explicit per-dimension rubric, NOT a single overall grade, so refinement knows where to focus. NEVER use the same prompt persona for critique as for the original producer — self-critique ratifies. Use adversarial framing (skeptical reviewer / safety auditor) or an explicit checklist. Composes into draft-critique (validation-loop child) and iterative-refinement (sequential-pipeline child) shells; also into validation-loop pattern when paired with a producer. Avoid for formal rule-checking (use validation) or for orphan critiques with no downstream consumer.\n\nCapabilities:\n  - given an artifact + quality criteria, produce a structured critique — per-criterion grade + list of specific issues + suggested fixes\n  - natural fit downstream of synthesis/design/code-building, upstream of refinement loops or human review\n  - outputs are typically a map with per-criterion scores + a vector of specific issues with locations + a vector of suggested improvements\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** require per-issue location references (line number / section name / item id) so the downstream refinement stage knows exactly what to address — vague issues produce vague fixes (confidence 1.00, evidence-count 1)\n    - Good when: the artifact is structured and references are addressable\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:artifact :criteria] :writes [:issues] :output-schemas {:issues [:vector [:map [:location :string] [:problem :string] [:severity :string] [:suggested-fix :string]]]}}]\n      ```\n\n  - **Trait:** score against an explicit per-criterion rubric (not a single overall grade) so the refinement stage knows which dimension needs work — overall-grade-only critiques produce regressions in unscored dimensions (confidence 1.00, evidence-count 1)\n    - Good when: quality has multiple distinct dimensions (correctness / clarity / completeness / efficiency)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:artifact :rubric] :writes [:scores] :output-schemas {:scores [:map-of :string :double]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** self-critique on the same model (no prompt-framing change) tends to ratify the original artifact — the model is biased toward consistency with its prior output (confidence 1.00, evidence-count 1)\n    - Avoid when: the critique stage uses the same :llm with the same role framing as the producer\n    - Recommended fix: use a different prompt persona (skeptical reviewer / safety auditor) OR a different model OR an explicit checklist that forces specific question forms — adversarial framing improves catch rate\n\n  - **Failure mode:** critiques that don't produce actionable per-issue fixes leave the refinement stage with nothing to act on — issues phrased as 'unclear' don't tell the writer what to do (confidence 1.00, evidence-count 1)\n    - Avoid when: the critique feeds a refinement stage\n    - Recommended fix: every issue must include a :suggested-fix — explicit phrasing of how to address it; not 'consider revising' but 'replace X with Y because Z'\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - draft review: per-section grade + specific issues + suggested rewrites\n  - code review: per-file findings + severity + suggested fix\n  - design review: per-decision check + risks + open questions\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 0f11dba5-c331-3cdf-81fa-8ee114fc224f)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral suggestion (confidence: 0.60)\n   Why this fits: The task involves a set of 5 distinct items (Findings A-E) that need to be processed independently into a structured vector of maps. Classification's recommended-pattern of using :map-each for independent items to preserve attention is a strong structural fit for the 5-finding requirement.\n\n   Guidance (seed `:summary`):\n   Classification assigns each item from a set to one or more predefined categories. ALWAYS include the closed-set vocabulary in :reads AND constrain output via :output-schemas with [:enum ...] of allowed categories — open-ended output drifts across runs and breaks downstream aggregation. Prefer :map-each per-item (with bounded :max-concurrency) over batch classification for >20 items — preserves per-item attention. Composes into parallel-classify-aggregate (map-reduce variant), map-reduce shells, and parallel-independent shells (multi-axis classification with per-axis classifier). Avoid for open-ended labels (clustering), for rule-based assignments (use :code), or for category set generation (use ideation).\n\nCapabilities:\n  - given a set of items + a category vocabulary, emit per-item category assignments (optionally multi-label with confidence)\n  - natural fit when downstream stages branch or aggregate by category\n  - outputs are typically a vector of {:item-id :category :confidence} or a map from item-id to category\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** fan out per-item classification via :map-each with bounded :max-concurrency — per-item LLM calls give richer per-item reasoning than a single batch classifier prompt (confidence 1.00, evidence-count 1)\n    - Good when: items are independent AND per-item context matters for accuracy\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :items :as :item :max-concurrency 3 :writes [:classifications]} [:llm {:reads [:item :vocabulary] :writes [:classification] :output-schemas {:classification [:map [:category :string] [:confidence :double]]}}]]\n      ```\n\n  - **Trait:** include the category vocabulary in :reads of each per-item classifier — anchors the model to the closed-set output and prevents drift to free-form labels (confidence 1.00, evidence-count 1)\n    - Good when: the category set is closed and stable\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:item :vocabulary] :writes [:classification] :output-schemas {:classification [:enum :a :b :c]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** classifying without the vocabulary in the prompt produces free-form labels that drift across runs — downstream aggregation over categories breaks (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages aggregate / branch on category equality\n    - Recommended fix: always include the closed-set vocabulary in :reads AND constrain output via :output-schemas with [:enum ...] of the allowed categories\n\n  - **Failure mode:** single batch classification of N>20 items in one :llm call loses per-item attention — accuracy degrades at the tail of the batch (confidence 1.00, evidence-count 1)\n    - Avoid when: item count >20 AND per-item accuracy matters\n    - Recommended fix: :map-each per-item with bounded :max-concurrency — wall-time stays low and per-item attention is preserved\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - per-document topic classification: each document → topic label + confidence\n  - per-issue triage: each support ticket → category from a fixed taxonomy\n  - per-clause risk-class assignment: each contract clause → risk level + reasoning\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 01f78800-c0e7-34b3-bb09-a7a6a95a022d)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nYou are given a list of 5 security audit findings on a deployed web application:\n\n  - Finding A: SQL injection possible in /search endpoint via the `q` parameter\n  - Finding B: Session cookies set without Secure or HttpOnly flags\n  - Finding C: User input reflected unescaped in error messages (XSS)\n  - Finding D: Admin role check bypassable by tampering with JWT `role` claim\n  - Finding E: Sensitive logs (auth tokens) stored in plaintext on disk\n\nProduce a haiku (5-7-5 syllable structure) for EACH finding that captures the\nessence of the vulnerability in evocative imagery while preserving technical\naccuracy. Each haiku should make the reader feel the seriousness without\nnaming the CVE category directly.\n\nReturn a vector of 5 maps `{:finding \"A\" :haiku \"...\"}` ordered A through E.",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? false},
+ :elapsed-ms 15465,
+ :confidence 0.9,
+ :was-fresh-mint? true,
+ :assigned-via :mint-domain-child}

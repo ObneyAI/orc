@@ -1,0 +1,316 @@
+{:slug "behavioral-fresh-mint-003-recipe-iambic-pentameter",
+ :envelope
+ {:assigned-tree-id #uuid "aef71f08-76bf-373c-862a-1250ef23f450",
+  :parent-tree-id nil,
+  :rerank-fallback? false,
+  :reasoning
+  "This task requires high 'stylistic care' and 'nuance' to satisfy strict iambic pentameter constraints while maintaining technical accuracy for the recipe. The Iterative Refinement pattern (draft -> critique -> revise) is ideal for nuanced creative writing where a single pass often fails to meet complex structural constraints like meter. The critique stage allows the model to identify lines that break meter or compromise cooking accuracy before fixing them in the final revised-draft.",
+  :outcome :matched,
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.009330260751283759,
+    :strengths
+    [{:trait
+      "explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit",
+      :good-when
+      "the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]"}
+     {:trait
+      "pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique",
+      :good-when
+      "the critique stage tends to focus on style/issues and might lose sight of the original requirement",
+      :recommended-pattern
+      "[:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]"}],
+    :avoid-when
+    ["the output is short and direct — single :llm with a careful instruction wins"
+     "the task needs unbounded iteration until convergence — use validation-loop"
+     "the work has clear validation rules (formal/syntactic) — use validation-loop with a code-based validator"
+     "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough"
+     "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.185751-05:00"},
+    :content
+    "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+    :rank 9,
+    :reasoning
+    "This task requires high 'stylistic care' and 'nuance' to satisfy strict iambic pentameter constraints while maintaining technical accuracy for the recipe. The Iterative Refinement pattern (draft -> critique -> revise) is ideal for nuanced creative writing where a single pass often fails to meet complex structural constraints like meter. The critique stage allows the model to identify lines that break meter or compromise cooking accuracy before fixing them in the final revised-draft.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward",
+      :avoid-when
+      "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough",
+      :recommended-alternative
+      "use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality"}
+     {:trait
+      "open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's",
+      :avoid-when
+      "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics",
+      :recommended-alternative
+      "use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes"}],
+    :cos-good 0.9972794875513264,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.998468866999181,
+    :score 443.7656262293416,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.8916027653238446,
+    :document-id
+    ":tree-class:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+    :domain-penalty 0.009330260751283759,
+    :cos-good-sans-content 0.9972794875513264,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.009330260751283759,
+    :strengths
+    [{:trait
+      "explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit",
+      :good-when
+      "the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]"}
+     {:trait
+      "pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique",
+      :good-when
+      "the critique stage tends to focus on style/issues and might lose sight of the original requirement",
+      :recommended-pattern
+      "[:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]"}],
+    :avoid-when
+    ["the output is short and direct — single :llm with a careful instruction wins"
+     "the task needs unbounded iteration until convergence — use validation-loop"
+     "the work has clear validation rules (formal/syntactic) — use validation-loop with a code-based validator"
+     "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough"
+     "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.175157-05:00"},
+    :content
+    "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+    :rank 10,
+    :reasoning
+    "Identical to the tree-class for Iterative Refinement, this fingerprint suggests a pattern suited for high-quality, nuanced outputs. Chaining a critique pass is the most reliable way to ensure the iambic pentameter is strictly followed (10 syllables, specific stress pattern) without losing the 'physical actions' required for the recipe's correctness.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward",
+      :avoid-when
+      "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough",
+      :recommended-alternative
+      "use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality"}
+     {:trait
+      "open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's",
+      :avoid-when
+      "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics",
+      :recommended-alternative
+      "use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes"}],
+    :cos-good 0.9972794875513264,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.998468866999181,
+    :score 443.7656262293416,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.8916027653238446,
+    :document-id
+    ":tree-fingerprint:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+    :domain-penalty 0.009330260751283759,
+    :cos-good-sans-content 0.9972794875513264,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "stage-by-stage chaining matches problems with explicit ordered dependencies",
+      :good-when
+      "the work has 2-3 distinct phases AND each phase consumes the previous phase's specific output AND each phase is non-trivial",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:input] :writes [:extracted]}] [:llm {:reads [:extracted] :writes [:enriched]}] [:llm {:reads [:enriched] :writes [:formatted]}] [:final {:keys [:formatted]}]]"}],
+    :avoid-when
+    ["stages are independent — use :parallel"
+     "the work is per-item over a collection — use :map-each"
+     "the chain is 3+ small :llm steps — consolidate into a single :llm with multi-step instruction"
+     "the chain has 3+ :llm children doing successive small transformations on the same data AND each transformation is simple"
+     "two or more stages in the pipeline could run independently"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:SequentialPipeline",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.183100-05:00"},
+    :content
+    "SequentialPipeline is a :sequence of 2+ :llm/:code nodes where each step consumes the previous step's output. Natural for ETL (extract → enrich → format) and iterative refinement (draft → critique → revise). Avoid when stages are independent (use :parallel) or when 3+ small :llm steps could be one larger :llm — small successive :llm calls burn tokens that a single multi-step instruction would cover.",
+    :rank 3,
+    :reasoning
+    "A SequentialPipeline is a natural fit for multi-stage refinement (e.g., Drafting -> Meter Checking -> Formatting). While the Iterative Refinement pattern is a specific instance of this, the general SequentialPipeline allows for the ordered dependencies required to take a raw recipe and progressively transform it into the final formatted Clojure-style map output.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "3+ small :llm steps burns sub-LLM tokens that could be a single larger :llm call with a multi-step instruction",
+      :avoid-when
+      "the chain has 3+ :llm children doing successive small transformations on the same data AND each transformation is simple",
+      :recommended-alternative
+      "consolidate into ONE :llm with a longer multi-step instruction; OR use :code for any deterministic intermediate stages (formatting, joining, regex extraction)"}
+     {:trait
+      "no parallelism — total wall-time is the sum of all children's durations",
+      :avoid-when
+      "two or more stages in the pipeline could run independently",
+      :recommended-alternative
+      "use :parallel for the independent stages, then :sequence around the genuinely-dependent ones; OR restructure as :parallel + final synthesis"}],
+    :cos-good 0.9988234651981792,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.996194150097523,
+    :score 444.23071241748687,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.75,
+    :document-id ":tree-class:\"seed:tree:SequentialPipeline\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9988234651981792,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "stage-by-stage chaining matches problems with explicit ordered dependencies",
+      :good-when
+      "the work has 2-3 distinct phases AND each phase consumes the previous phase's specific output AND each phase is non-trivial",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:input] :writes [:extracted]}] [:llm {:reads [:extracted] :writes [:enriched]}] [:llm {:reads [:enriched] :writes [:formatted]}] [:final {:keys [:formatted]}]]"}],
+    :avoid-when
+    ["stages are independent — use :parallel"
+     "the work is per-item over a collection — use :map-each"
+     "the chain is 3+ small :llm steps — consolidate into a single :llm with multi-step instruction"
+     "the chain has 3+ :llm children doing successive small transformations on the same data AND each transformation is simple"
+     "two or more stages in the pipeline could run independently"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:SequentialPipeline",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.172707-05:00"},
+    :content
+    "SequentialPipeline is a :sequence of 2+ :llm/:code nodes where each step consumes the previous step's output. Natural for ETL (extract → enrich → format) and iterative refinement (draft → critique → revise). Avoid when stages are independent (use :parallel) or when 3+ small :llm steps could be one larger :llm — small successive :llm calls burn tokens that a single multi-step instruction would cover.",
+    :rank 2,
+    :reasoning
+    "This fingerprint supports stage-by-stage chaining for non-trivial tasks. The 'format' stage mentioned in its ETL content is relevant to the final requirement of producing a specific map structure ({:ingredients [...] :steps [...]}), though it is less specialized for the creative writing constraint than Iterative Refinement.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "3+ small :llm steps burns sub-LLM tokens that could be a single larger :llm call with a multi-step instruction",
+      :avoid-when
+      "the chain has 3+ :llm children doing successive small transformations on the same data AND each transformation is simple",
+      :recommended-alternative
+      "consolidate into ONE :llm with a longer multi-step instruction; OR use :code for any deterministic intermediate stages (formatting, joining, regex extraction)"}
+     {:trait
+      "no parallelism — total wall-time is the sum of all children's durations",
+      :avoid-when
+      "two or more stages in the pipeline could run independently",
+      :recommended-alternative
+      "use :parallel for the independent stages, then :sequence around the genuinely-dependent ones; OR restructure as :parallel + final synthesis"}],
+    :cos-good 0.9988234651981792,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.996194150097523,
+    :score 444.23071241748687,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.75,
+    :document-id ":tree-fingerprint:\"seed:tree:SequentialPipeline\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9988234651981792,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "wall-time equals the slowest child instead of the sum of all children",
+      :good-when
+      "the same source data needs 2-3+ independent transformations AND children's latencies are similar AND children's :writes don't overlap",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:document] :writes [:summary]}] [:llm {:reads [:document] :writes [:entities]}] [:llm {:reads [:document] :writes [:key-dates]}]] [:final {:keys [:summary :entities :key-dates]}]]"}],
+    :avoid-when
+    ["the work is per-item over a collection — use :map-each (collection iteration), not :parallel (independent transformations)"
+     "any child depends on any other child's output — use :sequence"
+     "only one child exists — drop the :parallel wrapper"
+     "any two children declare the same key in their :writes"
+     "one child is dramatically slower than the others AND a downstream node needs all children's results"
+     "a child's :reads include a key another sibling writes to"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ParallelIndependent",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.183686-05:00"},
+    :content
+    "ParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.",
+    :rank 7,
+    :reasoning
+    "This is a poor fit because the steps of a recipe and the subsequent formatting depend on one another. The 'avoid-when' specifically warns against using this when 'any child depends on any other child\\'s output', which is the case for drafting and then refining the meter of the same text.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "two children with overlapping :writes race — the surviving value is non-deterministic",
+      :avoid-when
+      "any two children declare the same key in their :writes",
+      :recommended-alternative
+      "give each child a distinct :writes key; OR use :sequence so writes happen in order; OR aggregate via :code after the :parallel"}
+     {:trait
+      "uneven child latencies mean the parallel speedup is bottlenecked by the slowest",
+      :avoid-when
+      "one child is dramatically slower than the others AND a downstream node needs all children's results",
+      :recommended-alternative
+      "split the slow child into smaller pieces via :map-each so its work parallelizes too; OR restructure so the slow child runs in :sequence with a downstream node that doesn't need siblings' results"}
+     {:trait
+      "children cannot read each other's outputs — they execute concurrently",
+      :avoid-when
+      "a child's :reads include a key another sibling writes to",
+      :recommended-alternative
+      "use :sequence to chain dependent computations; OR ensure each child reads only from blackboard keys set BEFORE the :parallel"}],
+    :cos-good 0.9989738380044357,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9943838088781186,
+    :score 443.8104083368811,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.2,
+    :document-id ":tree-class:\"seed:tree:ParallelIndependent\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9989738380044357,
+    :cos-avoid 1.0}],
+  :confidence 0.8916027653238446,
+  :ranked-candidates
+  [{:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.8916027653238446,
+    :score 443.7656262293416}
+   {:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.8916027653238446,
+    :score 443.7656262293416}
+   {:target-id "seed:tree:SequentialPipeline",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.75,
+    :score 444.23071241748687}
+   {:target-id "seed:tree:SequentialPipeline",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.75,
+    :score 444.23071241748687}
+   {:target-id "seed:tree:ParallelIndependent",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.2,
+    :score 443.8104083368811}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 8796,
+ :parent-chain []}

@@ -1,0 +1,130 @@
+{:slug "behavioral-fresh-mint-001-haiku-audit",
+ :envelope
+ {:assigned-tree-id #uuid "926e1802-f198-4d26-b796-7ee5dcdccfda",
+  :parent-tree-id nil,
+  :rerank-fallback? false,
+  :reasoning
+  "The task requires processing a list of 5 distinct security findings (natural sections) and transforming each into a specific structured output (a haiku) while preserving the finding's identity. This aligns with the :map-each pattern described for processing sections independently. However, the fitness is low (0.3) because the task is creative/literary transformation rather than risk/severity classification, and it does not require a risk matrix or executive summary.",
+  :outcome :novel,
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured output schema reliably classifies risks across long documents",
+      :good-when
+      "document has natural sections (clauses, paragraphs) AND each section can be independently classified",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:risks] :output-schemas {:risks [:vector [:map [:obligation :string] [:severity [:enum :high :medium :low]] [:justification :string]]]}}]] [:aggregate {:from :results :writes [:risk-matrix]}] [:llm {:reads [:document :risk-matrix] :writes [:executive-summary]}] [:final {:keys [:risk-matrix :executive-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section boundaries — chunk-by-size and tolerate that some obligations straddle boundaries"
+     "output doesn't need per-item categorization — use simpler entity-extraction patterns instead"
+     "document is >5KB AND tree is a single :llm without per-section chunking"
+     "the per-section :llm writes severity as a free-form string"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.181465-05:00"},
+    :content
+    "Risk-analysis trees identify and categorize risks/obligations from a document into a per-item :risk-matrix (HIGH/MEDIUM/LOW + justification) plus an :executive-summary. The proven shape is per-section :map-each with structured :output-schemas: split by section delimiter, classify each section under bounded concurrency, aggregate the matrix, then synthesize the executive summary. Always use :output-schemas to constrain severity to an enum — free-form strings drift across iterations and break aggregation.",
+    :rank 8,
+    :reasoning
+    "The task requires processing a list of 5 distinct security findings (natural sections) and transforming each into a specific structured output (a haiku) while preserving the finding's identity. This aligns with the :map-each pattern described for processing sections independently. However, the fitness is low (0.3) because the task is creative/literary transformation rather than risk/severity classification, and it does not require a risk matrix or executive summary.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "single :llm classification on a long document misses many obligations because of attention-budget exhaustion",
+      :avoid-when
+      "document is >5KB AND tree is a single :llm without per-section chunking",
+      :recommended-alternative
+      "split into sections (use :chunk-document with :delimiter) and run per-section :map-each :llm with bounded concurrency"}
+     {:trait
+      "without :output-schemas, severity classifications drift to inconsistent strings ('high', 'HIGH', 'High', 'critical') across iterations — downstream aggregation breaks",
+      :avoid-when
+      "the per-section :llm writes severity as a free-form string",
+      :recommended-alternative
+      "always declare :output-schemas with severity as [:enum :high :medium :low] so the model is constrained to consistent values"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9940225871457296,
+    :score 437.867317001339,
+    :cos-avoid-sans-content 0.9989344725718752,
+    :fitness-score 0.3,
+    :document-id
+    ":tree-class:#uuid \"00000000-c1c1-4001-b002-d0c0a0a0a0a2\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9989344725718752}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured output schema reliably classifies risks across long documents",
+      :good-when
+      "document has natural sections (clauses, paragraphs) AND each section can be independently classified",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:risks] :output-schemas {:risks [:vector [:map [:obligation :string] [:severity [:enum :high :medium :low]] [:justification :string]]]}}]] [:aggregate {:from :results :writes [:risk-matrix]}] [:llm {:reads [:document :risk-matrix] :writes [:executive-summary]}] [:final {:keys [:risk-matrix :executive-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section boundaries — chunk-by-size and tolerate that some obligations straddle boundaries"
+     "output doesn't need per-item categorization — use simpler entity-extraction patterns instead"
+     "document is >5KB AND tree is a single :llm without per-section chunking"
+     "the per-section :llm writes severity as a free-form string"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.170676-05:00"},
+    :content
+    "Risk-analysis trees identify and categorize risks/obligations from a document into a per-item :risk-matrix (HIGH/MEDIUM/LOW + justification) plus an :executive-summary. The proven shape is per-section :map-each with structured :output-schemas: split by section delimiter, classify each section under bounded concurrency, aggregate the matrix, then synthesize the executive summary. Always use :output-schemas to constrain severity to an enum — free-form strings drift across iterations and break aggregation.",
+    :rank 7,
+    :reasoning
+    "This candidate describes the same structural pattern as the other, involving per-item processing. It is ranked slightly lower as it is a fingerprint rather than a class definition, and like the other candidate, it focuses on risk-analysis domain (severity enums, matrices) which is a poor semantic match for generating haikus about vulnerabilities.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "single :llm classification on a long document misses many obligations because of attention-budget exhaustion",
+      :avoid-when
+      "document is >5KB AND tree is a single :llm without per-section chunking",
+      :recommended-alternative
+      "split into sections (use :chunk-document with :delimiter) and run per-section :map-each :llm with bounded concurrency"}
+     {:trait
+      "without :output-schemas, severity classifications drift to inconsistent strings ('high', 'HIGH', 'High', 'critical') across iterations — downstream aggregation breaks",
+      :avoid-when
+      "the per-section :llm writes severity as a free-form string",
+      :recommended-alternative
+      "always declare :output-schemas with severity as [:enum :high :medium :low] so the model is constrained to consistent values"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9940225871457296,
+    :score 437.867317001339,
+    :cos-avoid-sans-content 0.9989344725718752,
+    :fitness-score 0.25,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b002-d0c0a0a0a0a2\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9989344725718752}],
+  :confidence 0.3,
+  :ranked-candidates
+  [{:target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 437.867317001339}
+   {:target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.25,
+    :score 437.867317001339}],
+  :was-fresh-mint? true,
+  :assigned-via :mint},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? false},
+ :elapsed-ms 4474,
+ :parent-chain []}

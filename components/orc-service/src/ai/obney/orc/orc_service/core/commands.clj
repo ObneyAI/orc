@@ -2705,6 +2705,9 @@
           :ontology/record-task-classification-deferral
           (requiring-resolve
            'ai.obney.orc.ontology.core.commands/ontology-record-task-classification-deferral)
+          :ontology/mint-domain-child
+          (requiring-resolve
+           'ai.obney.orc.ontology.core.commands/ontology-mint-domain-child)
           nil)]
     (if (and handler
              (m/validate (:command/name effect-command) effect-command))
@@ -2757,10 +2760,34 @@
     :ontology/record-task-classification-deferral})
 
 (def ^:private researcher-classification-effect-priority
-  {:ontology/record-claim-deltas 10
+  {;; RS-3: the domain child's concept + skos:broader edge exist before
+   ;; anything (the CV-1 capture, the assignment) references the child.
+   :ontology/mint-domain-child 5
+   :ontology/record-claim-deltas 10
    :sheet/record-injection 20
    :ontology/assign-task-class 100
    :ontology/record-task-classification-deferral 100})
+
+(def ^:private domain-mint-assignment-vias
+  #{:mint-domain-child :mint-sibling-domain-child})
+
+(defn- domain-axis-deferral?
+  "RS-3: the domain-axis deferral recorded BESIDE a structural assignment
+   (the wedge's :domain-classification-deferral effect) — the deferral
+   command with :fallback-source :domain-coverage. By name it looks like a
+   second outcome; it is the domain axis of the same outcome."
+  [effect]
+  (and (= :ontology/record-task-classification-deferral (:command/name effect))
+       (= :domain-coverage (:fallback-source effect))))
+
+(defn- researcher-classification-effect-order
+  "One order on both paths (spec ClassificationEffectsCommitAsOneBoundedSet):
+   mint, capture, injection, assignment, then the domain-axis deferral that
+   rides the assignment."
+  [effect]
+  (if (domain-axis-deferral? effect)
+    110
+    (get researcher-classification-effect-priority (:command/name effect) 50)))
 
 (defn- researcher-classification-commit-error
   [{:keys [sheet-id tick-id node-id ownership-epoch effects]}]
@@ -2780,8 +2807,9 @@
     :else
     (let [outcomes
           (filterv
-           #(contains? researcher-classification-outcome-command-names
-                       (:command/name %))
+           #(and (contains? researcher-classification-outcome-command-names
+                            (:command/name %))
+                 (not (domain-axis-deferral? %)))
            effects)
           outcome (first outcomes)
           injections
@@ -2789,52 +2817,85 @@
           convergence-captures
           (filterv #(= :ontology/record-claim-deltas (:command/name %)) effects)
           convergence-capture (first convergence-captures)
+          assignment? (= :ontology/assign-task-class (:command/name outcome))
           fresh-mint-assignment?
-          (and (= :ontology/assign-task-class (:command/name outcome))
-               (true? (:was-fresh-mint? outcome)))]
+          (and assignment? (true? (:was-fresh-mint? outcome)))
+          ;; RS-3: the domain-child mint and the domain-axis deferral.
+          domain-mint-assignment?
+          (and assignment?
+               (contains? domain-mint-assignment-vias (:assigned-via outcome)))
+          mints (filterv #(= :ontology/mint-domain-child (:command/name %)) effects)
+          mint (first mints)
+          domain-deferrals (filterv domain-axis-deferral? effects)
+          domain-deferral (first domain-deferrals)
+          bound-to-campaign?
+          (fn [effect]
+            (= [sheet-id tick-id node-id]
+               [(:source-sheet-id effect)
+                (:source-tick-id effect)
+                (:source-node-id effect)]))]
       (cond
-      (not= 1 (count outcomes))
-      "Researcher classification commit requires exactly one outcome"
+        (not= 1 (count outcomes))
+        "Researcher classification commit requires exactly one outcome"
 
-      (not= [sheet-id tick-id node-id ownership-epoch]
-            [(:source-sheet-id outcome)
-             (:source-tick-id outcome)
-             (:source-node-id outcome)
-             (:researcher-ownership-epoch outcome)])
-      "Researcher classification outcome does not belong to the committing campaign epoch"
+        (not (and (bound-to-campaign? outcome)
+                  (= ownership-epoch (:researcher-ownership-epoch outcome))))
+        "Researcher classification outcome does not belong to the committing campaign epoch"
 
-      (> (count injections) 1)
-      "Researcher classification commit accepts at most one injection record"
+        (> (count injections) 1)
+        "Researcher classification commit accepts at most one injection record"
 
-      (not-every? #(= [sheet-id tick-id node-id]
-                      [(:sheet-id %) (:tick-id %) (:node-id %)])
-                  injections)
-      "Researcher classification injection does not belong to the committing campaign"
+        (not-every? #(= [sheet-id tick-id node-id]
+                        [(:sheet-id %) (:tick-id %) (:node-id %)])
+                    injections)
+        "Researcher classification injection does not belong to the committing campaign"
 
-      (> (count convergence-captures) 1)
-      "Researcher classification commit accepts at most one convergence capture"
+        (> (count convergence-captures) 1)
+        "Researcher classification commit accepts at most one convergence capture"
 
-      (and fresh-mint-assignment?
-           (not= 1 (count convergence-captures)))
-      "Fresh-mint classification requires one convergence capture"
+        (and fresh-mint-assignment?
+             (not= 1 (count convergence-captures)))
+        "Fresh-mint classification requires one convergence capture"
 
-      (and (not fresh-mint-assignment?) (seq convergence-captures))
-      "Only a fresh-mint assignment may publish convergence capture"
+        (and (not fresh-mint-assignment?) (seq convergence-captures))
+        "Only a fresh-mint assignment may publish convergence capture"
 
-      (and fresh-mint-assignment?
-           (or (not= :tree-class (:granularity convergence-capture))
-               (not= (:assigned-tree-id outcome)
-                     (:target-identifier convergence-capture))))
-      "Researcher convergence capture does not belong to the assigned tree class"
+        (and fresh-mint-assignment?
+             (or (not= :tree-class (:granularity convergence-capture))
+                 (not= (:assigned-tree-id outcome)
+                       (:target-identifier convergence-capture))))
+        "Researcher convergence capture does not belong to the assigned tree class"
+
+        (> (count mints) 1)
+        "Researcher classification commit accepts at most one domain-child mint"
+
+        (and domain-mint-assignment? (not= 1 (count mints)))
+        "Domain-child classification requires its domain-child mint"
+
+        (and (not domain-mint-assignment?) (seq mints))
+        "Only a domain-child assignment may publish a domain-child mint"
+
+        (and domain-mint-assignment?
+             (or (not (bound-to-campaign? mint))
+                 (not= (:assigned-tree-id outcome) (:child-tree-id mint))))
+        "Researcher domain-child mint does not belong to the assigned domain child"
+
+        (> (count domain-deferrals) 1)
+        "Researcher classification commit accepts at most one domain-axis deferral"
+
+        (and (some? domain-deferral)
+             (or (not assignment?)
+                 (not (bound-to-campaign? domain-deferral))
+                 (not= ownership-epoch
+                       (:researcher-ownership-epoch domain-deferral))))
+        "Researcher domain-axis deferral does not belong to the committing assignment"
 
         :else nil))))
 
 (defn- canonical-researcher-classification-effects
   [effects]
   (->> effects
-       (sort-by #(get researcher-classification-effect-priority
-                      (:command/name %)
-                      50))
+       (sort-by researcher-classification-effect-order)
        vec))
 
 (defcommand :sheet commit-researcher-classification

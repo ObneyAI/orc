@@ -1267,12 +1267,21 @@
         (deliver retire-release true)
         (is (not= ::stop-timeout (deref stop-result 5000 ::stop-timeout))))
       (runtime/deregister-completion! (:tick-id abandoned-start))
-      (let [recovered-ctx (assoc ctx :processors (h/start-test-processors ctx))]
+      (let [recovered-ctx (assoc ctx :processors (h/start-test-processors ctx))
+            last-scan (atom nil)]
         (try
           (is (h/settle-until!
-               #(some :resumed? (runtime/resume-in-progress! recovered-ctx))
+               #(some :resumed? (reset! last-scan (runtime/resume-in-progress! recovered-ctx)))
                :timeout-ms 30000)
-              "recovery waits until the abandoned frontier is projected")
+              ;; A CI-only failure here said nothing; the message now carries
+              ;; what the last scan actually returned and which of the
+              ;; abandoned start's events the store holds.
+              (str "recovery waits until the abandoned frontier is projected. Last scan: "
+                   (pr-str @last-scan)
+                   " Events for the abandoned tick: "
+                   (pr-str (mapv #(select-keys % [:event/type :node-id :status])
+                                 (filter #(= (:tick-id abandoned-start) (:tick-id %))
+                                         (h/read-all-events ctx))))))
           (let [result (deref pending 30000 ::timeout)
                 child-starts (filter #(and (= :sheet/tree-tick-started (:event/type %))
                                            (= (:trace-id result) (:parent-tick-id %)))

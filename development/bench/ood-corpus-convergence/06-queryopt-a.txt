@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: queryopt (off-domain); variant a of 3 — the same domain re-asked with a different concrete instance.
+A PostgreSQL report query joining orders, customers and line_items over 90 days takes 42 seconds. Given the query, the EXPLAIN ANALYZE output and the table sizes, diagnose the bottleneck, propose index and query rewrites, estimate the improvement, and give the final query with its expected plan. Output: {:diagnosis ... :indexes [...] :rewritten-query ... :expected-plan ...}

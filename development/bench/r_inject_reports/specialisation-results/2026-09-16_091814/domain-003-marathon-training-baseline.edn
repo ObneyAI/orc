@@ -1,0 +1,339 @@
+{:reasoning-mentions-corpus? false,
+ :slug "domain-003-marathon-training",
+ :arm :baseline,
+ :generated-tree-raw
+ [:sequence
+  [:llm
+   {:instruction
+    "Calculate marathon training paces for a 4:00 goal (~9:09 pace) for a runner at 6,200ft elevation. Provide specific paces for Easy, Marathon, Tempo, and Interval runs. Also, design a strength program focused on Achilles stability (glute/hip/calf) for someone with a history of tendinopathy (no heavy lifting). Define clear 'red flag' warning signs for overtraining or injury flare-ups.",
+    :writes [:foundations],
+    :output-schemas
+    {:foundations
+     [:map
+      [:paces
+       [:map
+        [:easy :string]
+        [:marathon :string]
+        [:tempo :string]
+        [:interval :string]]]
+      [:strength-program :string]
+      [:red-flags :string]]}}]
+  [:llm
+   {:instruction
+    "Generate Weeks 1-4 (Base Block) of the marathon plan. Start at 25 mpw, build to ~32 mpw. Include 2 strength sessions/week. Week 4 must be a cutback week. Include daily run descriptions and mileage.",
+    :reads [:foundations],
+    :writes [:weeks_1_4],
+    :output-schemas
+    {:weeks_1_4
+     [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]
+  [:llm
+   {:instruction
+    "Generate Weeks 5-8 (Build Block) of the marathon plan. Build from 32 mpw to ~42 mpw. Include variety (tempo, long runs). Week 8 must be a cutback week.",
+    :reads [:foundations],
+    :writes [:weeks_5_8],
+    :output-schemas
+    {:weeks_5_8
+     [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]
+  [:llm
+   {:instruction
+    "Generate Weeks 9-12 (Peak Block Phase 1) of the marathon plan. Build from 42 mpw to ~52 mpw. Week 12 must be a cutback week.",
+    :reads [:foundations],
+    :writes [:weeks_9_12],
+    :output-schemas
+    {:weeks_9_12
+     [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]
+  [:llm
+   {:instruction
+    "Generate Weeks 13-16 (Peak & Taper). Week 13-14 should hit peak volume (~55-60 miles). Weeks 14-16 is a 3-week taper. Week 16 is race week (marathon on weekend).",
+    :reads [:foundations],
+    :writes [:weeks_13_16],
+    :output-schemas
+    {:weeks_13_16
+     [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]
+  [:code
+   {:fn
+    (fn
+     [{:keys [inputs]}]
+     (let
+      [f
+       (:foundations inputs)
+       w
+       (vec
+        (concat
+         (:weeks_1_4 inputs)
+         (:weeks_5_8 inputs)
+         (:weeks_9_12 inputs)
+         (:weeks_13_16 inputs)))]
+      {:result
+       (str
+        "{:week-by-week "
+        w
+        "\n :paces "
+        (:paces f)
+        "\n :strength-program \""
+        (:strength-program f)
+        "\""
+        "\n :red-flags \""
+        (:red-flags f)
+        "\"}")})),
+    :reads
+    [:foundations :weeks_1_4 :weeks_5_8 :weeks_9_12 :weeks_13_16],
+    :writes [:result]}]
+  [:final {:keys [:result]}]],
+ :node-trace-usage-total
+ {:prompt-tokens 34753, :completion-tokens 6871, :total-tokens 41624},
+ :duration-ms 40996,
+ :deferred [],
+ :usage
+ {:prompt-tokens 31330,
+  :completion-tokens 4516,
+  :total-tokens 35846,
+  :by-node
+  {[{:type :leaf,
+     :node-id #uuid "d90cf2c6-cc78-4be2-8cf4-d9baf009d2e7"}]
+   {:prompt-tokens 31330,
+    :completion-tokens 4516,
+    :total-tokens 35846}}},
+ :render {:arm nil, :prepend-chars nil, :candidates nil, :prepend nil},
+ :status :success,
+ :reasoning-names-label? false,
+ :iteration-reasonings
+ ["The task requires generating a detailed 16-week marathon training plan with specific constraints (elevation, injury history, volume targets, and goal pace). Given the complexity and length of the plan, I will use `emit-tree!` to structure the workload. \n\nFirst, I will use an LLM node to define the foundational training parameters, specifically the targeted paces and the strength program tailored for Achilles health. \n\nNext, I will divide the 16-week schedule into four 4-week blocks (Base, Build, Peak, and Taper) to manage the generation more effectively and ensure the \"cutback week every 4th week\" requirement is met. \n\nFinally, I will use a `:code` node to aggregate these blocks and the foundational data into the final structured output. This approach ensures high fidelity for the week-by-week details while maintaining consistency across the entire 16-week period."
+  "The previous attempt failed because the `:code` node's `:fn` was not quoted, which is required for the `emit-tree!` durable execution engine. I am fixing this by wrapping the `:fn` in `(quote ...)` or using the backtick syntax. I will also maintain the structural split of the 16-week plan into four manageable blocks (Base, Build, Peak 1, Peak 2/Taper) to ensure the LLM can provide high-quality detail for each week while respecting token limits and context. The foundational data (paces, strength, red flags) will be generated first and passed to subsequent nodes to ensure consistency across the entire training plan."
+  "The previous tree execution successfully generated all the required components for the marathon training plan: foundations (paces, strength, red flags) and four blocks of training weeks (1-16). The final `:code` node in that tree aggregated these variables into the `:result` string according to the required schema. Since the `:result` variable is now present in the sandbox and contains the full synthesized output, I can proceed to finalize the task by returning this value."],
+ :tree-node-count 8,
+ :outputs
+ {:result
+  "{:week-by-week [{:week 1, :plan \"Monday: Rest. Tuesday: 4 miles Easy (10:45-11:30) + Strength Program. Wednesday: 5 miles Easy. Thursday: 4 miles Easy + Strength Program. Friday: Rest. Saturday: 8 miles Long Run (Marathon Pace segments: 2 miles Easy, 4 miles at 9:15-9:25, 2 miles Easy). Sunday: 4 miles Easy.\", :mileage 25} {:week 2, :plan \"Monday: Rest. Tuesday: 5 miles Easy (10:45-11:30) + Strength Program. Wednesday: 6 miles Easy. Thursday: 5 miles Easy + Strength Program. Friday: Rest. Saturday: 9 miles Long Run (9:45-10:15 avg). Sunday: 3 miles Recovery.\", :mileage 28} {:week 3, :plan \"Monday: Rest. Tuesday: 5 miles Easy + Strength Program. Wednesday: 6 miles including Tempo (2 miles Easy, 2 miles at 8:35-8:45, 2 miles Easy). Thursday: 6 miles Easy + Strength Program. Friday: Rest. Saturday: 11 miles Long Run (Steady effort). Sunday: 4 miles Recovery.\", :mileage 32} {:week 4, :plan \"Monday: Rest. Tuesday: 4 miles Easy + Strength Program. Wednesday: 5 miles Easy. Thursday: 4 miles Easy + Strength Program. Friday: Rest. Saturday: 7 miles Long Run (Easy pace). Sunday: 3 miles Recovery. (Cutback week for recovery and Achilles monitoring).\", :mileage 23} {:week 5, :plan \"Mon: Rest & Strength. Tue: 6 miles Easy (10:45-11:30). Wed: 7 miles total including 3 miles at Tempo pace (8:35-8:45). Thu: 5 miles Easy + Strength. Fri: Rest. Sat: 10 miles Long Run (Easy/Marathon mix). Sun: 4 miles Recovery.\", :mileage 32} {:week 6, :plan \"Mon: Rest & Strength. Tue: 7 miles Easy. Wed: 8 miles total including 4x800m Intervals (7:45-7:55) w/ 400m recovery. Thu: 6 miles Easy + Strength. Fri: Rest. Sat: 12 miles Long Run (Steady 10:45-11:00). Sun: 4 miles Recovery.\", :mileage 37} {:week 7, :plan \"Mon: Rest & Strength. Tue: 8 miles Easy. Wed: 9 miles total including 5 miles at Marathon Pace (9:15-9:25). Thu: 6 miles Easy + Strength. Fri: Rest. Sat: 14 miles Long Run (Progressive). Sun: 5 miles Recovery.\", :mileage 42} {:week 8, :plan \"Mon: Rest & Strength. Tue: 5 miles Easy. Wed: 6 miles total including 2 miles at Tempo pace (8:35-8:45). Thu: 4 miles Easy + Strength. Fri: Rest. Sat: 9 miles Long Run (Easy). Sun: 3 miles Recovery.\", :mileage 27} {:week 9, :plan \"Mon: Rest & Strength. Tue: 7 miles easy (10:45-11:30). Wed: 8 miles w/ 4 miles at Tempo (8:35-8:45). Thu: 6 miles easy + Strength. Fri: 5 miles easy. Sat: 16 miles Long Run (incorporate 5 miles at Marathon Pace: 9:15-9:25). Sun: Rest.\", :mileage 42} {:week 10, :plan \"Mon: Rest & Strength. Tue: 8 miles easy. Wed: 9 miles w/ 5x1000m Intervals (7:45-7:55) w/ 400m recovery. Thu: 7 miles easy + Strength. Fri: 5 miles easy. Sat: 18 miles Long Run (Easy/Steady). Sun: Rest.\", :mileage 47} {:week 11, :plan \"Mon: Rest & Strength. Tue: 8 miles easy. Wed: 10 miles w/ 6 miles at Tempo (8:35-8:45). Thu: 8 miles easy + Strength. Fri: 6 miles easy. Sat: 20 miles Long Run (Progressive finish). Sun: Rest.\", :mileage 52} {:week 12, :plan \"Mon: Rest & Strength. Tue: 6 miles easy. Wed: 7 miles w/ 3 miles at Marathon Pace (9:15-9:25). Thu: 5 miles easy + Strength. Fri: 4 miles easy. Sat: 12 miles Long Run (Easy). Sun: Rest.\", :mileage 34} {:week 13, :plan \"Peak Volume Week. Mon: Rest & Strength. Tue: 9 miles easy (10:45-11:30). Wed: 12 miles total including 4 x 2-mile repeats at Tempo (8:35-8:45) w/ 2-min recovery. Thu: 8 miles easy + Strength. Fri: 6 miles easy + 6 strides. Sat: 20 miles Long Run (Easy pace, focus on fuel). Sun: 3 miles recovery or walk.\", :mileage 58} {:week 14, :plan \"Taper Phase 1. Mon: Rest & Strength. Tue: 8 miles easy. Wed: 10 miles total including 6 miles at Marathon Pace (9:15-9:25). Thu: 6 miles easy + Strength. Fri: 5 miles easy. Sat: 14 miles Long Run (Steady). Sun: 2 miles recovery walk.\", :mileage 45} {:week 15, :plan \"Taper Phase 2. Mon: Rest & Strength. Tue: 6 miles easy. Wed: 8 miles total including 3 x 1-mile at Interval pace (7:45-7:55) w/ 3-min recovery. Thu: 5 miles easy. Fri: 4 miles easy + 4 strides. Sat: 8 miles easy. Sun: Rest.\", :mileage 31} {:week 16, :plan \"Race Week. Mon: 4 miles easy. Tue: 5 miles total including 2 miles at Marathon Pace. Wed: 3 miles easy. Thu: Rest & Light Mobility. Fri: 2 miles shakeout + strides. Sat: MARATHON (26.2 miles). Sun: Total Rest.\", :mileage 40}]\n :paces {:easy \"10:45 - 11:30 min/mile\", :marathon \"9:15 - 9:25 min/mile\", :tempo \"8:35 - 8:45 min/mile\", :interval \"7:45 - 7:55 min/mile\"}\n :strength-program \"This program focuses on isometric stability and eccentric control to manage Achilles load without heavy external weights. Perform 3x per week.\n\n1. **Achilles/Calf (Isometric focus):** \n   - *Double-Leg Calf Raise Iso-Hold:* Rise onto balls of feet and hold for 45 seconds. 3 reps.\n   - *Seated Soleus Press:* Sitting down, press knees up against a table/resistance while on toes. 3 sets of 15 reps.\n2. **Glute/Hip Stability:**\n   - *Single-Leg Glute Bridge:* Focus on keeping hips level. 3 sets of 12 reps per side.\n   - *Clamshells (Slow Tempo):* 3 sets of 20 reps per side, 3-second hold at the top.\n   - *Side-Lying Leg Raises:* 3 sets of 15 reps per side to target the gluteus medius.\n3. **Foot/Ankle Control:**\n   - *Short Foot Exercises:* Engaging the arch without curling the toes. 2 minutes per foot.\n   - *Single-Leg Balance:* Stand on one leg on a flat surface (progression: close eyes). 3 sets of 60 seconds.\"\n :red-flags \"1. **Morning Stiffness:** Intense pain or \"creaking\" in the Achilles tendon for more than 15 minutes after waking up.\n2. **Pain Localization:** Sharp, pinpoint pain on the tendon that increases during a run or causes a change in gait (limping).\n3. **Recovery Lag:** Resting heart rate (RHR) elevated by >5-10 beats per minute over your baseline for two consecutive mornings.\n4. **Post-Exercise Flare:** Pain that lasts more than 24 hours after a workout or prevents you from performing daily activities (walking stairs).\n5. **Sleep Disturbance:** Inability to fall asleep or stay asleep due to a localized throb in the lower leg or general systemic fatigue.\"}",
+  :generated-tree-raw
+  [:sequence
+   [:llm
+    {:instruction
+     "Calculate marathon training paces for a 4:00 goal (~9:09 pace) for a runner at 6,200ft elevation. Provide specific paces for Easy, Marathon, Tempo, and Interval runs. Also, design a strength program focused on Achilles stability (glute/hip/calf) for someone with a history of tendinopathy (no heavy lifting). Define clear 'red flag' warning signs for overtraining or injury flare-ups.",
+     :writes [:foundations],
+     :output-schemas
+     {:foundations
+      [:map
+       [:paces
+        [:map
+         [:easy :string]
+         [:marathon :string]
+         [:tempo :string]
+         [:interval :string]]]
+       [:strength-program :string]
+       [:red-flags :string]]}}]
+   [:llm
+    {:instruction
+     "Generate Weeks 1-4 (Base Block) of the marathon plan. Start at 25 mpw, build to ~32 mpw. Include 2 strength sessions/week. Week 4 must be a cutback week. Include daily run descriptions and mileage.",
+     :reads [:foundations],
+     :writes [:weeks_1_4],
+     :output-schemas
+     {:weeks_1_4
+      [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]
+   [:llm
+    {:instruction
+     "Generate Weeks 5-8 (Build Block) of the marathon plan. Build from 32 mpw to ~42 mpw. Include variety (tempo, long runs). Week 8 must be a cutback week.",
+     :reads [:foundations],
+     :writes [:weeks_5_8],
+     :output-schemas
+     {:weeks_5_8
+      [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]
+   [:llm
+    {:instruction
+     "Generate Weeks 9-12 (Peak Block Phase 1) of the marathon plan. Build from 42 mpw to ~52 mpw. Week 12 must be a cutback week.",
+     :reads [:foundations],
+     :writes [:weeks_9_12],
+     :output-schemas
+     {:weeks_9_12
+      [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]
+   [:llm
+    {:instruction
+     "Generate Weeks 13-16 (Peak & Taper). Week 13-14 should hit peak volume (~55-60 miles). Weeks 14-16 is a 3-week taper. Week 16 is race week (marathon on weekend).",
+     :reads [:foundations],
+     :writes [:weeks_13_16],
+     :output-schemas
+     {:weeks_13_16
+      [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]
+   [:code
+    {:fn
+     (fn
+      [{:keys [inputs]}]
+      (let
+       [f
+        (:foundations inputs)
+        w
+        (vec
+         (concat
+          (:weeks_1_4 inputs)
+          (:weeks_5_8 inputs)
+          (:weeks_9_12 inputs)
+          (:weeks_13_16 inputs)))]
+       {:result
+        (str
+         "{:week-by-week "
+         w
+         "\n :paces "
+         (:paces f)
+         "\n :strength-program \""
+         (:strength-program f)
+         "\""
+         "\n :red-flags \""
+         (:red-flags f)
+         "\"}")})),
+     :reads
+     [:foundations :weeks_1_4 :weeks_5_8 :weeks_9_12 :weeks_13_16],
+     :writes [:result]}]
+   [:final {:keys [:result]}]],
+  :generated-tree-source
+  "[:sequence [:llm {:instruction \"Calculate marathon training paces for a 4:00 goal (~9:09 pace) for a runner at 6,200ft elevation. Provide specific paces for Easy, Marathon, Tempo, and Interval runs. Also, design a strength program focused on Achilles stability (glute/hip/calf) for someone with a history of tendinopathy (no heavy lifting). Define clear 'red flag' warning signs for overtraining or injury flare-ups.\", :writes [:foundations], :output-schemas {:foundations [:map [:paces [:map [:easy :string] [:marathon :string] [:tempo :string] [:interval :string]]] [:strength-program :string] [:red-flags :string]]}}] [:llm {:instruction \"Generate Weeks 1-4 (Base Block) of the marathon plan. Start at 25 mpw, build to ~32 mpw. Include 2 strength sessions/week. Week 4 must be a cutback week. Include daily run descriptions and mileage.\", :reads [:foundations], :writes [:weeks_1_4], :output-schemas {:weeks_1_4 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}] [:llm {:instruction \"Generate Weeks 5-8 (Build Block) of the marathon plan. Build from 32 mpw to ~42 mpw. Include variety (tempo, long runs). Week 8 must be a cutback week.\", :reads [:foundations], :writes [:weeks_5_8], :output-schemas {:weeks_5_8 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}] [:llm {:instruction \"Generate Weeks 9-12 (Peak Block Phase 1) of the marathon plan. Build from 42 mpw to ~52 mpw. Week 12 must be a cutback week.\", :reads [:foundations], :writes [:weeks_9_12], :output-schemas {:weeks_9_12 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}] [:llm {:instruction \"Generate Weeks 13-16 (Peak & Taper). Week 13-14 should hit peak volume (~55-60 miles). Weeks 14-16 is a 3-week taper. Week 16 is race week (marathon on weekend).\", :reads [:foundations], :writes [:weeks_13_16], :output-schemas {:weeks_13_16 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}] [:code {:fn (fn [{:keys [inputs]}] (let [f (:foundations inputs) w (vec (concat (:weeks_1_4 inputs) (:weeks_5_8 inputs) (:weeks_9_12 inputs) (:weeks_13_16 inputs)))] {:result (str \"{:week-by-week \" w \"\\n :paces \" (:paces f) \"\\n :strength-program \\\"\" (:strength-program f) \"\\\"\" \"\\n :red-flags \\\"\" (:red-flags f) \"\\\"}\")})), :reads [:foundations :weeks_1_4 :weeks_5_8 :weeks_9_12 :weeks_13_16], :writes [:result]}] [:final {:keys [:result]}]]",
+  :iteration-reasonings
+  ["The task requires generating a detailed 16-week marathon training plan with specific constraints (elevation, injury history, volume targets, and goal pace). Given the complexity and length of the plan, I will use `emit-tree!` to structure the workload. \n\nFirst, I will use an LLM node to define the foundational training parameters, specifically the targeted paces and the strength program tailored for Achilles health. \n\nNext, I will divide the 16-week schedule into four 4-week blocks (Base, Build, Peak, and Taper) to manage the generation more effectively and ensure the \"cutback week every 4th week\" requirement is met. \n\nFinally, I will use a `:code` node to aggregate these blocks and the foundational data into the final structured output. This approach ensures high fidelity for the week-by-week details while maintaining consistency across the entire 16-week period."
+   "The previous attempt failed because the `:code` node's `:fn` was not quoted, which is required for the `emit-tree!` durable execution engine. I am fixing this by wrapping the `:fn` in `(quote ...)` or using the backtick syntax. I will also maintain the structural split of the 16-week plan into four manageable blocks (Base, Build, Peak 1, Peak 2/Taper) to ensure the LLM can provide high-quality detail for each week while respecting token limits and context. The foundational data (paces, strength, red flags) will be generated first and passed to subsequent nodes to ensure consistency across the entire training plan."
+   "The previous tree execution successfully generated all the required components for the marathon training plan: foundations (paces, strength, red flags) and four blocks of training weeks (1-16). The final `:code` node in that tree aggregated these variables into the `:result` string according to the required schema. Since the `:result` variable is now present in the sandbox and contains the full synthesized output, I can proceed to finalize the task by returning this value."],
+  :iterations
+  [{:variable-delta
+    {:created-keys [], :updated-keys [], :removed-keys []},
+    :attempt-ordinal 0,
+    :started-at "2026-09-16T14:18:14.893Z",
+    :emitted-tree-recorded? false,
+    :reasoning
+    "The task requires generating a detailed 16-week marathon training plan with specific constraints (elevation, injury history, volume targets, and goal pace). Given the complexity and length of the plan, I will use `emit-tree!` to structure the workload. \n\nFirst, I will use an LLM node to define the foundational training parameters, specifically the targeted paces and the strength program tailored for Achilles health. \n\nNext, I will div",
+    :stdout-profile
+    {:type :string, :length 0, :word-count 1, :line-count 1},
+    :error-class "clojure.lang.ExceptionInfo",
+    :duration-ms 8718,
+    :status :failure,
+    :code
+    "(emit-tree! \n  [:sequence\n   [:llm {:instruction \"Calculate training paces and design a runner-specific strength program for a 4:00 marathon goal (~9:09 pace) for a 38-year-old at 6,200ft elevation. Focus on Achilles stability (glutes/hips/calves) without heavy lifting. Also define specific red-flag warning signs for injury flare-up.\"\n          :writes [:foundations]\n          :output-schemas {:foundations [:map \n                                         [:paces [:map [:easy :string] [:marathon :string] [:tempo :string] [:interval :string]]]\n                                         [:strength_program :string]\n                                         [:red_flags :string]]}}]\n   [:llm {:instruction \"Generate Weeks 1-4 (Base Block) of the marathon plan. Start at 25 mpw, build to ~32 mpw. Include 2 strength sessions/week. Week 4 must be a cutback week. Calibrate for a 4:00 goal at 6,200ft.\"\n          :reads [:foundations]\n          :writes [:weeks_1_4]\n          :output-schemas {:weeks_1_4 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]\n   [:llm {:instruction \"Generate Weeks 5-8 (Build Block) of the marathon plan. Build from 32 mpw to ~42 mpw. Include variety (tempo, long runs). Week 8 must be a cutback week.\"\n          :reads [:foundations]\n          :writes [:weeks_5_8]\n          :output-schemas {:weeks_5_8 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]\n   [:llm {:instruction \"Generate Weeks 9-12 (Peak Block Phase 1) of the marathon plan. Build from 42 mpw to ~52 mpw. Week 12 must be a cutback week.\"\n          :reads [:foundations]\n          :writes [:weeks_9_12]\n          :output-schemas {:weeks_9_12 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]\n   [:llm {:instruction \"Generate Weeks 13-16 (Peak & Taper). Week 13-14 should hit peak volume (~55-60 miles). Weeks 14-16 is a 3-week taper. Week 16 is race week.\"\n          :reads [:foundations]\n          :writes [:weeks_13_16]\n          :output-schemas {:weeks_13_16 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]\n   [:code {:fn (fn [{:keys [inputs]}]\n                 (let [foundations (:foundations inputs)\n                       weeks (concat (:weeks_1_4 inputs) \n                                     (:weeks_5_8 inputs) \n                                     (:weeks_9_12 inputs) \n                                     (:weeks_13_16 inputs))]\n                   {:result (str \"{:week-by-week \" (vec weeks) \n                                 \"\\n :paces \" (:paces foundations) \n                                 \"\\n :strength-program \\\"\" (:strength_program foundations) \"\\\"\"\n                                 \"\\n :red-flags \\\"\" (:red_flags foundations) \"\\\"}\")}))\n           :reads [:foundations :weeks_1_4 :weeks_5_8 :weeks_9_12 :weeks_13_16]\n           :writes [:result]}]\n   [:final {:keys [:result]}]])",
+    :completed-at "2026-09-16T14:18:23.611Z",
+    :generated-code-recorded? true,
+    :error-excerpt
+    "Durable emit-tree! code nodes require quoted (fn ...) source; an already-evaluated closure cannot be recorded as durable source\nAvailable variables: :result, :iteration-reason",
+    :iteration-index 0}
+   {:result-profile {:type :vector, :length 8},
+    :variable-delta
+    {:created-keys [:result],
+     :updated-keys [:iteration-reasonings],
+     :removed-keys []},
+    :attempt-ordinal 0,
+    :started-at "2026-09-16T14:18:23.633Z",
+    :emitted-tree-recorded? true,
+    :reasoning
+    "The previous attempt failed because the `:code` node's `:fn` was not quoted, which is required for the `emit-tree!` durable execution engine. I am fixing this by wrapping the `:fn` in `(quote ...)` or using the backtick syntax. I will also maintain the structural split of the 16-week plan into four manageable blocks (Base, Build, Peak 1, Peak 2/Taper) to ensure the LLM can provide high-quality detail for each week while respecting tok",
+    :stdout-profile
+    {:type :string, :length 0, :word-count 1, :line-count 1},
+    :tree-fingerprint "1672180525",
+    :duration-ms 29814,
+    :status :success,
+    :code
+    "(emit-tree! \n  (quote \n    [:sequence\n     [:llm {:instruction \"Calculate marathon training paces for a 4:00 goal (~9:09 pace) for a runner at 6,200ft elevation. Provide specific paces for Easy, Marathon, Tempo, and Interval runs. Also, design a strength program focused on Achilles stability (glute/hip/calf) for someone with a history of tendinopathy (no heavy lifting). Define clear 'red flag' warning signs for overtraining or injury flare-ups.\"\n            :writes [:foundations]\n            :output-schemas {:foundations [:map \n                                           [:paces [:map [:easy :string] [:marathon :string] [:tempo :string] [:interval :string]]]\n                                           [:strength-program :string]\n                                           [:red-flags :string]]}}]\n     [:llm {:instruction \"Generate Weeks 1-4 (Base Block) of the marathon plan. Start at 25 mpw, build to ~32 mpw. Include 2 strength sessions/week. Week 4 must be a cutback week. Include daily run descriptions and mileage.\"\n            :reads [:foundations]\n            :writes [:weeks_1_4]\n            :output-schemas {:weeks_1_4 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]\n     [:llm {:instruction \"Generate Weeks 5-8 (Build Block) of the marathon plan. Build from 32 mpw to ~42 mpw. Include variety (tempo, long runs). Week 8 must be a cutback week.\"\n            :reads [:foundations]\n            :writes [:weeks_5_8]\n            :output-schemas {:weeks_5_8 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]\n     [:llm {:instruction \"Generate Weeks 9-12 (Peak Block Phase 1) of the marathon plan. Build from 42 mpw to ~52 mpw. Week 12 must be a cutback week.\"\n            :reads [:foundations]\n            :writes [:weeks_9_12]\n            :output-schemas {:weeks_9_12 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]\n     [:llm {:instruction \"Generate Weeks 13-16 (Peak & Taper). Week 13-14 should hit peak volume (~55-60 miles). Weeks 14-16 is a 3-week taper. Week 16 is race week (marathon on weekend).\"\n            :reads [:foundations]\n            :writes [:weeks_13_16]\n            :output-schemas {:weeks_13_16 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}]\n     [:code {:fn (fn [{:keys [inputs]}]\n                   (let [f (:foundations inputs)\n                         w (vec (concat (:weeks_1_4 inputs) \n                                        (:weeks_5_8 inputs) \n                                        (:weeks_9_12 inputs) \n                                        (:weeks_13_16 inputs)))]\n                     {:result (str \"{:week-by-week \" w \n                                   \"\\n :paces \" (:paces f) \n                                   \"\\n :strength-program \\\"\" (:strength-program f) \"\\\"\"\n                                   \"\\n :red-flags \\\"\" (:red-flags f) \"\\\"}\")}))\n             :reads [:foundations :weeks_1_4 :weeks_5_8 :weeks_9_12 :weeks_13_16]\n             :writes [:result]}]\n     [:final {:keys [:result]}]\n    ]))",
+    :emitted-tree-source
+    "[:sequence [:llm {:instruction \"Calculate marathon training paces for a 4:00 goal (~9:09 pace) for a runner at 6,200ft elevation. Provide specific paces for Easy, Marathon, Tempo, and Interval runs. Also, design a strength program focused on Achilles stability (glute/hip/calf) for someone with a history of tendinopathy (no heavy lifting). Define clear 'red flag' warning signs for overtraining or injury flare-ups.\", :writes [:foundations], :output-schemas {:foundations [:map [:paces [:map [:easy :string] [:marathon :string] [:tempo :string] [:interval :string]]] [:strength-program :string] [:red-flags :string]]}}] [:llm {:instruction \"Generate Weeks 1-4 (Base Block) of the marathon plan. Start at 25 mpw, build to ~32 mpw. Include 2 strength sessions/week. Week 4 must be a cutback week. Include daily run descriptions and mileage.\", :reads [:foundations], :writes [:weeks_1_4], :output-schemas {:weeks_1_4 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}] [:llm {:instruction \"Generate Weeks 5-8 (Build Block) of the marathon plan. Build from 32 mpw to ~42 mpw. Include variety (tempo, long runs). Week 8 must be a cutback week.\", :reads [:foundations], :writes [:weeks_5_8], :output-schemas {:weeks_5_8 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}] [:llm {:instruction \"Generate Weeks 9-12 (Peak Block Phase 1) of the marathon plan. Build from 42 mpw to ~52 mpw. Week 12 must be a cutback week.\", :reads [:foundations], :writes [:weeks_9_12], :output-schemas {:weeks_9_12 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}] [:llm {:instruction \"Generate Weeks 13-16 (Peak & Taper). Week 13-14 should hit peak volume (~55-60 miles). Weeks 14-16 is a 3-week taper. Week 16 is race week (marathon on weekend).\", :reads [:foundations], :writes [:weeks_13_16], :output-schemas {:weeks_13_16 [:vector [:map [:week :int] [:plan :string] [:mileage :int]]]}}] [:code {:fn (fn [{:keys [inputs]}] (let [f (:foundations inputs) w (vec (concat (:weeks_1_4 inputs) (:weeks_5_8 inputs) (:weeks_9_12 inputs) (:weeks_13_16 inputs)))] {:result (str \"{:week-by-week \" w \"\\n :paces \" (:paces f) \"\\n :strength-program \\\"\" (:strength-program f) \"\\\"\" \"\\n :red-flags \\\"\" (:red-flags f) \"\\\"}\")})), :reads [:foundations :weeks_1_4 :weeks_5_8 :weeks_9_12 :weeks_13_16], :writes [:result]}] [:final {:keys [:result]}]]",
+    :completed-at "2026-09-16T14:18:53.447Z",
+    :generated-code-recorded? true,
+    :iteration-index 1,
+    :emitted-tree
+    [:sequence
+     [:llm
+      {:instruction
+       "Calculate marathon training paces for a 4:00 goal (~9:09 pace) for a runner at 6,200ft elevation. Provide specific paces for Easy, Marathon, Tempo, and Interval runs. Also, design a strength program focused on Achilles stability (glute/hip/calf) for someone with a history of tendinopathy (no heavy lifting). Define clear 'red flag' warning signs for overtraining or injury flare-ups.",
+       :writes [:foundations],
+       :output-schemas
+       {:foundations
+        [:map
+         [:paces
+          [:map
+           [:easy :string]
+           [:marathon :string]
+           [:tempo :string]
+           [:interval :string]]]
+         [:strength-program :string]
+         [:red-flags :string]]}}]
+     [:llm
+      {:instruction
+       "Generate Weeks 1-4 (Base Block) of the marathon plan. Start at 25 mpw, build to ~32 mpw. Include 2 strength sessions/week. Week 4 must be a cutback week. Include daily run descriptions and mileage.",
+       :reads [:foundations],
+       :writes [:weeks_1_4],
+       :output-schemas
+       {:weeks_1_4
+        [:vector
+         [:map [:week :int] [:plan :string] [:mileage :int]]]}}]
+     [:llm
+      {:instruction
+       "Generate Weeks 5-8 (Build Block) of the marathon plan. Build from 32 mpw to ~42 mpw. Include variety (tempo, long runs). Week 8 must be a cutback week.",
+       :reads [:foundations],
+       :writes [:weeks_5_8],
+       :output-schemas
+       {:weeks_5_8
+        [:vector
+         [:map [:week :int] [:plan :string] [:mileage :int]]]}}]
+     [:llm
+      {:instruction
+       "Generate Weeks 9-12 (Peak Block Phase 1) of the marathon plan. Build from 42 mpw to ~52 mpw. Week 12 must be a cutback week.",
+       :reads [:foundations],
+       :writes [:weeks_9_12],
+       :output-schemas
+       {:weeks_9_12
+        [:vector
+         [:map [:week :int] [:plan :string] [:mileage :int]]]}}]
+     [:llm
+      {:instruction
+       "Generate Weeks 13-16 (Peak & Taper). Week 13-14 should hit peak volume (~55-60 miles). Weeks 14-16 is a 3-week taper. Week 16 is race week (marathon on weekend).",
+       :reads [:foundations],
+       :writes [:weeks_13_16],
+       :output-schemas
+       {:weeks_13_16
+        [:vector
+         [:map [:week :int] [:plan :string] [:mileage :int]]]}}]
+     [:code
+      {:fn
+       (fn
+        [{:keys [inputs]}]
+        (let
+         [f
+          (:foundations inputs)
+          w
+          (vec
+           (concat
+            (:weeks_1_4 inputs)
+            (:weeks_5_8 inputs)
+            (:weeks_9_12 inputs)
+            (:weeks_13_16 inputs)))]
+         {:result
+          (str
+           "{:week-by-week "
+           w
+           "\n :paces "
+           (:paces f)
+           "\n :strength-program \""
+           (:strength-program f)
+           "\""
+           "\n :red-flags \""
+           (:red-flags f)
+           "\"}")})),
+       :reads
+       [:foundations :weeks_1_4 :weeks_5_8 :weeks_9_12 :weeks_13_16],
+       :writes [:result]}]
+     [:final {:keys [:result]}]]}
+   {:result-profile {:type :map, :length 1},
+    :vars-updated [:iteration-reasonings],
+    :vars-created [],
+    :provider-latency-ms 2316,
+    :reasoning
+    "The previous tree execution successfully generated all the required components for the marathon training plan: foundations (paces, strength, red flags) and four blocks of training weeks (1-16). The final `:code` node in that tree aggregated these variables into the `:result` string according to the required schema. Since the `:result` variable is now present in the sandbox and contains the full synthesized output, I can proceed to finalize the task by returning this value.",
+    :stdout-profile
+    {:type :string, :length 0, :word-count 1, :line-count 1},
+    :error-class nil,
+    :provider-usage
+    {:prompt-tokens 11454,
+     :completion-tokens 123,
+     :total-tokens 11577},
+    :result
+    "\"FINAL_ANSWER: {:result \\\"{:week-by-week [{:week 1, :plan \\\\\\\"Monday: Rest. Tuesday: 4 miles Easy (10:45-11:30) + Strength Program. Wednesday: 5 miles Easy. Thursday: 4 miles Easy + Strength Program. Friday: Rest. Saturday: 8 miles Long Run (Marathon Pace segments: 2 miles Easy, 4 miles at 9:15-9:25, 2 miles Easy). Sunday: 4 miles Easy.\\\\\\\", :mileage 25} {:week 2, :plan \\\\\\\"Monday: Rest. Tuesday: 5 miles Easy (10:45-11:30) + Strength Program. Wednesday: 6 miles Easy. Thursday: 5 miles Easy + Strength Program. Friday: Rest. Saturday: 9 miles Long Run (9:45-10:15 avg). Sunday: 3 miles Recovery.\\\\\\\", :mileage 28} {:week 3, :plan \\\\\\\"Monday: Rest. Tuesday: 5 miles Easy + Strength Program. Wednesday: 6 miles including Tempo (2 miles Easy, 2 miles at 8:35-8:45, 2 miles Easy). Thursday: 6 miles Easy + Strength Program. Friday: Rest. Saturday: 11 miles Long Run (Steady effort). Sunday: 4 miles Recovery.\\\\\\\", :mileage 32} {:week 4, :plan \\\\\\\"Monday: Rest. Tuesday: 4 miles Easy + Strength Program. Wednesday: 5 miles Easy. Thursday: 4 miles Easy + Strength Program. Friday: Rest. Saturday: 7 miles Long Run (Easy pace). Sunday: 3 miles Recovery. (Cutback week for recovery and Achilles monitoring).\\\\\\\", :mileage 23} {:week 5, :plan \\\\\\\"Mon: Rest & Strength. Tue: 6 miles Easy (10:45-11:30). Wed: 7 miles total including 3 miles at Tempo pace (8:35-8:45). Thu: 5 miles Easy + Strength. Fri: Rest. Sat: 10 miles Long Run (Easy/Marathon mix). Sun: 4 miles Recovery.\\\\\\\", :mileage 32} {:week 6, :plan \\\\\\\"Mon: Rest & Strength. Tue: 7 miles Easy. Wed: 8 miles total including 4x800m Intervals (7:45-7:55) w/ 400m recovery. Thu: 6 miles Easy + Strength. Fri: Rest. Sat: 12 miles Long Run (Steady 10:45-11:00). Sun: 4 miles Recovery.\\\\\\\", :mileage 37} {:week 7, :plan \\\\\\\"Mon: Rest & Strength. Tue: 8 miles Easy. Wed: 9 miles total including 5 miles at Marathon Pace (9:15-9:25). Thu: 6 miles Easy + Strength. Fri: Rest. Sat: 14 miles Long Run (Progressive). Sun: 5 miles Recovery.\\\\\\\", :mileage 42} {:week 8, :plan \\\\\\\"Mon: Rest & Strength. Tue: 5 miles Easy. Wed: 6 miles total including 2 miles at Tempo pace (8:35-8:45). Thu: 4 miles Easy + Strength. Fri: Rest. Sat: 9 miles Long Run (Easy). Sun: 3 miles Recovery.\\\\\\\", :mileage 27} {:week 9, :plan \\\\\\\"Mon: Rest & Strength. Tue: 7 miles easy (10:45-11:30). Wed: 8 miles w/ 4 miles at Tempo (8:35-8:45). Thu: 6 miles easy + Strength. Fri: 5 miles easy. Sat: 16 miles Long Run (incorporate 5 miles at Marathon Pace: 9:15-9:25). Sun: Rest.\\\\\\\", :mileage 42} {:week 10, :plan \\\\\\\"Mon: Rest & Strength. Tue: 8 miles easy. Wed: 9 miles w/ 5x1000m Intervals (7:45-7:55) w/ 400m recovery. Thu: 7 miles easy + Strength. Fri: 5 miles easy. Sat: 18 miles Long Run (Easy/Steady). Sun: Rest.\\\\\\\", :mileage 47} {:week 11, :plan \\\\\\\"Mon: Rest & Strength. Tue: 8 miles easy. Wed: 10 miles w/ 6 miles at Tempo (8:35-8:45). Thu: 8 miles easy + Strength. Fri: 6 miles easy. Sat: 20 miles Long Run (Progressive finish). Sun: Rest.\\\\\\\", :mileage 52} {:week 12, :plan \\\\\\\"Mon: Rest & Strength. Tue: 6 miles easy. Wed: 7 miles w/ 3 miles at Marathon Pace (9:15-9:25). Thu: 5 miles easy + Strength. Fri: 4 miles easy. Sat: 12 miles Long Run (Easy). Sun: Rest.\\\\\\\", :mileage 34} {:week 13, :plan \\\\\\\"Peak Volume Week. Mon: Rest & Strength. Tue: 9 miles easy (10:45-11:30). Wed: 12 miles total including 4 x 2-mile repeats at Tempo (8:35-8:45) w/ 2-min recovery. Thu: 8 miles easy + Strength. Fri: 6 miles easy + 6 strides. Sat: 20 miles Long Run (Easy pace, focus on fuel). Sun: 3 miles recovery or walk.\\\\\\\", :mileage 58} {:week 14, :plan \\\\\\\"Taper Phase 1. Mon: Rest & Strength. Tue: 8 miles easy. Wed: 10 miles total including 6 miles at Marathon Pace (9:15-9:25). Thu: 6 miles easy + Strength. Fri: 5 miles easy. Sat: 14 miles Long Run (Steady). Sun: 2 miles recovery walk.\\\\\\\", :mileage 45} {:week 15, :plan \\\\\\\"Taper Phase 2. Mon: Rest & Strength. Tue: 6 miles easy. Wed: 8 miles total including 3 x 1-mile at Interval pace (7:45-7:55) w/ 3-min recovery. Thu: 5 miles easy. Fri: 4 miles easy + 4 strides. Sat: 8 miles easy. Sun: Rest.\\\\\\\", :mileage 31} {:week 16, :plan \\\\\\\"Race Week. Mon: 4 miles easy. Tue: 5 miles total including 2 miles at Marathon Pace. Wed: 3 miles easy. Thu: Rest & Light Mobility. Fri: 2 miles shakeout + strides. Sat: MARATHON (26.2 miles). Sun: Total Rest.\\\\\\\", :mileage 40}]\\\\n :paces {:easy \\\\\\\"10:45 - 11:30 min/mile\\\\\\\", :marathon \\\\\\\"9:15 - 9:25 min/mile\\\\\\\", :tempo \\\\\\\"8:35 - 8:45 min/mile\\\\\\\", :interval \\\\\\\"7:45 - 7:55 min/mile\\\\\\\"}\\\\n :strength-program \\\\\\\"This program focuses on isometric stability and eccentric control to manage Achilles load without heavy external weights. Perform 3x per week.\\\\n\\\\n1. **Achilles/Calf (Isometric focus):** \\\\n   - *Double-Leg Calf Raise Iso-Hold:* Rise onto balls of feet and hold for 45 seconds. 3 reps.\\\\n   - *Seated Soleus Press:* Sitting down, press knees up against a table/resistance while on toes. 3 sets of 15 reps.\\\\n2. **Glute/Hip Stability:**\\\\n   - *Single-Leg Glute Bridge:* Focus on keeping hips level. 3 sets of 12 reps per side.\\\\n   - *Clamshells (Slow Tempo):* 3 sets of 20 reps per side, 3-second hold at the top.\\\\n   - *Side-Lying Leg Raises:* 3 sets of 15 reps per side to target the gluteus medius.\\\\n3. **Foot/Ankle Control:**\\\\n   - *Short Foot Exercises:* Engaging the arch without curling the toes. 2 minutes per foot.\\\\n   - *Single-Leg Balance:* Stand on one leg on a flat surface (progression: close eyes). 3 sets of 60 seconds.\\\\\\\"\\\\n :red-flags \\\\\\\"1. **Morning Stiffness:** Intense pain or \\\\\\\"creaking\\\\\\\" in the Achilles tendon for more than 15 minutes after waking up.\\\\n2. **Pain Localization:** Sharp, pinpoint pain on the tendon that increases during a run or causes a change in gait (limping).\\\\n3. **Recovery Lag:** Resting heart rate (RHR) elevated by >5-10 beats per minute over your baseline for two consecutive mornings.\\\\n4. **Post-Exercise Flare:** Pain that lasts more than 24 hours after a workout or prevents you from performing daily activities (walking stairs).\\\\n5. **Sleep Disturbance:** Inability to fall asleep or stay asleep due to a localized throb in the lower leg or general systemic fatigue.\\\\\\\"}\\\"}\"",
+    :code "(final! {:result (get-var :result)})",
+    :error nil,
+    :stdout ""}]},
+ :iteration-count 3,
+ :error nil,
+ :classified {},
+ :child-after-run nil}

@@ -1,0 +1,448 @@
+[{:reasoning-mentions-corpus? false,
+  :slug "domain-003-marathon-training",
+  :arm :baseline,
+  :node-trace-usage-total
+  {:prompt-tokens 34753, :completion-tokens 6871, :total-tokens 41624},
+  :duration-ms 40996,
+  :deferred [],
+  :usage
+  {:prompt-tokens 31330,
+   :completion-tokens 4516,
+   :total-tokens 35846,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "d90cf2c6-cc78-4be2-8cf4-d9baf009d2e7"}]
+    {:prompt-tokens 31330,
+     :completion-tokens 4516,
+     :total-tokens 35846}}},
+  :status :success,
+  :reasoning-names-label? false,
+  :tree-node-count 8,
+  :iteration-count 3,
+  :error nil,
+  :classified {},
+  :child-after-run nil}
+ {:reasoning-mentions-corpus? false,
+  :slug "domain-003-marathon-training",
+  :arm :r-inject-1,
+  :node-trace-usage-total
+  {:prompt-tokens 53760,
+   :completion-tokens 11630,
+   :total-tokens 65390},
+  :duration-ms 62810,
+  :deferred [],
+  :usage
+  {:prompt-tokens 50227,
+   :completion-tokens 6381,
+   :total-tokens 56608,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "ed1041c1-dd5e-4a1e-9b98-98a7b5861194"}]
+    {:prompt-tokens 50227,
+     :completion-tokens 6381,
+     :total-tokens 56608}}},
+  :status :success,
+  :reasoning-names-label? false,
+  :tree-node-count 6,
+  :iteration-count 2,
+  :error nil,
+  :classified
+  {:assigned-tree-id #uuid "eb7742d8-0547-3308-891c-dfda7bb10724",
+   :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+   :domain-label "marathon-training-plan",
+   :outcome :matched,
+   :domain-verdict
+   {:domain-coverage :partial,
+    :domain-label "marathon-training-plan",
+    :domain-reasoning
+    "The candidate describes a pipeline for content transformation and deterministic formatting, which matches the task of transforming runner profile data into a structured training plan. While 'marathon training' isn't explicitly named, the 'enriched/formatted' output kind is a strong match for this complex generation task."},
+   :domain-children-considered [],
+   :confidence 0.92,
+   :was-fresh-mint? true,
+   :assigned-via :mint-domain-child},
+  :child-after-run
+  {:claim-count 2,
+   :claim-kinds {:representative-use 1, :strength 1},
+   :concept-label "marathon-training-plan",
+   :summary
+   "Representative uses: INSTRUCTION:\nBuild a 16-week marathon training plan for a runner with the following profile:\n\n- Age 38, recreational runner, currently logging 25 miles/week\n- Goal: complete a marathon in 4:00 (~9:09/mile pace)\n- Previous race: half-marathon in 1:55 six months ago\n- Available training time: weekday runs 45-60 min, long run on Saturday or Sunday\n- Constraints: prior right Achilles tendinopathy (no flare-up in 18 months),\n  no track access, lives at 6,200 ft elevation, gym access (treadmill +\n  basic strength equipment)\n\nProduce a week-by-week plan that:\n- Builds peak training volume to ~55-60 miles/week by week 13-14\n- Includes appropriate variety: easy runs, tempo runs, intervals,\n  long runs, recovery runs\n- Has a 3-week taper (weeks 14-15-16) appropriate for the goal time\n- Includes specific paces (easy / marathon / tempo / interval) calibrated\n  to a 4:00 marathon goal\n- Schedules 2 strength sessions per week with exercise types appropriate\n  for runners (no heavy lifting; focus on glute / hip / calf stability\n  given the Achilles history)\n- Provides cutback weeks every 4th week to allow adaptation\n- Includes specific WARNING SIGNS that would warrant a deload or rest week\n\nOutput: `{:week-by-week [<week-plan> ...] :paces {...} :strength-program :red-flags}`\n\nREADS: (none)\nWRITES: :result\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none). Strengths: emits the 189798240 worked tree for tasks of this class.",
+   :representative-uses
+   ["INSTRUCTION:\nBuild a 16-week marathon training plan for a runner with the following profile:\n\n- Age 38, recreational runner, currently logging 25 miles/week\n- Goal: complete a marathon in 4:00 (~9:09/mile pace)\n- Previous race: half-marathon in 1:55 six months ago\n- Available training time: weekday runs 45-60 min, long run on Saturday or Sunday\n- Constraints: prior right Achilles tendinopathy (no flare-up in 18 months),\n  no track access, lives at 6,200 ft elevation, gym access (treadmill +\n  basic strength equipment)\n\nProduce a week-by-week plan that:\n- Builds peak training volume to ~55-60 miles/week by week 13-14\n- Includes appropriate variety: easy runs, tempo runs, intervals,\n  long runs, recovery runs\n- Has a 3-week taper (weeks 14-15-16) appropriate for the goal time\n- Includes specific paces (easy / marathon / tempo / interval) calibrated\n  to a 4:00 marathon goal\n- Schedules 2 strength sessions per week with exercise types appropriate\n  for runners (no heavy lifting; focus on glute / hip / calf stability\n  given the Achilles history)\n- Provides cutback weeks every 4th week to allow adaptation\n- Includes specific WARNING SIGNS that would warrant a deload or rest week\n\nOutput: `{:week-by-week [<week-plan> ...] :paces {...} :strength-program :red-flags}`\n\nREADS: (none)\nWRITES: :result\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none)"],
+   :version 3,
+   :weakness-count 0,
+   :consolidated-from-event-count 0,
+   :strength-count 1}}
+ {:reasoning-mentions-corpus? false,
+  :slug "domain-003-marathon-training",
+  :arm :r-inject-2,
+  :node-trace-usage-total
+  {:prompt-tokens 132514,
+   :completion-tokens 18495,
+   :total-tokens 151009},
+  :duration-ms 97000,
+  :deferred [],
+  :usage
+  {:prompt-tokens 128092,
+   :completion-tokens 10680,
+   :total-tokens 138772,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "d26974f3-ac45-44ff-88f8-bb9214693653"}]
+    {:prompt-tokens 128092,
+     :completion-tokens 10680,
+     :total-tokens 138772}}},
+  :status :failure,
+  :reasoning-names-label? false,
+  :tree-node-count 0,
+  :iteration-count 0,
+  :error "Max iterations reached without final!",
+  :classified
+  {:assigned-tree-id #uuid "eb7742d8-0547-3308-891c-dfda7bb10724",
+   :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+   :domain-label "marathon-training-plan",
+   :outcome :matched,
+   :domain-verdict
+   {:domain-coverage :covered,
+    :domain-label "marathon-training-plan",
+    :domain-reasoning
+    "The candidate lists 'marathon-training-plan' as an existing domain child, which directly matches the task's subject matter (marathon training), material (runner profile/constraints), and output (week-by-week plan)."},
+   :domain-children-considered ["marathon-training-plan"],
+   :confidence 1.0,
+   :was-fresh-mint? false,
+   :assigned-via :land-on-domain-child},
+  :child-after-run
+  {:claim-count 4,
+   :claim-kinds {:representative-use 1, :strength 1, :weakness 2},
+   :concept-label "marathon-training-plan",
+   :summary
+   "Representative uses: INSTRUCTION:\nBuild a 16-week marathon training plan for a runner with the following profile:\n\n- Age 38, recreational runner, currently logging 25 miles/week\n- Goal: complete a marathon in 4:00 (~9:09/mile pace)\n- Previous race: half-marathon in 1:55 six months ago\n- Available training time: weekday runs 45-60 min, long run on Saturday or Sunday\n- Constraints: prior right Achilles tendinopathy (no flare-up in 18 months),\n  no track access, lives at 6,200 ft elevation, gym access (treadmill +\n  basic strength equipment)\n\nProduce a week-by-week plan that:\n- Builds peak training volume to ~55-60 miles/week by week 13-14\n- Includes appropriate variety: easy runs, tempo runs, intervals,\n  long runs, recovery runs\n- Has a 3-week taper (weeks 14-15-16) appropriate for the goal time\n- Includes specific paces (easy / marathon / tempo / interval) calibrated\n  to a 4:00 marathon goal\n- Schedules 2 strength sessions per week with exercise types appropriate\n  for runners (no heavy lifting; focus on glute / hip / calf stability\n  given the Achilles history)\n- Provides cutback weeks every 4th week to allow adaptation\n- Includes specific WARNING SIGNS that would warrant a deload or rest week\n\nOutput: `{:week-by-week [<week-plan> ...] :paces {...} :strength-program :red-flags}`\n\nREADS: (none)\nWRITES: :result\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none). Strengths: emits the 189798240 worked tree for tasks of this class. Known weaknesses: emitted the 810560271 tree for tasks of this class and it failed; emitted the 421551625 tree for tasks of this class and it failed.",
+   :representative-uses
+   ["INSTRUCTION:\nBuild a 16-week marathon training plan for a runner with the following profile:\n\n- Age 38, recreational runner, currently logging 25 miles/week\n- Goal: complete a marathon in 4:00 (~9:09/mile pace)\n- Previous race: half-marathon in 1:55 six months ago\n- Available training time: weekday runs 45-60 min, long run on Saturday or Sunday\n- Constraints: prior right Achilles tendinopathy (no flare-up in 18 months),\n  no track access, lives at 6,200 ft elevation, gym access (treadmill +\n  basic strength equipment)\n\nProduce a week-by-week plan that:\n- Builds peak training volume to ~55-60 miles/week by week 13-14\n- Includes appropriate variety: easy runs, tempo runs, intervals,\n  long runs, recovery runs\n- Has a 3-week taper (weeks 14-15-16) appropriate for the goal time\n- Includes specific paces (easy / marathon / tempo / interval) calibrated\n  to a 4:00 marathon goal\n- Schedules 2 strength sessions per week with exercise types appropriate\n  for runners (no heavy lifting; focus on glute / hip / calf stability\n  given the Achilles history)\n- Provides cutback weeks every 4th week to allow adaptation\n- Includes specific WARNING SIGNS that would warrant a deload or rest week\n\nOutput: `{:week-by-week [<week-plan> ...] :paces {...} :strength-program :red-flags}`\n\nREADS: (none)\nWRITES: :result\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none)"],
+   :version 5,
+   :weakness-count 2,
+   :consolidated-from-event-count 0,
+   :strength-count 1}}
+ {:reasoning-mentions-corpus? false,
+  :slug "domain-002-recipe-scaling",
+  :arm :baseline,
+  :node-trace-usage-total
+  {:prompt-tokens 18023, :completion-tokens 2938, :total-tokens 20961},
+  :duration-ms 19119,
+  :deferred [],
+  :usage
+  {:prompt-tokens 17560,
+   :completion-tokens 1890,
+   :total-tokens 19450,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "9b97d73d-2ee5-4ffc-b2bf-d5669a019496"}]
+    {:prompt-tokens 17560,
+     :completion-tokens 1890,
+     :total-tokens 19450}}},
+  :status :success,
+  :reasoning-names-label? false,
+  :tree-node-count 4,
+  :iteration-count 2,
+  :error nil,
+  :classified {},
+  :child-after-run nil}
+ {:reasoning-mentions-corpus? false,
+  :slug "domain-002-recipe-scaling",
+  :arm :r-inject-1,
+  :node-trace-usage-total
+  {:prompt-tokens 42299, :completion-tokens 5231, :total-tokens 47530},
+  :duration-ms 43127,
+  :deferred [],
+  :usage
+  {:prompt-tokens 40461,
+   :completion-tokens 3131,
+   :total-tokens 43592,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "8a24616d-40fa-44a9-bbbe-2e86163b122a"}]
+    {:prompt-tokens 40461,
+     :completion-tokens 3131,
+     :total-tokens 43592}}},
+  :status :success,
+  :reasoning-names-label? false,
+  :tree-node-count 7,
+  :iteration-count 2,
+  :error nil,
+  :classified
+  {:assigned-tree-id #uuid "b39534d2-a161-3144-9111-b3e24d6cb163",
+   :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+   :domain-label "catering-recipe-scaling",
+   :outcome :matched,
+   :domain-verdict
+   {:domain-coverage :partial,
+    :domain-label "catering-recipe-scaling",
+    :domain-reasoning
+    "The candidate lists 'marathon-training-plan' as an existing child domain, which shares the 'complex planning/logistics' subject matter of large-scale catering planning. While not an exact match for catering, it is the closest domain match in the set."},
+   :domain-children-considered ["marathon-training-plan"],
+   :confidence 0.95,
+   :was-fresh-mint? true,
+   :assigned-via :mint-sibling-domain-child},
+  :child-after-run
+  {:claim-count 2,
+   :claim-kinds {:representative-use 1, :strength 1},
+   :concept-label "catering-recipe-scaling",
+   :summary
+   "Representative uses: INSTRUCTION:\nA small restaurant has a chef-tested recipe for ratatouille that yields\n6 plates from these ingredients + technique:\n\nIngredients:\n- 2 medium eggplants, diced 1 cm\n- 3 zucchini, diced 1 cm\n- 2 red bell peppers, diced 1 cm\n- 4 plum tomatoes, peeled + diced\n- 1 large onion, finely chopped\n- 4 garlic cloves, minced\n- 1/2 cup olive oil\n- 2 tsp salt, 1 tsp ground black pepper\n- 1 tbsp dried herbes de Provence\n- Fresh basil for garnish\n\nTechnique:\n- Sweat onions and garlic in olive oil 5 min\n- Add peppers, cook 5 min\n- Add eggplant + zucchini, cook 10 min with occasional stirring\n- Add tomatoes + seasoning, simmer covered 25 min\n- Uncover, reduce 10 min\n\nScale this recipe to feed 60 plates for a catering event. NOT a simple\n10x multiplication — provide a scaled recipe that accounts for:\n- Knife work + dicing time at scale (suggest a workflow + station setup)\n- Cookware capacity (a 12\" pan can hold ~6 plates of vegetables; what\n  changes with scaling?)\n- Heat distribution in larger pans / pots (timing adjustments)\n- Seasoning at scale (salt doesn't scale linearly with vegetable volume)\n- Texture preservation (over-stirring with larger batches mashes the\n  vegetables)\n- Service timing (how far in advance can this be cooked + held without\n  texture loss)\n- Cost estimate at typical restaurant supplier pricing\n\nOutput: `{:scaled-ingredients :revised-technique :workflow :timing :cost-estimate :pitfalls-and-mitigations}`\n\nREADS: (none)\nWRITES: :result\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none). Strengths: emits the 1252324492 worked tree for tasks of this class.",
+   :representative-uses
+   ["INSTRUCTION:\nA small restaurant has a chef-tested recipe for ratatouille that yields\n6 plates from these ingredients + technique:\n\nIngredients:\n- 2 medium eggplants, diced 1 cm\n- 3 zucchini, diced 1 cm\n- 2 red bell peppers, diced 1 cm\n- 4 plum tomatoes, peeled + diced\n- 1 large onion, finely chopped\n- 4 garlic cloves, minced\n- 1/2 cup olive oil\n- 2 tsp salt, 1 tsp ground black pepper\n- 1 tbsp dried herbes de Provence\n- Fresh basil for garnish\n\nTechnique:\n- Sweat onions and garlic in olive oil 5 min\n- Add peppers, cook 5 min\n- Add eggplant + zucchini, cook 10 min with occasional stirring\n- Add tomatoes + seasoning, simmer covered 25 min\n- Uncover, reduce 10 min\n\nScale this recipe to feed 60 plates for a catering event. NOT a simple\n10x multiplication — provide a scaled recipe that accounts for:\n- Knife work + dicing time at scale (suggest a workflow + station setup)\n- Cookware capacity (a 12\" pan can hold ~6 plates of vegetables; what\n  changes with scaling?)\n- Heat distribution in larger pans / pots (timing adjustments)\n- Seasoning at scale (salt doesn't scale linearly with vegetable volume)\n- Texture preservation (over-stirring with larger batches mashes the\n  vegetables)\n- Service timing (how far in advance can this be cooked + held without\n  texture loss)\n- Cost estimate at typical restaurant supplier pricing\n\nOutput: `{:scaled-ingredients :revised-technique :workflow :timing :cost-estimate :pitfalls-and-mitigations}`\n\nREADS: (none)\nWRITES: :result\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none)"],
+   :version 3,
+   :weakness-count 0,
+   :consolidated-from-event-count 0,
+   :strength-count 1}}
+ {:reasoning-mentions-corpus? true,
+  :slug "domain-002-recipe-scaling",
+  :arm :r-inject-2,
+  :node-trace-usage-total
+  {:prompt-tokens 38413, :completion-tokens 2997, :total-tokens 41410},
+  :duration-ms 34878,
+  :deferred [],
+  :usage
+  {:prompt-tokens 38079,
+   :completion-tokens 1988,
+   :total-tokens 40067,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "ca1fac4a-16d5-4b1c-aa38-765463c2600b"}]
+    {:prompt-tokens 38079,
+     :completion-tokens 1988,
+     :total-tokens 40067}}},
+  :status :success,
+  :reasoning-names-label? true,
+  :tree-node-count 4,
+  :iteration-count 2,
+  :error nil,
+  :classified
+  {:assigned-tree-id #uuid "b39534d2-a161-3144-9111-b3e24d6cb163",
+   :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+   :domain-label "catering-recipe-scaling",
+   :outcome :matched,
+   :domain-verdict
+   {:domain-coverage :covered,
+    :domain-label "catering-recipe-scaling",
+    :domain-reasoning
+    "The candidate explicitly lists 'catering-recipe-scaling' as an existing domain child, directly matching the subject matter of the task."},
+   :domain-children-considered
+   ["catering-recipe-scaling" "marathon-training-plan"],
+   :confidence 1.0,
+   :was-fresh-mint? false,
+   :assigned-via :land-on-domain-child},
+  :child-after-run
+  {:claim-count 3,
+   :claim-kinds {:representative-use 1, :strength 2},
+   :concept-label "catering-recipe-scaling",
+   :summary
+   "Representative uses: INSTRUCTION:\nA small restaurant has a chef-tested recipe for ratatouille that yields\n6 plates from these ingredients + technique:\n\nIngredients:\n- 2 medium eggplants, diced 1 cm\n- 3 zucchini, diced 1 cm\n- 2 red bell peppers, diced 1 cm\n- 4 plum tomatoes, peeled + diced\n- 1 large onion, finely chopped\n- 4 garlic cloves, minced\n- 1/2 cup olive oil\n- 2 tsp salt, 1 tsp ground black pepper\n- 1 tbsp dried herbes de Provence\n- Fresh basil for garnish\n\nTechnique:\n- Sweat onions and garlic in olive oil 5 min\n- Add peppers, cook 5 min\n- Add eggplant + zucchini, cook 10 min with occasional stirring\n- Add tomatoes + seasoning, simmer covered 25 min\n- Uncover, reduce 10 min\n\nScale this recipe to feed 60 plates for a catering event. NOT a simple\n10x multiplication — provide a scaled recipe that accounts for:\n- Knife work + dicing time at scale (suggest a workflow + station setup)\n- Cookware capacity (a 12\" pan can hold ~6 plates of vegetables; what\n  changes with scaling?)\n- Heat distribution in larger pans / pots (timing adjustments)\n- Seasoning at scale (salt doesn't scale linearly with vegetable volume)\n- Texture preservation (over-stirring with larger batches mashes the\n  vegetables)\n- Service timing (how far in advance can this be cooked + held without\n  texture loss)\n- Cost estimate at typical restaurant supplier pricing\n\nOutput: `{:scaled-ingredients :revised-technique :workflow :timing :cost-estimate :pitfalls-and-mitigations}`\n\nREADS: (none)\nWRITES: :result\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none). Strengths: emits the 1252324492 worked tree for tasks of this class; emits the -1784297838 worked tree for tasks of this class.",
+   :representative-uses
+   ["INSTRUCTION:\nA small restaurant has a chef-tested recipe for ratatouille that yields\n6 plates from these ingredients + technique:\n\nIngredients:\n- 2 medium eggplants, diced 1 cm\n- 3 zucchini, diced 1 cm\n- 2 red bell peppers, diced 1 cm\n- 4 plum tomatoes, peeled + diced\n- 1 large onion, finely chopped\n- 4 garlic cloves, minced\n- 1/2 cup olive oil\n- 2 tsp salt, 1 tsp ground black pepper\n- 1 tbsp dried herbes de Provence\n- Fresh basil for garnish\n\nTechnique:\n- Sweat onions and garlic in olive oil 5 min\n- Add peppers, cook 5 min\n- Add eggplant + zucchini, cook 10 min with occasional stirring\n- Add tomatoes + seasoning, simmer covered 25 min\n- Uncover, reduce 10 min\n\nScale this recipe to feed 60 plates for a catering event. NOT a simple\n10x multiplication — provide a scaled recipe that accounts for:\n- Knife work + dicing time at scale (suggest a workflow + station setup)\n- Cookware capacity (a 12\" pan can hold ~6 plates of vegetables; what\n  changes with scaling?)\n- Heat distribution in larger pans / pots (timing adjustments)\n- Seasoning at scale (salt doesn't scale linearly with vegetable volume)\n- Texture preservation (over-stirring with larger batches mashes the\n  vegetables)\n- Service timing (how far in advance can this be cooked + held without\n  texture loss)\n- Cost estimate at typical restaurant supplier pricing\n\nOutput: `{:scaled-ingredients :revised-technique :workflow :timing :cost-estimate :pitfalls-and-mitigations}`\n\nREADS: (none)\nWRITES: :result\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none)"],
+   :version 5,
+   :weakness-count 0,
+   :consolidated-from-event-count 0,
+   :strength-count 2}}
+ {:reasoning-mentions-corpus? false,
+  :slug "domain-001-game-balance",
+  :arm :baseline,
+  :node-trace-usage-total
+  {:prompt-tokens 27930, :completion-tokens 3421, :total-tokens 31351},
+  :duration-ms 23402,
+  :deferred [],
+  :usage
+  {:prompt-tokens 27645,
+   :completion-tokens 2740,
+   :total-tokens 30385,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "cef08745-6d72-45ee-84e5-c4dc8b0803e4"}]
+    {:prompt-tokens 27645,
+     :completion-tokens 2740,
+     :total-tokens 30385}}},
+  :status :success,
+  :reasoning-names-label? false,
+  :tree-node-count 5,
+  :iteration-count 3,
+  :error nil,
+  :classified {},
+  :child-after-run nil}
+ {:reasoning-mentions-corpus? false,
+  :slug "domain-001-game-balance",
+  :arm :r-inject-1,
+  :node-trace-usage-total
+  {:prompt-tokens 34836, :completion-tokens 5927, :total-tokens 40763},
+  :duration-ms 47325,
+  :deferred [],
+  :usage
+  {:prompt-tokens 34638,
+   :completion-tokens 3577,
+   :total-tokens 38215,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "e7d1f8ff-8b8c-4237-96bb-28023cbc779f"}]
+    {:prompt-tokens 34638,
+     :completion-tokens 3577,
+     :total-tokens 38215}}},
+  :status :success,
+  :reasoning-names-label? true,
+  :tree-node-count 5,
+  :iteration-count 2,
+  :error nil,
+  :classified
+  {:assigned-tree-id #uuid "8d76a391-4c67-3784-a70a-5f62d61ef84e",
+   :parent-tree-id #uuid "2ead65e6-6373-38de-81c4-ef7bf067afc9",
+   :domain-label "game-balance-simulation",
+   :outcome :matched,
+   :domain-verdict
+   {:domain-coverage :uncovered,
+    :domain-label "game-balance-simulation",
+    :domain-reasoning
+    "The intent involves game balance through simulation and iterative adjustment. SequentialPipeline's content mentions iterative refinement, but its representative uses don't specifically name game balancing or simulation-based tuning."},
+   :domain-children-considered [],
+   :confidence 0.95,
+   :was-fresh-mint? true,
+   :assigned-via :mint-domain-child},
+  :child-after-run
+  {:claim-count 2,
+   :claim-kinds {:representative-use 1, :strength 1},
+   :concept-label "game-balance-simulation",
+   :summary
+   "Representative uses: INSTRUCTION:\nBalance a 4-class deckbuilder card game (Mage / Rogue / Warrior / Cleric)\nso that across simulated head-to-head matches, every pair of classes\nconverges to a win-rate in the [45%, 55%] window.\n\nEach class has a starting kit:\n- Mage:    24 HP, 3 spell-cards (5 dmg @ 4 mana), 1 shield-card (block 2 @ 1 mana)\n- Rogue:   26 HP, 4 quick-cards (2 dmg @ 1 mana), 1 dodge-card (50% block @ 2 mana)\n- Warrior: 30 HP, 2 attack-cards (4 dmg @ 3 mana), 1 armor-card (block 3 @ 2 mana)\n- Cleric:  28 HP, 2 heal-cards (heal 5 @ 3 mana), 2 smite-cards (3 dmg @ 2 mana)\n\nYou are NOT given a baseline win-rate matrix. The work is iterative:\n- Hypothesize a starting balance (which class is over/under-tuned and why)\n- Simulate enough head-to-head matches to estimate the 4x4 win-rate matrix\n- Identify any pair outside [45%, 55%]\n- Adjust class parameters (HP / card damage / card cost) on the outlier classes\n- Re-simulate the affected matchups\n- Repeat until all 6 pairwise matchups converge into [45%, 55%]\n\nProduce:\n- :final-balance — the converged class parameters as a map keyed by class\n- :rounds — vector of {:round-N {:adjustments {...} :winrate-matrix {...}}}\n- :rationale — 2-3 paragraphs explaining iteration strategy + convergence\n\nREADS: (none)\nWRITES: :result\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none). Strengths: emits the -1794653892 worked tree for tasks of this class.",
+   :representative-uses
+   ["INSTRUCTION:\nBalance a 4-class deckbuilder card game (Mage / Rogue / Warrior / Cleric)\nso that across simulated head-to-head matches, every pair of classes\nconverges to a win-rate in the [45%, 55%] window.\n\nEach class has a starting kit:\n- Mage:    24 HP, 3 spell-cards (5 dmg @ 4 mana), 1 shield-card (block 2 @ 1 mana)\n- Rogue:   26 HP, 4 quick-cards (2 dmg @ 1 mana), 1 dodge-card (50% block @ 2 mana)\n- Warrior: 30 HP, 2 attack-cards (4 dmg @ 3 mana), 1 armor-card (block 3 @ 2 mana)\n- Cleric:  28 HP, 2 heal-cards (heal 5 @ 3 mana), 2 smite-cards (3 dmg @ 2 mana)\n\nYou are NOT given a baseline win-rate matrix. The work is iterative:\n- Hypothesize a starting balance (which class is over/under-tuned and why)\n- Simulate enough head-to-head matches to estimate the 4x4 win-rate matrix\n- Identify any pair outside [45%, 55%]\n- Adjust class parameters (HP / card damage / card cost) on the outlier classes\n- Re-simulate the affected matchups\n- Repeat until all 6 pairwise matchups converge into [45%, 55%]\n\nProduce:\n- :final-balance — the converged class parameters as a map keyed by class\n- :rounds — vector of {:round-N {:adjustments {...} :winrate-matrix {...}}}\n- :rationale — 2-3 paragraphs explaining iteration strategy + convergence\n\nREADS: (none)\nWRITES: :result\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none)"],
+   :version 3,
+   :weakness-count 0,
+   :consolidated-from-event-count 0,
+   :strength-count 1}}
+ {:reasoning-mentions-corpus? true,
+  :slug "domain-001-game-balance",
+  :arm :r-inject-2,
+  :node-trace-usage-total
+  {:prompt-tokens 30703, :completion-tokens 1204, :total-tokens 31907},
+  :duration-ms 34328,
+  :deferred [],
+  :usage
+  {:prompt-tokens 30703,
+   :completion-tokens 1204,
+   :total-tokens 31907,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "b02d64e5-83e0-4953-9ac6-31a3ef28d086"}]
+    {:prompt-tokens 30703,
+     :completion-tokens 1204,
+     :total-tokens 31907}}},
+  :status :success,
+  :reasoning-names-label? false,
+  :tree-node-count 6,
+  :iteration-count 2,
+  :error nil,
+  :classified
+  {:outcome :matched,
+   :assigned-via :match,
+   :assigned-tree-id #uuid "8d76a391-4c67-3784-a70a-5f62d61ef84e",
+   :domain-verdict
+   {:domain-coverage :covered,
+    :domain-label "game-balance-simulation",
+    :domain-reasoning
+    "The representative use exactly matches the subject matter (deckbuilder game balancing), material (HP/card/mana kits), and output (win-rate matrix/final balance)."},
+   :domain-children-considered [],
+   :confidence 1.0,
+   :was-fresh-mint? false},
+  :child-after-run nil}
+ {:reasoning-mentions-corpus? false,
+  :slug "legal-issue-detection",
+  :arm :baseline,
+  :node-trace-usage-total
+  {:prompt-tokens 21636, :completion-tokens 3692, :total-tokens 25328},
+  :duration-ms 29816,
+  :deferred [],
+  :usage
+  {:prompt-tokens 19006,
+   :completion-tokens 2121,
+   :total-tokens 21127,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "5b184e83-e641-48e6-b0fc-6a89952a6c6d"}]
+    {:prompt-tokens 19006,
+     :completion-tokens 2121,
+     :total-tokens 21127}}},
+  :status :success,
+  :reasoning-names-label? false,
+  :tree-node-count 3,
+  :iteration-count 2,
+  :error nil,
+  :classified {},
+  :child-after-run nil}
+ {:reasoning-mentions-corpus? true,
+  :slug "legal-issue-detection",
+  :arm :r-inject-1,
+  :node-trace-usage-total
+  {:prompt-tokens 52354, :completion-tokens 4338, :total-tokens 56692},
+  :duration-ms 41968,
+  :deferred [],
+  :usage
+  {:prompt-tokens 48903,
+   :completion-tokens 2618,
+   :total-tokens 51521,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "98ded79a-8da2-4249-9d6f-9e6740092652"}]
+    {:prompt-tokens 48903,
+     :completion-tokens 2618,
+     :total-tokens 51521}}},
+  :status :success,
+  :reasoning-names-label? false,
+  :tree-node-count 5,
+  :iteration-count 2,
+  :error nil,
+  :classified
+  {:outcome :matched,
+   :assigned-via :match,
+   :assigned-tree-id #uuid "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+   :domain-verdict
+   {:domain-coverage :covered,
+    :domain-label "employment-agreement-review",
+    :domain-reasoning
+    "The representative use explicitly names flagging legal concerns in a document with severity and citation, which matches the subject matter (employment contract), material (text), and output (legal issues/recommendations)."},
+   :domain-children-considered [],
+   :confidence 1.0,
+   :was-fresh-mint? false},
+  :child-after-run nil}
+ {:reasoning-mentions-corpus? false,
+  :slug "legal-issue-detection",
+  :arm :r-inject-2,
+  :node-trace-usage-total
+  {:prompt-tokens 98273,
+   :completion-tokens 3385,
+   :total-tokens 101658},
+  :duration-ms 51086,
+  :deferred [],
+  :usage
+  {:prompt-tokens 98273,
+   :completion-tokens 3385,
+   :total-tokens 101658,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "424b90cb-4bf6-4266-8a88-81a8d53b98d1"}]
+    {:prompt-tokens 98273,
+     :completion-tokens 3385,
+     :total-tokens 101658}}},
+  :status :success,
+  :reasoning-names-label? false,
+  :tree-node-count 7,
+  :iteration-count 5,
+  :error nil,
+  :classified
+  {:outcome :matched,
+   :assigned-via :match,
+   :assigned-tree-id #uuid "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+   :domain-verdict
+   {:domain-coverage :covered,
+    :domain-label "employment-agreement-review",
+    :domain-reasoning
+    "The candidate specifically names 'legal-issue-detection trees' and its representative use case is flagging legal concerns in a document with source citations, which covers the subject (employment agreement), material (contract document), and output kind (issues/recommendations with citations)."},
+   :domain-children-considered [],
+   :confidence 1.0,
+   :was-fresh-mint? false},
+  :child-after-run nil}]
