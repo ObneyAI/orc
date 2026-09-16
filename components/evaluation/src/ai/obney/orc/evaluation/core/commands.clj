@@ -41,25 +41,42 @@
 ;; Idempotency helpers
 ;; =============================================================================
 
+(defn- same-judge-score?
+  [sheet-id node-id tick-id judge-name event]
+  (and (= sheet-id (:sheet-id event))
+       (= node-id (:node-id event))
+       (= tick-id (:tick-id event))
+       (= judge-name (:judge-name event))))
+
+(defn- same-composite-score?
+  [sheet-id node-id tick-id event]
+  (and (= sheet-id (:sheet-id event))
+       (= node-id (:node-id event))
+       (= tick-id (:tick-id event))))
+
 (defn- existing-judge-score?
   "True when a :judge/score-emitted event already exists for the identity
    tuple [sheet-id node-id tick-id judge-name]. Reading the event store
-   directly (rather than a read-model) keeps the check correct even when
-   two records for the same tuple race — last-writer sees the first's
-   event."
+   directly (rather than a read-model) makes the common duplicate path
+   immediately visible. The command-result CAS below is the authoritative
+   race fence when two writers both observe no prior event."
   [{:keys [event-store tenant-id]} sheet-id node-id tick-id judge-name]
   (boolean
-    (some (fn [e]
-            (and (= sheet-id (:sheet-id e))
-                 (= node-id (:node-id e))
-                 (= tick-id (:tick-id e))
-                 (= judge-name (:judge-name e))))
+    (some (partial same-judge-score?
+                   sheet-id node-id tick-id judge-name)
           (into [] (es/read event-store {:types #{:judge/score-emitted}
+                                         :tags #{[:tick tick-id]}
                                          :tenant-id tenant-id})))))
 
 (defn- existing-composite-score?
   "True when a :judge/composite-score-computed event already exists for
-   the identity tuple [sheet-id node-id tick-id]."
+   the identity tuple [sheet-id node-id tick-id].
+
+   RR-23: scoped by the `[:tick tick-id]` tag `record-composite-score`
+   already writes on every emitted event — was the last untagged
+   full-type scan on this hot path (`existing-judge-score?` above was
+   already tick-scoped); this duplicate check runs once per composite
+   score dispatched, over the fastest-growing event type in the system."
   [{:keys [event-store tenant-id]} sheet-id node-id tick-id]
   (boolean
     (some (fn [e]
@@ -67,6 +84,7 @@
                  (= node-id (:node-id e))
                  (= tick-id (:tick-id e))))
           (into [] (es/read event-store {:types #{:judge/composite-score-computed}
+                                         :tags #{[:tick tick-id]}
                                          :tenant-id tenant-id})))))
 
 ;; =============================================================================
@@ -89,7 +107,15 @@
   (if (existing-judge-score? ctx sheet-id node-id tick-id judge-name)
     ;; Idempotent no-op: a score for this tuple already exists.
     {:command-result/events []}
-    {:command-result/events
+    {:command-result/cas
+     {:types #{:judge/score-emitted}
+      :tags #{[:tick tick-id]}
+      :predicate-fn
+      (fn [existing]
+        (not-any? (partial same-judge-score?
+                           sheet-id node-id tick-id judge-name)
+                  (into [] existing)))}
+     :command-result/events
      [(->event
         {:type :judge/score-emitted
          :tags #{[:sheet sheet-id]
@@ -118,8 +144,21 @@
             contributing-judges emitted-at]} :command
     :as ctx}]
   (if (existing-composite-score? ctx sheet-id node-id tick-id)
+    ;; Idempotent no-op: a composite for this tuple already exists.
     {:command-result/events []}
-    {:command-result/events
+    ;; The read above cannot fence a race: judge dispatch runs one future per
+    ;; judge and the processor path is at-least-once, so two deliveries can both
+    ;; read before either appends. The CAS re-checks at append time, which is the
+    ;; only place OneCompositePerCompletion can actually be enforced — the same
+    ;; fence `record-judge-score` uses above.
+    {:command-result/cas
+     {:types #{:judge/composite-score-computed}
+      :tags #{[:tick tick-id]}
+      :predicate-fn
+      (fn [existing]
+        (not-any? (partial same-composite-score? sheet-id node-id tick-id)
+                  (into [] existing)))}
+     :command-result/events
      [(->event
         {:type :judge/composite-score-computed
          :tags #{[:sheet sheet-id]

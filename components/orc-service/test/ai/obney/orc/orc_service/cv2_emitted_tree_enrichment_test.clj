@@ -28,6 +28,7 @@
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.core.commands]
             [ai.obney.orc.orc-service.core.read-models]
+            [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
             ;; Register the ontology enrichment + description + read-model
             ;; namespaces so the post-emit enrichment processor is on the
             ;; global processor registry and its commands/read-models resolve.
@@ -107,8 +108,8 @@
 ;; Fixtures — the emitted worked-DSL is a pure S-expr (matches seed shape).
 ;; ---------------------------------------------------------------------------
 (def ^:private emitted-tree
-  "A pure-data emitted S-expr tree (what emit-tree! produces as
-   :generated-tree-raw and the bookend sanitizes before durable storage)."
+  "A pure-data emitted S-expr tree (what emit-tree! captures before compiling
+   a separate executable representation)."
   [:sequence
    [:llm {:reads [:doc] :writes [:summary]}]
    [:final {:keys [:summary]}]])
@@ -116,14 +117,21 @@
 ;; ---------------------------------------------------------------------------
 ;; Real-grain fixtures — every step is a schema-validated command.
 ;; ---------------------------------------------------------------------------
-(defn- classify! [ctx source-sheet-id class-id]
+(defn- classify!
+  "RR-20: `source-tick-id` is now an explicit, caller-supplied argument
+   (rather than a fresh random-uuid generated INSIDE this fn) because
+   enrichment resolves the tree-class by the OCCURRENCE pair
+   `[source-sheet-id source-tick-id]` (SJ-1's :occurrence->class), not by the
+   bare sheet-id — callers must be able to hand `complete-emit!` the SAME
+   tick-id this classification used."
+  [ctx source-sheet-id source-tick-id class-id]
   (cp/process-command
     (assoc ctx :command
            {:command/name :ontology/assign-task-class
             :command/id (random-uuid)
             :command/timestamp (time/now)
             :source-sheet-id source-sheet-id
-            :source-tick-id (random-uuid)
+            :source-tick-id source-tick-id
             :source-node-id (random-uuid)
             :assigned-tree-id class-id
             :confidence 0.95
@@ -160,20 +168,38 @@
   (boolean (and (some #{signature} (:representative-uses desc))
                 (clojure.string/includes? (str (:summary desc)) signature))))
 
-(defn- complete-emit! [ctx source-sheet-id tree]
-  ;; The Phase-2 bookend: an ephemeral :sheet-id (distinct from the source),
-  ;; carrying the emitted DSL + the source sheet-id for the sheet->class join.
-  (cp/process-command
-    (assoc ctx :command
-           (cond-> {:command/name :sheet/record-rlm-tree-execution-completion
-                    :command/id (random-uuid)
-                    :command/timestamp (time/now)
-                    :sheet-id (random-uuid)  ;; ephemeral Phase-2 sheet
-                    :tick-id (random-uuid)
-                    :trajectory []
-                    :total-usage {:total-tokens 0}}
-             source-sheet-id (assoc :source-sheet-id source-sheet-id)
-             tree            (assoc :generated-tree tree)))))
+(defn- complete-emit!
+  "RR-20: now also carries `:source-tick-id` (the occurrence join half —
+   must match the `source-tick-id` `classify!` used) and `:status` (the
+   outcome that decides which section — :strength vs :weakness — the shape
+   lands in; omitted entirely reproduces the pre-C-2a-2 replay no-op path).
+   When a tree is supplied, `:generated-tree-source` is set to its `pr-str`
+   so this fixture's pre-existing `pr-str`-equality assertions keep meaning
+   what they said: RR-20 prefers the exact `:generated-tree-source` over
+   `pr-str` of the decoded tree ONLY when the two could differ — the
+   dedicated `a-pattern-is-offered-as-its-exact-recorded-source` test in
+   `rr20_worked_pattern_outcome_shape_test` is what proves that preference
+   with genuinely different source text."
+  ([ctx source-sheet-id source-tick-id tree] (complete-emit! ctx source-sheet-id source-tick-id tree nil))
+  ([ctx source-sheet-id source-tick-id tree status]
+   ;; The Phase-2 bookend: an ephemeral :sheet-id (distinct from the source),
+   ;; carrying the emitted DSL + the source sheet-id/tick-id for the
+   ;; occurrence join.
+   (cp/process-command
+     (assoc ctx :command
+            (cond-> {:command/name :sheet/record-rlm-tree-execution-completion
+                     :command/id (random-uuid)
+                     :command/timestamp (time/now)
+                     :sheet-id (random-uuid)  ;; ephemeral Phase-2 sheet
+                     :tick-id (random-uuid)
+                     :trajectory []
+                     :total-usage {:total-tokens 0}}
+              source-sheet-id (assoc :source-sheet-id source-sheet-id)
+              source-tick-id  (assoc :source-tick-id source-tick-id)
+              tree            (assoc :generated-tree tree
+                                      :generated-tree-source (pr-str tree)
+                                      :tree-fingerprint (rlm-fingerprint/fingerprint tree))
+              status          (assoc :status status))))))
 
 (defn- emit-strength
   "The single :strengths entry CV-2 carries the emitted worked-DSL in."
@@ -249,14 +275,16 @@
   (testing "after an emit, the assigned :tree-class description gains a :strengths entry whose :recommended-pattern = the emitted DSL; CV-1's :summary preserved"
     (with-test-ctx [ctx]
       (let [source-sheet-id (random-uuid)
+            source-tick-id (random-uuid)
             class-id (random-uuid)
             signature "implement: summarize a document"]
         ;; CV-1 floor: classify the task + record the provisional description.
-        (classify! ctx source-sheet-id class-id)
+        (classify! ctx source-sheet-id source-tick-id class-id)
         (record-floor! ctx class-id signature)
         (Thread/sleep 150)
-        ;; The RLM emits its tree (Phase-2 completion bookend).
-        (complete-emit! ctx source-sheet-id emitted-tree)
+        ;; The RLM emits its tree (Phase-2 completion bookend). RR-20: a
+        ;; :success status is what earns this shape a :strength claim.
+        (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)
         (Thread/sleep 400)
         ;; Read the description read-model BACK — never trust a return value.
         (let [desc (ontology/get-description ctx :tree-class class-id)
@@ -278,11 +306,12 @@
   (testing "harvest-body's best-recommended-pattern returns the emitted DSL for the enriched class (a harvested specialist ships the real worked pattern)"
     (with-test-ctx [ctx]
       (let [source-sheet-id (random-uuid)
+            source-tick-id (random-uuid)
             class-id (random-uuid)]
-        (classify! ctx source-sheet-id class-id)
+        (classify! ctx source-sheet-id source-tick-id class-id)
         (record-floor! ctx class-id "implement: summarize a document")
         (Thread/sleep 150)
-        (complete-emit! ctx source-sheet-id emitted-tree)
+        (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)
         (Thread/sleep 400)
         ;; Harvest assembles the durable behavior body by REUSING the
         ;; enriched description (no second synthesis). It must carry the
@@ -301,13 +330,14 @@
   (testing "a turn that times out before emit (completion carries NO :generated-tree) records no enrichment; the class stays retrievable via CV-1's floor"
     (with-test-ctx [ctx]
       (let [source-sheet-id (random-uuid)
+            source-tick-id (random-uuid)
             class-id (random-uuid)
             signature "implement: summarize a document"]
-        (classify! ctx source-sheet-id class-id)
+        (classify! ctx source-sheet-id source-tick-id class-id)
         (record-floor! ctx class-id signature)
         (Thread/sleep 150)
         ;; Timeout bookend: source-sheet-id present, but NO emitted tree.
-        (complete-emit! ctx source-sheet-id nil)
+        (complete-emit! ctx source-sheet-id source-tick-id nil)
         (Thread/sleep 300)
         (let [desc (ontology/get-description ctx :tree-class class-id)]
           (is (some? desc) "the class remains retrievable (CV-1 floor)")
@@ -321,7 +351,7 @@
     (with-test-ctx [ctx]
       (let [unclassified-sheet (random-uuid)]
         ;; No classify!, no floor — just an emit bookend for a stray sheet.
-        (complete-emit! ctx unclassified-sheet emitted-tree)
+        (complete-emit! ctx unclassified-sheet (random-uuid) emitted-tree :success)
         (Thread/sleep 300)
         (is (nil? (ontology/get-tree-class-for-sheet ctx unclassified-sheet))
             "no class resolves for an unclassified sheet — enrichment is a no-op")))))
@@ -348,13 +378,14 @@
   (testing "re-emitting the SAME DSL leaves exactly ONE worked-pattern entry in the assembled body, and ZERO whole-body tree-class writes on either pass"
     (with-test-ctx [ctx]
       (let [source-sheet-id (random-uuid)
+            source-tick-id (random-uuid)
             class-id (random-uuid)]
-        (classify! ctx source-sheet-id class-id)
+        (classify! ctx source-sheet-id source-tick-id class-id)
         (record-floor! ctx class-id "implement: summarize a document")
         (Thread/sleep 150)
-        (complete-emit! ctx source-sheet-id emitted-tree)
+        (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)
         (Thread/sleep 400)
-        (complete-emit! ctx source-sheet-id emitted-tree)  ;; identical re-emit
+        (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)  ;; identical re-emit
         (Thread/sleep 400)
         (let [desc (ontology/get-description ctx :tree-class class-id)
               updates (tree-class-description-updates ctx class-id)]

@@ -23,6 +23,7 @@
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.core.commands]
             [ai.obney.orc.orc-service.core.read-models]
+            [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
@@ -90,14 +91,19 @@
    [:llm {:reads [:notes] :writes [:summary]}]
    [:final {:keys [:summary]}]])
 
-(defn- classify! [ctx source-sheet-id class-id]
+(defn- classify!
+  "RR-20: `source-tick-id` is now caller-supplied (enrichment resolves the
+   tree-class by the OCCURRENCE pair, not the bare sheet-id — see
+   `read-models/get-tree-class-for-occurrence`), so callers must hand
+   `complete-emit!` the SAME tick-id this classification used."
+  [ctx source-sheet-id source-tick-id class-id]
   (cp/process-command
     (assoc ctx :command
            {:command/name :ontology/assign-task-class
             :command/id (random-uuid)
             :command/timestamp (time/now)
             :source-sheet-id source-sheet-id
-            :source-tick-id (random-uuid)
+            :source-tick-id source-tick-id
             :source-node-id (random-uuid)
             :assigned-tree-id class-id
             :confidence 0.95
@@ -123,7 +129,15 @@
             :evidence-event-count 0
             :claim-set-version (ontology/get-claim-set-version ctx :tree-class class-id)})))
 
-(defn- complete-emit! [ctx source-sheet-id tree]
+(defn- complete-emit!
+  "RR-20: carries `:source-tick-id` (must match `classify!`'s) + `:status`
+   (the outcome that decides :strength vs :weakness). `:generated-tree-source`
+   is set to `tree`'s `pr-str` so this file's pre-existing `pr-str`-equality
+   assertions keep meaning what they said — RR-20's exact-source preference
+   only bites when the two genuinely differ, which the dedicated
+   `a-pattern-is-offered-as-its-exact-recorded-source` test in
+   `rr20_worked_pattern_outcome_shape_test` covers."
+  [ctx source-sheet-id source-tick-id tree status]
   (cp/process-command
     (assoc ctx :command
            (cond-> {:command/name :sheet/record-rlm-tree-execution-completion
@@ -134,7 +148,11 @@
                     :trajectory []
                     :total-usage {:total-tokens 0}}
              source-sheet-id (assoc :source-sheet-id source-sheet-id)
-             tree            (assoc :generated-tree tree)))))
+             source-tick-id  (assoc :source-tick-id source-tick-id)
+             tree            (assoc :generated-tree tree
+                                     :generated-tree-source (pr-str tree)
+                                     :tree-fingerprint (rlm-fingerprint/fingerprint tree))
+             status          (assoc :status status)))))
 
 (defn- pattern-claims
   "Every claim carrying a worked-DSL recommendation."
@@ -166,12 +184,13 @@
             whole-body tree-class write happened"
     (with-test-ctx [ctx]
       (let [source-sheet-id (random-uuid)
+            source-tick-id (random-uuid)
             class-id (random-uuid)
             signature "implement: summarize a document"]
-        (classify! ctx source-sheet-id class-id)
+        (classify! ctx source-sheet-id source-tick-id class-id)
         (capture-floor! ctx class-id signature)
         (Thread/sleep 200)
-        (complete-emit! ctx source-sheet-id emitted-tree)
+        (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)
         (Thread/sleep 600)
         (let [pcs (pattern-claims ctx class-id)
               body (ontology/get-description ctx :tree-class class-id)]
@@ -205,14 +224,15 @@
             raises its support — corroboration, not a duplicate entry"
     (with-test-ctx [ctx]
       (let [source-sheet-id (random-uuid)
+            source-tick-id (random-uuid)
             class-id (random-uuid)]
-        (classify! ctx source-sheet-id class-id)
+        (classify! ctx source-sheet-id source-tick-id class-id)
         (capture-floor! ctx class-id "implement: summarize a document")
         (Thread/sleep 200)
-        (complete-emit! ctx source-sheet-id emitted-tree)
+        (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)
         (Thread/sleep 600)
         (let [before (first (pattern-claims ctx class-id))]
-          (complete-emit! ctx source-sheet-id emitted-tree)
+          (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)
           (Thread/sleep 600)
           (let [after (pattern-claims ctx class-id)]
             (is (= 1 (count after))
@@ -223,32 +243,51 @@
                 "the re-emit REINFORCED it: the mechanical entry is a counter now")))))))
 
 ;; ===========================================================================
-;; CYCLE 6 — a CHANGED pattern EDITS the same claim rather than adding a rival.
+;; CYCLE 6 — RENAMED under RR-20 (was `a-revised-emit-edits-the-same-claim`).
+;;
+;; RR-20 CHANGED THE MECHANISM HERE, DELIBERATELY, so this test changed with
+;; it. Before RR-20, claim identity was ONE FIXED LITERAL per class, so a
+;; "revised emit" — literally any DIFFERENT tree, successful or not — could
+;; only ever EDIT that one slot in place: a genuinely different (and possibly
+;; WORSE, or FAILED) shape silently replacing whatever the class had proven
+;; before. That is exactly the defect `WorkedPatternsAreProvenNotMerelyRecent`
+;; names: "a later attempt does not overwrite an earlier proven one merely by
+;; being later." RR-20 keys claim identity PER SHAPE (`:tree-fingerprint`), so
+;; two successful-but-different trees are two DISTINCT shapes and therefore
+;; two claims that never touch each other — `a-class-that-succeeds-with-two-
+;; shapes-keeps-both` in `rr20_worked_pattern_outcome_shape_test` is the
+;; behavioural proof. `:edit` still exists, but now only within ONE shape's
+;; identity (see `shape-delta`'s docstring for the rare case that reaches it).
 ;; ===========================================================================
 
-(deftest a-revised-emit-edits-the-same-claim
-  (testing "emitting a DIFFERENT tree rewords the existing worked-pattern claim
-            in place — same claim-id, accumulated support kept, new DSL — rather
-            than leaving two rival patterns for harvest to choose between"
+(deftest a-revised-emit-with-a-different-shape-adds-a-second-claim-not-an-edit
+  (testing "emitting a DIFFERENT (successful) tree adds a SECOND worked-pattern
+            claim rather than overwriting the first — both proven shapes are
+            kept, distinguishable by their own recommendation"
     (with-test-ctx [ctx]
       (let [source-sheet-id (random-uuid)
+            source-tick-id (random-uuid)
             class-id (random-uuid)]
-        (classify! ctx source-sheet-id class-id)
+        (classify! ctx source-sheet-id source-tick-id class-id)
         (capture-floor! ctx class-id "implement: summarize a document")
         (Thread/sleep 200)
-        (complete-emit! ctx source-sheet-id emitted-tree)
+        (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)
         (Thread/sleep 600)
-        (let [before (first (pattern-claims ctx class-id))]
-          (complete-emit! ctx source-sheet-id revised-tree)
+        (let [before (first (pattern-claims ctx class-id))
+              [source-sheet-id2 source-tick-id2] [(random-uuid) (random-uuid)]]
+          (classify! ctx source-sheet-id2 source-tick-id2 class-id)
+          (complete-emit! ctx source-sheet-id2 source-tick-id2 revised-tree :success)
           (Thread/sleep 600)
           (let [after (pattern-claims ctx class-id)]
-            (is (= 1 (count after)) "still one worked-pattern claim, not two rivals")
-            (is (= (:claim-id before) (:claim-id (first after)))
-                "the claim kept its identity across the revision")
-            (is (= (pr-str revised-tree) (:recommendation (first after)))
-                "and now carries the NEW emitted DSL")
-            (is (<= (:support before) (:support (first after)))
-                "an edit reinforces as well as rewords — nothing is lost")))))))
+            (is (= 2 (count after))
+                "two distinct proven shapes, not one rewritten in place")
+            (is (some #(= (:claim-id before) (:claim-id %)) after)
+                "the first shape's claim kept its identity — untouched by the second")
+            (is (= (pr-str emitted-tree)
+                   (:recommendation (first (filter #(= (:claim-id before) (:claim-id %)) after))))
+                "the first shape's recommendation is unchanged")
+            (is (some #(= (pr-str revised-tree) (:recommendation %)) after)
+                "the second, different shape is recorded as its OWN claim")))))))
 
 ;; ===========================================================================
 ;; CYCLE 7 — the legacy-body hazard. A target that still holds only a
@@ -263,8 +302,9 @@
             to make unrepresentable, arriving through a side door"
     (with-test-ctx [ctx]
       (let [source-sheet-id (random-uuid)
+            source-tick-id (random-uuid)
             class-id (random-uuid)]
-        (classify! ctx source-sheet-id class-id)
+        (classify! ctx source-sheet-id source-tick-id class-id)
         ;; A seeded / pre-claim class: whole body, no claims.
         (cp/process-command
           (assoc ctx :command
@@ -281,7 +321,7 @@
                          :version 9
                          :consolidated-from-event-count 120}}))
         (Thread/sleep 200)
-        (complete-emit! ctx source-sheet-id emitted-tree)
+        (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)
         (Thread/sleep 600)
         (let [body (ontology/get-description ctx :tree-class class-id)]
           (is (empty? (ontology/get-claims ctx :tree-class class-id))

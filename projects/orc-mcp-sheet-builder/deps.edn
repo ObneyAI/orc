@@ -1,8 +1,17 @@
 {:paths []
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
 
+        ;; Pin schema-util at the same Grain SHA as every other project so the
+
+        ;; core-v2 and event-store-sqlite-v3 gitlibs resolve to one copy (aligned
+
+        ;; with projects/orc-service).
+
+        cat/schema-util {:git/url "https://github.com/ObneyAI/grain.git" :git/sha "dbf5b5229aad09785e40f71e96adf65c90f971d5" :deps/root "components/schema-util"}
+
+
         obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git"
-                               :git/sha "5de0735d04916c63055a76637fa9bdef36345533"
+                               :git/sha "dbf5b5229aad09785e40f71e96adf65c90f971d5"
                                :deps/root "projects/grain-core-v2"}
 
         ;; MCP Sheet Builder (Layer 8) — generates ORC behavior trees from MCP

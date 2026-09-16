@@ -1367,6 +1367,64 @@
                  "Got: " (pr-str (:inputs trace-data))))))))
 
 ;; =============================================================================
+;; RR-31 — build-trace-data resolves :inputs from the value log when the
+;; completion records :read-keys; the pre-RR-31 direct-inputs / started-event
+;; reach-back is kept ONLY for completions that record no reads (the
+;; direct-tick / researcher paths Gap-7 fixed). These guard tests extend the
+;; two gap7-build-trace-data-* tests above rather than modifying them.
+;; =============================================================================
+
+(deftest rr31-build-trace-data-no-read-keys-still-reaches-back-to-started-event
+  (testing "RR-31 guard: a completion with NO :read-keys (empty vector, same as absent) still reaches back to the matching started event's :inputs — the reads-resolution path must not swallow the Gap-7 reach-back"
+    (with-test-ctx [ctx]
+      (let [build-trace-data @#'ai.obney.orc.evaluation.core.judge-runtime/build-trace-data
+            sheet-id (random-uuid)
+            tick-id (random-uuid)
+            node-id (random-uuid)
+            started-inputs {:document "The original task input text"}
+            _ (es/append (:event-store ctx)
+                         {:tenant-id (:tenant-id ctx)
+                          :events [(es/->event
+                                     {:type :sheet/node-execution-started
+                                      :tags #{[:sheet sheet-id]
+                                              [:node node-id]
+                                              [:tick tick-id]}
+                                      :body {:sheet-id sheet-id
+                                             :tick-id tick-id
+                                             :node-id node-id
+                                             :inputs started-inputs}})]})
+            completion-event {:sheet-id sheet-id
+                              :tick-id tick-id
+                              :node-id node-id
+                              :status :success
+                              :read-keys []
+                              :writes {:issues "Found some legal issues"}}
+            trace-data (build-trace-data ctx completion-event)]
+        (is (= started-inputs (:inputs trace-data))
+            (str "an empty :read-keys must be treated the same as absent :read-keys — the completion "
+                 "recorded no reads to resolve, so the reach-back applies. Got: " (pr-str (:inputs trace-data))))))))
+
+(deftest rr31-find-started-inputs-query-scoped-to-tick
+  (testing "RR-31 acceptance: the started-event reach-back's event-store query is scoped to the tick (:tags #{[:tick tick-id]}), not a tenant-wide scan — the same O(store)-per-judged-completion shape as the survey-hang root cause"
+    (with-test-ctx [ctx]
+      (let [find-started-inputs @#'ai.obney.orc.evaluation.core.judge-runtime/find-started-inputs
+            sheet-id (random-uuid)
+            tick-id (random-uuid)
+            node-id (random-uuid)
+            captured-query (atom nil)
+            real-read es/read]
+        (with-redefs [es/read (fn [store opts]
+                                (when (contains? opts :types)
+                                  (when (contains? (:types opts) :sheet/node-execution-started)
+                                    (reset! captured-query opts)))
+                                (real-read store opts))]
+          (find-started-inputs ctx sheet-id tick-id node-id))
+        (is (some? @captured-query) "find-started-inputs must query the event store for started events")
+        (is (contains? (:tags @captured-query) [:tick tick-id])
+            (str "the query must scope to this tick's events via :tags #{[:tick tick-id]}, not scan the "
+                 "whole tenant. Got query: " (pr-str @captured-query)))))))
+
+;; =============================================================================
 ;; Gap-7b RED#1 — :rlm/tree-generated triggers heuristic-structural
 ;; =============================================================================
 ;;

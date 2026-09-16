@@ -15,6 +15,29 @@
             [clojure.string :as str]))
 
 ;; =============================================================================
+;; RR-23 — shared tag derivations
+;; =============================================================================
+;;
+;; Lives here (not commands.clj or harvest.clj) so BOTH can require it without
+;; a cycle: commands.clj already requires this ns, harvest.clj already
+;; requires this ns, and this ns requires neither of them.
+
+(defn harvested-tree-class-tag
+  "Stable event-store tag identifying a `:ontology/behavioral-subtree-
+   minted` event as the harvested mint FOR `class-id`. Tag values must be
+   UUIDs (event-store-v3), so a non-UUID class-id is not native here —
+   class-ids ARE UUIDs, but the derivation still goes through a stable hash
+   (matching the idiom `commands.clj`'s other `:description-target` tags
+   use) so the emit site (`mint-behavioral-subtree`) and every reader
+   (`harvest.clj`'s `already-harvested?`) compute the SAME tag value from
+   ONE derivation, never two independently-computed hashes that could
+   drift apart."
+  [class-id]
+  [:harvested-tree-class
+   (java.util.UUID/nameUUIDFromBytes
+    (.getBytes (str "harvested-tree-class:" class-id) "UTF-8"))])
+
+;; =============================================================================
 ;; Event Type Sets
 ;; =============================================================================
 
@@ -720,6 +743,14 @@
   [claim]
   (assoc claim :status (earned-status claim)))
 
+(def ^:private campaign-verdict-basis
+  "RR-20: the evidence basis a shape claim's occurrence-corroboration
+   reinforcement declares (`todo-processors/corroborate-worked-patterns-
+   from-occurrence!`). Distinct from `authored-basis` above — a different
+   axis (`reinforce-claim` below counts it; `earned-status`/`add-claim`
+   never treat it specially)."
+  :campaign-verdict)
+
 (defn- reinforce-claim
   "CC-2, spec `ReinforceClaim`: a `:support` (or `:edit`) delta earns the
    claim one more unit of support and files the episode that earned it.
@@ -728,13 +759,24 @@
 
    CC-7: the earned support may cross the validation threshold, so status is
    re-derived here — after the episodes are filed, because the post-guard
-   condition reads them."
+   condition reads them.
+
+   RR-20: when THIS delta declares `:evidence-basis :campaign-verdict`,
+   `:verdict-corroborations` is incremented (defaulting an absent/nil prior
+   value to 0) — the durable count of how many distinct RR-19 campaign
+   verdicts have corroborated this shape, which
+   `harvest/best-recommended-pattern` ranks on ahead of raw support. A
+   `:support` delta that declares any OTHER (or no) basis leaves this field
+   untouched — an ordinary re-emit of the same bookend is not a campaign
+   verdict."
   [claim delta recorded-at]
-  (-> claim
-      (update :support inc)
-      (update :supporting-episodes (fnil into []) (:episodes delta))
-      (assoc :updated-at recorded-at)
-      (with-earned-status)))
+  (cond-> (-> claim
+              (update :support inc)
+              (update :supporting-episodes (fnil into []) (:episodes delta))
+              (assoc :updated-at recorded-at)
+              (with-earned-status))
+    (= campaign-verdict-basis (:evidence-basis delta))
+    (update :verdict-corroborations (fnil inc 0))))
 
 (defn- edit-claim
   "CC-2, spec `ReinforceClaim` for `delta.operation = edit`: an edit
@@ -962,6 +1004,106 @@
   (into [] (comp (filter #(= kind (:kind %))) (map :content) (distinct))
         ranked-claims))
 
+;; =============================================================================
+;; RR-22 (`OfferedPatternsAreUsable`): pattern key-binding derivation
+;; =============================================================================
+;;
+;; A pattern offered to a model (a `:strengths[].recommended-pattern`, RR-20's
+;; exact `:generated-tree-source`) is USABLE only when what it reads and
+;; writes is declared — otherwise "adopt this shape against my keys" is a
+;; re-derivation, not a mechanical rebind. `pattern-key-bindings` derives that
+;; declaration PURELY from the pattern's own exact source text: no execution,
+;; no ontology dependency on orc-service (whose `rlm_dsl.clj` owns the
+;; authoritative EXECUTABLE walk — this is a read-only sibling over the same
+;; DSL shape, kept here because ontology may not depend on orc-service).
+
+(def ^:private inline-fn-placeholder
+  "The literal `sanitize-tree-for-events` (G6, `rlm_tree_executor.clj`)
+   writes in place of an already-compiled `:code` node's `:fn` before the
+   tree becomes an event — a placeholder where the runnable logic was. A
+   pattern carrying this text cannot be adopted (ADOPT requires runnable
+   code), so it declares no bindings either: advertising a rebind for logic
+   that is not there would be worse than advertising nothing."
+  "<inline-fn>")
+
+(defn- pattern-tree-node?
+  [x]
+  (and (vector? x) (keyword? (first x))))
+
+(defn- pattern-node-opts
+  "The first map among a node's args — every node type that carries
+   `:reads`/`:writes`/`:keys` (`:llm`, `:code`, `:chunk-document`,
+   `:aggregate`, `:map-each`, `:final`) puts it there; `:sequence` and
+   `:parallel` have none."
+  [args]
+  (first (filter map? args)))
+
+(defn- pattern-node-children
+  "A node's child tree nodes, in source order — every arg that is itself a
+   parseable tree node. Covers `:sequence`/`:parallel` (all args are
+   children) and `:map-each` (opts, then one child) uniformly."
+  [args]
+  (filterv pattern-tree-node? args))
+
+(defn- flatten-pattern-nodes
+  "Every node in the tree, tree order, depth-first parent-before-children —
+   the same left-to-right order the source text itself reads in."
+  [node]
+  (when (pattern-tree-node? node)
+    (let [[node-type & args] node]
+      (cons {:node-type node-type :opts (pattern-node-opts args)}
+            (mapcat flatten-pattern-nodes (pattern-node-children args))))))
+
+(defn- pattern-code-placeholder?
+  [{:keys [node-type opts]}]
+  (and (= :code node-type) (= inline-fn-placeholder (:fn opts))))
+
+(defn- fold-pattern-bindings
+  "Walk `nodes` in tree order, threading forward the set of keys WRITTEN so
+   far: a node's `:reads` count as the pattern's external inputs only for
+   the keys not already in that set (an earlier node's output, not an
+   outside input). `:writes` accumulates every key written, in order.
+   `:final`'s `:keys` become `:outputs`."
+  [nodes]
+  (reduce
+   (fn [{:keys [written reads writes] :as acc} {:keys [node-type opts]}]
+     (let [;; `:from` on :map-each / :chunk-document / :aggregate is a read of
+           ;; the collection (or document) the node iterates or folds; a key
+           ;; listed twice inside one node is still one binding.
+           node-reads  (vec (distinct (concat (when-let [from (:from opts)] [from])
+                                              (:reads opts))))
+           node-writes (some-> (:writes opts) vec)
+           external    (remove written node-reads)]
+       (cond-> (assoc acc
+                      :written (into written node-writes)
+                      :reads   (into reads (remove (set reads) external))
+                      :writes  (into writes node-writes))
+         (= :final node-type) (assoc :outputs (some-> (:keys opts) vec)))))
+   {:written #{} :reads [] :writes [] :outputs nil}
+   nodes))
+
+(defn pattern-key-bindings
+  "Derive a pattern's declared key bindings from its EXACT source text (a
+   `:recommended-pattern` / `:generated-tree-source` string): `:reads` — the
+   keys the pattern reads before any node inside it wrote them, i.e. its
+   external inputs; `:writes` — every key any node writes; `:outputs` — the
+   `[:final {:keys […]}]` node's keys, when the pattern has one.
+
+   Returns nil — never throws — for text that is not a string, that fails
+   to parse as Clojure data, or whose code was elided (RR-22's placeholder
+   check): an unusable pattern declares nothing rather than a binding that
+   would mislead the model rebinding it."
+  [source]
+  (when (string? source)
+    (try
+      (let [parsed (binding [*read-eval* false] (read-string source))
+            nodes  (seq (flatten-pattern-nodes parsed))]
+        (when (and nodes (not-any? pattern-code-placeholder? nodes))
+          (let [{:keys [reads writes outputs]} (fold-pattern-bindings nodes)]
+            (cond-> {:reads reads :writes writes}
+              (seq outputs) (assoc :outputs outputs)))))
+      (catch Exception _ nil))))
+
 (defn- principle-entry
   "One `:strengths` / `:weaknesses` entry, principle-shaped per the shipped
    `schemas/principle-entry`: an actionable trait, its context guard, its
@@ -972,15 +1114,34 @@
    `:recommended-alternative` — which is exactly the branch R-Inject's
    `format-principle-entry` and EL-5's `avoid-strings` take. Both are
    `{:optional true} :string` (not `:maybe`) on the shipped schema, so a nil
-   guard must be ABSENT, not present-and-nil."
+   guard must be ABSENT, not present-and-nil.
+
+   RR-20: `:verdict-corroborations` is forwarded ONLY when positive — a
+   claim never corroborated by an RR-19 campaign verdict carries no such
+   key at all, matching every claim recorded before this slice and keeping
+   the additive-field contract exact (existing consumers see byte-identical
+   shapes for every OTHER field).
+
+   RR-22: `:pattern-reads`/`:pattern-writes`/`:pattern-outputs` are
+   forwarded ONLY for the strengths branch (`advice-key = :recommended-
+   pattern` — a worked-example DSL; weaknesses' `:recommended-alternative`
+   is prose, not a pattern to parse) and ONLY when the pattern's exact
+   source actually parses. Additive: every other field, and any entry
+   whose pattern does not parse, is unchanged."
   [claim guard-key advice-key]
-  (cond-> {:trait          (:content claim)
-           :confidence     (derive-confidence (:support claim))
-           :evidence-count (count (:supporting-episodes claim))}
-    (:context-guard claim)  (assoc guard-key (:context-guard claim))
-    (:recommendation claim) (assoc advice-key (:recommendation claim))
-    (:created-at claim)     (assoc :first-observed-at (:created-at claim))
-    (:updated-at claim)     (assoc :last-reinforced-at (:updated-at claim))))
+  (let [pattern-text (when (= advice-key :recommended-pattern) (:recommendation claim))
+        bindings     (some-> pattern-text pattern-key-bindings)]
+    (cond-> {:trait          (:content claim)
+             :confidence     (derive-confidence (:support claim))
+             :evidence-count (count (:supporting-episodes claim))}
+      (:context-guard claim)  (assoc guard-key (:context-guard claim))
+      (:recommendation claim) (assoc advice-key (:recommendation claim))
+      (:created-at claim)     (assoc :first-observed-at (:created-at claim))
+      (:updated-at claim)     (assoc :last-reinforced-at (:updated-at claim))
+      (pos? (or (:verdict-corroborations claim) 0))
+      (assoc :verdict-corroborations (:verdict-corroborations claim))
+      bindings (assoc :pattern-reads (:reads bindings) :pattern-writes (:writes bindings))
+      (:outputs bindings) (assoc :pattern-outputs (:outputs bindings)))))
 
 (def ^:private empty-body-summary
   "What `:summary` says for a target whose claim set is empty — reachable
@@ -1810,11 +1971,11 @@
 ;;                                          [:node-instance [sheet node]]
 ;;   :sheet/rlm-tree-execution-completed → increments :delta + :total for
 ;;                                          [:tree-fingerprint fp]
-;;   :ontology/task-classified           → increments :delta + :total for
+;;   :ontology/tree-class-occurrence-recorded
+;;                                       → increments :delta + :total for
 ;;                                          [:tree-class assigned-tree-id]
-;;                                          (C-Loop-1: drives the Living
-;;                                          Description loop at the
-;;                                          classifier's substrate)
+;;                                          once a classified campaign reaches
+;;                                          a behavior verdict
 ;;   :ontology/consolidation-requested   → resets :delta to 0 (:total
 ;;                                          continues climbing)
 
@@ -1848,7 +2009,7 @@
     (bump-counter state [:tree-fingerprint fp])
     state))
 
-(defmethod consolidation-delta-counters* :ontology/task-classified
+(defmethod consolidation-delta-counters* :ontology/tree-class-occurrence-recorded
   [state event]
   (if-let [tree-class-id (:assigned-tree-id event)]
     (bump-counter state [:tree-class tree-class-id])
@@ -1868,9 +2029,9 @@
 (defreadmodel :ontology consolidation-delta-counters
   {:events #{:sheet/node-execution-completed
              :sheet/rlm-tree-execution-completed
-             :ontology/task-classified
+             :ontology/tree-class-occurrence-recorded
              :ontology/consolidation-requested}
-   :version 2}
+   :version 3}
   [state event] (consolidation-delta-counters* state event))
 
 (defn get-consolidation-delta
@@ -1887,9 +2048,33 @@
    (target-type, target-id) target. Used by the CAS guard on
    consolidation-requested emissions to derive the crossing-number
    that enforces exactly-once-per-threshold-crossing across
-   concurrent processor handlers."
+   concurrent processor handlers.
+
+   RR-23: for a `:tree-class` target, `[:tree-class target-id :total]` is
+   bumped by exactly one event type — `:ontology/tree-class-occurrence-
+   recorded` events whose `:assigned-tree-id` matches (`bump-counter`,
+   the `consolidation-delta-counters*` multimethod). `:sheet/node-
+   execution-completed` and `:sheet/rlm-tree-execution-completed` bump
+   `:node-type`/`:node-instance`/`:tree-fingerprint` paths, never
+   `:tree-class`; `:ontology/consolidation-requested` touches only
+   `:delta` at its own target, never `:total`. So querying ONLY that one
+   type, scoped by the `[:description-target target-id]` tag it already
+   carries, through the read-model's OWN registered reducer (`rmp/project`
+   `{:queries [...]}`, the engine's documented scope override — not a
+   redefinition of the read-model), yields a state PROVABLY IDENTICAL at
+   `[:tree-class target-id :total]` to the full unscoped fold, without
+   growing with other targets' node-completion/bookend/consolidation-
+   request volume. This was the dominant cost in `maybe-harvest!`'s
+   pre-gate (measured: it alone accounted for the RR-23 baseline's 48->120
+   promotion-path growth) — the read-model's DEFINITION is unchanged;
+   only this :tree-class call site's query is narrowed. Other target-types
+   have no such tag and stay on the general (unscoped) path."
   [ctx target-type target-id]
-  (or (get-in (rmp/project ctx :ontology/consolidation-delta-counters)
+  (or (get-in (if (= target-type :tree-class)
+                (rmp/project ctx :ontology/consolidation-delta-counters
+                             {:queries [{:types #{:ontology/tree-class-occurrence-recorded}
+                                         :tags #{[:description-target target-id]}}]})
+                (rmp/project ctx :ontology/consolidation-delta-counters))
               [target-type target-id :total])
       0))
 
@@ -1921,7 +2106,7 @@
 ;; (its whole design note is that a score seen before or after its
 ;; classification both land correctly), so it structurally cannot answer "the
 ;; last N" — which is exactly what the dimension axis now needs. Order comes
-;; from the :ontology/task-classified fold, the same occurrence order
+;; from the :ontology/tree-class-occurrence-recorded fold, the same occurrence order
 ;; harvest/occurrence-scores derives from the event stream; the per-judge
 ;; SCORES are already in :sheet-judge, so the trailing per-judge sequence is a
 ;; join of the two, computed by the accessor. Order-independence is preserved:
@@ -1950,7 +2135,7 @@
   "Append `occurrence-key` to a class's bounded recent-occurrence sequence,
    preserving occurrence order and dropping the oldest past the bound. An
    occurrence already inside the retained window is not re-appended (a
-   re-classification of the SAME occurrence is one occurrence, exactly as
+   re-delivery of the SAME verdict fact is one occurrence, exactly as
    harvest/occurrence-scores' `distinct` treats it).
 
    The trim COPIES rather than `subvec`s, and that is load-bearing: `subvec`
@@ -1980,13 +2165,6 @@
   [state event]
   (if-let [class-id (:assigned-tree-id event)]
     (-> state
-        ;; CC-24b: the class's own occurrence ORDER, bounded. Keyed by class
-        ;; (not by occurrence) because this is the only reducer branch that
-        ;; knows which class an occurrence belongs to — the score branch
-        ;; deliberately does not, which is what keeps the fold order-free.
-        (update-in [:class->recent-occurrences class-id]
-                   conj-recent-occurrence
-                   [(:source-sheet-id event) (:source-tick-id event)])
         ;; :sheet->class stays keyed on the bare (possibly shared/static)
         ;; sheet-id — get-tree-class-for-sheet (CV-2's post-emit enrichment
         ;; consumer) relies on this "most recent classification for this
@@ -2002,6 +2180,14 @@
         ;; already used this way by the consolidator (gather-recent-tree-
         ;; class-events joins judge-scores by (sheet-id, tick-id)).
         (assoc-in [:occurrence->class [(:source-sheet-id event) (:source-tick-id event)]] class-id))
+    state))
+
+(defmethod tree-class-judge-averages* :ontology/tree-class-occurrence-recorded
+  [state event]
+  (if-let [class-id (:assigned-tree-id event)]
+    (update-in state [:class->recent-occurrences class-id]
+               conj-recent-occurrence
+               [(:source-sheet-id event) (:source-tick-id event)])
     state))
 
 (defmethod tree-class-judge-averages* :judge/score-emitted
@@ -2062,13 +2248,15 @@
       {} (get class->recent-occurrences tree-class-id []))))
 
 (defreadmodel :ontology tree-class-judge-averages
-  {:events #{:judge/score-emitted :ontology/task-classified}
+  {:events #{:judge/score-emitted
+             :ontology/task-classified
+             :ontology/tree-class-occurrence-recorded}
    ;; CC-24b (ADR 0029): state shape changed — :class->recent-occurrences is
    ;; new. A cache generation built by code that could not see the new key
    ;; would project an empty trailing window for every class and silently make
    ;; the dimension axis inert again, so the generation must rebuild (the
    ;; CC-28 precedent).
-   :version 2}
+   :version 3}
   [state event] (tree-class-judge-averages* state event))
 
 (defn get-tree-class-for-sheet
@@ -2084,6 +2272,24 @@
   [ctx source-sheet-id]
   (get-in (rmp/project ctx :ontology/tree-class-judge-averages)
           [:sheet->class source-sheet-id]))
+
+(defn get-tree-class-for-occurrence
+  "RR-20: return the :tree-class id assigned to the
+   `[source-sheet-id source-tick-id]` OCCURRENCE, or nil when that occurrence
+   was never classified.
+
+   Reuses SJ-1's `:occurrence->class` map (the same per-occurrence join
+   `tree-class-judge-averages-projection` already uses to attribute judge
+   scores) instead of `get-tree-class-for-sheet`'s bare-sheet-id join. A
+   static task-shape's sheet-id is shared across every turn, so a bare-sheet
+   join can attribute a Phase-2 bookend to whichever class the shared host
+   sheet was MOST RECENTLY (re)classified to — a different turn's class. The
+   occurrence pair is what uniquely names the turn the bookend belongs to.
+   The post-emit enrichment processor uses this instead of the sheet-only
+   join so a bookend can never be attributed to a sibling classification."
+  [ctx source-sheet-id source-tick-id]
+  (get-in (rmp/project ctx :ontology/tree-class-judge-averages)
+          [:occurrence->class [source-sheet-id source-tick-id]]))
 
 (defn get-tree-class-judge-averages
   "EL-4: return {judge-name -> mean-score} across this tree-class's lifetime,

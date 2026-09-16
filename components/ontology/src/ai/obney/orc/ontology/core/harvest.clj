@@ -235,25 +235,14 @@
            (every? #(and (number? %) (>= % effective-floor))
                    (vals judge-averages))))))
 
-(defn coherent-enough?
-  "The spec's `distinct_shape_ratio(tree_class) <= maximum_shape_ratio`: a
-   recurring pattern converges on a few shapes, a grab-bag scatters."
-  [distinct-tree-shapes occurrences max-shapes-ratio]
-  (boolean
-    (and (number? distinct-tree-shapes)
-         (number? occurrences)
-         (pos? occurrences)
-         (<= (/ (double distinct-tree-shapes) (double occurrences))
-             max-shapes-ratio))))
-
 (defn harvest-candidate?
   "Pure conservative gate. Returns true iff the class is RECURRING and
    well-scored on BOTH axes (every DIMENSION over its recent scored
-   occurrences, every recent OCCURRENCE over the consistency window) and
-   COHERENT, per config.
+   occurrences, every recent OCCURRENCE over the consistency window), per
+   config.
 
    Metrics:
-     :occurrences               lifetime count of classifications
+     :occurrences               lifetime count of verdict-qualified campaigns
      :judge-trailing-averages   {judge-name -> mean over that judge's most
                                 recent :dimension-window scored occurrences} —
                                 the DIMENSION axis. CC-24b (ADR 0029) renamed
@@ -266,40 +255,44 @@
      :occurrence-scores         per-occurrence aggregate judge score, in
                                 temporal order (most recent LAST) — the
                                 CONSISTENCY axis
-     :distinct-tree-shapes      coherence signal
+
+   RR-21: the COHERENCE clause (winning-shape-coherence, the ratio of
+   distinct successful terminal shapes to successful campaigns) is computed
+   and REPORTED (see `winning-shape-coherence` and the durable
+   :ontology/shape-coherence-reported event) but never gates here — the
+   spec's `rule PromoteWellScoredClass` carries no coherence `requires`, and
+   ADR 0029's dossier note is explicit: a threshold that has never fired
+   cannot be distinguished from one that never will, so it is measured
+   before it is trusted to block. Threshold calibration is a later,
+   data-driven slice.
 
    A non-positive occurrence count never passes (avoids divide-by-zero +
    seeds/total=0 slipping through)."
-  [{:keys [occurrences judge-trailing-averages occurrence-scores distinct-tree-shapes]}
+  [{:keys [occurrences judge-trailing-averages occurrence-scores]}
    {:keys [min-occurrences dimension-floor
-           consistency-window consistency-floor max-shapes-ratio]}]
+           consistency-window consistency-floor]}]
   (boolean
     (and (number? occurrences)
          (pos? occurrences)
          (>= occurrences min-occurrences)
          (every-dimension-qualified? judge-trailing-averages dimension-floor)
-         (consistently-qualified? occurrence-scores consistency-window consistency-floor)
-         (coherent-enough? distinct-tree-shapes occurrences max-shapes-ratio))))
+         (consistently-qualified? occurrence-scores consistency-window consistency-floor))))
 
 (defn harvest-gate-report
   "The gate's verdict, CLAUSE BY CLAUSE, so a decision nobody watched can be
    read back afterwards. `:candidate?` is `harvest-candidate?` itself — this
    is a lens on the gate, never a second implementation of it.
 
-   CC-24b (ADR 0029 decision 5) exists for one clause in particular. The
-   COHERENCE axis passes when `distinct_shape_ratio <= maximum_shape_ratio`,
-   and a class with NO shape evidence at all has ratio 0/N = 0.0, so it passes
-   — vacuously. Measured (CC-24a): that is 100% of occurrences in BOTH real
-   stores. 0 of 138 tree-execution events carry a `:tree-fingerprint` or a
-   `:source-tick-id`, and a class that solves by direct tool call emits no
-   tree at all; HP-2b fixed the emit site but no post-fix bookend exists
-   anywhere, so the signal is unwitnessed end-to-end. We do not gate on a
-   signal we have never seen work — but a gate that reports `coherent` for a
-   signal it has never once observed is reporting a fiction, so the abstention
-   is named: `:abstained`, distinct from `:qualified`. Behaviour is unchanged;
-   only the visibility is new. Requiring shape evidence waits on one real
-   post-HP-2b bookend carrying a non-nil fingerprint."
-  [{:keys [occurrences judge-trailing-averages occurrence-scores distinct-tree-shapes]
+   RR-21: the `:coherence` clause reports `winning-shape-coherence`'s
+   `:status` (`:qualified` | `:rejected` | `:not-measurable` — see that fn)
+   verbatim as `:verdict`, alongside the counts and ratio it observed. Unlike
+   every other clause here, `:coherence`'s verdict is NEVER folded into
+   `:candidate?` — see `harvest-candidate?`. `:not-measurable` replaces the
+   pre-RR-21 `:abstained` (the all-trees `distinct-tree-shapes` measure,
+   which passed vacuously on 100% of occurrences in both real stores and is
+   now retired from harvest — the consolidator keeps its own independent
+   descriptive aggregate for reflection)."
+  [{:keys [occurrences judge-trailing-averages occurrence-scores winning-shape-coherence]
     :as metrics}
    {:keys [min-occurrences dimension-floor dimension-window
            consistency-window consistency-floor max-shapes-ratio] :as config}]
@@ -323,15 +316,13 @@
                             :qualified :rejected)
                  :window (vec (take-last (or consistency-window 0) occurrence-scores))
                  :floor consistency-floor}
-   :coherence   {:verdict (cond
-                            ;; NO shape evidence at all: the clause passes, but
-                            ;; it passes on an absence, not on a measurement.
-                            (and (number? distinct-tree-shapes)
-                                 (zero? distinct-tree-shapes)) :abstained
-                            (coherent-enough? distinct-tree-shapes occurrences
-                                              max-shapes-ratio) :qualified
-                            :else :rejected)
-                 :distinct-tree-shapes distinct-tree-shapes
+   :coherence   {:verdict (:status winning-shape-coherence)
+                 :ratio (:ratio winning-shape-coherence)
+                 :successful-campaigns (:successful-campaigns winning-shape-coherence)
+                 :successful-shape-observations (:successful-shape-observations
+                                                  winning-shape-coherence)
+                 :distinct-successful-shapes (:distinct-successful-shapes
+                                              winning-shape-coherence)
                  :max-shapes-ratio max-shapes-ratio}
    :candidate?  (harvest-candidate? metrics config)})
 
@@ -341,43 +332,177 @@
 
 (defn- behavioral-subtree-uri [id] (str "behavioral-subtree:" id))
 
-(defn- class-occurrence-pairs
-  "The [source-sheet-id source-tick-id] pairs of every task-classified event
-   assigned to this class — the per-OCCURRENCE identity. HP-2: the bare
-   source-sheet-id is the STATIC workflow-definition sheet shared by every
-   turn of a task-shape, so a sheet-only set either matches nothing (a
-   bookend's :sheet-id is the EPHEMERAL Phase-2 sheet, a disjoint domain) or
-   over-matches across classes sharing the host. The pair is what uniquely
-   names one occurrence, on both the classification and the bookend
+(defn- durable-through
+  "`events` (already in durable event-store order) truncated to include
+   everything up to and INCLUDING the event whose `:event/id` is
+   `upper-bound-event-id`. nil bound means unbounded — 'everything so far'.
+   Falls back to unbounded if the named id is not found (defensive only; the
+   report command always names an event it just read from the same store)."
+  [events upper-bound-event-id]
+  (if (nil? upper-bound-event-id)
+    (vec events)
+    (let [truncated
+          (persistent!
+           (reduce (fn [acc event]
+                     (let [acc (conj! acc event)]
+                       (if (= upper-bound-event-id (:event/id event))
+                         (reduced acc)
+                         acc)))
+                   (transient [])
+                   events))]
+      (if (and (seq truncated) (= upper-bound-event-id (:event/id (peek truncated))))
+        truncated
+        (vec events)))))
+
+(defn class-occurrences-through
+  "RR-21 (finding, inspection); RR-23 (tag-scoped): this class's
+   `:ontology/tree-class-occurrence-recorded` events, in durable order,
+   bounded to (and including) the one whose `:event/id` is
+   `upper-bound-event-id` — nil bound means unbounded (every occurrence
+   recorded so far). PUBLIC: the durable-order 'as of THIS occurrence'
+   snapshot both `:verdict-occurrences` and `winning-shape-coherence` are
+   computed over, so the report command derives both numbers from the
+   identical bounded view — never the store's current state at PROCESSING
+   time, which is a race a backlogged/reordered delivery can and does
+   expose (reproduced: three verdicts landed before the handler ran on any
+   of them; every report read back the FINAL count instead of its own
+   occurrence's position).
+
+   RR-23: scoped by the `[:description-target class-id]` tag every
+   `:ontology/tree-class-occurrence-recorded` event already carries
+   (commands.clj) instead of a type-wide tenant scan — cost no longer
+   grows with occurrences belonging to other classes. The `:assigned-
+   tree-id` filter stays as a defensive check (tag narrows, filter
+   decides); no legacy concern, this tag predates RR-23."
+  [ctx class-id upper-bound-event-id]
+  (let [this-classes-occurrences
+        (->> (es/read (:event-store ctx)
+                      {:types #{:ontology/tree-class-occurrence-recorded}
+                       :tenant-id (:tenant-id ctx)
+                       :tags #{[:description-target class-id]}})
+             (into [])
+             (filter #(= class-id (:assigned-tree-id %))))]
+    (durable-through this-classes-occurrences upper-bound-event-id)))
+
+(defn- successful-verdict-pairs
+  "RR-21: the [source-sheet-id source-tick-id] pairs of this class's
+   `:success`-verdict tree-class occurrences ONLY, bounded to
+   `upper-bound-event-id` (see `class-occurrences-through`) — the population
+   the winning-shape ratio is computed over. Failed, timed-out, cancelled and
+   abandoned campaigns never enter this set (cancelled/abandoned campaigns
+   have no verdict occurrence at all; failed/timed-out ones are excluded by
+   the `:verdict` filter), so they cannot make a failure-heavy class look
+   more coherent. HP-2: the bare source-sheet-id is the STATIC
+   workflow-definition sheet shared by every turn of a task-shape, so a
+   sheet-only set either matches nothing (a bookend's :sheet-id is the
+   EPHEMERAL Phase-2 sheet, a disjoint domain) or over-matches across classes
+   sharing the host. The pair is what uniquely names one occurrence across
+   its classification attribution, explicit verdict fact, and bookend
    (:source-sheet-id/:source-tick-id)."
-  [ctx class-id]
-  (->> (es/read (:event-store ctx)
-                {:types #{:ontology/task-classified} :tenant-id (:tenant-id ctx)})
-       (into [])
-       (filter #(= class-id (:assigned-tree-id %)))
+  [ctx class-id upper-bound-event-id]
+  (->> (class-occurrences-through ctx class-id upper-bound-event-id)
+       (filter #(= :success (:verdict %)))
        (map (juxt :source-sheet-id :source-tick-id))
        (into #{})))
 
-(defn distinct-tree-shapes
-  "EL-4: count of distinct tree-fingerprints across executions attributed to
-   this class. Mirrors the consolidator's aggregate :distinct-tree-shapes —
-   the coherence signal the gate reads. HP-2: joined by the bookend's
-   [:source-sheet-id :source-tick-id] occurrence pair (pre-HP-2 this filtered
-   the class's HOST sheet-ids against the bookend's EPHEMERAL :sheet-id —
-   disjoint domains, 0 rows always, so the coherence gate passed vacuously).
-   Bookends predating the :source-tick-id field don't participate. Computed
-   by a targeted scan; reached only past the cheap occurrence pre-gate, so
-   it runs rarely."
-  [ctx class-id]
-  (let [pairs (class-occurrence-pairs ctx class-id)]
-    (->> (es/read (:event-store ctx)
-                  {:types #{:sheet/rlm-tree-execution-completed}
-                   :tenant-id (:tenant-id ctx)})
-         (into [])
-         (filter #(contains? pairs [(:source-sheet-id %) (:source-tick-id %)]))
-         (keep :tree-fingerprint)
-         distinct
-         count)))
+(defn- winning-shape-bookends
+  "RR-23: this `pair`'s (`[source-sheet-id source-tick-id]`) Phase-2 bookends,
+   scoped by the `[:source-tick source-tick-id]` tag `record-rlm-tree-
+   execution-completion` now writes at its emit site — a targeted read
+   instead of a type-wide tenant scan. `:source-sheet-id` stays a defensive
+   filter (tag narrows, filter decides).
+
+   Legacy replay: a bookend written BEFORE this slice landed carries no
+   `:source-tick` tag and is invisible to the scoped read above. Correctness
+   for such pre-existing stores is opt-in only (`legacy-replay?`), never the
+   default — falling back to a full type scan on every call would restore
+   exactly the O(store) cost this slice removes. When opted in and the
+   scoped read finds nothing, fall back once to the old unscoped scan
+   filtered by `pair`."
+  [ctx pair legacy-replay?]
+  (let [[sheet tick] pair
+        scoped (->> (es/read (:event-store ctx)
+                             {:types #{:sheet/rlm-tree-execution-completed}
+                              :tenant-id (:tenant-id ctx)
+                              :tags #{[:source-tick tick]}})
+                    (into [])
+                    (filter #(= sheet (:source-sheet-id %))))]
+    (if (and legacy-replay? (empty? scoped))
+      (->> (es/read (:event-store ctx)
+                    {:types #{:sheet/rlm-tree-execution-completed}
+                     :tenant-id (:tenant-id ctx)})
+           (into [])
+           (filter #(and (= sheet (:source-sheet-id %)) (= tick (:source-tick-id %)))))
+      scoped)))
+
+(defn- winning-shape
+  "RR-21 + RR-23: the fingerprint of the LAST `:status :success` Phase-2
+   bookend, in durable event order, among `pair`'s bookends (see
+   `winning-shape-bookends`) — the winning shape that carried that
+   successful campaign to success. Shapes the campaign abandoned earlier
+   (failed bookends, or earlier success bookends superseded by a later one)
+   are process evidence, never winning shapes. nil when the campaign has no
+   success bookend at all — it solved by direct tool call, or the (non-nil)
+   fingerprint field is simply absent — which is exactly the 'successful
+   campaign with no recorded shape' case: it contributes to
+   `:successful-campaigns` but not to `:successful-shape-observations`."
+  [ctx pair legacy-replay?]
+  (->> (winning-shape-bookends ctx pair legacy-replay?)
+       (filter #(and (= pair [(:source-sheet-id %) (:source-tick-id %)])
+                     (= :success (:status %))))
+       last
+       :tree-fingerprint))
+
+(defn winning-shape-coherence
+  "RR-21 (rule ReportSuccessfulShapeCoherence, dossier G11): the ratified
+   coherence measure — distinct successful terminal shapes divided by
+   successful campaigns, ONE winning shape per successful campaign (the
+   terminal `:success` bookend in durable order; see `winning-shape`).
+   Replaces the never-witnessed all-trees `distinct-tree-shapes` measure
+   (retired from harvest; the consolidator keeps its own independent
+   descriptive aggregate for reflection).
+
+   Measurable iff `successful-campaigns > 0` AND
+   `successful-shape-observations > 0` — a class with successful campaigns
+   but no recorded shape (every campaign solved by direct tool call) is
+   `:not-measurable`, distinct from a real `:qualified`/`:rejected` verdict:
+   'harvesting nothing looks identical to nothing qualifying' (ADR 0029),
+   so the absence of evidence is never reported as if it were evidence.
+   Computed by a targeted scan, like `occurrence-scores`.
+
+   4-arity `upper-bound-event-id` (see `class-occurrences-through`) computes
+   the measure strictly AS OF that occurrence's durable position — the fix
+   for the scheduling-dependent race a backlogged/reordered delivery
+   exposed. The 2- and 3-arities stay unbounded ('everything so far'), used
+   by `maybe-harvest!`'s live (non-durable) gate check, which has no single
+   occurrence identity to be 'as of'.
+
+   RR-23: bookends are read PER PAIR, scoped by `[:source-tick source-tick-
+   id]` (see `winning-shape-bookends`), instead of one type-wide tenant
+   scan — cost no longer grows with other classes' bookends. `config`'s
+   optional `:legacy-replay?` (default false/absent — never on by default)
+   opts every pair's read into a one-time unscoped fallback when its
+   scoped read is empty, for stores holding bookends written before this
+   slice; `default-harvest-config` does not set it, so the live gate stays
+   tag-scoped-only unless a caller explicitly asks for legacy replay."
+  ([ctx class-id] (winning-shape-coherence ctx class-id default-harvest-config nil))
+  ([ctx class-id config] (winning-shape-coherence ctx class-id config nil))
+  ([ctx class-id {:keys [max-shapes-ratio legacy-replay?]} upper-bound-event-id]
+   (let [pairs (successful-verdict-pairs ctx class-id upper-bound-event-id)
+         successful-campaigns (count pairs)
+         winning-shapes (into [] (keep #(winning-shape ctx % legacy-replay?)) pairs)
+         successful-shape-observations (count winning-shapes)
+         distinct-successful-shapes (count (distinct winning-shapes))
+         measurable? (and (pos? successful-campaigns) (pos? successful-shape-observations))
+         ratio (when measurable? (/ distinct-successful-shapes successful-campaigns))]
+     {:successful-campaigns successful-campaigns
+      :successful-shape-observations successful-shape-observations
+      :distinct-successful-shapes distinct-successful-shapes
+      :ratio ratio
+      :status (cond
+                (not measurable?) :not-measurable
+                (<= ratio max-shapes-ratio) :qualified
+                :else :rejected)})))
 
 (defn occurrence-scores
   "CC-26 — the CONSISTENCY axis: this class's per-OCCURRENCE aggregate judge
@@ -398,36 +523,51 @@
    — the marginal along the DIMENSION axis. That is not a re-collapse of the
    two floors: the dimension floor is the OTHER marginal (per judge, over the
    class's lifetime), and the two together constrain both axes of the
-   (judge x occurrence) matrix that the old single scalar flattened."
+   (judge x occurrence) matrix that the old single scalar flattened.
+
+   RR-23: the occurrence scan is scoped by `[:description-target class-id]`
+   (the tag `:ontology/tree-class-occurrence-recorded` already carries).
+   Judge scores are then read ONCE PER OCCURRENCE, scoped by
+   `[:tick tick-id]` (the tag `:judge/score-emitted` already carries), in
+   place of one type-wide scan over the tenant's fastest-growing event type
+   grouped in memory — cost is now proportional to this class's occurrence
+   count, not the store's total score count. `:sheet-id` stays a defensive
+   filter (tick alone already names one occurrence; tag narrows, filter
+   decides)."
   [ctx class-id]
   (let [ordered-occurrences (->> (es/read (:event-store ctx)
-                                          {:types #{:ontology/task-classified}
-                                           :tenant-id (:tenant-id ctx)})
+                                          {:types #{:ontology/tree-class-occurrence-recorded}
+                                           :tenant-id (:tenant-id ctx)
+                                           :tags #{[:description-target class-id]}})
                                  (into [])
                                  (filter #(= class-id (:assigned-tree-id %)))
                                  (map (juxt :source-sheet-id :source-tick-id))
-                                 (distinct))
-        scores-by-occurrence (->> (es/read (:event-store ctx)
-                                           {:types #{:judge/score-emitted}
-                                            :tenant-id (:tenant-id ctx)})
-                                  (into [])
-                                  (filter #(number? (:score %)))
-                                  (group-by (juxt :sheet-id :tick-id)))]
+                                 (distinct))]
     (into []
-          (keep (fn [occurrence-key]
-                  (when-let [scores (seq (get scores-by-occurrence occurrence-key))]
-                    (/ (reduce + 0.0 (map :score scores))
-                       (double (count scores))))))
+          (keep (fn [[sheet tick]]
+                  (let [scores (->> (es/read (:event-store ctx)
+                                             {:types #{:judge/score-emitted}
+                                              :tenant-id (:tenant-id ctx)
+                                              :tags #{[:tick tick]}})
+                                    (into [])
+                                    (filter #(and (number? (:score %)) (= sheet (:sheet-id %)))))]
+                    (when (seq scores)
+                      (/ (reduce + 0.0 (map :score scores))
+                         (double (count scores)))))))
           ordered-occurrences)))
 
 (defn- latest-classified-behavior-id
   "The top behavior-id from the most-recent task-classified event for this
    class that carries a non-empty :behavioral-subtrees — the live signal of
    which behavior this class composes into. nil when the class has never been
-   behaviorally classified."
+   behaviorally classified.
+
+   RR-23: scoped by the `[:description-target class-id]` tag
+   `:ontology/task-classified` already carries."
   [ctx class-id]
   (->> (es/read (:event-store ctx)
-                {:types #{:ontology/task-classified} :tenant-id (:tenant-id ctx)})
+                {:types #{:ontology/task-classified} :tenant-id (:tenant-id ctx)
+                 :tags #{[:description-target class-id]}})
        (into [])
        (filter #(and (= class-id (:assigned-tree-id %))
                      (seq (:behavioral-subtrees %))))
@@ -461,22 +601,67 @@
 (defn already-harvested?
   "Fire-once guard, keyed on the STABLE class-id (independent of any name or
    parent drift): true when a :harvested behavioral-subtree already records
-   this class as its source."
+   this class as its source.
+
+   RR-23: scoped by the `[:harvested-tree-class ...]` tag the mint command
+   already writes on this path (commands.clj's `mint-behavioral-subtree`,
+   via the shared `harvested-tree-class-tag` derivation) instead of a
+   type-wide scan of every minted behavioral-subtree for the tenant — a
+   non-harvested mint carries no such tag at all, so the scoped read never
+   sees it. `:provenance`/`:harvested-from-tree-class` stay a defensive
+   filter (tag narrows, filter decides). No legacy concern: this tag
+   predates RR-23."
   [ctx class-id]
   (boolean
     (some #(and (= :harvested (:provenance %))
                 (= class-id (:harvested-from-tree-class %)))
           (into [] (es/read (:event-store ctx)
                             {:types #{:ontology/behavioral-subtree-minted}
-                             :tenant-id (:tenant-id ctx)})))))
+                             :tenant-id (:tenant-id ctx)
+                             :tags #{(rm/harvested-tree-class-tag class-id)}})))))
 
 (defn- best-recommended-pattern
-  "The worked DSL for the class = the highest-confidence strength's
-   :recommended-pattern from the consolidated description."
+  "RR-20 (exact behavioral change 4): the worked DSL for the class.
+
+   Only `:strengths` entries ever carry `:recommended-pattern` — a failed
+   shape is recorded as a `:weakness` (RR-20's writer, `todo-processors/
+   enrich-tree-class-with-emitted-dsl!`), so it surfaces under
+   `:recommended-alternative` in `:weaknesses`, never here. A failed-only
+   class therefore returns nil by construction: never a failed shape offered
+   as the worked pattern.
+
+   Ranked by `:verdict-corroborations` descending FIRST, then `:confidence`
+   (support) descending, then `:last-reinforced-at` descending (most
+   recently reinforced first). This IS 'prefer success-backed shapes
+   corroborated by verdict occurrences over bare emitted artefacts', made
+   an EXPLICIT primary sort key rather than left to support alone: a bare
+   artefact re-emitted repeatedly earns support too (CV-2's ordinary
+   `:support` reinforcement), so ranking on raw `:confidence` alone could
+   let enough bare repetition outrank a shape corroborated by only ONE real
+   campaign verdict — a class-of-evidence conflation the acceptance
+   criterion 'prefers... over' does not tolerate. `:verdict-corroborations`
+   (absent/nil treated as 0) is durable ONLY on the claims RR-19's
+   `todo-processors/corroborate-worked-patterns-from-occurrence!` reinforced
+   with `:evidence-basis :campaign-verdict` (`read-models/reinforce-claim`),
+   so ANY corroborated shape (>= 1) outranks EVERY merely-repeated one (= 0)
+   before support is ever compared. No cross-event query belongs here:
+   `harvest-body`'s signature (`desc` + `occurrences`) is the propagated
+   RR-20 contract and stays exactly that — the field is read straight off
+   the already-assembled `:strengths` entries."
   [desc]
   (->> (:strengths desc)
        (filter :recommended-pattern)
-       (sort-by :confidence >)
+       (sort (fn [a b]
+               (let [by-corroboration (compare (or (:verdict-corroborations b) 0)
+                                               (or (:verdict-corroborations a) 0))]
+                 (if-not (zero? by-corroboration)
+                   by-corroboration
+                   (let [by-confidence (compare (or (:confidence b) 0.0)
+                                                (or (:confidence a) 0.0))]
+                     (if (zero? by-confidence)
+                       (compare (or (:last-reinforced-at b) "")
+                                (or (:last-reinforced-at a) ""))
+                       by-confidence))))))
        first
        :recommended-pattern))
 
@@ -530,11 +715,11 @@
              trailing-avgs (rm/get-tree-class-judge-recent-averages
                              ctx class-id (:dimension-window config))
              scores (occurrence-scores ctx class-id)
-             shapes (distinct-tree-shapes ctx class-id)
+             coherence (winning-shape-coherence ctx class-id config)
              metrics {:occurrences occurrences
                       :judge-trailing-averages trailing-avgs
                       :occurrence-scores scores
-                      :distinct-tree-shapes shapes}
+                      :winning-shape-coherence coherence}
              report (harvest-gate-report metrics config)]
          ;; The judge count is a LOAD-BEARING ASSUMPTION (see
          ;; known-judge-dimension-count). Announce its expiry rather than
@@ -586,22 +771,54 @@
                           :judge-trailing-averages trailing-avgs
                           :recent-occurrence-scores
                           (take-last (:consistency-window config) scores)
-                          :distinct-tree-shapes shapes)
+                          :winning-shape-coherence coherence)
                    (mint-harvested! ctx class-id body parent))))))))))
+
+(defn- report-shape-coherence!
+  "RR-21: dispatch the durable :ontology/report-shape-coherence command for
+   ONE verdict occurrence. `source-occurrence-event-id` is that occurrence
+   event's own `:event/id` (UUIDv7, durably time-ordered) — the identity the
+   command bounds its measure to (see `harvest/class-occurrences-through`),
+   so the report reflects THIS occurrence's durable position regardless of
+   what has landed in the store by the time it is actually processed
+   (finding, inspection: computing from the store's current state at
+   PROCESSING time is a scheduling-dependent race, not a measure of the
+   named occurrence). The command's own CAS makes this idempotent per
+   [tree-class source-sheet-id source-tick-id] (a no-op on replay, RR-19's
+   occurrence-command idiom) — this fn itself has no process-local state and
+   performs no bare production event append."
+  [ctx class-id source-sheet-id source-tick-id source-occurrence-event-id]
+  (command-processor/process-command
+    (assoc ctx :command
+           {:command/name :ontology/report-shape-coherence
+            :command/id (random-uuid)
+            :command/timestamp (time/now)
+            :tree-class class-id
+            :source-sheet-id source-sheet-id
+            :source-tick-id source-tick-id
+            :source-occurrence-event-id source-occurrence-event-id})))
 
 (defprocessor :ontology on-tree-class-check-harvest
   {:topics #{:sheet/node-execution-completed
              :sheet/rlm-tree-execution-completed
-             :ontology/task-classified}}
-  "EL-4 (ADR 0015): after a task-classified event, check whether the class
-   has crossed the conservative harvest gate; if so (and not already
-   harvested), crystallize it into a durable behavioral-subtree. Only
-   :ontology/task-classified identifies a :tree-class target; the other
-   topics are subscribed for symmetry with the threshold processor but are
-   no-ops here."
+             :ontology/tree-class-occurrence-recorded}}
+  "EL-4 + RR-19 + RR-21: after a verdict occurrence, (1) report the
+   winning-shape coherence measure durably — UNCONDITIONALLY, every
+   occurrence, no threshold (the spec's rule ReportSuccessfulShapeCoherence
+   has none) — then (2) check whether the class has crossed the conservative
+   harvest gate; if so (and not already harvested), crystallize it into a
+   durable behavioral-subtree. Only :ontology/tree-class-occurrence-recorded
+   identifies a :tree-class target; the other topics are subscribed for
+   symmetry with the threshold processor but are no-ops here."
   [{:keys [event] :as context}]
-  (when (= :ontology/task-classified (:event/type event))
+  (when (= :ontology/tree-class-occurrence-recorded (:event/type event))
     (when-let [class-id (:assigned-tree-id event)]
+      (try
+        (report-shape-coherence! context class-id
+                                  (:source-sheet-id event) (:source-tick-id event)
+                                  (:event/id event))
+        (catch Exception e
+          (u/log ::shape-coherence-report-error :class-id class-id :error (.getMessage e))))
       (try
         (maybe-harvest! context class-id)
         (catch Exception e

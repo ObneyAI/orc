@@ -192,23 +192,58 @@
 
 (defn- seed-below-gate-class!
   "Give `tree-class-id` a consolidation total of 1 — inside the gate's
-   filter band (0 < 1 < retrieval-gate 3) — by recording one real
-   :ontology/task-classified assignment for it. This makes it a candidate
-   that MATCHING sees but SURFACING gates out."
+   filter band (0 < 1 < retrieval-gate 3) — by recording one classified
+   campaign and its real terminal-success occurrence. Classification alone is
+   attribution and does not advance recurrence (RR-19). This makes the class a
+   candidate that MATCHING sees but SURFACING gates out."
   [ctx tree-class-id]
-  (cp/process-command
-    (assoc ctx :command
-           {:command/name :ontology/assign-task-class
-            :command/id (random-uuid)
-            :command/timestamp (gtime/now)
-            :source-sheet-id (random-uuid)
-            :source-tick-id (random-uuid)
-            :source-node-id (random-uuid)
-            :assigned-tree-id tree-class-id
-            :confidence 0.9
-            :top-candidates []
-            :reasoning "seed occurrence to place the class inside the gate band"
-            :was-fresh-mint? true})))
+  (let [sheet-id (random-uuid)
+        tick-id (random-uuid)
+        node-id (random-uuid)]
+    (cp/process-command
+     (assoc ctx :command
+            {:command/name :ontology/assign-task-class
+             :command/id (random-uuid)
+             :command/timestamp (gtime/now)
+             :source-sheet-id sheet-id
+             :source-tick-id tick-id
+             :source-node-id node-id
+             :assigned-tree-id tree-class-id
+             :confidence 0.9
+             :top-candidates []
+             :reasoning "seed attribution for a verdict-qualified occurrence"
+             :was-fresh-mint? true}))
+    (es/append
+     (:event-store ctx)
+     {:tenant-id (:tenant-id ctx)
+      :events [(es/->event
+                {:type :sheet/node-execution-completed
+                 :tags #{[:tick tick-id]}
+                 :body {:sheet-id sheet-id
+                        :tick-id tick-id
+                        :node-id node-id
+                        :node-type :repl-researcher
+                        :status :success
+                        :completion-kind :terminal}})]})
+    (let [completion-id
+          (:event/id
+           (last
+            (into []
+                  (es/read (:event-store ctx)
+                           {:tenant-id (:tenant-id ctx)
+                            :types #{:sheet/node-execution-completed}
+                            :tags #{[:tick tick-id]}}))))]
+      (cp/process-command
+       (assoc ctx :command
+              {:command/name :ontology/record-tree-class-occurrence
+               :command/id (random-uuid)
+               :command/timestamp (gtime/now)
+               :source-sheet-id sheet-id
+               :source-tick-id tick-id
+               :source-node-id node-id
+               :source-completion-event-id completion-id
+               :assigned-tree-id tree-class-id
+               :verdict :success})))))
 
 (defmacro with-rerank-success
   "Stub the rerank seam with a SUCCESSFUL deterministic rerank: rerank!

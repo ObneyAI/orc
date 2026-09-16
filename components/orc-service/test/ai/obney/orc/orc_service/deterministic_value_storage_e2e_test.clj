@@ -219,6 +219,21 @@
                         sheet-id {})))
      @calls]))
 
+(defn- failure-evidence
+  "Everything a failed execute result and its trace can tell us, for an
+   assertion message — so a CI-only failure reports WHY, not just that it
+   failed (the run's error, liveness, and every node trace's status and
+   error)."
+  [ctx result]
+  (let [trace (try (get-in (h/run-query ctx (h/make-get-trace-query (:trace-id result)))
+                           [:query/result :trace])
+                   (catch Throwable t {:trace-query-threw (.getMessage t)}))]
+    (pr-str {:result (dissoc result :outputs)
+             :node-traces (mapv #(select-keys % [:node-type :status :error :node-id])
+                                (:node-traces trace))
+             :trace-status (:status trace)
+             :trace-error (:error trace)})))
+
 (defn- failed-leaf-detail [ctx result]
   (let [trace (trace-for ctx result)
         leaf (some #(when (= :leaf (:node-type %)) %) (:node-traces trace))]
@@ -270,7 +285,7 @@
             [truncated truncated-detail]
             (execute-response "truncated"
                               (response "resp-truncated" "length" {:content nil}))]
-        (is (= :success (:status valid)))
+        (is (= :success (:status valid)) (failure-evidence ctx valid))
         (is (= "ok" (get-in valid [:outputs :answer])))
         (is (nil? (:failure-kind valid-detail)))
 
@@ -344,7 +359,7 @@
             tool-trace (trace-for ctx tool-result)
             marker-detail (failed-leaf-detail ctx marker-result)
             tool-detail (failed-leaf-detail ctx tool-result)]
-        (is (= :success (:status marker-result)))
+        (is (= :success (:status marker-result)) (failure-evidence ctx marker-result))
         (is (= {:action :reply :reply "Done."}
                (get-in marker-result [:outputs :decision])))
         (is (not (contains? (get-in marker-result [:outputs :decision]) :capability)))
@@ -391,7 +406,7 @@
                                     sheet-id {})
               trace (trace-for ctx result)
               detail (failed-leaf-detail ctx result)]
-          (is (= :success (:status result)))
+          (is (= :success (:status result)) (failure-evidence ctx result))
           (is (= {:action :none :explanation "Nothing changed"}
                  (get-in result [:outputs :decision])))
           (is (not (contains? (get-in result [:outputs :decision])

@@ -711,7 +711,6 @@
        :execution-count total
        :success-count success-count
        :failure-count (get statuses :failure 0)
-       :skip-count (get statuses :skipped 0)
        :success-rate (if (pos? total) (double (/ success-count total)) 0.0)
        :avg-duration-ms (when (seq durations)
                           (double (/ (reduce + durations) (count durations))))

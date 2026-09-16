@@ -1,6 +1,7 @@
 (ns ai.obney.orc.llm.core-test
   (:require [clojure.core.async :as async]
             [clojure.test :refer [deftest is testing]]
+            [hato.client :as http]
             [litellm.router :as router]
             [litellm.providers.openrouter :as openrouter]
             [ai.obney.orc.llm.interface :as llm]))
@@ -140,6 +141,44 @@
           "ORC's millisecond deadline reaches LiteLLM's provider timeout key")
       (is (not (contains? @captured-request :timeout-ms))
           "the ORC-only spelling does not leak into the provider request"))))
+
+(deftest blocking-timeout-reaches-the-pinned-openrouter-http-transport
+  (let [config-name (keyword (str "rr9-openrouter-timeout-" (random-uuid)))
+        captured-http (atom nil)]
+    (router/register!
+     config-name
+     {:provider :openrouter
+      :model "test/model"
+      :config {:api-key "not-sent"
+               :api-base "https://transport.invalid"}})
+    (try
+      (with-redefs
+        [http/post
+         (fn [url options]
+           (reset! captured-http {:url url :options options})
+           (future
+             {:status 200
+              :body {:id "rr9-response"
+                     :model "test/model"
+                     :choices [{:index 0
+                                :message {:role "assistant"
+                                          :content "[[ ## answer ## ]]\nParis"}
+                                :finish_reason "stop"}]
+                     :usage {:prompt_tokens 1
+                             :completion_tokens 1
+                             :total_tokens 2}}}))]
+        (is (= {:answer "Paris"}
+               (llm/predict config-name qa {:question "Capital?"}
+                            {:validate? false
+                             :use-function-calling? false
+                             :timeout-ms 42000})))
+        (is (= "https://transport.invalid/chat/completions"
+               (:url @captured-http)))
+        (is (= 42000 (get-in @captured-http [:options :timeout]))
+            "the request timeout reaches Hato, not only LiteLLM's router map")
+        (is (true? (get-in @captured-http [:options :async?]))))
+      (finally
+        (router/unregister! config-name)))))
 
 (deftest function-calling-performs-one-provider-invocation
   (let [calls (atom 0)]

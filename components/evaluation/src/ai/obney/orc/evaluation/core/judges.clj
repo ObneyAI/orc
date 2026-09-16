@@ -182,9 +182,11 @@
   (str stance "\n\n"
        "WHAT TO EVALUATE:\n" criteria "\n\n"
        "You are given three inputs: `source` (the context the producer had), "
-       "`response` (what the producer wrote), and `producer_instruction` "
-       "(the task the producer was given). Compare the response against the "
-       "source ONLY.\n\n"
+       "`response` (the producer's declared output fields, one value per "
+       "field, as a JSON object — the field set is fixed by the workflow's "
+       "typed blackboard, not chosen by the producer; judge the values, not "
+       "the object shape), and `producer_instruction` (the task the producer "
+       "was given). Compare the response against the source ONLY.\n\n"
        "SCORING BANDS (choose exactly one level for the `level` field):\n"
        (scale/render-bands scale) "\n\n"
        "Fill `reasoning` first (adversarial analysis grounded in the source), "
@@ -211,7 +213,10 @@
              :description "The source context the producer was given (ground truth to check against)."}
             {:name :response
              :spec :string
-             :description "The producer's output to evaluate for grounding."}
+             :description (str "The producer's declared output fields, one value per "
+                               "field, as a JSON object. The field set is fixed by the "
+                               "workflow's typed blackboard, not chosen by the producer. "
+                               "Judge the values, not the object shape.")}
             {:name :producer_instruction
              :spec :string
              :description "The instruction the producer was given (for context only; do not grade against it)."}]
@@ -308,32 +313,49 @@
    example and NO 'return only JSON' directive — the output shape is the typed
    blackboard's job, not the prompt's. The trace data is passed as typed INPUT
    fields (see build-tier1-module), not interpolated here."
-  [{:keys [criteria stance scale]}]
-  (str stance "\n\n"
-       "WHAT TO EVALUATE:\n" criteria "\n\n"
-       "You are given three inputs: `instruction` (the task the producer was "
-       "given), `response` (what the producer wrote), and `inputs` (the "
-       "context/material the producer had). Evaluate the response against the "
-       "instruction (and the inputs where relevant).\n\n"
-       "SCORING BANDS (choose exactly one level for the `level` field):\n"
-       (scale/render-bands scale) "\n\n"
-       "Fill `reasoning` first (adversarial analysis), then the evidence "
-       "lists, then choose `level`, then write `feedback`."))
+  ([rubric]
+   (build-tier1-instruction rubric false))
+  ([{:keys [criteria stance scale]} iteration-evidence?]
+   (str stance "\n\n"
+        "WHAT TO EVALUATE:\n" criteria "\n\n"
+        "You are given three inputs: `instruction` (the task the producer was "
+        "given), `response` (the producer's declared output fields, one value "
+        "per field, as a JSON object — the field set is fixed by the "
+        "workflow's typed blackboard, not chosen by the producer; judge the "
+        "values, not the object shape), and `inputs` (the context/material "
+        "the producer had). Evaluate the response against the instruction "
+        "(and the inputs where relevant)."
+        (when iteration-evidence?
+          (str " You are also given `iteration_evidence`, a bounded durable "
+               "record of the research attempts. Use it to explain why the "
+               "outcome occurred."))
+        "\n\n"
+        "SCORING BANDS (choose exactly one level for the `level` field):\n"
+        (scale/render-bands scale) "\n\n"
+        "Fill `reasoning` first (adversarial analysis), then the evidence "
+        "lists, then choose `level`, then write `feedback`.")))
 
 (defn- build-tier1-module
   "ORC LLM module for a tier-1 (instruction/reasoning/completeness) judge. Typed
    INPUT fields carry the trace data; typed OUTPUT fields carry the verdict. No
    json-in-prompt, no permissive output schema."
-  [instruction output-fields]
-  {:inputs [{:name :instruction
-             :spec :string
-             :description "The instruction the producer was given (the task to evaluate compliance/coverage against)."}
-            {:name :response
-             :spec :string
-             :description "The producer's output to evaluate."}
-            {:name :inputs
-             :spec :string
-             :description "The context/material the producer had (for relevance checks)."}]
+  [instruction output-fields iteration-evidence?]
+  {:inputs (cond-> [{:name :instruction
+                     :spec :string
+                     :description "The instruction the producer was given (the task to evaluate compliance/coverage against)."}
+                    {:name :response
+                     :spec :string
+                     :description (str "The producer's declared output fields, one value per "
+                                       "field, as a JSON object. The field set is fixed by the "
+                                       "workflow's typed blackboard, not chosen by the producer. "
+                                       "Judge the values, not the object shape.")}
+                    {:name :inputs
+                     :spec :string
+                     :description "The context/material the producer had (for relevance checks)."}]
+             iteration-evidence?
+             (conj {:name :iteration_evidence
+                    :spec :string
+                    :description "Bounded durable evidence for the research attempts that produced the outcome."}))
    :outputs output-fields
    :instructions instruction})
 
@@ -364,16 +386,49 @@
                               :model (or (:model result) model)
                               :usage (:usage result)})))
 
+(defn- compose-task
+  "RR-33: compose the task string a judge is told, in priority order: the
+   node's own instruction when non-blank; else the judge's declared
+   :criteria when non-blank; else a synthesized task naming the node's
+   declared write keys (never blank when writes are known — a code node's
+   task is never the empty string just because the DSL's `code` takes no
+   instruction); else the existing 'No instruction provided' sentinel,
+   reached only when nothing at all is known about the task. Same rule for
+   both call-grounding-judge-llm and call-tier1-judge-llm."
+  [trace-data criteria]
+  (let [instruction (:instruction trace-data)
+        write-keys (:write-keys trace-data)]
+    (cond
+      (and (string? instruction) (not (str/blank? instruction)))
+      instruction
+
+      (and (string? criteria) (not (str/blank? criteria)))
+      criteria
+
+      (seq write-keys)
+      (str "Produce the declared output fields: "
+           (str/join ", " (map name write-keys)))
+
+      :else
+      "No instruction provided")))
+
 (defn call-grounding-judge-llm
   "PA-3 tier-1 grounding LLM call. Sends the trace data as typed INPUT fields
    (source / response / producer_instruction) and the decoupled instruction.
    Returns the raw parsed output map (with :reasoning, :grounded-claims,
    :ungrounded-claims, :level, :feedback) — gating + level→score mapping is
    the caller's job (grounding-judge), so the no-run-through gate sees the
-   raw model output."
-  [trace-data & {:keys [provider model] :or {provider *judge-provider*
-                                             model *judge-model*}}]
-  (let [rubric (rubrics/get-tier1-rubric :grounding)
+   raw model output.
+
+   RR-31: `:criteria`, when a non-blank string, OVERRIDES the rubric's
+   built-in criteria before the instruction is composed — the workflow's
+   declared \"what to evaluate\" for this judge. Absent :criteria leaves the
+   rubric untouched: the instruction is byte-identical to today's."
+  [trace-data & {:keys [provider model criteria] :or {provider *judge-provider*
+                                                       model *judge-model*}}]
+  (let [rubric (cond-> (rubrics/get-tier1-rubric :grounding)
+                 (and (string? criteria) (not (str/blank? criteria)))
+                 (assoc :criteria criteria))
         instruction (build-grounding-instruction rubric)
         module (build-grounding-module instruction)
         response (cond
@@ -383,7 +438,7 @@
                    :else "")
         inputs {:source (coerce-source-string (:inputs trace-data))
                 :response (str response)
-                :producer_instruction (or (:instruction trace-data) "No instruction provided")}
+                :producer_instruction (compose-task trace-data criteria)}
         result (llm/predict provider module inputs
                                {:with-metadata? true
                                 :validate? false
@@ -402,21 +457,34 @@
    :level, :feedback) — gating + level->score mapping is the caller's job, so
    the no-run-through gate sees the raw model output.
 
-   `output-fields` is the dimension's reason-before-score field vector."
-  [rubric-key output-fields trace-data & {:keys [provider model]
+   `output-fields` is the dimension's reason-before-score field vector.
+
+   RR-31: `:criteria`, when a non-blank string, OVERRIDES the rubric's
+   built-in criteria before the instruction is composed — the workflow's
+   declared \"what to evaluate\" for this judge. Absent :criteria leaves the
+   rubric untouched: the instruction is byte-identical to today's."
+  [rubric-key output-fields trace-data & {:keys [provider model criteria]
                                           :or {provider *judge-provider*
                                                model *judge-model*}}]
-  (let [rubric (rubrics/get-tier1-rubric rubric-key)
-        instruction (build-tier1-instruction rubric)
-        module (build-tier1-module instruction output-fields)
+  (let [rubric (cond-> (rubrics/get-tier1-rubric rubric-key)
+                 (and (string? criteria) (not (str/blank? criteria)))
+                 (assoc :criteria criteria))
+        iteration-evidence (not-empty (:researcher-iterations trace-data))
+        instruction (build-tier1-instruction rubric (boolean iteration-evidence))
+        module (build-tier1-module instruction output-fields
+                                   (boolean iteration-evidence))
         response (cond
                    (:response trace-data) (:response trace-data)
                    (string? (:outputs trace-data)) (:outputs trace-data)
                    (:outputs trace-data) (json/generate-string (:outputs trace-data) {:pretty true})
                    :else "")
-        inputs {:instruction (or (:instruction trace-data) "No instruction provided")
-                :response (str response)
-                :inputs (coerce-source-string (:inputs trace-data))}
+        inputs (cond->
+                {:instruction (compose-task trace-data criteria)
+                 :response (str response)
+                 :inputs (coerce-source-string (:inputs trace-data))}
+                 iteration-evidence
+                 (assoc :iteration_evidence
+                        (coerce-source-string iteration-evidence)))
         result (llm/predict provider module inputs
                                {:with-metadata? true
                                 :validate? false
@@ -491,10 +559,11 @@
    regression."
   [{:keys [inputs] :as _executor-context}]
   (let [trace-data (:trace-data inputs)
+        criteria (:criteria inputs)
         the-scale (:scale (rubrics/get-tier1-rubric :grounding))
         raw (if *use-mock-llm*
               (mock-grounding-result)
-              (call-grounding-judge-llm trace-data))
+              (call-grounding-judge-llm trace-data :criteria criteria))
         ;; no-run-through gate: empty/missing-level output throws; otherwise
         ;; enriches with a deterministic :score from the discrete :level.
         gated (scale/gate-banded-output the-scale raw)]
@@ -525,12 +594,14 @@
    model output."
   [{:keys [inputs] :as _executor-context}]
   (let [trace-data (:trace-data inputs)
+        criteria (:criteria inputs)
         the-scale (:scale (rubrics/get-tier1-rubric :instruction-following))
         raw (if *use-mock-llm*
               (mock-instruction-following-result)
               (call-tier1-judge-llm :instruction-following
                                     (instruction-following-output-fields)
-                                    trace-data))
+                                    trace-data
+                                    :criteria criteria))
         gated (scale/gate-banded-output the-scale raw)]
     {:instruction-result
      {:score (:score gated)
@@ -554,12 +625,14 @@
        :reasoning-weaknesses :feedback} PLUS {:level :reasoning}."
   [{:keys [inputs] :as _executor-context}]
   (let [trace-data (:trace-data inputs)
+        criteria (:criteria inputs)
         the-scale (:scale (rubrics/get-tier1-rubric :reasoning))
         raw (if *use-mock-llm*
               (mock-reasoning-result)
               (call-tier1-judge-llm :reasoning
                                     (reasoning-output-fields)
-                                    trace-data))
+                                    trace-data
+                                    :criteria criteria))
         gated (scale/gate-banded-output the-scale raw)]
     {:reasoning-result
      {:score (:score gated)
@@ -583,12 +656,14 @@
        :aspects-missing :feedback} PLUS {:level :reasoning}."
   [{:keys [inputs] :as _executor-context}]
   (let [trace-data (:trace-data inputs)
+        criteria (:criteria inputs)
         the-scale (:scale (rubrics/get-tier1-rubric :completeness))
         raw (if *use-mock-llm*
               (mock-completeness-result)
               (call-tier1-judge-llm :completeness
                                     (completeness-output-fields)
-                                    trace-data))
+                                    trace-data
+                                    :criteria criteria))
         gated (scale/gate-banded-output the-scale raw)]
     {:completeness-result
      {:score (:score gated)
@@ -602,6 +677,17 @@
 ;; =============================================================================
 ;; Aggregation Executor
 ;; =============================================================================
+
+(def default-judge-dimension-names
+  "The one vocabulary for the four default LLM judges' dimension names. Each
+   is the judge's tier-1 rubric name, and each is a name the ontology
+   classifier maps to a failure concept (its dictionary is case-sensitive).
+   Used by the synchronous aggregate below and by the live runtime's
+   per-judge dimension projection, so the two paths cannot drift apart."
+  {:grounding             (:name rubrics/GROUNDING_TIER1)
+   :instruction-following (:name rubrics/INSTRUCTION_FOLLOWING_TIER1)
+   :reasoning             (:name rubrics/REASONING_TIER1)
+   :completeness          (:name rubrics/COMPLETENESS_TIER1)})
 
 (defn aggregate-dimensions
   "Aggregate multiple dimension results into a single score.
@@ -623,19 +709,19 @@
         completeness (:completeness-result inputs)
 
         dimensions [(feedback/->metric-dimension
-                     "Source Grounding" 0.35
+                     (default-judge-dimension-names :grounding) 0.35
                      (or (:score grounding) 0.5)
                      (or (:feedback grounding) "No feedback"))
                     (feedback/->metric-dimension
-                     "Instruction Following" 0.25
+                     (default-judge-dimension-names :instruction-following) 0.25
                      (or (:score instruction) 0.5)
                      (or (:feedback instruction) "No feedback"))
                     (feedback/->metric-dimension
-                     "Reasoning Quality" 0.20
+                     (default-judge-dimension-names :reasoning) 0.20
                      (or (:score reasoning) 0.5)
                      (or (:feedback reasoning) "No feedback"))
                     (feedback/->metric-dimension
-                     "Completeness" 0.20
+                     (default-judge-dimension-names :completeness) 0.20
                      (or (:score completeness) 0.5)
                      (or (:feedback completeness) "No feedback"))]
 
@@ -669,37 +755,6 @@
                    :completeness completeness-judge)]
     (judge-fn {:inputs {:trace-data trace-data}})))
 
-(defn evaluate-all
-  "Evaluate a trace with all judges and aggregate.
-
-   Args:
-     trace-data: Map with :inputs, :outputs/:response, :instruction
-
-   Returns:
-     Map with:
-       :aggregate-score - Float 0.0-1.0
-       :feedback-summary - Combined feedback
-       :dimensions - Per-dimension results
-       :raw-results - Individual judge results"
-  [trace-data]
-  (let [grounding-res (grounding-judge {:inputs {:trace-data trace-data}})
-        instruction-res (instruction-following-judge {:inputs {:trace-data trace-data}})
-        reasoning-res (reasoning-judge {:inputs {:trace-data trace-data}})
-        completeness-res (completeness-judge {:inputs {:trace-data trace-data}})
-
-        ;; Combine all results for aggregation
-        combined-inputs (merge grounding-res instruction-res reasoning-res completeness-res)
-
-        agg-result (aggregate-dimensions {:inputs combined-inputs})]
-
-    {:aggregate-score (:aggregate-score agg-result)
-     :feedback-summary (:feedback-summary agg-result)
-     :dimensions (:dimensions agg-result)
-     :raw-results {:grounding (:grounding-result grounding-res)
-                   :instruction-following (:instruction-result instruction-res)
-                   :reasoning (:reasoning-result reasoning-res)
-                   :completeness (:completeness-result completeness-res)}}))
-
 ;; =============================================================================
 ;; Judge Registry
 ;; =============================================================================
@@ -732,7 +787,7 @@
 
    Example:
      (with-judge-config {:provider :anthropic :model \"claude-3-haiku-20240307\"}
-       (evaluate-all trace-data))"
+       (evaluate-single :grounding trace-data))"
   [{:keys [provider model mock?]} & body]
   `(binding [*judge-provider* (or ~provider *judge-provider*)
              *judge-model* (or ~model *judge-model*)

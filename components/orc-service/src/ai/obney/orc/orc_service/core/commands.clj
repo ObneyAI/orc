@@ -8,7 +8,10 @@
    - Last write wins (no optimistic concurrency)"
   (:require [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
             [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
+            [ai.obney.orc.orc-service.core.researcher-resume-state :as researcher-resume-state]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.metadata :as metadata]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
@@ -16,6 +19,7 @@
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
             [cognitect.anomalies :as anom]
+            [clojure.string :as str]
             [malli.core :as m]
             [malli.error :as me]))
 
@@ -1080,6 +1084,12 @@
                       ;; collect only this execution's descendant ticks rather
                       ;; than scanning every completion in the tenant.
                       parent-tick-id (conj [:parent-tick parent-tick-id])
+                      (and (true? (:checkpointed-campaign? options))
+                           (get-in options [:llm-budget-root-tick-id])
+                           (not= new-tick-id
+                                 (get-in options [:llm-budget-root-tick-id])))
+                      (conj [:tick (get-in options
+                                           [:llm-budget-root-tick-id])])
                       correlation-id (conj [:correlation correlation-id]))
               :body (cond-> {:sheet-id sheet-id
                              :tick-id new-tick-id
@@ -1174,13 +1184,15 @@
 
 (defcommand :sheet resume-node-execution
   {:authorized? authenticated?}
-  "Re-enqueue one abandoned leaf start after a processor restart.
+  "Re-enqueue one abandoned map, leaf, delegate, or researcher start after restart.
 
    The original start event id is a durable idempotency key. If that start has
    already completed, or a recovery start already points at it, this command is
-   a no-op. This deliberately resumes only a leaf frontier; composite parents
-   remain in progress and consume the recovered leaf's normal completion."
-  [{{:keys [sheet-id tick-id node-id original-start-event-id inputs]} :command
+   a no-op. A map start rebuilds its process-local coordinator from durable
+   child evidence; other composite parents remain in progress and consume the
+   recovered frontier's normal completion."
+  [{{:keys [sheet-id tick-id node-id original-start-event-id inputs
+            researcher-ownership-epoch]} :command
     :as ctx}]
   (let [tick-events (into [] (es/read (:event-store ctx)
                                       {:tenant-id (:tenant-id ctx)
@@ -1193,8 +1205,10 @@
         events-after-original (if (some? original-index)
                                 (subvec tick-events (inc original-index))
                                 [])
+        target-execution-key [node-id (value-log/exec-context inputs)]
         completed? (some #(and (= :sheet/node-execution-completed (:event/type %))
-                               (= node-id (:node-id %)))
+                               (= target-execution-key
+                                  (value-log/execution-key %)))
                          events-after-original)
         cancelled? (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
         already-resumed? (some #(and (= :sheet/node-execution-started (:event/type %))
@@ -1214,11 +1228,14 @@
        [(->event
          {:type :sheet/node-execution-started
           :tags #{[:sheet sheet-id] [:node node-id] [:tick tick-id]}
-          :body {:sheet-id sheet-id
-                 :tick-id tick-id
-                 :node-id node-id
-                 :inputs inputs
-                 :resumed-from-event-id original-start-event-id}})]
+          :body (cond-> {:sheet-id sheet-id
+                         :tick-id tick-id
+                         :node-id node-id
+                         :inputs inputs
+                         :resumed-from-event-id original-start-event-id}
+                  researcher-ownership-epoch
+                  (assoc :researcher-ownership-epoch
+                         researcher-ownership-epoch))})]
        :command-result/cas
        {:types #{:sheet/node-execution-started :sheet/node-execution-completed}
         :tags #{[:tick tick-id] [:node node-id]}
@@ -1236,18 +1253,218 @@
             (and (some? original-index)
                  (not-any? #(or (and (= :sheet/node-execution-completed
                                          (:event/type %))
-                                      (= node-id (:node-id %)))
+                                      (= target-execution-key
+                                         (value-log/execution-key %)))
                                  (and (= :sheet/node-execution-started
                                          (:event/type %))
                                       (= original-start-event-id
                                          (:resumed-from-event-id %))))
                            later))))}})))
 
+(defn- commit-researcher-iteration-v2
+  [{{:keys [sheet-id tick-id node-id resume-state iteration-record inputs resume?
+            sandbox-snapshot-interval]}
+    :command :as ctx}]
+  (let [iteration-index (:iteration-index iteration-record)
+        attempt-ordinal (:attempt-ordinal iteration-record)
+        durable-facts (into [] (es/read (:event-store ctx)
+                                        {:tenant-id (:tenant-id ctx)
+                                         :types #{:rlm/researcher-iteration-recorded
+                                                  :rlm/researcher-resume-state-saved}
+                                         :tags #{[:tick tick-id] [:node node-id]}}))
+        recorded? (some #(and (= :rlm/researcher-iteration-recorded (:event/type %))
+                              (= iteration-index (:iteration-index %))
+                              (= attempt-ordinal (:attempt-ordinal %)))
+                        durable-facts)
+        resume-facts (filterv #(= :rlm/researcher-resume-state-saved
+                                  (:event/type %))
+                              durable-facts)
+        latest-durable-resume-state (some-> resume-facts last :resume-state)
+        latest-resume-state
+        (researcher-resume-state/hydrate-latest
+         (mapv :resume-state resume-facts))
+        latest-max-observed-quantum-duration-ms
+        (long (or (:max-observed-quantum-duration-ms latest-resume-state) 0))
+        proposed-observed-quantum-duration-ms
+        (:observed-quantum-duration-ms resume-state)
+        ;; The running maximum is a command-boundary invariant, not a producer
+        ;; convention. A newer/rolling writer may advance the observation or
+        ;; omit it, but it cannot erase or lower previously durable evidence.
+        resume-state
+        (if (some? proposed-observed-quantum-duration-ms)
+          (assoc resume-state
+                 :max-observed-quantum-duration-ms
+                 (max latest-max-observed-quantum-duration-ms
+                      (long (or (:max-observed-quantum-duration-ms resume-state)
+                                0))
+                      (long proposed-observed-quantum-duration-ms)))
+          (if (contains? latest-resume-state
+                         :max-observed-quantum-duration-ms)
+            (assoc resume-state
+                   :max-observed-quantum-duration-ms
+                   latest-max-observed-quantum-duration-ms)
+            ;; A max without an observation is rolling-compatibility carry
+            ;; state only. With no prior durable evidence it is ungrounded.
+            (dissoc resume-state :max-observed-quantum-duration-ms)))
+        resume-order (fn [state]
+                       [(or (:revision state) -1)
+                        (or (:next-iteration state) -1)])
+        proposed-order (resume-order resume-state)
+        stale-resume-state?
+        (and latest-resume-state
+             (not (neg? (compare (resume-order latest-resume-state)
+                                 proposed-order))))
+        cancelled? (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
+        already-recorded? (or cancelled? recorded? stale-resume-state?)
+        durable-resume-state
+        (researcher-resume-state/encode
+         resume-state latest-durable-resume-state latest-resume-state
+         (or sandbox-snapshot-interval 1))
+        now (str (java.time.Instant/now))]
+    (cond-> {:command-result/events
+             (if already-recorded?
+               []
+               (cond->
+                [(->event
+                  {:type :rlm/researcher-iteration-recorded
+                   :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+                   :body {:sheet-id sheet-id
+                          :tick-id tick-id
+                          :node-id node-id
+                          :iteration-index iteration-index
+                          :attempt-ordinal attempt-ordinal
+                          :iteration-record iteration-record
+                          :recorded-at now}})
+                 (->event
+                  {:type :rlm/researcher-resume-state-saved
+                   :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+                   :body {:sheet-id sheet-id
+                          :tick-id tick-id
+                          :node-id node-id
+                          :revision (:revision resume-state)
+                          :next-iteration (:next-iteration resume-state)
+                          :resume-state durable-resume-state
+                          :yielded? (not= false resume?)
+                          :saved-at now}})]
+                 (not= false resume?)
+                 (conj
+                  (->event
+                   {:type :sheet/node-execution-started
+                    :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+                    :body {:sheet-id sheet-id
+                           :tick-id tick-id
+                           :node-id node-id
+                           :inputs inputs
+                           :researcher-resume? true
+                           :checkpoint-version (:version resume-state)
+                           :checkpoint-next-iteration (:next-iteration resume-state)}}))))}
+      (not already-recorded?)
+      (assoc :command-result/cas
+             {:types #{:rlm/researcher-iteration-recorded
+                       :rlm/researcher-resume-state-saved
+                       :rlm/researcher-frontier-claimed
+                       :rlm/researcher-classification-expired
+                       :sheet/node-execution-completed
+                       :sheet/tree-tick-completed
+                       :sheet/tick-cancelled}
+              ;; Parent terminal facts do not carry a node tag. Read the whole
+              ;; tick and filter node-scoped facts inside the predicate so a
+              ;; terminal winner atomically fences every later checkpoint.
+              :tags #{[:tick tick-id]}
+              :predicate-fn
+              (fn [existing]
+                (let [{:keys [iteration-recorded? latest-state
+                              frontier-seen? frontier-epoch terminal?]}
+                      (reduce
+                       (fn [state event]
+                         (case (:event/type event)
+                           :rlm/researcher-frontier-claimed
+                           (if (= node-id (:node-id event))
+                             (-> state
+                                 (assoc :frontier-seen? true)
+                                 (update :frontier-epoch max
+                                         (:ownership-epoch event)))
+                             state)
+
+                           :rlm/researcher-iteration-recorded
+                           (if (and (= node-id (:node-id event))
+                                    (= iteration-index
+                                       (:iteration-index event))
+                                    (= attempt-ordinal
+                                       (:attempt-ordinal event)))
+                             (assoc state :iteration-recorded? true)
+                             state)
+
+                           :rlm/researcher-resume-state-saved
+                           (if (= node-id (:node-id event))
+                             (let [candidate (:resume-state event)]
+                               (if (or (nil? (:latest-state state))
+                                       (neg? (compare
+                                              (resume-order (:latest-state state))
+                                              (resume-order candidate))))
+                                 (assoc state :latest-state candidate)
+                                 state))
+                             state)
+
+                           :rlm/researcher-classification-expired
+                           (if (= node-id (:node-id event))
+                             (assoc state :terminal? true)
+                             state)
+
+                           :sheet/node-execution-completed
+                           (if (and (= node-id (:node-id event))
+                                    (or (= :terminal (:completion-kind event))
+                                        (contains? #{:success :failure :timeout
+                                                     :blocked}
+                                                   (:status event))))
+                             (assoc state :terminal? true)
+                             state)
+
+                           :sheet/tree-tick-completed
+                           (if (not= :running (:root-status event))
+                             (assoc state :terminal? true)
+                             state)
+
+                           :sheet/tick-cancelled
+                           (assoc state :terminal? true)
+
+                           state))
+                       {:iteration-recorded? false
+                        :latest-state nil
+                        :frontier-seen? false
+                        :frontier-epoch 0
+                        :terminal? false}
+                       existing)]
+                  (and
+                   (not terminal?)
+                   (not iteration-recorded?)
+                   (or (nil? latest-state)
+                       (neg? (compare (resume-order latest-state)
+                                     proposed-order)))
+                   ;; Canonicalization above reads before append. A competing
+                   ;; higher observation may land after that read, so compare
+                   ;; the prebuilt event with the state current inside the CAS.
+                   ;; Reject and retry rather than let recovery lose the newer
+                   ;; durable running maximum.
+                   (>= (long (or (:max-observed-quantum-duration-ms resume-state)
+                                 0))
+                       (long (or (:max-observed-quantum-duration-ms latest-state)
+                                 0)))
+                   ;; Legacy v2 streams predate ownership frontiers. Preserve
+                   ;; their revision ordering; once a frontier exists, only
+                   ;; its current owner may append the iteration+state batch.
+                   (or (not frontier-seen?)
+                       (= frontier-epoch (:ownership-epoch resume-state))))))}))))
+
 (defcommand :sheet checkpoint-researcher-iteration
   {:authorized? authenticated?}
   "Atomically persist a completed researcher iteration and enqueue its next quantum."
-  [{{:keys [sheet-id tick-id node-id checkpoint inputs resume?]} :command :as ctx}]
-  (let [latest (some->> (into [] (es/read (:event-store ctx)
+  [{{:keys [sheet-id tick-id node-id checkpoint resume-state iteration-record
+            inputs resume?]}
+    :command :as ctx}]
+  (if (and resume-state iteration-record)
+    (commit-researcher-iteration-v2 ctx)
+    (let [latest (some->> (into [] (es/read (:event-store ctx)
                                           {:tenant-id (:tenant-id ctx)
                                            :tags #{[:tick tick-id] [:node node-id]}}))
                         (filter #(= :rlm/researcher-checkpointed (:event/type %)))
@@ -1295,7 +1512,154 @@
                              (compare [(get-in % [:checkpoint :revision] 0)
                                        (get-in % [:checkpoint :next-iteration] -1)]
                                       checkpoint-order))))
-                 (into [] existing))) }))))
+                 (into [] existing))) })))))
+
+(defcommand :sheet claim-researcher-frontier
+  {:authorized? authenticated?}
+  "Atomically acquire one checkpointed researcher campaign frontier epoch."
+  [{{:keys [sheet-id tick-id node-id budget-root-tick-id ownership-epoch claimed-at
+            campaign-started-at-ms campaign-deadline-ms]} :command}]
+  (let [campaign-tag (researcher-effects/campaign-tag sheet-id tick-id node-id)]
+    {:command-result/events
+     [(->event
+       {:type :rlm/researcher-frontier-claimed
+        :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]
+                        [:node node-id] campaign-tag}
+                (and budget-root-tick-id
+                     (not= budget-root-tick-id tick-id))
+                (conj [:tick budget-root-tick-id]))
+        :body (cond-> {:sheet-id sheet-id
+                       :tick-id tick-id
+                       :node-id node-id
+                       :ownership-epoch ownership-epoch
+                       :claimed-at claimed-at}
+                (some? campaign-started-at-ms)
+                (assoc :campaign-started-at-ms campaign-started-at-ms)
+                (some? campaign-deadline-ms)
+                (assoc :campaign-deadline-ms campaign-deadline-ms))})]
+     :command-result/cas
+     (researcher-effects/frontier-cas campaign-tag ownership-epoch)}))
+
+(defcommand :sheet claim-researcher-effect
+  {:authorized? authenticated?}
+  "Atomically claim an effect under the campaign's current ownership epoch."
+  [{{:keys [sheet-id tick-id node-id budget-root-tick-id iteration-index logical-action-identity
+            attempt-identity attempt-ordinal ownership-epoch kind claimed-at]}
+    :command}]
+  (let [campaign-tag (researcher-effects/campaign-tag sheet-id tick-id node-id)
+        expected-attempt-identity
+        (researcher-effects/attempt-identity
+         logical-action-identity ownership-epoch attempt-ordinal)]
+    (if (not= expected-attempt-identity attempt-identity)
+      {::anom/category ::anom/incorrect
+       ::anom/message
+       "Researcher effect attempt identity does not match logical action, epoch, and ordinal"}
+      {:command-result/events
+       [(->event
+         {:type :rlm/researcher-effect-claimed
+          :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]
+                          [:node node-id] campaign-tag}
+                  (and budget-root-tick-id
+                       (not= budget-root-tick-id tick-id))
+                  (conj [:tick budget-root-tick-id]))
+          :body {:sheet-id sheet-id
+                 :tick-id tick-id
+                 :node-id node-id
+                 :iteration-index iteration-index
+                 :logical-action-identity logical-action-identity
+                 :attempt-identity attempt-identity
+                 :attempt-ordinal attempt-ordinal
+                 :ownership-epoch ownership-epoch
+                 :kind kind
+                 :status :claimed
+                 :claimed-at claimed-at
+                 :resolved-at nil}})]
+       :command-result/cas
+       (researcher-effects/claim-cas campaign-tag ownership-epoch
+                                     logical-action-identity attempt-identity)})))
+
+(defcommand :sheet reserve-provider-call
+  {:authorized? authenticated?}
+  "Atomically consume one durable provider-call slot before dispatch."
+  [{{:keys [budget-sheet-id budget-tick-id sheet-id tick-id node-id
+            campaign-sheet-id campaign-tick-id campaign-node-id iteration-index
+            logical-action-identity invocation-identity
+            provider-attempt-ordinal ownership-epoch reserved-at]
+     :as reservation} :command}]
+  (let [expected-invocation-identity
+        (provider-call-reservations/invocation-identity
+         budget-tick-id logical-action-identity ownership-epoch
+         provider-attempt-ordinal)]
+    (if (not= expected-invocation-identity invocation-identity)
+      {::anom/category ::anom/incorrect
+       ::anom/message
+       "Provider invocation identity does not match logical action, epoch, and ordinal"}
+      {:command-result/events
+       [(->event
+         {:type provider-call-reservations/reservation-event-type
+          :tags #{[:sheet budget-sheet-id]
+                  [:tick budget-tick-id]
+                  [:provider-invoking-tick tick-id]
+                  [:provider-node node-id]
+                  [:researcher-campaign-tick campaign-tick-id]
+                  (researcher-effects/campaign-tag
+                   campaign-sheet-id campaign-tick-id campaign-node-id)}
+          :body (select-keys reservation
+                             [:budget-sheet-id :budget-tick-id
+                              :sheet-id :tick-id :node-id
+                              :campaign-tick-id :campaign-node-id
+                              :iteration-index :logical-action-identity
+                              :invocation-identity :provider-attempt-ordinal
+                              :ownership-epoch :reserved-at])})]
+       :command-result/cas
+       (provider-call-reservations/reservation-cas reservation)})))
+
+(defcommand :sheet complete-researcher-effect
+  {:authorized? authenticated?}
+  "Atomically record an observed effect outcome while its claim still owns the frontier."
+  [{{:keys [sheet-id tick-id node-id logical-action-identity attempt-identity
+            ownership-epoch result resolved-at]}
+    :command}]
+  (let [campaign-tag (researcher-effects/campaign-tag sheet-id tick-id node-id)]
+    {:command-result/events
+     [(->event
+       {:type :rlm/researcher-effect-completed
+        :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id] campaign-tag}
+        :body {:sheet-id sheet-id
+               :tick-id tick-id
+               :node-id node-id
+               :logical-action-identity logical-action-identity
+               :attempt-identity attempt-identity
+               :ownership-epoch ownership-epoch
+               :status :completed
+               :result result
+               :resolved-at resolved-at}})]
+     :command-result/cas
+     (researcher-effects/completion-cas campaign-tag ownership-epoch
+                                        logical-action-identity attempt-identity)}))
+
+(defcommand :sheet mark-researcher-effect-indeterminate
+  {:authorized? authenticated?}
+  "Atomically settle an unresolved effect after a newer campaign frontier wins."
+  [{{:keys [sheet-id tick-id node-id logical-action-identity attempt-identity
+            ownership-epoch resolved-at]}
+    :command}]
+  (let [campaign-tag (researcher-effects/campaign-tag sheet-id tick-id node-id)]
+    {:command-result/events
+     [(->event
+       {:type :rlm/researcher-effect-indeterminate
+        :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id] campaign-tag}
+        :body {:sheet-id sheet-id
+               :tick-id tick-id
+               :node-id node-id
+               :logical-action-identity logical-action-identity
+               :attempt-identity attempt-identity
+               :resolved-by-ownership-epoch ownership-epoch
+               :status :indeterminate
+               :resolved-at resolved-at}})]
+     :command-result/cas
+     (researcher-effects/indeterminate-cas
+      campaign-tag ownership-epoch logical-action-identity attempt-identity)}))
 
 (defcommand :sheet record-researcher-action
   {:authorized? authenticated?}
@@ -1337,7 +1701,9 @@
    atomically with the completion event to avoid race conditions.
 
    Optional :usage carries per-node token counts from LLM calls."
-  [{{:keys [sheet-id tick-id node-id completion-id status writes rejected-writes write-sources write-references? duration-ms error inputs usage model
+  [{{:keys [sheet-id tick-id node-id completion-id researcher-ownership-epoch
+            status writes rejected-writes write-sources write-references? duration-ms
+            observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage model
             node-type completion-kind raw-response failure-kind provider-evidence
             block-payload read-sources]} :command
     :as ctx}]
@@ -1351,7 +1717,27 @@
                                         :types #{:sheet/node-execution-completed}
                                         :tags #{[:tick tick-id]}})))))
     {:command-result/events []}
-    (let [;; Gap-7: when the dispatch site didn't explicitly set
+    (let [researcher-resume-events
+          (when researcher-ownership-epoch
+            (into []
+                  (es/read (:event-store ctx)
+                           {:tenant-id (:tenant-id ctx)
+                            :types #{:rlm/researcher-resume-state-saved}
+                            :tags #{[:tick tick-id] [:node node-id]}})))
+          latest-researcher-resume-state
+          (some-> researcher-resume-events last :resume-state)
+          latest-max-observed-quantum-duration-ms
+          (long (or (:max-observed-quantum-duration-ms
+                     latest-researcher-resume-state)
+                    0))
+          ;; Producer values are evidence; the rolling maximum is a command
+          ;; invariant. Canonicalize it here and re-check it in the append CAS.
+          max-observed-quantum-duration-ms
+          (when (some? observed-quantum-duration-ms)
+            (max latest-max-observed-quantum-duration-ms
+                 (long (or max-observed-quantum-duration-ms 0))
+                 (long observed-quantum-duration-ms)))
+          ;; Gap-7: when the dispatch site didn't explicitly set
         ;; :completion-kind but the node is a recursive repl-researcher,
         ;; derive the kind from :status. :tree-generated marks an
         ;; intermediate Phase 1 emit-tree iteration; :success/:failure
@@ -1423,6 +1809,9 @@
                                            :node-id node-id
                                            :status status}
                                     completion-id (assoc :completion-id completion-id)
+                                    researcher-ownership-epoch
+                                    (assoc :researcher-ownership-epoch
+                                           researcher-ownership-epoch)
                                     ;; Shape, not values — but only when the
                                     ;; values are durable elsewhere. The write
                                     ;; events carry :node-id and :exec-context
@@ -1442,6 +1831,12 @@
                                     (and (seq writes) (not externalize-writes?))
                                     (assoc :writes writes)
                                     duration-ms (assoc :duration-ms duration-ms)
+                                    (some? observed-quantum-duration-ms)
+                                    (assoc :observed-quantum-duration-ms
+                                           observed-quantum-duration-ms)
+                                    (some? max-observed-quantum-duration-ms)
+                                    (assoc :max-observed-quantum-duration-ms
+                                           max-observed-quantum-duration-ms)
                                     error (assoc :error error)
                                     ;; Verbatim raw LLM response for parse
                                     ;; failures — retrievable post-hoc via the
@@ -1522,7 +1917,60 @@
               rejected-writes)]
       (cond-> {:command-result/events
                (into [] (concat bb-write-events rejected-write-events reference-events [completion-event]))}
-        completion-id
+        researcher-ownership-epoch
+        (assoc :command-result/cas
+               {:types #{:rlm/researcher-frontier-claimed
+                         :rlm/researcher-resume-state-saved
+                         :sheet/node-execution-completed
+                         :sheet/tree-tick-completed
+                         :sheet/tick-cancelled}
+                :tags #{[:tick tick-id]}
+                :predicate-fn
+                (fn [existing]
+                  (let [{:keys [frontier-epoch latest-max terminal?]}
+                        (reduce
+                         (fn [state event]
+                           (case (:event/type event)
+                             :rlm/researcher-frontier-claimed
+                             (if (= node-id (:node-id event))
+                               (update state :frontier-epoch max
+                                       (:ownership-epoch event))
+                               state)
+
+                             :rlm/researcher-resume-state-saved
+                             (if (= node-id (:node-id event))
+                               (update state :latest-max max
+                                       (long
+                                        (or (get-in event
+                                                    [:resume-state
+                                                     :max-observed-quantum-duration-ms])
+                                            0)))
+                               state)
+
+                             :sheet/node-execution-completed
+                             (if (= node-id (:node-id event))
+                               (assoc state :terminal? true)
+                               state)
+
+                             :sheet/tree-tick-completed
+                             (if (not= :running (:root-status event))
+                               (assoc state :terminal? true)
+                               state)
+
+                             :sheet/tick-cancelled
+                             (assoc state :terminal? true)
+
+                             state))
+                         {:frontier-epoch 0
+                          :latest-max 0
+                          :terminal? false}
+                         existing)]
+                    (and (not terminal?)
+                         (= frontier-epoch researcher-ownership-epoch)
+                         (>= (long (or max-observed-quantum-duration-ms 0))
+                             latest-max))))})
+
+        (and completion-id (not researcher-ownership-epoch))
         (assoc :command-result/cas
                {:types #{:sheet/node-execution-completed}
                 :tags #{[:tick tick-id]}
@@ -1565,16 +2013,28 @@
    the per-tree-fingerprint rolling-metrics aggregator. The new fields are
    carried in the event body — the partition-by-fingerprint read-model
    reads :tree-fingerprint from the event body directly (tag values must
-   be UUIDs in event-store-v3, so we don't tag with the string fingerprint)."
+   be UUIDs in event-store-v3, so we don't tag with the string fingerprint).
+
+   RR-23: also tags the event `[:source-tick source-tick-id]` when
+   `:source-tick-id` is present — the SAME campaign identity already
+   carried in the body (HP-2), now also a tag, so the bookend is
+   addressable by the campaign that produced it rather than only by its
+   own ephemeral Phase-2 [:sheet :tick]. This is the missing half of the
+   bookend's identity: `:sheet`/`:tick` above name the throwaway execution
+   it ran IN; `:source-tick` names the campaign it belongs TO. Omitted
+   (like the body field) when `:source-tick-id` is absent — a bookend
+   written before this slice, or one whose caller never supplied it, is
+   correctly untagged rather than tagged with a fabricated value."
   [{{:keys [sheet-id tick-id trajectory total-usage task-fingerprint
-            tree-fingerprint status duration-ms generated-tree source-sheet-id
-            source-tick-id]} :command
+            tree-fingerprint status duration-ms generated-tree
+            generated-tree-source source-sheet-id source-tick-id]} :command
     :as _ctx}]
   {:command-result/events
    [(->event
       (cond-> {:type :sheet/rlm-tree-execution-completed
-               :tags #{[:sheet sheet-id]
-                       [:tick tick-id]}
+               :tags (cond-> #{[:sheet sheet-id]
+                               [:tick tick-id]}
+                       (some? source-tick-id) (conj [:source-tick source-tick-id]))
                :body {:sheet-id sheet-id
                       :tick-id tick-id
                       :trajectory trajectory
@@ -1591,6 +2051,8 @@
         ;; optional/backward-compatible — a turn that times out before emit
         ;; carries neither, so no enrichment fires (CV-1 floor still stands).
         (some? generated-tree)   (assoc-in [:body :generated-tree] generated-tree)
+        (some? generated-tree-source)
+        (assoc-in [:body :generated-tree-source] generated-tree-source)
         (some? source-sheet-id)  (assoc-in [:body :source-sheet-id] source-sheet-id)
         ;; HP-2: the hosting TURN's tick — pairs with :source-sheet-id as the
         ;; per-occurrence execution<->classification linkage (the shared/static
@@ -1600,50 +2062,99 @@
 (defcommand :sheet fail-node-execution
   {:authorized? authenticated?}
   "Mark a node execution as failed (internal command from todo processor)."
-  [{{:keys [sheet-id tick-id node-id error duration-ms]} :command
+  [{{:keys [sheet-id tick-id node-id error duration-ms
+            researcher-expected-frontier-epoch]} :command
     :as ctx}]
   (if (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
     {:command-result/events []}
-    {:command-result/events
-     [(->event
-       {:type :sheet/node-execution-completed
-        :tags #{[:sheet sheet-id]
-                [:node node-id]
-                [:tick tick-id]}
-        :body (cond-> {:sheet-id sheet-id
-                       :tick-id tick-id
-                       :node-id node-id
-                       :status :failure}
-                error (assoc :error error)
-                duration-ms (assoc :duration-ms duration-ms))})]}))
+    (cond->
+     {:command-result/events
+      [(->event
+        {:type :sheet/node-execution-completed
+         :tags #{[:sheet sheet-id]
+                 [:node node-id]
+                 [:tick tick-id]}
+         :body (cond-> {:sheet-id sheet-id
+                        :tick-id tick-id
+                        :node-id node-id
+                        :status :failure}
+                 error (assoc :error error)
+                 duration-ms (assoc :duration-ms duration-ms))})]}
+      (some? researcher-expected-frontier-epoch)
+      (assoc
+       :command-result/cas
+       {:types #{:rlm/researcher-frontier-claimed
+                 :sheet/node-execution-completed
+                 :sheet/tree-tick-completed
+                 :sheet/tick-cancelled}
+        :tags #{[:tick tick-id]}
+        :predicate-fn
+        (fn [existing]
+          (let [{:keys [frontier-epoch terminal?]}
+                (reduce
+                 (fn [state event]
+                   (case (:event/type event)
+                     :rlm/researcher-frontier-claimed
+                     (if (= node-id (:node-id event))
+                       (update state :frontier-epoch max
+                               (:ownership-epoch event))
+                       state)
+
+                     :sheet/node-execution-completed
+                     (if (= node-id (:node-id event))
+                       (assoc state :terminal? true)
+                       state)
+
+                     :sheet/tree-tick-completed
+                     (if (not= :running (:root-status event))
+                       (assoc state :terminal? true)
+                       state)
+
+                     :sheet/tick-cancelled
+                     (assoc state :terminal? true)
+
+                     state))
+                 {:frontier-epoch 0 :terminal? false}
+                 existing)]
+            (and (not terminal?)
+                 (= frontier-epoch
+                    researcher-expected-frontier-epoch))))}))))
+
+(def ^:private default-cancellation-reason "tick cancelled")
+
+(defn- normalize-cancellation-reason [reason]
+  (if (and (string? reason) (not (str/blank? reason)))
+    reason
+    default-cancellation-reason))
 
 (defcommand :sheet cancel-tick
   {:authorized? authenticated?}
   "Cancel a running tick. Prevents further re-ticks."
   [{{:keys [sheet-id tick-id reason]} :command
     :as ctx}]
-  (if (contains? #{:completed :cancelled} (:status (rm/get-tick ctx tick-id)))
-    {:command-result/events []}
-    {:command-result/events
-     [(->event
-       {:type :sheet/tick-cancelled
-        :tags #{[:sheet sheet-id]
-                [:tick tick-id]}
-        :body {:sheet-id sheet-id
-               :tick-id tick-id
-               :reason reason}})]
-     ;; The ticks projection is asynchronous, so concurrent cancellation
-     ;; commands can all observe :running. Fence the terminal decision at the
-     ;; append boundary shared by every cancellation producer.
-     :command-result/cas
-     {:types #{:sheet/tree-tick-completed :sheet/tick-cancelled}
-      :tags #{[:tick tick-id]}
-      :predicate-fn
-      (fn [existing]
-        (not-any? #(or (= :sheet/tick-cancelled (:event/type %))
-                       (and (= :sheet/tree-tick-completed (:event/type %))
-                            (not= :running (:root-status %))))
-                  (into [] existing)))}}))
+  (let [reason (normalize-cancellation-reason reason)]
+    (if (contains? #{:completed :cancelled} (:status (rm/get-tick ctx tick-id)))
+      {:command-result/events []}
+      {:command-result/events
+       [(->event
+         {:type :sheet/tick-cancelled
+          :tags #{[:sheet sheet-id]
+                  [:tick tick-id]}
+          :body {:sheet-id sheet-id
+                 :tick-id tick-id
+                 :reason reason}})]
+       ;; The ticks projection is asynchronous, so concurrent cancellation
+       ;; commands can all observe :running. Fence the terminal decision at the
+       ;; append boundary shared by every cancellation producer.
+       :command-result/cas
+       {:types #{:sheet/tree-tick-completed :sheet/tick-cancelled}
+        :tags #{[:tick tick-id]}
+        :predicate-fn
+        (fn [existing]
+          (not-any? #(or (= :sheet/tick-cancelled (:event/type %))
+                         (and (= :sheet/tree-tick-completed (:event/type %))
+                              (not= :running (:root-status %))))
+                    (into [] existing)))}})))
 
 ;; =============================================================================
 ;; System Commands (called internally via cp/process-command, not via HTTP)
@@ -1679,7 +2190,8 @@
                         consumed-ticks (assoc :consumed-ticks consumed-ticks)
                         terminal-reason (assoc :terminal-reason terminal-reason)
                         output-keys (assoc :output-keys output-keys)
-                        block-payload (assoc :block-payload block-payload)
+                        (= :blocked root-status)
+                        (assoc :block-payload block-payload)
                         error (assoc :error error))})]
      :command-result/cas
      {:types #{:sheet/tree-tick-completed :sheet/tick-cancelled}
@@ -2128,3 +2640,251 @@
        :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
        :body (assoc (dissoc command :command/name :command/id :command/timestamp)
                     :recorded-at (or recorded-at (str (java.time.Instant/now))))})]})
+
+(defn- researcher-classification-commit-cas
+  [tick-id node-id ownership-epoch]
+  {:types #{:rlm/researcher-frontier-claimed
+            :sheet/node-execution-completed
+            :sheet/tick-cancelled
+            :sheet/tree-tick-completed
+            :ontology/task-classified
+            :ontology/task-classification-deferred
+            :rlm/researcher-classification-expired}
+   :tags #{[:tick tick-id]}
+   :predicate-fn
+   (fn [existing]
+     (let [events (into [] existing)
+           latest-epoch
+           (reduce (fn [latest event]
+                     (if (and (= :rlm/researcher-frontier-claimed
+                                  (:event/type event))
+                              (= node-id (:node-id event)))
+                       (max latest (:ownership-epoch event))
+                       latest))
+                   0
+                   events)
+           terminal?
+           (some (fn [event]
+                   (or (= :sheet/tick-cancelled (:event/type event))
+                       (and (= :sheet/tree-tick-completed (:event/type event))
+                            (not= :running (:root-status event)))
+                       (and (= :sheet/node-execution-completed
+                               (:event/type event))
+                            (= node-id (:node-id event))
+                            (= :terminal (:completion-kind event)))))
+                 events)
+           already-settled?
+           (some (fn [event]
+                   (or
+                    (and (contains? #{:ontology/task-classified
+                                      :ontology/task-classification-deferred}
+                                    (:event/type event))
+                         (= node-id (:source-node-id event))
+                         (= ownership-epoch
+                            (:researcher-ownership-epoch event)))
+                    (and (= :rlm/researcher-classification-expired
+                            (:event/type event))
+                         (= node-id (:node-id event))
+                         (= ownership-epoch (:ownership-epoch event)))))
+                 events)]
+       (and (= ownership-epoch latest-epoch)
+            (not terminal?)
+            (not already-settled?))))})
+
+(defn- prepare-researcher-classification-effect
+  [ctx effect-command]
+  (let [handler
+        (case (:command/name effect-command)
+          :sheet/record-injection sheet-record-injection
+          :ontology/record-claim-deltas
+          (requiring-resolve
+           'ai.obney.orc.ontology.core.commands/ontology-record-claim-deltas)
+          :ontology/assign-task-class
+          (requiring-resolve
+           'ai.obney.orc.ontology.core.commands/ontology-assign-task-class)
+          :ontology/record-task-classification-deferral
+          (requiring-resolve
+           'ai.obney.orc.ontology.core.commands/ontology-record-task-classification-deferral)
+          nil)]
+    (if (and handler
+             (m/validate (:command/name effect-command) effect-command))
+      (handler (assoc ctx :command effect-command))
+      {::anom/category ::anom/incorrect
+       ::anom/message
+       (str "Unsupported or invalid researcher classification effect: "
+            (:command/name effect-command))
+       :error/explain
+       (when handler
+         (me/humanize
+         (m/explain (:command/name effect-command) effect-command)))})))
+
+(defn- cas-filter-events
+  "Recreate one Grain CAS guard's filtered view from a wider transactional
+   view. Tags retain Grain's all-tags (set-subset) semantics."
+  [events {:keys [types tags]}]
+  (filter
+   (fn [event]
+     (and (or (nil? types)
+              (contains? types (:event/type event)))
+          (or (nil? tags)
+              (every? (:event/tags event) tags))))
+   events))
+
+(defn- compose-researcher-classification-cas
+  "Compose the campaign fence with every prepared effect's own CAS.
+
+   Grain evaluates one filtered CAS view per append. Classification spans the
+   tick stream and, for a fresh mint, a disjoint ontology claim-target stream,
+   so the composed guard reads the union of their event types transactionally
+   and recreates each child view before invoking its predicate."
+  [guards]
+  (let [guards (vec guards)
+        all-type-filtered? (every? :types guards)
+        selected-types (when all-type-filtered?
+                         (into #{} (mapcat :types) guards))]
+    (cond->
+     {:predicate-fn
+      (fn [existing]
+        (let [events (into [] existing)]
+          (every?
+           (fn [{:keys [predicate-fn] :as guard}]
+             (predicate-fn (cas-filter-events events guard)))
+           guards)))}
+      selected-types (assoc :types selected-types))))
+
+(def ^:private researcher-classification-outcome-command-names
+  #{:ontology/assign-task-class
+    :ontology/record-task-classification-deferral})
+
+(def ^:private researcher-classification-effect-priority
+  {:ontology/record-claim-deltas 10
+   :sheet/record-injection 20
+   :ontology/assign-task-class 100
+   :ontology/record-task-classification-deferral 100})
+
+(defn- researcher-classification-commit-error
+  [{:keys [sheet-id tick-id node-id ownership-epoch effects]}]
+  (cond
+    (not (and (uuid? sheet-id) (uuid? tick-id) (uuid? node-id)))
+    "Researcher classification commit requires sheet, tick, and node identifiers"
+
+    (not (and (integer? ownership-epoch) (pos? ownership-epoch)))
+    "Researcher classification commit requires a positive ownership epoch"
+
+    (not (vector? effects))
+    "Researcher classification commit requires an effects vector"
+
+    (not-every? map? effects)
+    "Researcher classification commit effects must be command maps"
+
+    :else
+    (let [outcomes
+          (filterv
+           #(contains? researcher-classification-outcome-command-names
+                       (:command/name %))
+           effects)
+          outcome (first outcomes)
+          injections
+          (filterv #(= :sheet/record-injection (:command/name %)) effects)
+          convergence-captures
+          (filterv #(= :ontology/record-claim-deltas (:command/name %)) effects)
+          convergence-capture (first convergence-captures)
+          fresh-mint-assignment?
+          (and (= :ontology/assign-task-class (:command/name outcome))
+               (true? (:was-fresh-mint? outcome)))]
+      (cond
+      (not= 1 (count outcomes))
+      "Researcher classification commit requires exactly one outcome"
+
+      (not= [sheet-id tick-id node-id ownership-epoch]
+            [(:source-sheet-id outcome)
+             (:source-tick-id outcome)
+             (:source-node-id outcome)
+             (:researcher-ownership-epoch outcome)])
+      "Researcher classification outcome does not belong to the committing campaign epoch"
+
+      (> (count injections) 1)
+      "Researcher classification commit accepts at most one injection record"
+
+      (not-every? #(= [sheet-id tick-id node-id]
+                      [(:sheet-id %) (:tick-id %) (:node-id %)])
+                  injections)
+      "Researcher classification injection does not belong to the committing campaign"
+
+      (> (count convergence-captures) 1)
+      "Researcher classification commit accepts at most one convergence capture"
+
+      (and fresh-mint-assignment?
+           (not= 1 (count convergence-captures)))
+      "Fresh-mint classification requires one convergence capture"
+
+      (and (not fresh-mint-assignment?) (seq convergence-captures))
+      "Only a fresh-mint assignment may publish convergence capture"
+
+      (and fresh-mint-assignment?
+           (or (not= :tree-class (:granularity convergence-capture))
+               (not= (:assigned-tree-id outcome)
+                     (:target-identifier convergence-capture))))
+      "Researcher convergence capture does not belong to the assigned tree class"
+
+        :else nil))))
+
+(defn- canonical-researcher-classification-effects
+  [effects]
+  (->> effects
+       (sort-by #(get researcher-classification-effect-priority
+                      (:command/name %)
+                      50))
+       vec))
+
+(defcommand :sheet commit-researcher-classification
+  {:authorized? authenticated?}
+  "Atomically publish a fully prepared checkpointed classification under the
+   active campaign epoch.  Timeout/cancellation and this append contend on the
+   same durable CAS, so an interruption-ignoring worker cannot publish late or
+   leave convergence/injection facts without its classification outcome."
+  [{:keys [command] :as ctx}]
+  (if-let [boundary-error (researcher-classification-commit-error command)]
+    {::anom/category ::anom/incorrect
+     ::anom/message boundary-error}
+    (let [{:keys [tick-id node-id ownership-epoch]} command
+          effects (canonical-researcher-classification-effects
+                   (:effects command))
+          results (mapv #(prepare-researcher-classification-effect ctx %) effects)
+          anomaly (some #(when (::anom/category %) %) results)
+          refusal (some #(when (:ontology/refused %) %) results)]
+      (cond
+        anomaly anomaly
+
+        refusal
+        {::anom/category ::anom/conflict
+         ::anom/message "Researcher classification convergence capture was stale"}
+
+        :else
+        {:command-result/events
+         (into [] (mapcat :command-result/events) results)
+         :command-result/cas
+         (compose-researcher-classification-cas
+          (into [(researcher-classification-commit-cas
+                  tick-id node-id ownership-epoch)]
+                (keep :command-result/cas)
+                results))}))))
+
+(defcommand :sheet expire-researcher-classification
+  {:authorized? authenticated?}
+  "Durably win the classification-timeout race. The expiration and the atomic
+   classification commit use the same CAS predicate, so exactly one becomes
+   visible even when the classification worker ignores interruption."
+  [{{:keys [sheet-id tick-id node-id ownership-epoch expired-at]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :rlm/researcher-classification-expired
+      :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+      :body {:sheet-id sheet-id
+             :tick-id tick-id
+             :node-id node-id
+             :ownership-epoch ownership-epoch
+             :expired-at expired-at}})]
+   :command-result/cas
+   (researcher-classification-commit-cas
+    tick-id node-id ownership-epoch)})

@@ -537,7 +537,7 @@ behavior with `with-mock-llm`:
                                          Version 3 adds mandatory arbitration clause."}
              :instruction "Survey the structure and key provisions of both contracts."}]
   (judges/with-mock-llm
-    (prn (eval/evaluate-trace trace))))
+    (prn (eval/evaluate-single :grounding trace))))
 ```
 
 **Real captured output** (run with `judges/with-mock-llm`; mock assigns level 4
@@ -1431,7 +1431,7 @@ mirroring [`SELF-IMPROVING-LOOP.md`](SELF-IMPROVING-LOOP.md#honest-status-today-
 | **Consolidator-driven body evolution** | **Solid** — repeated traffic on a pattern increments body version with new strengths grounded in observed execution; history is append-only |
 | **Detect-and-defer novelty handling** | **Solid** — `classify-task` retrieves on both `:tree-fingerprint` and `:tree-class`, returns a three-state `:outcome` (`:matched`/`:novel`/`:uncertain`); an uncertain (reranker-fallback) task skips assignment, a novel one bundles onto a near class or records a provisional one — no durable behavior is fabricated at runtime |
 | **Grounded domain rank** | **Solid** — the reranker reads each candidate's judge-grounded `:avoid-when`, and a deterministic contrastive penalty (ADR 0016) enforces it after the rerank so a strong shape match no longer overrides a firing domain guard |
-| **Harvest (durable promotion)** | **Designed, not yet shipped on this branch** — novel candidates accrue judge evidence on their `:tree-class` identity today; crystallizing a recurring, well-scored candidate into a named behavior is the next pulled step of the emergence loop |
+| **Harvest (durable promotion)** | **Live** — a class's recurrence is counted at verdict, never at intent; once verdict-occurrence volume clears the harvest gate, the evidence-grounded promotion of a recurring, well-scored candidate into a named behavior runs, with coherence over winning shapes measured and reported per verdict occurrence (report-only until a calibrated blocking threshold is set) |
 
 Novelty is handled by **detect-and-defer**: the runtime detects that a
 task is novel/uncertain and accrues evidence rather than fabricating a

@@ -6,7 +6,9 @@
    - Nodes are leaf (execute), sequence (run all until failure), or fallback (run until success)
    - Data flows through a shared blackboard
    - Nodes return status: success, failure, or running"
-  (:require [ai.obney.grain.schema-util.interface :refer [defschemas]]))
+  (:require [ai.obney.grain.schema-util.interface :refer [defschemas]]
+            [ai.obney.orc.orc-service.core.iteration-evidence :as iteration-evidence]
+            [ai.obney.orc.orc-service.core.researcher-resume-state :as researcher-resume-state]))
 
 ;; =============================================================================
 ;; Domain Enums
@@ -64,6 +66,138 @@
                                      [:completion-tokens {:optional true} :int]
                                      [:total-tokens {:optional true} :int]]]]
    [:output-truncated? {:optional true} :boolean]])
+
+(def researcher-resume-state-v2
+  [:and
+   [:map
+    [:version [:= 2]]
+    [:revision [:and :int [:>= 0]]]
+    [:ownership-epoch {:optional true} [:and :int [:>= 0]]]
+    [:next-iteration [:and :int [:>= 0]]]
+    [:classification-context {:optional true} :map]
+    [:sandbox-vars :map]
+    [:var-creation-times
+     [:map-of :keyword [:and :int [:>= 0]]]]
+    [:usage
+     [:map
+      [:prompt-tokens [:and :int [:>= 0]]]
+      [:completion-tokens [:and :int [:>= 0]]]
+      [:total-tokens [:and :int [:>= 0]]]]]
+    [:cumulative-tree-ms [:and :int [:>= 0]]]
+    [:iteration-attempts
+     [:map-of [:and :int [:>= 0]] [:and :int [:>= 0]]]]
+    [:campaign-started-at-ms [:and :int [:>= 0]]]
+    [:campaign-deadline-ms [:and :int [:>= 0]]]
+    ;; Additive within V2 so resume states written before RR-9 remain readable.
+    ;; New completed-quantum states carry both fields; a max-only state is
+    ;; admitted for rolling compatibility when an older writer cannot measure
+    ;; the current quantum but the command boundary preserves the prior max.
+    [:observed-quantum-duration-ms {:optional true}
+     [:and :int [:>= 0]]]
+    [:max-observed-quantum-duration-ms {:optional true}
+     [:and :int [:>= 0]]]]
+   [:fn {:error/message
+         "version-2 researcher resume state must be compact and its observed quantum duration cannot exceed its running maximum"}
+    (fn [state]
+      (let [observed (:observed-quantum-duration-ms state)
+            running-max (:max-observed-quantum-duration-ms state)]
+        (and (not (contains? state :history))
+             (not (contains? state :terminal-result))
+             (or (nil? observed)
+                 (and (some? running-max)
+                      (<= observed running-max))))))]])
+
+(def researcher-resume-state-v3
+  [:and
+   [:map
+   [:version [:= 3]]
+   [:revision [:and :int [:>= 0]]]
+   [:ownership-epoch {:optional true} [:and :int [:>= 0]]]
+   [:next-iteration [:and :int [:>= 0]]]
+   [:classification-context {:optional true} :map]
+   [:sandbox-fact-kind [:enum :full-snapshot :sandbox-delta]]
+   [:resulting-state-hash :string]
+   [:sandbox-snapshot {:optional true} :map]
+   [:predecessor-revision {:optional true} [:and :int [:>= 0]]]
+   [:predecessor-state-hash {:optional true} :string]
+   [:sandbox-puts {:optional true} :map]
+   [:sandbox-deletes {:optional true} [:set :keyword]]
+   [:var-creation-times [:map-of :keyword [:and :int [:>= 0]]]]
+   [:usage [:map
+            [:prompt-tokens [:and :int [:>= 0]]]
+            [:completion-tokens [:and :int [:>= 0]]]
+            [:total-tokens [:and :int [:>= 0]]]]]
+   [:cumulative-tree-ms [:and :int [:>= 0]]]
+   [:iteration-attempts [:map-of [:and :int [:>= 0]]
+                         [:and :int [:>= 0]]]]
+   [:campaign-started-at-ms [:and :int [:>= 0]]]
+   [:campaign-deadline-ms [:and :int [:>= 0]]]
+   [:observed-quantum-duration-ms {:optional true} [:and :int [:>= 0]]]
+   [:max-observed-quantum-duration-ms {:optional true} [:and :int [:>= 0]]]]
+   [:fn {:error/message
+         "version-3 researcher resume state must match its full-snapshot or sandbox-delta shape"}
+    researcher-resume-state/valid-v3-shape?]])
+
+(def researcher-iteration-record
+  [:and
+   [:map {:closed true}
+   [:iteration-index [:and :int [:>= 0]]]
+   [:attempt-ordinal [:and :int [:>= 0]]]
+   [:status [:enum :success :failure :timeout :blocked]]
+   [:block-reason {:optional true} :any]
+   ;; Optional only for RR-4 command compatibility: its public fixtures predate
+   ;; the RR-5 digest and the record has no version discriminator. Production
+   ;; checkpointed execution always supplies this lifecycle/evidence shape.
+   [:started-at {:optional true} :string]
+   [:completed-at {:optional true} :string]
+   [:duration-ms {:optional true} [:and :int [:>= 0]]]
+   [:code {:optional true} [:maybe :string]]
+   [:reasoning
+    {:optional true}
+    [:maybe [:string {:max iteration-evidence/reasoning-max-chars}]]]
+   [:generated-code-recorded? {:optional true} :boolean]
+   [:emitted-tree-recorded? {:optional true} :boolean]
+   [:emitted-tree {:optional true} :any]
+   ;; Exact EDN source captured before compilation. The structured tree remains
+   ;; useful for projection/query consumers, but Fressian does not preserve
+   ;; list-vs-vector syntax; this string is the restart/re-emission authority.
+   [:emitted-tree-source {:optional true} :string]
+   [:tree-fingerprint {:optional true} :string]
+   [:error-class {:optional true} :string]
+   [:error-excerpt
+    {:optional true}
+    [:string {:max iteration-evidence/error-excerpt-max-chars}]]
+   [:variable-delta
+    {:optional true}
+    [:map {:closed true}
+     [:created-keys [:vector :keyword]]
+     [:updated-keys [:vector :keyword]]
+     [:removed-keys [:vector :keyword]]]]
+   [:result-profile
+    {:optional true}
+    [:map {:closed true}
+     [:type [:enum :string :vector :map :other]]
+     [:length [:and :int [:>= 0]]]
+     [:word-count {:optional true} [:and :int [:>= 0]]]
+     [:line-count {:optional true} [:and :int [:>= 0]]]]]
+   [:stdout-profile
+    {:optional true}
+    [:map {:closed true}
+     [:type [:enum :string :vector :map :other]]
+     [:length [:and :int [:>= 0]]]
+     [:word-count {:optional true} [:and :int [:>= 0]]]
+     [:line-count {:optional true} [:and :int [:>= 0]]]]]]
+   [:fn {:error/message
+         "a recorded emitted tree requires both its durable tree and fingerprint"}
+    (fn [record]
+      (or (not (:emitted-tree-recorded? record))
+          (and (some? (:emitted-tree record))
+               (seq (:tree-fingerprint record)))))]
+   [:fn {:error/message
+         "a blocked researcher iteration must carry its opaque block reason"}
+    (fn [record]
+      (= (= :blocked (:status record))
+         (contains? record :block-reason)))]])
 
 ;; Legacy field-type enum - kept for migration from old format
 (def field-type
@@ -127,7 +261,8 @@
   [:map-of :string
    [:map {:closed true}
     [:arguments {:optional true} :any]
-    [:result {:optional true} :any]]])
+    [:result {:optional true} :any]
+    [:checkpoint-safe? {:optional true} :boolean]]])
 
 ;; =============================================================================
 ;; Domain Schemas (for use in query results)
@@ -270,7 +405,9 @@
     ;; execution by :trace-instance-id; the service uses this context to join
     ;; that instance back to its lifecycle and canonical value events.
     [:exec-context {:optional true} :map]
-    [:status [:enum :success :failure :running :skipped :partial :timeout]]
+    ;; :blocked belongs here as much as it does on the enclosing tick's own
+    ;; status: a blocked node is durable, rejoinable evidence, not an absence.
+    [:status [:enum :success :failure :running :partial :timeout :blocked]]
     [:started-at :any]
     [:completed-at {:optional true} :any]
     [:duration-ms {:optional true} :int]
@@ -352,6 +489,43 @@
 ;; =============================================================================
 ;; Command Schemas
 ;; =============================================================================
+
+(def ^:private researcher-classification-outcome-command-names
+  #{:ontology/assign-task-class
+    :ontology/record-task-classification-deferral})
+
+(defn- valid-researcher-classification-commit?
+  [{:keys [sheet-id tick-id node-id ownership-epoch effects]}]
+  (let [outcomes
+        (filterv
+         #(contains? researcher-classification-outcome-command-names
+                     (:command/name %))
+         effects)
+        outcome (first outcomes)
+        injections
+        (filterv #(= :sheet/record-injection (:command/name %)) effects)
+        convergence-captures
+        (filterv #(= :ontology/record-claim-deltas (:command/name %)) effects)
+        fresh-mint-assignment?
+        (and (= :ontology/assign-task-class (:command/name outcome))
+             (true? (:was-fresh-mint? outcome)))
+        convergence-capture (first convergence-captures)]
+    (and (= 1 (count outcomes))
+         (= sheet-id (:source-sheet-id outcome))
+         (= tick-id (:source-tick-id outcome))
+         (= node-id (:source-node-id outcome))
+         (= ownership-epoch (:researcher-ownership-epoch outcome))
+         (<= (count injections) 1)
+         (every? #(and (= sheet-id (:sheet-id %))
+                       (= tick-id (:tick-id %))
+                       (= node-id (:node-id %)))
+                 injections)
+         (if fresh-mint-assignment?
+           (and (= 1 (count convergence-captures))
+                (= :tree-class (:granularity convergence-capture))
+                (= (:assigned-tree-id outcome)
+                   (:target-identifier convergence-capture)))
+           (empty? convergence-captures)))))
 
 (defschemas commands
   {;; -------------------------------------------------------------------------
@@ -496,7 +670,16 @@
     [:tool-caller-fn {:optional true} :string]          ;; Consumer-scoped caller builder FQN
     [:model {:optional true} :string]                   ;; OpenRouter model ID
     [:max-iterations {:optional true} :int]             ;; Default 10
-    [:rlm {:optional true} [:or :boolean :map]]         ;; Enable RLM mode (true or {:debug? true})
+    [:rlm {:optional true}
+     [:and
+      [:or :boolean :map]
+      [:fn {:error/message
+            "sandbox snapshot interval must be a positive integer"}
+       (fn [rlm]
+         (or (boolean? rlm)
+             (not (contains? rlm :sandbox-snapshot-interval))
+             (let [interval (:sandbox-snapshot-interval rlm)]
+               (and (integer? interval) (pos? interval)))))]]]
     [:options {:optional true} :map]                    ;; Per-node executor/ORC LLM options
     [:timeout-ms {:optional true} :int]]                ;; D-003: total Phase-1+Phase-2 budget
 
@@ -611,18 +794,31 @@
    [:map
     [:sheet-id :uuid]
     [:tick-id :uuid]
-    [:node-id :uuid]
-    [:original-start-event-id :uuid]
+   [:node-id :uuid]
+   [:original-start-event-id :uuid]
+    [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]
     [:inputs [:map-of :keyword :any]]]
 
    :sheet/checkpoint-researcher-iteration
-   [:map
-    [:sheet-id :uuid]
-    [:tick-id :uuid]
-    [:node-id :uuid]
-    [:checkpoint :map]
-    [:resume? {:optional true} :boolean]
-    [:inputs [:map-of :keyword :any]]]
+   ;; Preserve strict version-1 validation while admitting the split version-2
+   ;; write. A partial v2 command must not fall through to the legacy handler.
+   [:or
+    [:map
+     [:sheet-id :uuid]
+     [:tick-id :uuid]
+     [:node-id :uuid]
+     [:checkpoint :map]
+     [:resume? {:optional true} :boolean]
+     [:inputs [:map-of :keyword :any]]]
+    [:map
+     [:sheet-id :uuid]
+     [:tick-id :uuid]
+     [:node-id :uuid]
+     [:resume-state researcher-resume-state-v2]
+     [:iteration-record researcher-iteration-record]
+     [:sandbox-snapshot-interval {:optional true} [:and :int [:> 0]]]
+     [:resume? {:optional true} :boolean]
+     [:inputs [:map-of :keyword :any]]]]
 
    :sheet/record-researcher-action
    [:map
@@ -635,6 +831,77 @@
     [:result :any]
     [:completed-at :string]]
 
+   :sheet/claim-researcher-frontier
+   [:map
+   [:sheet-id :uuid]
+   [:tick-id :uuid]
+   [:node-id :uuid]
+   [:budget-root-tick-id {:optional true} :uuid]
+   [:ownership-epoch [:and :int [:>= 1]]]
+    [:campaign-started-at-ms {:optional true} [:and :int [:>= 0]]]
+   [:campaign-deadline-ms {:optional true} [:and :int [:>= 0]]]
+    [:claimed-at :string]]
+
+   :sheet/expire-researcher-classification
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:expired-at :string]]
+
+   :sheet/claim-researcher-effect
+   [:map
+   [:sheet-id :uuid]
+   [:tick-id :uuid]
+   [:node-id :uuid]
+    [:budget-root-tick-id {:optional true} :uuid]
+    [:iteration-index [:and :int [:>= 0]]]
+    [:logical-action-identity :string]
+    [:attempt-identity :string]
+    [:attempt-ordinal [:and :int [:>= 0]]]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:kind [:enum :provider :tool :generated-child :behavior-mint]]
+    [:claimed-at :string]]
+
+   :sheet/reserve-provider-call
+   [:map
+    [:budget-sheet-id :uuid]
+    [:budget-tick-id :uuid]
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:campaign-sheet-id :uuid]
+    [:campaign-tick-id :uuid]
+    [:campaign-node-id :uuid]
+    [:iteration-index [:and :int [:>= 0]]]
+    [:logical-action-identity :string]
+    [:invocation-identity :string]
+    [:provider-attempt-ordinal [:and :int [:>= 0]]]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:reserved-at :string]]
+
+   :sheet/complete-researcher-effect
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:logical-action-identity :string]
+    [:attempt-identity :string]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:result :any]
+    [:resolved-at :string]]
+
+   :sheet/mark-researcher-effect-indeterminate
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:logical-action-identity :string]
+    [:attempt-identity :string]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:resolved-at :string]]
+
    ;; Internal commands (issued by todo processors)
    :sheet/complete-node-execution
    [:map
@@ -642,6 +909,7 @@
     [:tick-id :uuid]
     [:node-id :uuid]
     [:completion-id {:optional true} :uuid]
+    [:researcher-ownership-epoch {:optional true} [:and :int [:>= 1]]]
     ;; WS-2a: :blocked — a leaf raised the orc block signal (a gated tool call
     ;; needs permission). The node completes (so the tick completes and the
     ;; parent deref returns immediately) instead of the throwable escaping the
@@ -660,6 +928,10 @@
     ;; backward-compatible — present only on :blocked completions.
     [:block-payload {:optional true} :any]
     [:duration-ms {:optional true} :int]
+    [:observed-quantum-duration-ms {:optional true}
+     [:and :int [:>= 0]]]
+    [:max-observed-quantum-duration-ms {:optional true}
+     [:and :int [:>= 0]]]
     ;; Execution context + the values this node READ. The read values are
     ;; reduced to :read-keys + :input-profile before reaching the event.
     [:inputs {:optional true} [:map-of :keyword :any]]
@@ -704,6 +976,7 @@
     [:tick-id :uuid]
     [:node-id :uuid]
     [:error :string]
+    [:researcher-expected-frontier-epoch {:optional true} [:and :int [:>= 0]]]
     [:duration-ms {:optional true} :int]]
 
    ;; Records an RLM-tree node completion. Emitted by execute-leaf-node
@@ -739,7 +1012,7 @@
     [:total-usage [:map]]
     [:task-fingerprint {:optional true} [:maybe :string]]
     ;; C-2a-2: deterministic hash of canonical tree-raw S-expression.
-    ;; Stable across the inline-fn sanitization step. Drives the per-
+    ;; Stable across durable source serialization. Drives the per-
     ;; tree-fingerprint rolling-metrics aggregator. Optional for
     ;; backwards compatibility with replays of older events.
     [:tree-fingerprint {:optional true} [:maybe :string]]
@@ -751,12 +1024,13 @@
     ;; C-2a-2: wall-clock duration of Phase 2 execution. Optional for
     ;; the same reason :status is.
     [:duration-ms {:optional true} :int]
-    ;; CV-2 (ADR 0017 decision 3): the emitted worked-DSL (sanitized, pure
-    ;; data) + the SOURCE (host/classified) sheet-id. The post-emit
+    ;; CV-2 (ADR 0017 decision 3): the emitted worked-DSL plus the SOURCE
+    ;; (host/classified) sheet-id. The post-emit
     ;; enrichment processor uses source-sheet-id to resolve the tree-class
     ;; (sheet->class join) and records generated-tree as the class's
     ;; :recommended-pattern. Both optional/backward-compatible.
     [:generated-tree {:optional true} [:maybe :any]]
+    [:generated-tree-source {:optional true} [:maybe :string]]
     [:source-sheet-id {:optional true} [:maybe :uuid]]
     ;; HP-2: the hosting TURN's tick. :source-sheet-id alone cannot attribute
     ;; an execution to a classification occurrence — the host sheet is a
@@ -908,7 +1182,23 @@
     [:baseline-policy-id :string]
     [:selection-propensity :double]
     [:rendered-block {:optional true} :string]
-    [:recorded-at {:optional true} :string]]})
+    [:recorded-at {:optional true} :string]]
+
+   ;; RR-9: one internal atomic append for all durable facts produced while a
+   ;; checkpointed classification is prepared.  Effect command bodies remain
+   ;; internal data and are interpreted by the handler under the campaign CAS.
+   :sheet/commit-researcher-classification
+   [:and
+    [:map
+     [:sheet-id :uuid]
+     [:tick-id :uuid]
+     [:node-id :uuid]
+     [:ownership-epoch [:and :int [:>= 1]]]
+     [:effects [:vector [:map [:command/name :keyword]]]]]
+    [:fn
+     {:error/message
+      "classification commit requires one outcome bound to its sheet, tick, node, and epoch"}
+     valid-researcher-classification-commit?]]})
 
 ;; =============================================================================
 ;; Event Schemas
@@ -1180,6 +1470,10 @@
    ;; Execution Events
    ;; -------------------------------------------------------------------------
 
+   :sheet/recovery-scan-triggered
+   [:map
+    [:triggered-at :string]]
+
    :sheet/tree-tick-started
    [:map
     [:sheet-id :uuid]
@@ -1208,7 +1502,10 @@
     ;; Durable idempotency key for restart recovery. A resumed start points to
     ;; the exact abandoned start it supersedes; repeat recovery scans therefore
     ;; do not enqueue the same frontier twice.
-    [:resumed-from-event-id {:optional true} :uuid]]
+    [:resumed-from-event-id {:optional true} :uuid]
+    ;; Candidate ownership is carried only by a recovered checkpointed
+    ;; researcher start. Ordinary starts and leaf/delegate recovery omit it.
+    [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]]
 
    :sheet/ephemeral-evaluations-recorded
    [:map
@@ -1228,6 +1525,7 @@
     [:tick-id :uuid]
     [:node-id :uuid]
     [:completion-id {:optional true} :uuid]
+    [:researcher-ownership-epoch {:optional true} [:and :int [:>= 1]]]
     ;; WS-2a: :blocked — see :sheet/complete-node-execution.
     [:status [:enum :success :failure :running :tree-generated :partial :timeout :blocked]]
     ;; Shape, not values — the values are durable in this node's
@@ -1256,6 +1554,10 @@
     ;; WS-2a: OPAQUE block payload, present only on :blocked completions.
     [:block-payload {:optional true} :any]
     [:duration-ms {:optional true} :int]
+    [:observed-quantum-duration-ms {:optional true}
+     [:and :int [:>= 0]]]
+    [:max-observed-quantum-duration-ms {:optional true}
+     [:and :int [:>= 0]]]
     ;; Retains ONLY namespaced execution-context keys (map-each correlation).
     ;; Read VALUES live in :read-keys / :input-profile / :read-sources above.
     [:inputs {:optional true} [:map-of :keyword :any]]
@@ -1339,6 +1641,9 @@
     ;; CV-2 (ADR 0017 decision 3): emitted worked-DSL + source (host) sheet-id.
     ;; Optional/backward-compatible — replayed older bookends carry neither.
     [:generated-tree {:optional true} [:maybe :any]]
+    ;; Exact pre-compilation EDN text. Unlike :generated-tree, this preserves
+    ;; list syntax through codecs that decode every Java List as a vector.
+    [:generated-tree-source {:optional true} [:maybe :string]]
     [:source-sheet-id {:optional true} [:maybe :uuid]]
     ;; HP-2: the hosting TURN's tick — the per-occurrence half of the
     ;; [source-sheet-id source-tick-id] execution<->classification linkage.
@@ -1591,6 +1896,7 @@
     [:tree-id :uuid]
     [:execution-id :uuid]
     [:raw-dsl :any]                              ;; S-expr literal from LLM (serializable)
+    [:source-edn {:optional true} :string]        ;; exact pre-compilation source
     [:iteration-count {:optional true} :int]    ;; How many REPL iterations
     [:input-metadata {:optional true} [:map
                                        [:size :int]
@@ -1650,6 +1956,27 @@
     [:yielded? {:optional true} :boolean]
     [:checkpointed-at :string]]
 
+   :rlm/researcher-iteration-recorded
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:iteration-index :int]
+    [:attempt-ordinal :int]
+    [:iteration-record researcher-iteration-record]
+    [:recorded-at :string]]
+
+   :rlm/researcher-resume-state-saved
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:revision :int]
+    [:next-iteration :int]
+    [:resume-state [:or researcher-resume-state-v2 researcher-resume-state-v3]]
+    [:yielded? {:optional true} :boolean]
+    [:saved-at :string]]
+
    :rlm/researcher-action-completed
    [:map
     [:sheet-id :uuid]
@@ -1660,6 +1987,78 @@
     [:iteration :int]
     [:result :any]
     [:completed-at :string]]
+
+   :rlm/researcher-frontier-claimed
+   [:map
+    [:sheet-id :uuid]
+   [:tick-id :uuid]
+   [:node-id :uuid]
+   [:ownership-epoch [:and :int [:>= 1]]]
+    [:campaign-started-at-ms {:optional true} [:and :int [:>= 0]]]
+   [:campaign-deadline-ms {:optional true} [:and :int [:>= 0]]]
+    [:claimed-at :string]]
+
+   :rlm/researcher-classification-expired
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:expired-at :string]]
+
+   :rlm/researcher-effect-claimed
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:iteration-index [:and :int [:>= 0]]]
+    [:logical-action-identity :string]
+    [:attempt-identity :string]
+    [:attempt-ordinal [:and :int [:>= 0]]]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:kind [:enum :provider :tool :generated-child :behavior-mint]]
+    [:status [:= :claimed]]
+    [:claimed-at :string]
+    [:resolved-at [:maybe :string]]]
+
+   :sheet/provider-call-reserved
+   [:map
+    [:budget-sheet-id :uuid]
+    [:budget-tick-id :uuid]
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:campaign-tick-id :uuid]
+    [:campaign-node-id :uuid]
+    [:iteration-index [:and :int [:>= 0]]]
+    [:logical-action-identity :string]
+    [:invocation-identity :string]
+    [:provider-attempt-ordinal [:and :int [:>= 0]]]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:reserved-at :string]]
+
+   :rlm/researcher-effect-completed
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:logical-action-identity :string]
+    [:attempt-identity :string]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:status [:= :completed]]
+    [:result :any]
+    [:resolved-at :string]]
+
+   :rlm/researcher-effect-indeterminate
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:logical-action-identity :string]
+    [:attempt-identity :string]
+    [:resolved-by-ownership-epoch [:and :int [:>= 1]]]
+    [:status [:= :indeterminate]]
+    [:resolved-at :string]]
 
    ;; -------------------------------------------------------------------------
    ;; CC-13 — Injection Record (:intervention/* ledger, NARROW SUBSET)
@@ -2000,7 +2399,6 @@
                       [:execution-count :int]
                       [:success-count :int]
                       [:failure-count :int]
-                      [:skip-count :int]
                       [:success-rate :double]
                       [:avg-duration-ms {:optional true} :double]
                       [:p50-duration-ms {:optional true} :int]

@@ -190,6 +190,11 @@ and what does *not*:**
   references the prepend surfaces *inform* (not gate) when the model uses
   it. References inform new and adjacent behaviors regardless of whether a
   match cleared threshold.
+- For a checkpointed campaign, classification runs **once per campaign**,
+  not once per quantum: it happens before the first iteration, and a
+  resumed quantum reuses the carried classification rather than
+  re-deriving it, so one campaign contributes exactly one occurrence to
+  every counter that reads it.
 
 ---
 
@@ -280,7 +285,7 @@ rough on the current loop.
 | **Solid** (use without hesitation) | **Rough** (know before you commit) |
 |---|---|
 | In-distribution classification — tasks resembling shipped seed patterns (legal-issue-detection, contract-comparison, risk-analysis, chunked-extraction) match at confidence 1.00; prepend carries the full worked-example DSL | Hierarchical seed gaps — the abstract behavioral seeds describe shape; domain-specialized children accrue from evidence rather than shipping pre-authored |
-| Recursive RLM with drill-down — `(tree-detail)`, `(tree-failures)`, `(node-output node-id)` all work; model recovers mid-tree failures via focused single-node resume trees without rebuilding the whole pipeline | Harvest (durable promotion) is the *designed* terminus of the emergence loop and not yet shipped on this branch — novel candidates accrue evidence today; crystallizing a recurring, well-scored candidate into a named behavior is the next pulled step |
+| Recursive RLM with drill-down — `(tree-detail)`, `(tree-failures)`, `(node-output node-id)` all work; model recovers mid-tree failures via focused single-node resume trees without rebuilding the whole pipeline | Harvest (durable promotion) is live — a class's recurrence is counted at verdict, never at intent, and coherence over winning shapes is measured and reported per verdict occurrence; a calibrated blocking threshold on that measure remains a later, data-driven decision |
 | Detect-and-defer + grounded domain rank — `classify-task` retrieves on the instruction-aware `:tree-class` axis, an OOD task is classified *novel*/*uncertain* (not force-minted), and the reranker reads + a deterministic contrastive penalty enforces each candidate's judge-grounded `:avoid-when` | |
 | Consolidator-driven body evolution — repeated traffic on a pattern increments the body version with new strengths grounded in observed execution; history is append-only | |
 
@@ -510,13 +515,34 @@ and 0015):
   the band records a provisional class of its own.
 
 So when no behavior fits, the **tree the model emits IS the candidate**.
-It accrues judge evidence on its `:tree-class` identity (the same counter
-the consolidator reads), and the recurring, well-scored candidates are
-the raw material for **harvest** — the evidence-grounded promotion of a
-recurring candidate into a named, durable behavior. Harvest is the
-designed terminus of this loop (ADR 0015) and is the path that *creates*
-durable behaviors; it is pulled when there is volume to harvest, and is
-not yet shipped on this branch.
+It accrues judge evidence on its `:tree-class` identity, and the class's
+**recurrence is counted at outcome, never at intent**: each campaign's
+terminal verdict (`:success`, `:failure`, `:timeout` or `:blocked` — the
+first terminal completion in durable order, whatever its status; a
+cancelled campaign completes nothing and records no verdict) records one
+verdict occurrence, and that verdict occurrence — not the classification
+that preceded it — is what the consolidation counters, the recent-
+occurrence window and the harvest gate all read. The recurring,
+well-scored verdict occurrences are the raw material for **harvest** —
+the evidence-grounded promotion of a recurring candidate into a named,
+durable behavior. Harvest is live: it is the designed terminus of this
+loop and is the path that *creates* durable behaviors, gated on
+verdict-occurrence volume rather than raw classification count.
+
+Convergence toward harvest is measured over **winning shapes** — the
+shape that carried a successful campaign to success, one per successful
+campaign — and is **report-only** today: the ratio of distinct
+successful terminal shapes to successful campaigns is durably recorded
+per verdict occurrence so the observed distribution can be read back
+before any threshold is made load-bearing, but it does not yet block
+promotion. The reference a class offers is a **worked pattern** recorded
+per shape and by outcome, not merely by recency — a successful bookend
+reinforces its exact shape's strength claim, a corroborating campaign
+verdict counts additively toward that shape's `:verdict-corroborations`,
+and any other outcome records the shape as a weakness that never
+displaces a proven one. R-Inject renders the winning pattern whole, never
+truncated, with its declared key bindings — see
+[`RLM-GUIDE.md`](RLM-GUIDE.md#pattern-injection-via-r-inject-auto-classify).
 
 The references the prepend surfaces **inform** the design — they do not
 gate it. The behavioral `(mint-behavior! ...)` primitive remains

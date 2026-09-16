@@ -282,10 +282,12 @@ There is no `:score` field in the typed output fields. `:score` is injected by
 
 ## 4. Structured feedback envelope
 
-### `evaluate-trace` result: `ScoreWithFeedback`
+### A judge's result: `ScoreWithFeedback`
 
-`eval/evaluate-trace` returns a `ScoreWithFeedback` record — the aggregate result across
-all four dimension judges.
+Each judge returns a `ScoreWithFeedback`-shaped map (score, feedback, dimensions). The
+synchronous all-judges aggregate `evaluate-trace` was retired; cross-judge aggregation is the
+composite score the event-driven runtime emits per completion. The prototype below therefore
+runs one judge, `evaluate-single`, rather than the retired aggregate.
 
 **Real prototype output** (run with `judges/with-mock-llm` against a contract-analysis
 trace; mock assigns level 4 to each dimension → score 0.75):
@@ -299,7 +301,7 @@ clj -M:dev -e '
              :outputs {:document-survey "Both contracts are governed by California law. Version 3 adds arbitration clause."}
              :instruction "Survey the structure and key differences between contract versions."}]
   (judges/with-mock-llm
-    (prn (eval/evaluate-trace trace))))
+    (prn (eval/evaluate-single :grounding trace))))
 ```
 
 ```
@@ -330,7 +332,7 @@ change after the fact. Deterministic judges may omit the field.
 
 ### Per-judge result shape (grounding example)
 
-When a judge runs individually (`evaluate-single` or inside `evaluate-all`), it returns:
+When a judge runs (`evaluate-single`, or inside the event-driven runtime), it returns:
 
 ```clojure
 ;; Field order shown as generated (reasoning before level — enforced by output-field order)
@@ -479,9 +481,9 @@ latency per use.
   :check {:key :quality-score :op :gte :value 0.75})
 ```
 
-For a built-in LLM judge used in-pipeline, wire `evaluate-trace` as the fn body of a
-`sheet/code` node that writes `:quality-score` to the blackboard, then gate with
-`sheet/condition` as above.
+For a built-in LLM judge used in-pipeline, wire `evaluate-single` with the judge you want as
+the fn body of a `sheet/code` node that writes `:quality-score` to the blackboard, then gate
+with `sheet/condition` as above.
 
 This is a different deployment of the same judge scoring logic. The judge function itself
 does not change.

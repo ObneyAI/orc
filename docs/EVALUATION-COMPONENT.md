@@ -25,6 +25,19 @@ finished, as a side effect of the event log. Your `:execute` call returns
 exactly what it returned before; the score lands in the event store a moment
 later.
 
+**What a judge is actually told** (this is the contract the runtime keeps, so
+you can predict a score): its `source`/`inputs` are the values of the node's
+declared `:reads`, resolved from the durable value log for that exact execution
+— not the raw event payload, which carries only execution context. Its
+`response` is the node's declared output fields as one JSON object, one value
+per field, and the judge is told that the field set was fixed by your typed
+blackboard, so it grades the values and never the object shape. Its task is the
+node's `:instruction` when it has one; a node without one (a `code` node, for
+example) is judged against the judge's declared `:criteria`, or, failing that,
+against a sentence naming its declared `:writes` — never an empty task. And a
+`:criteria` string you declare in `sheet/judges` replaces the built-in judge's
+"what to evaluate" verbatim; the stance and scoring scale stay the built-in ones.
+
 The rest of this section walks you from the tree you already have, in the
 smallest possible steps, to a tree whose every interesting node is being graded
 — and whose scores feed ORC's automatic-improvement machinery.
@@ -224,7 +237,7 @@ A judge is **one evaluation capability** — not inherently a pass/fail gate. Th
 The judge fires out-of-band, after node execution, as a side effect of the event log. The `:evaluation/on-node-execution-completed` processor subscribes to `:sheet/node-execution-completed` events, fires attached judges in parallel via futures, and emits one `:judge/score-emitted` event per judge. Scores feed the consolidator → Living Descriptions body → GEPA reflective dataset. This is the self-improving loop path. Zero overhead when the Living Description opt-in flag is off.
 
 **Mode B — In-pipeline behavior-tree gate**
-The judge runs inline inside the workflow execution and its verdict directly gates flow. Wire `evaluate-trace` as the fn body of a `sheet/code` node that writes `:quality-score` to the blackboard, then gate with a `sheet/condition` node on the returned score. This adds one LLM call's worth of latency per qualifying node. The judge function itself does not change — only its deployment site differs.
+The judge runs inline inside the workflow execution and its verdict directly gates flow. Wire a per-judge call — `evaluate-single` with the judge you want, for example `:grounding` — as the fn body of a `sheet/code` node that writes `:quality-score` to the blackboard, then gate with a `sheet/condition` node on the returned score. This adds one LLM call's worth of latency per qualifying node. The judge function itself does not change — only its deployment site differs. (There is no synchronous "run every judge and aggregate" entry point: aggregation across judges is the live path's composite score, emitted by the event-driven runtime.)
 
 Improving the built-in judge benefits both modes simultaneously. For the full event-flow diagram, processor wiring detail, and code patterns for each mode, see [JUDGE-ARCHITECTURE.md § 6 — Two deployment modes](JUDGE-ARCHITECTURE.md#6-two-deployment-modes).
 
@@ -241,14 +254,18 @@ Improving the built-in judge benefits both modes simultaneously. For the full ev
    :response "The gym is open Monday-Friday 6am-10pm."
    :instruction "Answer based only on the provided FAQ."})
 
-;; 3. Evaluate with mock LLM (no API calls - for testing)
+;; 3. Run one judge with the mock LLM (no API calls - for testing)
 (judges/with-mock-llm
-  (eval/evaluate-trace trace))
-;; => {:score 0.82, :feedback "...", :dimensions [...]}
+  (eval/evaluate-single :grounding trace))
+;; => {:score 0.75, :feedback "...", ...}
 
-;; 4. Evaluate with real LLM
-(eval/evaluate-trace trace)
-;; => {:score 0.85, :feedback "Well grounded...", :dimensions [...]}
+;; 4. Run one judge with the real LLM
+(eval/evaluate-single :grounding trace)
+;; => {:score 0.85, :feedback "Well grounded...", ...}
+
+;; Every judge at once, with aggregation, is the event-driven path: attach judges to
+;; the workflow's nodes and read the :judge/score-emitted events (see "Workflow
+;; Integration" below). There is no synchronous all-judges call.
 ```
 
 ## Overview
@@ -405,6 +422,12 @@ Judges are defined at the workflow level using `sheet/judges`, paralleling how `
 | **Discoverability** | Easy to see all evaluation standards for a workflow |
 
 ### Writing Effective Criteria
+
+A declared `:criteria` does two things on the live path: it replaces the
+built-in judge's "WHAT TO EVALUATE" section verbatim (stance and scale are
+unchanged), and for a node that has no `:instruction` it is also the task the
+judge is told the producer had. Write it as the standard you would hand a
+reviewer, not as a description of the judge.
 
 **Be specific and measurable:**
 ```clojure
@@ -638,7 +661,7 @@ Adversarial coverage auditor: enumerates the distinct aspects the task required,
 
 Pure-Clojure heuristic that grades the SHAPE of a tree the model produced (via `:generated-tree-raw` in the host's writes). Looks for patterns like declared `:output-schemas`, presence of `:aggregate` for deterministic merges, `:max-concurrency` on `:map-each`, etc. Returns a score reflecting "how well-formed is this tree as a behavior tree?"
 
-This judge is **deterministic** — it keeps its `[0,1]` shape directly (no discrete `Scale`, no LLM call, so `get-tier1-rubric` returns `nil` for it). Fires alongside the 4 LLM judges when Living Description is on. No LLM cost. Also fires per `:rlm/tree-generated` event (each intermediate Phase-1 emit-tree iteration), not just on terminal completion.
+This judge is **deterministic** — it keeps its `[0,1]` shape directly (no discrete `Scale`, no LLM call, so `get-tier1-rubric` returns `nil` for it). Fires alongside the 4 LLM judges when Living Description is on. No LLM cost. Also fires on the campaign's single `:rlm/tree-generated` event — emitted once per campaign at the terminal boundary, carrying the last tree the model produced — in addition to the terminal completion; intermediate trees' shapes live on the iteration records, not on that event.
 
 **Source:** `components/evaluation/src/.../core/heuristic_structural.clj`
 
@@ -648,38 +671,10 @@ This judge is **deterministic** — it keeps its `[0,1]` shape directly (no disc
 
 ### High-Level Functions
 
-#### `evaluate-trace`
-
-Evaluate a single trace with all judges.
-
-```clojure
-(eval/evaluate-trace trace-data)
-(eval/evaluate-trace trace-data {:judges [:grounding :reasoning]})
-```
-
-**Args:**
-- `trace-data`: Map with `:inputs`, `:response`, `:instruction`
-- `options` (optional):
-  - `:judges` - Vector of judge keys to run (default: all four)
-
-**Returns:** `ScoreWithFeedback` record
-
-#### `evaluate-traces`
-
-Evaluate multiple traces with statistics.
-
-```clojure
-(eval/evaluate-traces [trace1 trace2 trace3])
-```
-
-**Returns:**
-```clojure
-{:results [ScoreWithFeedback, ...]
- :avg-score 0.78
- :min-score 0.65
- :max-score 0.92
- :low-scoring [traces with score < 0.7]}
-```
+The synchronous `evaluate-trace` / `evaluate-traces` entry points were retired: nothing in the
+engine called them, and the batch form carried a hardcoded low-score threshold. Judges run
+either per judge (`evaluate-single`, below) or through the event-driven runtime, which emits one
+`:judge/score-emitted` per judge and one composite per completion.
 
 ### Judge Functions
 
@@ -694,17 +689,11 @@ Run a single judge on a trace.
 (judges/evaluate-single :completeness trace-data)
 ```
 
-#### `evaluate-all`
+#### `evaluate-all` — retired
 
-Run all judges and aggregate.
+The synchronous all-judges aggregate was retired with `evaluate-trace`; aggregation across judges
+is the live runtime's composite score.
 
-```clojure
-(judges/evaluate-all trace-data)
-;; => {:aggregate-score 0.78
-;;     :feedback-summary "Good (78%): 1 dimension(s) need improvement..."
-;;     :dimensions [{:name "Grounding" :score 0.8 ...} ...]
-;;     :raw-results {:grounding {...} :reasoning {...} ...}}
-```
 
 ### Trace Extraction
 
@@ -849,10 +838,10 @@ Use mock mode for testing without LLM API calls:
 ```clojure
 ;; Mock mode - no API calls
 (judges/with-mock-llm
-  (judges/evaluate-all trace-data))
+  (judges/evaluate-single :grounding trace-data))
 
 ;; Real mode (default) - makes LLM calls
-(judges/evaluate-all trace-data)
+(judges/evaluate-single :grounding trace-data)
 ```
 
 ### Provider and Model Configuration
@@ -866,12 +855,12 @@ judges/*judge-model*     ; => "google/gemini-2.5-flash"
 (judges/with-judge-config
   {:provider :anthropic
    :model "claude-3-haiku-20240307"}
-  (judges/evaluate-all trace-data))
+  (judges/evaluate-single :grounding trace-data))
 
 ;; Or override globally
 (binding [judges/*judge-provider* :anthropic
           judges/*judge-model* "claude-3-haiku-20240307"]
-  (judges/evaluate-all trace-data))
+  (judges/evaluate-single :grounding trace-data))
 ```
 
 ### Custom Rubrics and Workflow Judges
@@ -976,9 +965,9 @@ Or reference a custom evaluation sheet via the `:custom` judge type:
    :response "The gym is open Monday-Friday 6am-10pm."
    :instruction "Answer based only on the provided FAQ."})
 
-;; Quick evaluation with mock LLM
+;; Quick single-judge check with the mock LLM
 (judges/with-mock-llm
-  (judges/evaluate-all trace))
+  (judges/evaluate-single :grounding trace))
 ```
 
 ### Intermediate: Quick Grounding Check
@@ -1019,36 +1008,18 @@ Or reference a custom evaluation sheet via the `:custom` judge type:
 (def results
   (for [trace traces]
     (let [eval-data (eval/format-trace-for-evaluation trace)
-          result (judges/evaluate-all eval-data)]
+          result (judges/evaluate-single :grounding eval-data)]
       {:trace-id (:trace-id trace)
-       :score (:aggregate-score result)
-       :feedback (:feedback-summary result)})))
+       :score (:score result)
+       :feedback (:feedback result)})))
 
 ;; Find low-scoring traces for analysis
 (filter #(< (:score %) 0.7) results)
 ```
 
-### Production: Batch Evaluation with Statistics
+### Production: Batch Evaluation with Statistics — retired
 
-```clojure
-(require '[ai.obney.orc.evaluation.interface :as eval])
-
-;; Evaluate many traces
-(def traces [...]) ; your trace data
-
-(def batch-result (eval/evaluate-traces traces))
-
-;; Summary statistics
-(println "Average score:" (:avg-score batch-result))
-(println "Score range:" (:min-score batch-result) "-" (:max-score batch-result))
-(println "Low-scoring traces:" (count (:low-scoring batch-result)))
-
-;; Analyze failure patterns
-(doseq [trace (:low-scoring batch-result)]
-  (println "---")
-  (println "Score:" (:score trace))
-  (println "Issues:" (:feedback trace)))
-```
+The synchronous batch evaluator (`evaluate-traces`) was retired: it had no caller and carried a hardcoded low-score threshold. Batch statistics over judged executions come from the emitted `:judge/score-emitted` and `:judge/composite-score-computed` events (see `get-judge-scores` and the read models above).
 
 ### ORC Sheet: Full Workflow Integration
 

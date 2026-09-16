@@ -62,7 +62,24 @@
    [:confidence              :double]
    [:evidence-count          :int]
    [:first-observed-at       {:optional true} :string]
-   [:last-reinforced-at      {:optional true} :string]])
+   [:last-reinforced-at      {:optional true} :string]
+   ;; RR-20: only present (and only > 0) when the underlying claim has been
+   ;; reinforced by at least one RR-19 durable campaign verdict — the
+   ;; selector's preference signal (`harvest/best-recommended-pattern`).
+   ;; Additive/optional so every existing consumer sees byte-identical
+   ;; shapes for every OTHER field. Deliberately NOT forwarded through
+   ;; `interface/compact-strengths` — the reranker boundary stays terse.
+   [:verdict-corroborations  {:optional true} :int]
+   ;; RR-22 (`OfferedPatternsAreUsable`): only present on a :recommended-
+   ;; pattern that parses (`read-models/pattern-key-bindings`) — the pattern's
+   ;; declared key bindings, so binding it to a new task is a mechanical
+   ;; rebind rather than a re-derivation. Additive/optional, strengths-only
+   ;; (weaknesses' :recommended-alternative is prose, not a pattern).
+   ;; Deliberately NOT forwarded through `interface/compact-strengths` — the
+   ;; reranker boundary stays terse, same as :verdict-corroborations.
+   [:pattern-reads           {:optional true} [:vector :keyword]]
+   [:pattern-writes          {:optional true} [:vector :keyword]]
+   [:pattern-outputs         {:optional true} [:vector :keyword]]])
 
 (def description-body
   "The shared body shape across all three description-updated event types.
@@ -206,12 +223,45 @@
      :emitted-artifact          a verbatim artifact the engine produced and
                                 recorded — CV-2's emitted worked-DSL. Asserts
                                 that the tree was emitted, not that it was good.
+     :emitted-artifact-outcome  RR-20: a verbatim artifact the engine produced
+                                AND recorded AGAINST the engine's own
+                                deterministic execution-outcome (the Phase-2
+                                bookend's `:status`) — the shape a campaign
+                                SUCCEEDED or FAILED with. `:emitted-artifact`
+                                alone is honest only for 'this was emitted';
+                                once a writer conditions on outcome to decide
+                                WHICH section of the claim set a shape lands
+                                in (`:strength` = proven worked pattern,
+                                `:weakness` = failed shape), the declaration
+                                must name that stronger, still-mechanical fact.
+                                It is still not a judge's qualitative verdict —
+                                :status is the engine's own deterministic
+                                report, not an LLM judgement — so it earns
+                                admission exactly like the other mechanical
+                                bases and nothing more.
+     :campaign-verdict          RR-20: the delta rests on RR-19's DURABLE
+                                campaign verdict (`:ontology/tree-class-
+                                occurrence-recorded` `:verdict :success`) —
+                                distinct from `:emitted-artifact-outcome`
+                                (the Phase-2 bookend's OWN status, asserted
+                                by the writer that CREATES a shape claim).
+                                `:campaign-verdict` is asserted only by the
+                                REINFORCEMENT this writer's occurrence-
+                                reactive corroboration issues — a SEPARATE,
+                                LATER, still-mechanical fact (the whole
+                                campaign, not just this one Phase-2
+                                execution, reached :success) — and is what
+                                `:verdict-corroborations` counts. Still no
+                                occurrence named on the delta itself (the
+                                guard's `:episodes` stay empty), so it buys
+                                admission and nothing else, exactly like
+                                every other mechanical basis.
      :authored                  designer-written corpus knowledge (CC-9d).
                                 Asserts AUTHORSHIP — a true, auditable statement
                                 about provenance.
 
    WHAT A DECLARATION BUYS: admission past the guard, and — for `:authored`
-   alone — enforcement. The four MECHANICAL bases buy admission and nothing
+   alone — enforcement. The MECHANICAL bases buy admission and nothing
    else: such a delta names no occurrence, so it contributes no post-guard
    episode, so CC-7 cannot validate the claim and CC-9's gate cannot let it
    enforce, at any level of accumulated support. Mechanical knowledge is visible
@@ -234,7 +284,7 @@
    the reflection LLM cannot reach it: the consolidator STAMPS
    `:judged-occurrences` on every model-proposed operation in code."
   [:enum :judged-occurrences :legacy-corpus :classification-signature
-   :emitted-artifact :authored])
+   :emitted-artifact :emitted-artifact-outcome :campaign-verdict :authored])
 
 (def claim-operation
   "The complete set of operations a consolidation may express over a claim
@@ -310,6 +360,13 @@
    [:contradicting-episodes [:vector episode-ref]]
    [:legacy-provenance      :boolean]
    [:evidence-basis         {:optional true} [:maybe evidence-basis]]
+   ;; RR-20: how many times a REINFORCEMENT delta declaring
+   ;; `:evidence-basis :campaign-verdict` has landed on this claim — i.e.
+   ;; how many distinct RR-19 durable campaign verdicts corroborate this
+   ;; shape, as opposed to merely re-emitting the same bookend. Optional and
+   ;; additive: absent means 0 (never corroborated), exactly like every
+   ;; claim recorded before this slice. `reinforce-claim` is the only writer.
+   [:verdict-corroborations {:optional true} :int]
    [:created-at             :string]
    [:updated-at             :string]])
 
@@ -627,6 +684,12 @@
     [:reasoning         :string]
     [:classified-at     :string]
     [:was-fresh-mint?   :boolean]
+    ;; RR-9: present for checkpointed campaign classifications so the
+    ;; durable decision can be tied to the frontier epoch that accepted it.
+    [:researcher-ownership-epoch {:optional true} [:and :int [:>= 1]]]
+    ;; RR-18: the exact prompt-classification payload is committed with the
+    ;; outcome so recovery before the first researcher checkpoint can reuse it.
+    [:classification-context {:optional true} :map]
     ;; C-2d-2: when the walk-down classifier descends from an abstract
     ;; parent OR fresh-mints under a matched ancestor, the parent's
     ;; tree-id is carried here so the concept-graph projector can wire
@@ -659,7 +722,50 @@
     ;; CC-23: the assigned identity's provenance — WHICH branch produced
     ;; :assigned-tree-id. CLOSED set (the CC-28 idiom): a new provenance
     ;; must be added here deliberately. OPTIONAL for pre-CC-23 replay.
-    [:assigned-via {:optional true} [:enum :match :bundle :walk-down :mint]]]
+   [:assigned-via {:optional true} [:enum :match :bundle :walk-down :mint]]]
+
+   ;; RR-19: one explicit recurrence fact for a classified researcher
+   ;; campaign that reached a behavior verdict. Infrastructure endings are
+   ;; deliberately absent from the closed verdict set.
+   :ontology/tree-class-occurrence-recorded
+   [:map
+    [:source-sheet-id :uuid]
+    [:source-tick-id :uuid]
+    [:source-node-id :uuid]
+    [:source-completion-event-id :uuid]
+    [:assigned-tree-id :uuid]
+    [:verdict [:enum :success :failure :timeout]]
+    [:recorded-at :string]]
+
+   ;; RR-21 (rule ReportSuccessfulShapeCoherence): the observed winning-shape
+   ;; coherence distribution, recorded on EVERY verdict occurrence (no
+   ;; threshold) so a calibrated promotion threshold can eventually be chosen
+   ;; from data. :ratio is nil when :status is :not-measurable — a successful
+   ;; campaign count with no recorded winning shape is absence of evidence,
+   ;; never a verdict either way. One event per [:tree-class :source-sheet-id
+   ;; :source-tick-id] occurrence (idempotent replay via the defcommand's CAS).
+   ;;
+   ;; :source-occurrence-event-id (inspection finding, fixed) is the
+   ;; triggering :ontology/tree-class-occurrence-recorded event's OWN
+   ;; :event/id (UUIDv7, durably time-ordered) — :verdict-occurrences and the
+   ;; coherence counts/ratio are bounded to it (durable order, never the
+   ;; store's current state at processing time), so this report is a measure
+   ;; of THIS occurrence's position, not of whatever has landed by the time a
+   ;; possibly-backlogged handler gets to it.
+   :ontology/shape-coherence-reported
+   [:map
+    [:tree-class :uuid]
+    [:source-sheet-id :uuid]
+    [:source-tick-id :uuid]
+    [:source-occurrence-event-id :uuid]
+    [:verdict-occurrences :int]
+    [:successful-campaigns :int]
+    [:successful-shape-observations :int]
+    [:distinct-successful-shapes :int]
+    [:ratio [:maybe number?]]
+    [:status [:enum :qualified :rejected :not-measurable]]
+    [:maximum-shape-ratio number?]
+    [:recorded-at :string]]
 
    ;; -------------------------------------------------------------------------
    ;; CC-23 — Task-classification deferral event (DeferralIsVisible)
@@ -694,7 +800,9 @@
     [:fallback-source   [:enum :colbert-fallback :timeout-fallback]]
     [:ranked-candidates ranked-candidates]
     [:reasoning         :string]
-    [:deferred-at       :string]]
+    [:deferred-at       :string]
+    [:researcher-ownership-epoch {:optional true} [:and :int [:>= 1]]]
+    [:classification-context {:optional true} :map]]
 
    ;; -------------------------------------------------------------------------
    ;; R05c — Behavioral subtree minting (audit-trail event)
@@ -720,10 +828,30 @@
     [:provenance         [:enum :agent-minted :human-authored :harvested]]
     [:minted-by-sheet-id {:optional true} :uuid]
     [:minted-by-tick-id  {:optional true} :uuid]
+    [:logical-action-identity {:optional true} :string]
+    [:attempt-identity {:optional true} :string]
+    [:researcher-iteration {:optional true} [:int {:min 0}]]
+    ;; RR-24: explicit attempt provenance — carried whenever a logical
+    ;; action identity is present, so a reader can distinguish a
+    ;; confident first-attempt mint from a late-fallback mint without
+    ;; re-hashing :attempt-identity. Optional so pre-RR-24 replay
+    ;; (events without these fields) stays schema-valid.
+    [:attempt-ordinal {:optional true} [:int {:min 0}]]
+    [:ownership-epoch {:optional true} [:and :int [:>= 1]]]
     ;; EL-4: the source :tree-class this behavior was harvested from
     ;; (present only when :provenance :harvested).
     [:harvested-from-tree-class {:optional true} [:or :uuid :string]]
     [:minted-at          :string]]
+
+   ;; RR-24: durable at-most-once marker recording that the forced ColBERT
+   ;; reindex for one specific :ontology/behavioral-subtree-minted event id
+   ;; has already run. CAS'd on that event id (mint-reindex-forced-tag) so a
+   ;; todo-processor-v2 redelivery of the SAME minted event conflicts and
+   ;; the caller skips the (expensive) rebuild instead of re-paying it.
+   :ontology/mint-reindex-forced
+   [:map
+    [:minted-event-id :uuid]
+    [:forced-at        :string]]
 
    ;; -------------------------------------------------------------------------
    ;; CC-1 (ADR 0021) — Claim delta events
@@ -1412,6 +1540,8 @@
     [:top-candidates    [:vector :map]]
     [:reasoning         :string]
     [:was-fresh-mint?   :boolean]
+    [:researcher-ownership-epoch {:optional true} [:and :int [:>= 1]]]
+    [:classification-context {:optional true} :map]
     ;; C-2d-2: optional parent ancestor (UUID or fingerprint string)
     ;; surfaced by walk-down. The defcommand forwards this to the
     ;; emitted task-classified event body.
@@ -1428,7 +1558,31 @@
     ;; wedge from the classify-task result. Optional so pre-CC-23 callers
     ;; (and replayed tooling) stay valid; new producers always attach them.
     [:ranked-candidates {:optional true} ranked-candidates]
-    [:assigned-via {:optional true} [:enum :match :bundle :walk-down :mint]]]
+   [:assigned-via {:optional true} [:enum :match :bundle :walk-down :mint]]]
+
+   :ontology/record-tree-class-occurrence
+   [:map
+    [:source-sheet-id :uuid]
+    [:source-tick-id :uuid]
+    [:source-node-id :uuid]
+    [:source-completion-event-id :uuid]
+    [:assigned-tree-id :uuid]
+    [:verdict [:enum :success :failure :timeout]]]
+
+   ;; RR-21: dispatched by the harvest check processor for EVERY
+   ;; :ontology/tree-class-occurrence-recorded (no threshold). The handler
+   ;; computes the winning-shape coherence measure itself and stamps
+   ;; :verdict-occurrences / :recorded-at; callers name the occurrence being
+   ;; reported on AND its own :event/id (:source-occurrence-event-id,
+   ;; inspection finding, fixed) so the handler can bound its measure to that
+   ;; occurrence's durable position rather than the store's state at
+   ;; whatever moment it happens to process the command.
+   :ontology/report-shape-coherence
+   [:map
+    [:tree-class :uuid]
+    [:source-sheet-id :uuid]
+    [:source-tick-id :uuid]
+    [:source-occurrence-event-id :uuid]]
 
    ;; -------------------------------------------------------------------------
    ;; CC-23 — Record a task-classification deferral (DeferralIsVisible)
@@ -1448,7 +1602,9 @@
     [:source-node-id    :uuid]
     [:fallback-source   [:enum :colbert-fallback :timeout-fallback]]
     [:ranked-candidates ranked-candidates]
-    [:reasoning         :string]]
+    [:reasoning         :string]
+    [:researcher-ownership-epoch {:optional true} [:and :int [:>= 1]]]
+    [:classification-context {:optional true} :map]]
 
    ;; -------------------------------------------------------------------------
    ;; R05c — Mint a new behavioral-subtree concept
@@ -1485,10 +1641,26 @@
     ;; build-rlm-context's :sheet-id / :tick-id opts.
     [:minted-by-sheet-id {:optional true} :uuid]
     [:minted-by-tick-id  {:optional true} :uuid]
+    [:logical-action-identity {:optional true} :string]
+    [:attempt-identity {:optional true} :string]
+    [:researcher-iteration {:optional true} [:int {:min 0}]]
+    ;; RR-24: explicit attempt provenance forwarded from the sandbox's
+    ;; claim onto the mint command, and from there onto the minted
+    ;; event (see the event schema above for why these are explicit
+    ;; rather than only hashed into :attempt-identity).
+    [:attempt-ordinal {:optional true} [:int {:min 0}]]
+    [:ownership-epoch {:optional true} [:and :int [:>= 1]]]
     ;; EL-4: the source :tree-class id this behavior is harvested from.
     ;; Present only on the :harvested path; the mint command forwards it
     ;; onto the audit event for the fire-once/provenance trail.
     [:harvested-from-tree-class {:optional true} [:or :uuid :string]]]
+
+   ;; RR-24: dispatched by the mint-triggered force-rebuild processor before
+   ;; it calls force-rebuild!, CAS'd on the triggering minted event's id —
+   ;; see the :ontology/mint-reindex-forced event schema above.
+   :ontology/mark-mint-reindex-forced
+   [:map
+    [:minted-event-id :uuid]]
 
    ;; -------------------------------------------------------------------------
    ;; C-2a-3a — Consolidation trigger commands
@@ -1593,14 +1765,6 @@
     [:dimension :string]
     [:feedback :string]
     [:failure-uri {:optional true} :string]]
-
-   ;; Discovery Commands
-
-   :ontology/run-pattern-discovery
-   [:map
-    [:sheet-id :uuid]
-    [:min-traces {:optional true} :int]
-    [:score-threshold {:optional true} :double]]
 
    ;; -------------------------------------------------------------------------
    ;; Evolutionary Builder Commands (CQRS wrappers)

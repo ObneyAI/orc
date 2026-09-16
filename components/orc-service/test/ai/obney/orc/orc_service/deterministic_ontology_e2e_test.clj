@@ -84,15 +84,37 @@
 
 (defn- classify!
   ([ctx sheet-id tick-id class-id]
-   (classify! ctx sheet-id tick-id class-id nil))
-  ([ctx sheet-id tick-id class-id behavioral-subtrees]
+   (classify! ctx sheet-id tick-id (random-uuid) class-id nil))
+  ([ctx sheet-id tick-id node-id class-id behavioral-subtrees]
    (command! ctx :ontology/assign-task-class
              (cond-> {:source-sheet-id sheet-id :source-tick-id tick-id
-                      :source-node-id (random-uuid) :assigned-tree-id class-id
+                      :source-node-id node-id :assigned-tree-id class-id
                       :confidence 0.95 :top-candidates [] :reasoning "deterministic"
                       :was-fresh-mint? false}
                behavioral-subtrees
                (assoc :behavioral-subtrees behavioral-subtrees)))))
+
+(defn- verdict!
+  "RR-19: recurrence is counted at outcome, not at classification. Give the
+   classified campaign its real terminal researcher completion (the verdict)
+   and record the one verdict occurrence that advances recurrence."
+  [ctx sheet-id tick-id node-id class-id status]
+  (command! ctx :sheet/complete-node-execution
+            {:sheet-id sheet-id :tick-id tick-id :node-id node-id
+             :node-type :repl-researcher :completion-kind :terminal
+             :status status :duration-ms 1})
+  (let [completion-id (->> (es/read (:event-store ctx)
+                                    {:tenant-id (:tenant-id ctx)
+                                     :types #{:sheet/node-execution-completed}
+                                     :tags #{[:tick tick-id]}})
+                           (into [])
+                           last
+                           :event/id)]
+    (command! ctx :ontology/record-tree-class-occurrence
+              {:source-sheet-id sheet-id :source-tick-id tick-id
+               :source-node-id node-id
+               :source-completion-event-id completion-id
+               :assigned-tree-id class-id :verdict status})))
 
 (defn- score! [ctx sheet-id tick-id score]
   (command! ctx :evaluation/record-judge-score
@@ -101,14 +123,26 @@
              :feedback "deterministic" :dimensions []}))
 
 (defn- occurrence!
+  "RR-23: the Phase-2 bookend carries :source-sheet-id/:source-tick-id (this
+   helper's own sheet-id/tick-id — there is no separate ephemeral Phase-2
+   pair here) — production's execute-tree always supplies them alongside
+   the execution's own :sheet-id/:tick-id, and RR-23's harvest/consolidator
+   reads are now scoped by the [:source-tick ...] tag that pair drives. A
+   bookend without it is invisible to those scoped reads, which broke
+   det-e2e-091's harvest assertions until this fixture was corrected to
+   model production."
   ([ctx class-id sheet-id fingerprint score]
    (occurrence! ctx class-id sheet-id fingerprint score nil))
   ([ctx class-id sheet-id fingerprint score behavioral-subtrees]
-   (let [tick-id (random-uuid)]
-     (classify! ctx sheet-id tick-id class-id behavioral-subtrees)
+   (let [tick-id (random-uuid)
+         node-id (random-uuid)]
+     (classify! ctx sheet-id tick-id node-id class-id behavioral-subtrees)
      (score! ctx sheet-id tick-id score)
+     (verdict! ctx sheet-id tick-id node-id class-id :success)
      (command! ctx :sheet/record-rlm-tree-execution-completion
-               {:sheet-id sheet-id :tick-id tick-id :trajectory []
+               {:sheet-id sheet-id :tick-id tick-id
+                :source-sheet-id sheet-id :source-tick-id tick-id
+                :trajectory []
                 :total-usage {:total-tokens 0} :tree-fingerprint fingerprint
                 :status :success :duration-ms 1}))))
 

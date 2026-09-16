@@ -211,6 +211,16 @@ Iterate over a collection.
 > item failed from the event/trace channel and re-run/surface it at the parent (never ship a
 > compacted partial as complete). See ORC-PRINCIPLES Principle 14.
 
+With checkpoint recovery enabled, a one-level `map-each` resumes the original
+tick from durable per-item execution contexts. Completed items are rejoined,
+started-but-incomplete items are resumed, and only never-started pending items
+are newly dispatched. Result order and partial-failure evidence follow the
+declared item indices rather than completion order. The coordinator held in
+memory is only a cache and overlapping recovery scans cannot replace newer
+completion state with an older snapshot. Nested `map-each` recovery is not yet
+supported: its identity requires a stacked occurrence context rather than the
+current single parent/index pair.
+
 ### Leaf Nodes
 
 #### `llm`
@@ -365,7 +375,7 @@ Execute a two-phase recursive research loop. In Phase 1 the model inspects the t
   :rlm    {:recursive? true})   ;; recursive is the default; omit for same effect
 ```
 
-> **Recursive is the default.** `:rlm true`, `:rlm {}`, and `:rlm {:debug? true}` all default to recursive mode (`:rlm {:recursive? true}`). Terminal mode (`:rlm {:recursive? false}`) is **deprecated** — preserved for backward compatibility; migrate by dropping the `:recursive? false` key. Source: `executor.clj:2172-2176`.
+> **Recursive and checkpointed are the defaults.** `:rlm true`, `:rlm {}`, and `:rlm {:debug? true}` select recursive mode and durable per-iteration checkpointing. Use `:checkpointed? false` only for the legacy single-invocation path. Terminal mode (`:rlm {:recursive? false}`) remains non-checkpointed when the checkpoint key is omitted and is **deprecated** — preserved for backward compatibility; migrate by dropping the `:recursive? false` key.
 
 **Options:**
 
@@ -841,8 +851,8 @@ Create deterministic executors for testing:
 (require '[ai.obney.orc.evaluation.core.judges :as judges])
 
 (binding [judges/*use-mock-llm* true]
-  ;; Evaluation calls will use mock responses
-  (eval/evaluate-trace trace-data {:judges [:grounding]}))
+  ;; Judge calls will use mock responses
+  (eval/evaluate-single :grounding trace-data))
 ```
 
 ---

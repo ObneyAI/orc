@@ -16,7 +16,8 @@
    `:judge/score-emitted` shape. The consolidator (under Gap-3) will
    consume these events alongside raw execution evidence to update
    Living Description bodies."
-  (:require [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
+  (:require [clojure.string :as str]
+            [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
@@ -59,12 +60,20 @@
    completions get empty inputs context, the rubric prompt renders
    `{inputs}` as `{}`, OpenRouter responses lack a valid :score, and
    judges silently nil. Returns nil if no matching started event is
-   found."
+   found.
+
+   RR-31: the query is scoped to this tick (`:tags #{[:tick tick-id]}`)
+   rather than scanning every :sheet/node-execution-started event the
+   tenant has ever emitted — the same O(store)-per-judged-completion shape
+   as the survey-hang root cause. The in-memory filter below already
+   narrowed to this tick-id; this just stops fetching every other tick's
+   events to do it."
   [ctx sheet-id tick-id node-id]
   (when (and (:event-store ctx) sheet-id tick-id node-id)
     (let [started-events (into [] (es/read (:event-store ctx)
                                             {:types #{:sheet/node-execution-started}
-                                             :tenant-id (:tenant-id ctx)}))
+                                             :tenant-id (:tenant-id ctx)
+                                             :tags #{[:tick tick-id]}}))
           matching (first (filter #(and (= sheet-id (:sheet-id %))
                                          (= tick-id (:tick-id %))
                                          (= node-id (:node-id %)))
@@ -100,39 +109,143 @@
          :node-id (:node-id matching)
          :inputs (or (:inputs matching) {})}))))
 
+(defn- resolved-reads-inputs
+  "RR-31: the node's :inputs, resolved from its recorded reads via the value
+   log. `event` is the `:sheet/node-execution-completed` body — it carries
+   :read-keys (what the node declared it reads) and :read-sources (where
+   each key's value came from); `orc/value-log-resolve-reads` walks those
+   pointers back to the actual values the node read, the same way
+   build-trace-data's :outputs already resolves the node's writes.
+
+   Any non-empty direct :inputs on the event (execution context / map-each
+   item overrides — the only thing `:inputs` carries since the value-log
+   merge, per todo_processors.clj's root-start emit) is layered OVER the
+   resolved reads: those are overrides the caller has already computed, not
+   a substitute for the reads. When there is no direct :inputs, the resolved
+   reads stand alone."
+  [ctx tick-id event]
+  (let [resolved (or (orc/value-log-resolve-reads (:event-store ctx) (:tenant-id ctx)
+                                                  tick-id event)
+                     {})
+        direct-inputs (not-empty (:inputs event))]
+    (merge resolved direct-inputs)))
+
 (defn- build-trace-data
   "Build the `trace-data` map the evaluation judges expect:
    `{:inputs <host-input-values> :outputs <host-output-values>
-     :instruction <host-instruction>}`.
+     :instruction <host-instruction>
+     :researcher-iterations <ordered-durable-records, when applicable>}`.
 
-   `event` is the `:sheet/node-execution-completed` event body. When
-   the event lacks :inputs (the recursive RLM terminal-completion
-   case), reach back to the matching :sheet/node-execution-started
-   event so the LLM judges' rubric prompts render with the original
-   task inputs."
+   `event` is the `:sheet/node-execution-completed` event body.
+
+   RR-31: when the completion records :read-keys, :inputs is resolved from
+   the value log (`resolved-reads-inputs`) — the node's ACTUAL recorded
+   reads, not the execution-context leftovers the event itself carries.
+   Completions that record no :read-keys (direct-tick / researcher-terminal
+   completions, which never went through the read-key bookkeeping) keep the
+   pre-RR-31 behavior: direct :inputs on the event, else a reach-back to the
+   matching :sheet/node-execution-started event. Researcher iterations are
+   read from their durable projection rather than racing asynchronous
+   execution-trace publication."
   [ctx event]
   (let [sheet-id (:sheet-id event)
         tick-id (:tick-id event)
         node-id (:node-id event)
         node (when (and sheet-id node-id) (orc/get-node ctx sheet-id node-id))
+        read-keys (:read-keys event)
         direct-inputs (:inputs event)
-        reached-inputs (when (empty? direct-inputs)
-                         (find-started-inputs ctx sheet-id tick-id node-id))]
-    {:node-id node-id
-     :inputs (or (not-empty direct-inputs) reached-inputs {})
-     ;; The completion event carries only :write-keys — values live in the
-     ;; tick's :sheet/execution-value-written events. Resolve them by
-     ;; (node-id, exec-context) so judges score against what THIS node
-     ;; execution actually produced. An empty map here would silently
-     ;; degrade every grounding score rather than fail loudly.
-     :outputs (orc/value-log-writes-for
-               (orc/value-log-read-tick-events (:event-store ctx) (:tenant-id ctx) tick-id)
-               event)
-     :instruction (or (:instruction node) "")}))
+        inputs (if (seq read-keys)
+                 (resolved-reads-inputs ctx tick-id event)
+                 (or (not-empty direct-inputs)
+                    (find-started-inputs ctx sheet-id tick-id node-id)
+                    {}))
+        ;; The completion event carries only :write-keys — values live in the
+        ;; tick's :sheet/execution-value-written events. Resolve them by
+        ;; (node-id, exec-context) so judges score against what THIS node
+        ;; execution actually produced. An empty map here would silently
+        ;; degrade every grounding score rather than fail loudly.
+        outputs (orc/value-log-writes-for
+                 (orc/value-log-read-tick-events (:event-store ctx) (:tenant-id ctx) tick-id)
+                 event)
+        ;; RR-33: the node's declared writes, for judges that need to name
+        ;; the task when the node has no instruction (e.g. a `code` node,
+        ;; whose DSL takes no instruction). Prefer the completion event's
+        ;; own :write-keys (the shape it recorded at completion time); fall
+        ;; back to the resolved outputs' keys so this is never empty when
+        ;; the node in fact wrote something.
+        write-keys (or (not-empty (:write-keys event))
+                       (vec (keys outputs)))]
+    (cond->
+     {:node-id node-id
+      :inputs inputs
+      :outputs outputs
+      :write-keys write-keys
+      ;; RR-33: pass the node's instruction through as nil (not "") when
+      ;; absent — an empty string is truthy under `or`, so the pre-RR-33
+      ;; `(or (:instruction node) "")` here silently defeated every
+      ;; downstream "No instruction provided" fallback. nil lets
+      ;; compose-task (judges.clj) tell "no instruction" from "instruction
+      ;; is the empty string" and fall through to :criteria / declared
+      ;; write keys.
+      :instruction (:instruction node)}
+      (= :repl-researcher (:type node))
+      (assoc :researcher-iterations
+             (orc/get-researcher-iteration-records
+              ctx sheet-id tick-id node-id)))))
 
 ;; =============================================================================
 ;; Judge dispatch
 ;; =============================================================================
+
+(defn- summarize-evidence
+  "Render one dimension's feedback from a pair of evidence lists (cited vs
+   omitted), in the judge's own vocabulary. Empty lists still yield a
+   dimension — the feedback says nothing was cited/omitted rather than
+   silently dropping the dimension (RR-30 acceptance criterion)."
+  [cited-label cited-items omitted-label omitted-items]
+  (str cited-label ": "
+       (if (seq cited-items) (str/join "; " cited-items) "nothing cited")
+       ". " omitted-label ": "
+       (if (seq omitted-items) (str/join "; " omitted-items) "none")
+       "."))
+
+(defn- project-dimensions
+  "RR-30: project a default LLM judge's own evidence lists (already present
+   on `inner`, its result map) into named DimensionScore entries. One
+   dimension per evidence pair — a single-dimension judge — carrying the
+   judge's own :score and a weight of 1.0, named with the judge's rubric
+   name from `judges/default-judge-dimension-names` (the ontology
+   classifier's dictionary is case-sensitive; a name it does not know
+   yields a failure with no URI). Pure: no new model call, no
+   change to score/feedback/model-provenance. Judge types not yet projected
+   fall through to []."
+  [judge-type inner score]
+  (case judge-type
+    :grounding
+    [{:name (judges/default-judge-dimension-names :grounding)
+      :weight 1.0
+      :score score
+      :feedback (summarize-evidence "Grounded claims" (:grounded-claims inner)
+                                    "Ungrounded claims" (:ungrounded-claims inner))}]
+    :reasoning
+    [{:name (judges/default-judge-dimension-names :reasoning)
+      :weight 1.0
+      :score score
+      :feedback (summarize-evidence "Strengths" (:reasoning-strengths inner)
+                                    "Weaknesses" (:reasoning-weaknesses inner))}]
+    :completeness
+    [{:name (judges/default-judge-dimension-names :completeness)
+      :weight 1.0
+      :score score
+      :feedback (summarize-evidence "Aspects covered" (:aspects-covered inner)
+                                    "Aspects missing" (:aspects-missing inner))}]
+    :instruction-following
+    [{:name (judges/default-judge-dimension-names :instruction-following)
+      :weight 1.0
+      :score score
+      :feedback (summarize-evidence "Requirements met" (:requirements-met inner)
+                                    "Requirements missed" (:requirements-missed inner))}]
+    []))
 
 (defn- invoke-llm-judge
   "Dispatch on judge-type to the matching public judge function. Returns
@@ -140,7 +253,10 @@
    produced a score, otherwise nil. Each judge function resolves its
    var on every call so with-redefs / mock bindings take effect."
   [judge-type judge-config trace-data]
-  (let [executor-ctx {:inputs {:trace-data trace-data}}
+  (let [criteria (:criteria judge-config)
+        executor-ctx {:inputs (cond-> {:trace-data trace-data}
+                                (and (string? criteria) (not (str/blank? criteria)))
+                                (assoc :criteria criteria))}
         [judge-output result-key]
         (binding [judges/*judge-provider* (or (:provider judge-config)
                                               judges/*judge-provider*)
@@ -155,10 +271,21 @@
         inner (when (and judge-output result-key)
                 (get judge-output result-key))]
     (when (and inner (:score inner))
-      {:score (double (:score inner))
-       :feedback (or (:feedback inner) "")
-       :dimensions []
-       :model-provenance (:model-provenance inner)})))
+      (let [score (double (:score inner))
+            dimensions (project-dimensions judge-type inner score)
+            model-feedback (:feedback inner)]
+        {:score score
+         ;; ActionableFeedback: a successful score never carries blank
+         ;; feedback. A live model can return "" beside a valid banded
+         ;; verdict (seen on CI with Gemini 2.5 Flash); the judge's own
+         ;; projected dimension feedback then stands in — the same
+         ;; evidence, never an invented sentence.
+         :feedback (if (and (string? model-feedback) (not (str/blank? model-feedback)))
+                     model-feedback
+                     (or (some->> dimensions (map :feedback) (remove str/blank?) seq (str/join " "))
+                         ""))
+         :dimensions dimensions
+         :model-provenance (:model-provenance inner)}))))
 
 (def ^:private llm-judge-types
   "Set of judge types that route to evaluation/core/judges functions."
@@ -523,9 +650,9 @@
    attach a CUSTOM judge with :applies-to-completion-kinds on their
    own node — the filter only fires when the field is present.
 
-   The intermediate-tick grading use case (where we'd want
-   heuristic-structural to fire on each :rlm/tree-generated emission
-   rather than waiting for the terminal sum-up) is filed as
+   The tree-event grading use case (where we'd want
+   heuristic-structural to fire on the campaign's :rlm/tree-generated
+   event rather than only on the terminal sum-up) is filed as
    Gap-7b — `docs/issues/c2d-followups/Gap-7b-heuristic-structural-
    subscribes-to-rlm-tree-generated.md`. Gap-7b adds a SEPARATE
    processor subscribed to :rlm/tree-generated; it doesn't change
@@ -802,17 +929,17 @@
                           :exception-class (.getName (class t)))))))})))))
 
 ;; =============================================================================
-;; Gap-7b — per-Phase-1-iteration tree-shape grading
+;; Gap-7b — tree-shape grading on the campaign's :rlm/tree-generated event
 ;; =============================================================================
 ;;
-;; Recursive RLM emits :rlm/tree-generated per Phase 1 emit-tree! call.
-;; The terminal :sheet/node-execution-completed only fires ONCE per run
-;; (when the executor's loop terminates via (final!)), so subscribing
-;; tree-shape judges only to that event means we grade just the last
-;; tree the model produced — losing N-1 intermediate tree designs.
+;; :rlm/tree-generated fires ONCE per campaign, at the campaign's terminal
+;; boundary, carrying the LAST tree the model emitted — it is not a
+;; per-emit or per-iteration event. Every intermediate tree's shape is
+;; durable on its own :rlm/researcher-iteration-recorded record (the
+;; emitted-tree fingerprint), which is where per-iteration structure lives.
 ;;
-;; This processor subscribes to :rlm/tree-generated to grade each
-;; intermediate tree as it's emitted. It uses the SAME resolver +
+;; This processor subscribes to :rlm/tree-generated to grade that last
+;; tree's shape once per campaign. It uses the SAME resolver +
 ;; judge dispatch as the terminal processor, but filters to judges
 ;; that grade tree SHAPE (not output content) via tree-shape-judge-
 ;; types. LLM output judges (grounding/reasoning/etc.) don't run here
@@ -955,13 +1082,14 @@
 
 (defprocessor :evaluation on-rlm-tree-generated
   {:topics #{:rlm/tree-generated}}
-  "Gap-7b: per-Phase-1-iteration tree-shape grader. Recursive RLM
-   emits :rlm/tree-generated for each intermediate emit-tree! during
-   Phase 1; this processor grades the tree shape for each so the
-   consolidator sees multiple structural signals per run instead of
-   just the terminal sum-up. Only runs tree-shape judges (currently
-   heuristic-structural) — LLM output judges run on the terminal
-   :sheet/node-execution-completed event where final outputs are
-   available."
+  "Gap-7b: tree-shape grader on :rlm/tree-generated. The event fires
+   once per campaign, at the terminal boundary, carrying the last tree
+   the model emitted; this processor grades that tree's shape once, so
+   the consolidator receives one structural signal per campaign
+   alongside the terminal sum-up. Intermediate trees' shapes are
+   durable on their iteration records, not on this event. Only runs
+   tree-shape judges (currently heuristic-structural) — LLM output
+   judges run on the terminal :sheet/node-execution-completed event
+   where final outputs are available."
   [context]
   (on-rlm-tree-generated context))

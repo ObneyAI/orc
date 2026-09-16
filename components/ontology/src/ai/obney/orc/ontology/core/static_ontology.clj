@@ -9,6 +9,23 @@
    These are initialized once and extended over time via LLM discovery.")
 
 ;; =============================================================================
+;; Dimension -> Failure URI Dictionary
+;; =============================================================================
+;; The one dictionary mapping evaluation dimension names (the four rubric
+;; names plus their short aliases) to root failure concept URIs. The
+;; classifier and get-failure-concept-for-dimension below both read this
+;; single map so they cannot drift apart (RR-32).
+
+(def dimension->failure-uri
+  "Maps evaluation dimension names to root failure concept URIs."
+  {"Grounding" "failure:Grounding"
+   "Source Grounding" "failure:Grounding"
+   "Instruction Following" "failure:InstructionFollowing"
+   "Reasoning" "failure:Reasoning"
+   "Reasoning Quality" "failure:Reasoning"
+   "Completeness" "failure:Completeness"})
+
+;; =============================================================================
 ;; Layer 1: Failure Ontology
 ;; =============================================================================
 ;; Maps to the 4 evaluation judges: Grounding, Instruction Following, Reasoning, Completeness
@@ -524,9 +541,4 @@
 (defn get-failure-concept-for-dimension
   "Map evaluation dimension name to root failure concept URI."
   [dimension-name]
-  (case dimension-name
-    "Grounding" "failure:Grounding"
-    "Instruction Following" "failure:InstructionFollowing"
-    "Reasoning" "failure:Reasoning"
-    "Completeness" "failure:Completeness"
-    nil))
+  (get dimension->failure-uri dimension-name))

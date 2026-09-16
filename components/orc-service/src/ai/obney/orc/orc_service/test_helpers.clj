@@ -335,15 +335,18 @@
      :count-cache? - wrap the LMDB cache so every put/get is accounted
                      (see l2-stats / l2-write-bytes). The wrapper must be in
                      place BEFORE processors start, since each processor
-                     captures the context by value."
+                     captures the context by value.
+     :event-store-conn - Grain event-store connection map. Defaults to an
+                         in-memory store; recovery tests use this seam to
+                         close and reopen a persistent SQLite store."
   ([] (create-async-test-context {}))
-  ([{:keys [count-cache? context]}]
+  ([{:keys [count-cache? context event-store-conn]}]
   (rmp/l1-clear!)
   (let [dir (str "/tmp/sheet-async-test-" (random-uuid))
         background-supervisor (atom {:accepting? true :work #{}})
         ps (pubsub/start {:type :core-async
                            :topic-fn :event/type})
-        event-store (es/start {:conn {:type :in-memory}
+        event-store (es/start {:conn (or event-store-conn {:type :in-memory})
                                :event-pubsub ps
                                :logger nil})
         cache (cond-> (kv/start (lmdb/->KV-Store-LMDB {:storage-dir dir :db-name "test"}))

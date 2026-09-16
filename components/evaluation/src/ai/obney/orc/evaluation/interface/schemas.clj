@@ -57,30 +57,7 @@
                                     [:judge-name :string]
                                     [:score number?]
                                     [:weight number?]]]]
-    [:emitted-at :string]]
-
-   :evaluation/trace-evaluated
-   [:map
-    [:trace-id :uuid]
-    [:sheet-id :uuid]
-    [:node-id :uuid]
-    [:node-name :string]
-    [:dimensions [:vector DimensionScore]]
-    [:aggregate-score :double]
-    [:feedback-summary :string]
-    [:evaluated-at :string]]
-
-   :evaluation/batch-completed
-   [:map
-    [:batch-id :uuid]
-    [:sheet-id :uuid]
-    [:node-id :uuid]
-    [:traces-evaluated :int]
-    [:avg-score :double]
-    [:min-score :double]
-    [:max-score :double]
-    [:score-distribution [:map-of :string :int]]
-    [:completed-at :string]]})
+    [:emitted-at :string]]})
 
 ;; =============================================================================
 ;; Commands
@@ -115,29 +92,7 @@
                                     [:judge-name :string]
                                     [:score number?]
                                     [:weight number?]]]]
-    [:emitted-at {:optional true} :string]]
-
-   :evaluation/evaluate-trace
-   [:map
-    [:trace-id :uuid]
-    [:sheet-id :uuid]
-    [:node-id :uuid]
-    [:judge-config {:optional true}
-     [:map
-      [:dimensions {:optional true} [:vector :keyword]]
-      [:model {:optional true} :string]]]]
-
-   :evaluation/evaluate-batch
-   [:map
-    [:sheet-id :uuid]
-    [:node-id :uuid]
-    [:trace-ids {:optional true} [:vector :uuid]]
-    [:since {:optional true} :string]
-    [:limit {:optional true} :int]
-    [:judge-config {:optional true}
-     [:map
-      [:dimensions {:optional true} [:vector :keyword]]
-      [:model {:optional true} :string]]]]})
+    [:emitted-at {:optional true} :string]]})
 
 ;; =============================================================================
 ;; Read Models

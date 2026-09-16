@@ -500,8 +500,9 @@
 
    The discriminator is the lifetime consolidation total on the
    instruction-aware :tree-class axis (the SAME counter the consolidator reads,
-   ticked on every :ontology/task-classified). The filter band is the half-open
-   interval (0, retrieval-gate):
+   ticked on every verdict occurrence — :ontology/tree-class-occurrence-recorded,
+   RR-19 — not on classification; recurrence is counted at outcome, never at
+   intent). The filter band is the half-open interval (0, retrieval-gate):
 
      total = 0            → NOT a runtime-accrued class. Either a curated
                             baseline SEED (recorded description, never runtime-

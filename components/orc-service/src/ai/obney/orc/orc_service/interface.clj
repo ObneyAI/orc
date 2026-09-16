@@ -7,6 +7,7 @@
             [ai.obney.orc.orc-service.core.commands]
             [ai.obney.orc.orc-service.core.queries]
             [ai.obney.orc.orc-service.core.todo-processors]
+            [ai.obney.orc.orc-service.core.periodic-tasks]
             ;; Load schemas for registration
             [ai.obney.orc.orc-service.interface.schemas]
             ;; Re-export from interface sub-namespaces
@@ -83,6 +84,10 @@
 
 ;; Tick functions
 (def get-tick rm/get-tick)
+(def get-researcher-campaign rm/get-researcher-campaign)
+(def get-researcher-iteration-records rm/get-researcher-iteration-records)
+(def get-researcher-effect-claims rm/get-researcher-effect-claims)
+(def get-provider-call-reservations rm/get-provider-call-reservations)
 
 ;; Version functions
 (def get-versions-for-sheet rm/get-versions-for-sheet)
@@ -161,8 +166,8 @@
   runtime/execute)
 
 (def resume-in-progress!
-  "Resume abandoned leaf frontiers after processors restart against the same
-   durable event store. Repeated calls are idempotent."
+  "Resume abandoned leaf, delegate, and researcher frontiers after processors
+   restart against the same durable event store. Repeated calls are idempotent."
   runtime/resume-in-progress!)
 
 ;; =============================================================================
@@ -197,7 +202,9 @@
 
 (def cancel!
   "Cancel a running tick and any known child ticks. Best-effort: the engine
-   stops progressing but in-flight LLM HTTP calls run to completion.
+   stops progressing and registered checkpointed researcher work is
+   interrupted. Legacy non-checkpointed work remains outside that registry,
+   and interruption does not guarantee that a provider transport aborts.
    Blocking callers unblock with {:status :failure :cancelled? true}; live
    streams end with :tick-cancelled then :stream-closed {:reason :cancelled}.
 

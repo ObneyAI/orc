@@ -613,7 +613,8 @@
             :was-fresh-mint? false})))
 
 (defn- grounded-task-class-evidence!
-  "CC-4/CC-5: one classified occurrence that a judge ACTUALLY JUDGED.
+  "CC-4/CC-5 + RR-19: one classified, verdict-qualified occurrence that a
+   judge ACTUALLY JUDGED.
 
    `assign-task-class-evidence!` above records an occurrence nobody evaluated.
    That is fine for the input-gathering tests, but a claim derived from such an
@@ -623,7 +624,8 @@
    does."
   [ctx assigned-tree-id]
   (let [sheet-id (random-uuid)
-        tick-id (random-uuid)]
+        tick-id (random-uuid)
+        node-id (random-uuid)]
     (cp/process-command
       (assoc ctx :command
              {:command/name :ontology/assign-task-class
@@ -631,7 +633,7 @@
               :command/timestamp (time/now)
               :source-sheet-id sheet-id
               :source-tick-id tick-id
-              :source-node-id (random-uuid)
+              :source-node-id node-id
               :assigned-tree-id assigned-tree-id
               :confidence 0.95
               :top-candidates []
@@ -648,6 +650,20 @@
                              "verification command exited 0, so the assessment is "
                              "grounded in the observed diff and command output.")
               :dimensions []}))
+    (es/append
+     (:event-store ctx)
+     {:tenant-id (:tenant-id ctx)
+      :events [(es/->event
+                {:type :ontology/tree-class-occurrence-recorded
+                 :tags #{[:tick tick-id]
+                         [:description-target assigned-tree-id]}
+                 :body {:source-sheet-id sheet-id
+                        :source-tick-id tick-id
+                        :source-node-id node-id
+                        :source-completion-event-id (random-uuid)
+                        :assigned-tree-id assigned-tree-id
+                        :verdict :success
+                        :recorded-at (str (time/now))}})]})
     [sheet-id tick-id]))
 
 (deftest consolidator-handles-tree-class-consolidation-request
@@ -703,7 +719,7 @@
 ;;   1. Bootstrap: a seed body exists under :tree-class scope
 ;;   2. R-Inject "run 1": apply-r05-classifier-context reads :tree-class
 ;;      body (the seed bootstrap)
-;;   3. Threshold N task-classified events accumulate; threshold processor
+;;   3. Threshold N verdict-qualified occurrence events accumulate; threshold processor
 ;;      emits :ontology/consolidation-requested for :tree-class
 ;;   4. Consolidator runs LLM reflection, emits :tree-description-updated
 ;;      with :target-type :tree-class — body is the LLM's refined output
@@ -740,7 +756,7 @@
    :consolidated-from-event-count 99})
 
 (deftest two-run-living-description-loop-updates-tree-class-body
-  (testing "C-Loop-1 ceiling check: after the consolidator processes N task-classified events for a tree-class, get-description :tree-class returns the consolidator-written body, distinct from the original seed body"
+  (testing "C-Loop-1 ceiling check: after the consolidator processes N verdict-qualified occurrences for a tree-class, get-description :tree-class returns the consolidator-written body, distinct from the original seed body"
     (with-test-ctx [ctx]
       (let [tree-class-id (random-uuid)
             seed-body {:capabilities ["seed-bootstrap capability"]

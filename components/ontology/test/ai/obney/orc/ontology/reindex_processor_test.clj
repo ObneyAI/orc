@@ -709,3 +709,42 @@
                   (str "The minted behavior's target-id should be in the rebuilt "
                        "corpus. Expected " expected-target-id
                        " among " target-ids)))))))))
+
+;; =============================================================================
+;; RR-24 — forced reindex is idempotent per minted-event redelivery
+;; =============================================================================
+;;
+;; Grain's todo-processor-v2 checkpoints a pure-result handler AFTER it runs
+;; — the already-checkpointed? replay guard only exists on the
+;; :result/effect + :result/checkpoint :after path (process-effect-after).
+;; `on-behavioral-subtree-minted-force-rebuild` calls `force-rebuild!`
+;; directly in its body as a plain side effect, so an at-least-once
+;; redelivery of the SAME :ontology/behavioral-subtree-minted event — a
+;; pubsub/catch-up race, or a crash after the reindex ran but before the
+;; checkpoint landed — calls force-rebuild! (and re-pays the full ColBERT
+;; rebuild) a second time unless something durable guards it. This is
+;; distinct from RR-7's replayed-mint CAS (which already prevents a SECOND
+;; logical mint from ever emitting a second minted event): here the SAME
+;; already-emitted event is delivered to the processor twice. Prove the
+;; guard directly against the registered handler var, simulating
+;; redelivery by invoking it twice with the identical triggering event.
+
+(deftest mint-force-rebuild-is-idempotent-per-minted-event-redelivery
+  (testing "RR-24: redelivering the SAME minted event to the force-rebuild processor forces the rebuild only once"
+    (with-unwired-test-ctx [ctx]
+      (dispatch-mint! ctx "rr24-redelivery-test")
+      (let [minted-event (reduce (fn [_ e] (reduced e)) nil
+                                  (es/read (:event-store ctx)
+                                           {:tenant-id (:tenant-id ctx)
+                                            :types #{:ontology/behavioral-subtree-minted}}))
+            [calls stub] (stub-create-index!)]
+        (is (some? minted-event) "sanity: the mint landed")
+        (let [handler-fn (:handler-fn
+                           (get @tp/processor-registry*
+                                :ontology/on-behavioral-subtree-minted-force-rebuild))]
+          (is (some? handler-fn) "sanity: the force-rebuild processor is registered")
+          (with-redefs [colbert-ops/create-index! stub]
+            (handler-fn (assoc ctx :event minted-event))
+            (handler-fn (assoc ctx :event minted-event))
+            (is (= 1 (count @calls))
+                "a redelivered minted event must not force a second reindex")))))))

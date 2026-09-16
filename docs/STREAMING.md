@@ -43,17 +43,21 @@ in-process over a core.async channel that your application bridges to
 SSE/WebSocket however it likes. ORC stays a library; there is no HTTP layer
 here.
 
-Streaming is an **ephemeral observation layer**. The durable event-sourced
-model is unchanged: every event that was persisted before is persisted
-exactly the same way, whether or not anyone is streaming. If nobody
-subscribes, the stream machinery is a no-op.
+Streaming is a **live observation layer** over two kinds of signal. Durable
+execution events are normalized from Grain pubsub; ephemeral previews such as
+token deltas and in-progress RLM phases are emitted only to live subscribers.
+The event store remains the source of truth. If nobody subscribes, the stream
+machinery adds no durable writes.
 
 ## What streaming is for
 
-Streaming is an **ephemeral observation layer** — node lifecycle, progress, incremental node results, RLM phase activity. The durable event-sourced model is unchanged: every event that was persisted before is still persisted. If nobody subscribes, the stream machinery is a no-op.
+Streaming is a **live observation layer** — durable lifecycle and researcher
+iteration projections alongside ephemeral progress previews. If nobody
+subscribes, streaming adds no work to the durable model.
 
 **Use it for:** real-time UI progress bars, live debugging, streaming LLM token output to a frontend, monitoring execution from a separate process.
-**Don't use it as persistence** — the event store is the durable record. Streaming is ephemeral.
+**Don't use it as persistence** — the event store is the durable record. A
+durable envelope can be reconciled from that store; an ephemeral preview cannot.
 
 ## Quick start
 
@@ -125,6 +129,7 @@ Malli schemas for every type:
 | `:node-completed` | any node finishes — **this is the incremental-results event** | `:status` `:writes` `:usage` `:duration-ms` `:error` `:completion-kind` |
 | `:progress` | sequence/map-each advances | `:kind` `:index` `:total` |
 | `:child-tick-linked` | a child tick spawned (RLM Phase 2, delegate) | `:parent-tick-id` `:child-tick-id` |
+| `:rlm-iteration-recorded` | an immutable researcher attempt was durably committed (**authoritative**) | `:node-id` `:iteration-index` `:attempt-ordinal` `:iteration-record` |
 | `:rlm-iteration-started` | RLM Phase 1 iteration begins (**recursive mode only**) | `:iteration` `:max-iterations` |
 | `:rlm-code-generated` | model wrote sandbox code (**recursive mode only**) | `:iteration` `:code` `:reasoning` (capped) |
 | `:rlm-sandbox-completed` | sandbox execution finished (**recursive mode only**) | `:iteration` `:result` `:stdout` `:error` `:vars-created` `:final?` |
@@ -145,6 +150,9 @@ Notes:
 - Re-ticks re-emit `:tick-started` with `:iteration`. Intermediate
   `:running` tick completions are internal re-tick signals and are not
   forwarded.
+- `:rlm-iteration-recorded` is the authoritative iteration account used by
+  both live observers and durable readback. The started/code/sandbox/Phase-2
+  envelopes are non-authoritative previews and may be absent after a restart.
 - Map-each runs the same child `node-id` once per item; `:map-each
   {:parent :index}` disambiguates.
 
@@ -152,14 +160,12 @@ Notes:
 
 **Plain summary:** `:seq` is a strictly monotonic integer per subscription. A gap in `:seq` means your consumer fell behind the sliding buffer and lost events. For lost events, reconstruct from the event store using `(es/read event-store {:tenant-id tenant-id :tags #{[:tick tick-id]}})`. Grain v3 event-store operations are always tenant-scoped. This is why streaming is not a replacement for event store queries — it is a live feed, not a guarantee.
 
-- `:seq` is strictly monotonic per subscription, assigned by a single
-  router in arrival order. In practice a node's `:node-started` precedes
-  its deltas and its `:node-completed` (the forwarding path is
-  microseconds; the gap between the underlying durable events spans a full
-  append/publish/processor round-trip), but durable event types are
-  forwarded by independent tap loops, so cross-type ordering is an
-  expectation, not a structural guarantee — consumers needing strict
-  lifecycle ordering should reconcile against the durable event store.
+- `:seq` is strictly monotonic per subscription, assigned by a single router
+  in arrival order. All durable event topics share one tap channel, preserving
+  Grain's publication order across event types; a root terminal event therefore
+  cannot overtake an earlier durable iteration and close the stream first.
+  Concurrent ephemeral previews join the same subscription FIFO in their
+  arrival order, but do not constitute durable causal evidence.
 - The consumer channel is a **sliding buffer** (default 4096,
   `:buffer` option). A consumer that falls behind loses the **oldest**
   events; the newest (including the terminal `:stream-closed`) always
@@ -215,15 +221,19 @@ tick's `:sheet/execution-value-written` events (tagged `[:tick tick-id]`).
 ;; => {:cancelled [tick-id child-tick-id ...]} | anomaly map
 ```
 
-Best-effort: the engine stops progressing; in-flight LLM HTTP calls run to completion.
+Best-effort: the engine stops progressing and interrupts registered checkpointed
+researcher work. Legacy non-checkpointed work remains outside that registry.
 
 Semantics (best-effort, documented honestly):
 - The engine stops progressing: no new nodes start (a guard fails queued
   leaf executions fast), the re-tick loop halts, and known child ticks are
   cancelled too.
-- **In-flight LLM HTTP calls run to completion** — there is no abort hook
-  at the provider layer yet. A cancelled tick can still consume provider
-  tokens for calls already dispatched.
+- **Interruption is cooperative, not a transport guarantee** — a registered
+  checkpointed researcher and its bounded provider worker receive an interrupt,
+  but a provider client may not abort an already-dispatched HTTP request. The
+  request can therefore consume tokens until its transport deadline even though
+  the cancelled campaign cannot accept its result. Legacy non-checkpointed work
+  retains its previous run-to-completion boundary.
 - Callers blocked on `execute` unblock immediately with
   `{:status :failure :error "tick cancelled" :cancelled? true}`.
 - Live streams receive `:tick-cancelled` then
@@ -276,10 +286,12 @@ A recursive repl-researcher run streams like:
 ```
 :tick-started → :node-started (repl-researcher)
 → :rlm-iteration-started {:iteration 1} → :rlm-code-generated → :rlm-sandbox-completed
+→ :rlm-iteration-recorded {:iteration-index 0} (durable, authoritative)
 → :child-tick-linked → :rlm-phase2-started {:child-tick-id C}
 → :tick-started (C) → :node-started/:node-completed... (C, live)
 → :tick-completed (C) → :rlm-phase2-completed
 → :rlm-iteration-started {:iteration 2} → ... → :rlm-sandbox-completed {:final? true}
+→ :rlm-iteration-recorded {:iteration-index 1} (durable, authoritative)
 → :rlm-tree-generated   (durable; emitted once after the node finishes, with the last tree)
 → :node-completed (repl-researcher, full :writes + :usage)
 → :tick-completed → :stream-closed {:reason :completed}

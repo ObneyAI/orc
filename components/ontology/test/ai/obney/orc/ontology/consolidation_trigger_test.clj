@@ -395,16 +395,34 @@
             :reasoning "test"
             :was-fresh-mint? false})))
 
-(deftest delta-counter-ticks-on-task-classified-for-tree-class
-  (testing "After 3 :ontology/task-classified events for the same :assigned-tree-id, the counter for [:tree-class id] is 3"
+(defn- record-tree-class-occurrence! [ctx assigned-tree-id verdict]
+  (let [tick-id (random-uuid)]
+    (es/append
+     (:event-store ctx)
+     {:tenant-id (:tenant-id ctx)
+      :events [(es/->event
+                {:type :ontology/tree-class-occurrence-recorded
+                 :tags #{[:tick tick-id]
+                         [:description-target assigned-tree-id]}
+                 :body {:source-sheet-id (random-uuid)
+                        :source-tick-id tick-id
+                        :source-node-id (random-uuid)
+                        :source-completion-event-id (random-uuid)
+                        :assigned-tree-id assigned-tree-id
+                        :verdict verdict
+                        :recorded-at (str (time/now))}})]})))
+
+(deftest delta-counter-ticks-on-verdict-occurrence-for-tree-class
+  (testing "Three verdict-qualified occurrences advance the tree-class counter; classifications do not"
     (with-test-ctx [ctx]
       (let [tree-class-id (random-uuid)]
         (assign-task-class! ctx tree-class-id)
-        (assign-task-class! ctx tree-class-id)
-        (assign-task-class! ctx tree-class-id)
+        (record-tree-class-occurrence! ctx tree-class-id :success)
+        (record-tree-class-occurrence! ctx tree-class-id :failure)
+        (record-tree-class-occurrence! ctx tree-class-id :timeout)
         (Thread/sleep 100)
         (is (= 3 (ontology/get-consolidation-delta ctx :tree-class tree-class-id))
-            "Counter ticks once per :ontology/task-classified with matching assigned-tree-id")))))
+            "Counter ticks once per verdict occurrence, not classification intent")))))
 
 ;; =============================================================================
 ;; Gap-1 RED#1 — Living Description opt-in flag round-trips
@@ -455,8 +473,8 @@
       (is (false? (ontology/get-living-description-enabled? ctx))
           "After flip-back, query returns false"))))
 
-(deftest threshold-processor-fires-on-task-classified-for-tree-class
-  (testing "After threshold-N task-classified events for the same tree-class-id, one :ontology/consolidation-requested fires"
+(deftest threshold-processor-fires-on-verdict-occurrence-for-tree-class
+  (testing "Classification does not fire the threshold; threshold-N verdict occurrences do"
     (with-test-ctx [ctx]
       ;; Lower threshold to 3 for a fast deterministic test
       (cp/process-command
@@ -469,8 +487,11 @@
       (Thread/sleep 100)
       (let [tree-class-id (random-uuid)]
         (assign-task-class! ctx tree-class-id)
-        (assign-task-class! ctx tree-class-id)
-        (assign-task-class! ctx tree-class-id)
+        (Thread/sleep 100)
+        (is (= 0 (count-consolidation-requested-events ctx :tree-class tree-class-id)))
+        (record-tree-class-occurrence! ctx tree-class-id :success)
+        (record-tree-class-occurrence! ctx tree-class-id :failure)
+        (record-tree-class-occurrence! ctx tree-class-id :timeout)
         (Thread/sleep 400)
         (is (= 1 (count-consolidation-requested-events ctx :tree-class tree-class-id))
             "Exactly one consolidation-requested fires after threshold is crossed")

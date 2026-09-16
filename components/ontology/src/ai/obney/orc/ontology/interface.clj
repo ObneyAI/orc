@@ -24,9 +24,8 @@
             [ai.obney.orc.ontology.core.embedding :as embedding]
             [ai.obney.orc.ontology.core.field-analyzer :as field-analyzer]
             [ai.obney.orc.ontology.core.field-analyzer-workflow :as fa-workflow]
-            [ai.obney.orc.ontology.core.discovery :as discovery]
             [ai.obney.orc.ontology.core.rule-extraction :as rule-extraction]
-            [ai.obney.orc.ontology.core.commands] ;; Register defcommand handlers for tree profiles
+            [ai.obney.orc.ontology.core.commands :as commands] ;; Register defcommand handlers for tree profiles
             [ai.obney.orc.ontology.core.evolutionary-commands] ;; Register defcommand handlers for evolutionary builder
             [ai.obney.orc.ontology.core.todo-processors :as todo-processors] ;; Register todo processors for auto-learning
             [ai.obney.orc.ontology.core.harvest] ;; EL-4: register the harvest processor
@@ -75,6 +74,52 @@
   "Find a static concept by its URI."
   [uri]
   (static/get-concept-by-uri uri))
+
+(defn get-behavior-mint-by-logical-action
+  "Return the durable winning mint event for one researcher logical action."
+  [ctx logical-action-identity]
+  (reduce
+   (fn [found event]
+     (if (= logical-action-identity (:logical-action-identity event))
+       event
+       found))
+   nil
+   (event-store/read
+    (:event-store ctx)
+    {:tenant-id (:tenant-id ctx)
+     :types #{:ontology/behavioral-subtree-minted}
+     :tags #{(commands/researcher-logical-action-tag
+              logical-action-identity)}})))
+
+(defn behavior-mint-provenance
+  "RR-24: return the researcher attempt provenance recorded on one minted
+   behavior — {:iteration-index n :attempt-ordinal n :ownership-epoch n
+   :first-attempt? bool} — or nil when the mint carries no researcher
+   provenance (a hand-authored or harvested mint, or a pre-RR-24 event that
+   predates these fields).
+
+   :first-attempt? is true only when the recorded attempt was the campaign's
+   very first attempt (attempt-ordinal 0) on its very first ownership epoch
+   (ownership-epoch 1) — a late fallback (a higher attempt ordinal) and a
+   first attempt made by a NEW owner after a lease handoff (a higher
+   ownership epoch) both carry materially less evidentiary weight than a
+   confident, uncontested first try."
+  [ctx target-id]
+  (when-let [{:keys [researcher-iteration attempt-ordinal ownership-epoch]}
+             (reduce
+              (fn [found event]
+                (if (= target-id (:target-id event)) event found))
+              nil
+              (event-store/read
+               (:event-store ctx)
+               {:tenant-id (:tenant-id ctx)
+                :types #{:ontology/behavioral-subtree-minted}
+                :tags #{[:behavioral-subtree-minted target-id]}}))]
+    (when (and (some? attempt-ordinal) (some? ownership-epoch))
+      {:iteration-index researcher-iteration
+       :attempt-ordinal attempt-ordinal
+       :ownership-epoch ownership-epoch
+       :first-attempt? (and (= 0 attempt-ordinal) (= 1 ownership-epoch))})))
 
 (defn get-failure-concept-for-dimension
   "Map evaluation dimension name to failure concept URI.
@@ -281,6 +326,26 @@
    overwriting a concurrent one."
   [ctx granularity target-id]
   (rm/get-claim-set-version ctx granularity target-id))
+
+(defn pattern-key-bindings
+  "RR-22 (`OfferedPatternsAreUsable`): derive a pattern's declared key
+   bindings from its EXACT source text (a `:recommended-pattern` /
+   `:generated-tree-source` string) — a PURE function, no ctx, no effects.
+
+   Returns `{:reads […] :writes […] :outputs […]}`:
+   - `:reads`   — keys the pattern reads before any node inside it wrote
+                  them (its external inputs);
+   - `:writes`  — every key any node writes;
+   - `:outputs` — the `[:final {:keys […]}]` node's keys, present only
+                  when the pattern has a `:final` node.
+
+   Returns nil — never throws — for text that is not a string, does not
+   parse as Clojure data, or whose code was elided (the RR-6/G6 sanitize
+   placeholder `\"<inline-fn>\"` in place of a `:code` node's `:fn`): an
+   unusable pattern declares nothing rather than a binding that would
+   mislead a model rebinding it."
+  [source]
+  (rm/pattern-key-bindings source))
 
 (defn get-excluded-evidence
   "CC-4 (ADR 0023): return every claim delta the evidence guard REFUSED to
@@ -1896,60 +1961,6 @@
     {:embedding emb
      :fields-used fields
      :method (:method analysis)}))
-
-;; =============================================================================
-;; Pattern Discovery
-;; =============================================================================
-
-(defn get-low-scoring-evaluations
-  "Get evaluation events with low aggregate scores.
-
-   Reads :evaluation/trace-evaluated events from the event store and
-   filters to those below the score threshold.
-
-   Args:
-   - event-store: Grain event store
-   - sheet-id: UUID of the sheet to analyze
-   - options:
-     - :threshold - Score threshold (default 0.6)
-     - :limit - Max evaluations to return (default 100)
-
-   Returns vector of evaluation event bodies."
-  ([ctx sheet-id]
-   (discovery/get-low-scoring-evaluations ctx sheet-id {}))
-  ([ctx sheet-id options]
-   (discovery/get-low-scoring-evaluations ctx sheet-id options)))
-
-(defn build-discovery-workflow!
-  "Build the pattern discovery workflow. Returns sheet-id.
-
-   This is idempotent - calling multiple times with the same definition
-   will return the same sheet-id."
-  [ctx]
-  (discovery/build-discovery-workflow! ctx))
-
-(defn discover-patterns
-  "High-level API to run pattern discovery on a sheet's evaluations.
-
-   Analyzes low-scoring evaluation feedback from the evaluation component
-   to identify recurring failure patterns not covered by the current ontology.
-
-   Args:
-   - ctx: Context with event-store
-   - sheet-id: Sheet to analyze
-   - options:
-     - :min-traces - Minimum traces required to run (default 20)
-     - :score-threshold - Analyze traces below this score (default 0.6)
-
-   Returns map with:
-   - :discovered - count of new subtypes
-   - :analyzed-traces - count of traces analyzed
-   - :subtypes - vector of discovered subtype maps (with :parent-uri :proposed-uri :label :description :indicators :evidence-count)
-   - :skipped - true if insufficient traces (with :reason :found :required)"
-  ([ctx sheet-id]
-   (discovery/discover-patterns ctx sheet-id {}))
-  ([ctx sheet-id options]
-   (discovery/discover-patterns ctx sheet-id options)))
 
 ;; =============================================================================
 ;; Cache Preloading (Warm Startup)

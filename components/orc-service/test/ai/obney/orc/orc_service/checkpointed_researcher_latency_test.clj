@@ -27,15 +27,24 @@
                       :instruction "finish"
                       :writes [:summary]
                       :max-iterations 1
-                      :rlm {:recursive? true}}
+                      :rlm {:recursive? true :checkpointed? false}}
           checkpoint-node (assoc plain-node :rlm {:recursive? true
                                                    :checkpointed? true})
+          checkpoint-context
+          {:researcher-ownership-epoch 1
+           :claim-researcher-effect! (fn [_] {:command-result/events []})
+           :complete-researcher-effect! (fn [_] {:command-result/events []})}
           run-plain #(executor/execute-repl-researcher-rlm plain-node {} :test {})
-          run-checkpoint #(executor/execute-repl-researcher-rlm checkpoint-node {} :test {})]
+          run-checkpoint #(executor/execute-repl-researcher-rlm
+                           checkpoint-node {} :test checkpoint-context)]
       (with-redefs [llm/predict
                     (fn [_ _ _ _]
-                      {:outputs {:code "(store! :memo \"ok\")"}
+                      {:outputs {:code "(final! {:summary \"ok\"})"}
                        :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})]
+        (is (= :success (:status (run-plain)))
+            "the plain sample must execute rather than measure fail-fast setup")
+        (is (= :success (:status (run-checkpoint)))
+            "the checkpoint sample must cross its named engine boundary")
         (dotimes [_ 5] (run-plain) (run-checkpoint))
         (let [plain (summary (repeatedly 30 #(measure-ms run-plain)))
               checkpointed (summary (repeatedly 30 #(measure-ms run-checkpoint)))

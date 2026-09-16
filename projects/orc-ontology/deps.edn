@@ -1,9 +1,13 @@
 {:paths []
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
 
-        obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git"
-                               :git/sha "5de0735d04916c63055a76637fa9bdef36345533"
-                               :deps/root "projects/grain-core-v2"}
+        ;; Keep the ontology-only project on the same recovered Grain graph as
+        ;; the aggregate ORC projects while those upstream changes are pending.
+        ;; Mixing this graph with Grain's gitlib-owned schema-util produces two
+        ;; unrelated local roots and prevents the test basis from resolving.
+        cat/schema-util {:git/url "https://github.com/ObneyAI/grain.git" :git/sha "dbf5b5229aad09785e40f71e96adf65c90f971d5" :deps/root "components/schema-util"}
+
+        obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git" :git/sha "dbf5b5229aad09785e40f71e96adf65c90f971d5" :deps/root "projects/grain-core-v2"}
 
         ;; The ontology / general-memory stack — explicitly self-describing:
         ;;   ontology    → event-sourced concept graph + DJL embeddings +

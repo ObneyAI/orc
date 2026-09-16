@@ -803,12 +803,9 @@ The judge **reasons before it scores** (field order forces `:reasoning` + eviden
 (eval/evaluate-single :grounding trace-data)
 ;; => {:score 0.95 :feedback "All claims grounded..." :grounded-claims [...]}
 
-;; All judges with aggregation
-(eval/evaluate-trace trace-data)
-;; => {:score 0.87 :feedback "..." :dimensions [...]}
-
-;; Custom judge selection
-(eval/evaluate-trace trace-data {:judges [:grounding :reasoning]})
+;; All judges at once, with aggregation, is the event-driven path: attach judges to the
+;; workflow's nodes and read the :judge/score-emitted and :judge/composite-score-computed
+;; events. The synchronous all-judges call was retired.
 ```
 
 ### Judge Weights
@@ -931,7 +928,7 @@ For targeted improvement, find examples that scored poorly:
     (let [trace-data {:inputs (:inputs trace)
                       :outputs (:outputs trace)
                       :instruction (:instruction trace)}
-          result (eval/evaluate-trace trace-data)]
+          result (eval/evaluate-single :grounding trace-data)] ; per-judge; the all-judges aggregate was retired
       (assoc trace :eval-score (:score result)
                    :eval-feedback (:feedback result)))))
 
@@ -1038,7 +1035,7 @@ Bind `*use-mock-llm*` to avoid real LLM calls during evaluation:
   (let [trace-data {:inputs {:question "What is 2+2?"}
                     :outputs {:answer "4"}
                     :instruction "Answer accurately."}
-        result (eval/evaluate-trace trace-data)]
+        result (eval/evaluate-single :grounding trace-data)] ; per-judge; the all-judges aggregate was retired
     (is (number? (:score result)))
     (is (<= 0.0 (:score result) 1.0))))
 ```

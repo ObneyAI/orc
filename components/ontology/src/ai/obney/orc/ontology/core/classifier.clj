@@ -17,13 +17,10 @@
 ;; =============================================================================
 
 (def dimension->failure-uri
-  "Maps evaluation dimension names to root failure concept URIs."
-  {"Grounding" "failure:Grounding"
-   "Source Grounding" "failure:Grounding"
-   "Instruction Following" "failure:InstructionFollowing"
-   "Reasoning" "failure:Reasoning"
-   "Reasoning Quality" "failure:Reasoning"
-   "Completeness" "failure:Completeness"})
+  "Maps evaluation dimension names to root failure concept URIs. Delegates to
+   the static ontology's dictionary so this classifier and
+   static/get-failure-concept-for-dimension cannot drift apart (RR-32)."
+  static/dimension->failure-uri)
 
 ;; =============================================================================
 ;; Subtype Detection via Indicator Matching
@@ -147,6 +144,10 @@
   (let [{:keys [score dimensions]} evaluation-result
         failures (->> dimensions
                       (filter #(< (:score %) threshold))
+                      ;; Skip dimensions whose name is absent from the
+                      ;; dictionary instead of building a failure with a
+                      ;; nil URI (RR-32).
+                      (filter #(contains? dimension->failure-uri (:name %)))
                       (map (fn [{:keys [name score feedback]}]
                              (let [base-uri (get dimension->failure-uri name)
                                    confidence (dimension->confidence score threshold)

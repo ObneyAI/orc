@@ -147,7 +147,9 @@
                       :instruction "Guard test"
                       :reads [:document]
                       :writes [:summary]
-                      :rlm {:recursive? true}
+                      ;; This direct executor test isolates recursive dispatch
+                      ;; guarding and supplies no durable frontier/effect seam.
+                      :rlm {:recursive? true :checkpointed? false}
                       :max-iterations 4}
                 blackboard {:document {:key :document :schema :string
                                        :value "doc text" :version 1}}

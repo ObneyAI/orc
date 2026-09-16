@@ -337,6 +337,18 @@ whose grounding cannot be established must not become a durable claim.")
      :emitted-artifact          a verbatim artifact the engine itself produced,
                                 recorded from the completion event that
                                 produced it.
+     :emitted-artifact-outcome  RR-20: a verbatim artifact PLUS the engine's
+                                own deterministic execution-outcome (bookend
+                                `:status`) recorded with it — still a fact
+                                about what happened, never a judge's verdict.
+     :campaign-verdict          RR-20: RR-19's durable campaign verdict
+                                (`:ontology/tree-class-occurrence-recorded`
+                                `:success`) reinforcing a shape claim a
+                                bookend already created — a distinct,
+                                LATER mechanical fact from
+                                `:emitted-artifact-outcome`, still no
+                                occurrence named, still never a judge's
+                                verdict.
      :authored                  designer-written corpus knowledge (CC-9d). A
                                 curated guard has no occurrences by
                                 construction: nothing judged it, because
@@ -357,7 +369,8 @@ whose grounding cannot be established must not become a durable claim.")
    granted downstream in the claim fold, where the spec puts it, NOT here. The
    ONE rule below is unchanged: a delta that DOES name occurrences is resolved
    normally whatever it declares."
-  #{:legacy-corpus :classification-signature :emitted-artifact :authored})
+  #{:legacy-corpus :classification-signature :emitted-artifact
+    :emitted-artifact-outcome :campaign-verdict :authored})
 
 (defn- occurrence-explanations
   [occurrence-verdicts]

@@ -92,6 +92,26 @@
   [ctx tick-id]
   (core/get-tick ctx tick-id))
 
+(defn get-researcher-campaign
+  "Get the durable lifecycle of one checkpointed researcher campaign."
+  [ctx tick-id node-id]
+  (core/get-researcher-campaign ctx tick-id node-id))
+
+(defn get-researcher-iteration-records
+  "Get the ordered immutable iteration records for one researcher campaign."
+  [ctx sheet-id tick-id node-id]
+  (core/get-researcher-iteration-records ctx sheet-id tick-id node-id))
+
+(defn get-researcher-effect-claims
+  "Get the ordered durable effect-attempt ledger for one researcher campaign."
+  [ctx sheet-id tick-id node-id]
+  (core/get-researcher-effect-claims ctx sheet-id tick-id node-id))
+
+(defn get-provider-call-reservations
+  "Get the immutable provider-call reservation ledger for one budget root."
+  [ctx budget-sheet-id budget-tick-id]
+  (core/get-provider-call-reservations ctx budget-sheet-id budget-tick-id))
+
 ;; =============================================================================
 ;; Version Read Model Functions
 ;; =============================================================================

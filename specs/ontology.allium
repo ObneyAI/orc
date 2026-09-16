@@ -258,6 +258,17 @@ contract TaskClassification {
         -- deferral rate is a measured number, never an inference from
         -- missing events.
 
+    @invariant ClassificationIsOnePerCampaign
+        -- A task is classified once for the campaign that carries it out. The
+        -- signature a classification runs on is fixed by the work that was
+        -- asked for, so asking again during the same campaign asks an identical
+        -- question; a campaign that resumes reuses the answer it already has.
+        -- A verdict-bearing campaign contributes at most one occurrence,
+        -- however many quanta, resumes or restarts it took, and a repeated
+        -- assignment for the same occurrence does not become a second
+        -- occurrence. Cancelled and abandoned campaigns retain their evidence
+        -- but produce no occurrence.
+
     @invariant DecidedRankingIsRecorded
         -- The classified event records the PRE-GATE ranking the decision ran
         -- on, bounded to the retrieval's top-k, each entry reduced to
@@ -287,10 +298,31 @@ contract CustomOntologyMutation {
     create_concept: (ontology: Ontology, definition: ConceptDefinition) -> Concept
     update_concept: (ontology: Ontology, concept: Concept, changes: ConceptChanges) -> Concept
     create_relationship: (source: Concept, target: Concept, predicate: String, metadata: RelationshipMetadata) -> ConceptRelationship
+    -- Declared because BehavioralMintIdentityIsStable below constrains it: the
+    -- contract could not previously name the operation its own invariant governs.
+    mint_behavioral_subtree: (parent: Concept, name: String, body: DescriptionBody) -> Concept
 
     @invariant TenantScopedMutation
         -- Every mutation resolves ontology and concept identity within the
         -- initiating consumer's tenant before an event can be emitted.
+
+    @invariant WorkedPatternsAreProvenNotMerelyRecent
+        -- The pattern recorded for a class is one a campaign SUCCEEDED with. A
+        -- shape that failed is recorded as having failed and never displaces one
+        -- that worked, and a later attempt does not overwrite an earlier proven
+        -- one merely by being later. A class that genuinely succeeds with more
+        -- than one shape keeps each of them, so what is offered as proven is
+        -- distinguishable from what was merely most recent. Proof is graded:
+        -- a shape whose campaign reached a durable success verdict is
+        -- preferred over one that was merely emitted and observed to run,
+        -- however many times the latter was emitted.
+
+    @invariant OfferedPatternsAreUsable
+        -- A pattern offered to a model as proven can actually be used: the code
+        -- within it is present rather than elided, and what it reads and writes
+        -- is declared, so binding it to a new task is a mechanical step rather
+        -- than a reconstruction. A behavior remains evidence a model reasons
+        -- with and never a pipeline it is compelled down.
 
     @invariant BehavioralMintIdentityIsStable
         -- Repeated behavioral mints with the same name and parent resolve to
@@ -357,9 +389,17 @@ enum ClaimOperation { add | support | contradict | edit }
 -- authored: designer-written corpus knowledge. Authorship is a first-class
 -- basis rather than a fabricated support count, so provenance stays honest
 -- while curated guards keep the strength they were proven at.
+-- emitted_artifact_outcome: a verbatim artifact the engine produced, recorded
+-- together with the outcome the campaign that produced it actually reached. It
+-- is distinct from emitted_artifact, which records only that the artifact was
+-- produced and observed to run.
+-- campaign_verdict: the delta rests on a campaign's durable terminal verdict.
+-- This is the strongest artifact basis: what is offered as proven is something
+-- a campaign SUCCEEDED with, not merely something that was emitted often.
 enum EvidenceBasis {
     judged_occurrences | legacy_corpus | classification_signature
-    | emitted_artifact | authored
+    | emitted_artifact | emitted_artifact_outcome | campaign_verdict
+    | authored
 }
 
 -- Why a proposed delta was refused before it could become a claim. The guard
@@ -558,6 +598,13 @@ entity Claim {
     -- Support is earned: seeded on creation, incremented by support/edit,
     -- decremented by contradict. A claim is removed only at zero.
     support: Integer
+    -- How many distinct campaign verdicts have corroborated this exact claim.
+    -- Support alone cannot express this: an artifact emitted many times
+    -- accrues support without any campaign ever having SUCCEEDED with it. This
+    -- is the graded half of WorkedPatternsAreProvenNotMerelyRecent, and it is
+    -- what ranks a corroborated shape above a merely emitted one. Absent is
+    -- zero, so a claim no verdict has corroborated carries no such count.
+    verdict_corroborations: Integer?
     status: ClaimStatus
     -- Occurrence identity, not event identity: the [source_sheet, source_tick]
     -- pair that identifies one turn. This is what lets a claim be re-pooled if
@@ -723,28 +770,12 @@ rule LinkConcepts {
     )
 }
 
-rule ClassifyEvaluationFailure {
-    when: EvaluationClassified(trace, failure_uri, severity, triggers)
-
-    ensures: TreeWeaknessRecorded(
-        tree_id: trace.tree_id,
-        failure_uri: failure_uri,
-        severity: severity,
-        triggers: triggers
-    )
-}
-
-rule RecordSuccessfulPattern {
-    when: SuccessfulTreeOutcomeObserved(trace, pattern_uri, confidence, context, action)
-
-    ensures: TreeStrengthRecorded(
-        tree_id: trace.tree_id,
-        pattern_uri: pattern_uri,
-        confidence: confidence,
-        context: context,
-        action: action
-    )
-}
+-- Tree profiles are fed only by the consumer-facing strength and weakness
+-- recording commands. The automatic feeder that once classified a judged
+-- trace into a weakness and a high score into a strength was retired: it was
+-- triggered by an evaluation event that no producer ever emitted, and judge
+-- feedback reaches the loop through the consolidator's living descriptions
+-- instead (grill decision D6).
 
 rule ExtractLearnedRules {
     when: LearnedRuleExtractionRequested(tree_profile, minimum_confidence)
@@ -913,6 +944,14 @@ rule ReinforceClaim {
     ensures: claim.support = claim.support + 1
     ensures: claim.supporting_episodes = claim.supporting_episodes + delta.episodes
     ensures: claim.updated_at = now
+    -- Corroboration is counted only when THIS delta rests on a campaign's
+    -- durable verdict. An ordinary re-emit of the same artifact earns support
+    -- like any other observation, but it is not a campaign having succeeded,
+    -- so it must not raise the graded half of
+    -- WorkedPatternsAreProvenNotMerelyRecent.
+    ensures:
+        if delta.evidence_basis = campaign_verdict:
+            claim.verdict_corroborations = claim.verdict_corroborations + 1
     -- An edit additionally rewords the claim and may migrate its kind, keeping
     -- the support it earned. Guards and advice are refreshed only when the
     -- delta supplies them: a silent edit must not erase what an earlier one
@@ -1025,9 +1064,26 @@ rule AssembleDescriptionFromClaims {
 -- is earned by RECURRENCE; promoting one is earned by CONSISTENT, per-dimension
 -- quality. Separating them is what lets a recurring-but-mediocre class accrue an
 -- honest account of what it is bad at.
+-- An occurrence is recorded when a campaign reaches a verdict — success,
+-- failure or timeout — not when it is classified. A campaign that was cancelled
+-- or abandoned before reaching a verdict says something about our infrastructure
+-- and nothing about the behavior, so it never advances recurrence; the record
+-- of what it tried remains available for describing the class, but moves no
+-- gate. Failure is not cancellation or abandonment: a campaign that failed has
+-- produced a verdict and counts. A campaign has exactly one verdict: the first
+-- terminal completion of its node, blocked included, settles it, so a later
+-- completion delivered for the same node is a stray fact and never a verdict.
+-- The occurrence event carries only the class. The rules below read two DIFFERENT
+-- occurrence quantities, and each names the one it reads (the precedent set for
+-- ClassificationOutcome's nominal parameters): a class is DESCRIBED roughly every
+-- description_recurrence_threshold verdicts forever, because that counter resets
+-- each time a description consolidation fires; it is PROMOTED once, when its
+-- LIFETIME verdict count reaches promotion_occurrence_threshold and the other
+-- gates hold. Both thresholds are ten today; the schedules are not the same.
 rule DescribeRecurringClass {
-    when: TreeClassOccurrenceRecorded(tree_class, occurrences)
-    requires: occurrences >= description_recurrence_threshold
+    when: TreeClassOccurrenceRecorded(tree_class)
+    let occurrences_since_last_description = occurrences_since_last_description(tree_class)
+    requires: occurrences_since_last_description >= description_recurrence_threshold
 
     ensures: DescriptionConsolidationRequested(
         target_type: tree_class_target,
@@ -1036,9 +1092,10 @@ rule DescribeRecurringClass {
 }
 
 rule PromoteWellScoredClass {
-    when: TreeClassOccurrenceRecorded(tree_class, occurrences)
+    when: TreeClassOccurrenceRecorded(tree_class)
+    let lifetime_occurrences = lifetime_occurrence_count(tree_class)
     let quality = dimension_scores(tree_class)
-    requires: occurrences >= promotion_occurrence_threshold
+    requires: lifetime_occurrences >= promotion_occurrence_threshold
     requires: not already_harvested(tree_class)
     -- Per-dimension floors: one catastrophic dimension vetoes promotion, and
     -- cannot be compensated for by strength elsewhere.
@@ -1050,16 +1107,20 @@ rule PromoteWellScoredClass {
     -- Consistency, not average: durable creation requires the class to have
     -- qualified repeatedly, so a single disastrous occurrence is not averaged away.
     requires: consistently_qualified(tree_class, consistency_window)
-    -- Coherence: a tight cluster, not a grab-bag.
-    -- ADR 0029 (TRACKED GAP, measured): this axis passes VACUOUSLY for 100% of
-    -- occurrences in both real stores — 0/138 tree-execution events carry a
-    -- fingerprint or a source-tick-id, so there are no shapes to count, and a
-    -- class that solves by direct tool call emits no trees at all. HP-2b fixed
-    -- the emit site but NO post-fix bookend exists anywhere, so the signal is
-    -- unwitnessed end-to-end. The abstention stands (we do not gate on a signal
-    -- we have never seen work) but must be OBSERVABLE; requiring shape evidence
-    -- waits on one real post-HP-2b bookend with a non-nil fingerprint.
-    requires: distinct_shape_ratio(tree_class) <= maximum_shape_ratio
+    -- Coherence: a tight cluster, not a grab-bag. A winning shape is the terminal
+    -- shape that carried a successful campaign to success. The measured ratio is
+    -- distinct successful terminal shapes divided by successful campaigns.
+    -- Failed and timed-out campaigns remain recurrence, quality and weakness
+    -- evidence, but enter neither side of this ratio and therefore cannot make a
+    -- failure-heavy class look more coherent. Shapes abandoned during repair are
+    -- process evidence, not winning shapes.
+    -- ADR 0029 (TRACKED GAP, measured): this axis has never been WITNESSED —
+    -- it passed vacuously for 100% of occurrences in both real stores because
+    -- no tree-execution event carried a fingerprint. Until its real
+    -- distribution has been observed it is computed and REPORTED without
+    -- blocking promotion, because a threshold that has never fired cannot be
+    -- distinguished from one that never will: harvesting nothing looks
+    -- identical to nothing qualifying.
     let parent = nearest_abstract_behavior(tree_class)
     requires: parent != null
 
@@ -1072,6 +1133,33 @@ rule PromoteWellScoredClass {
         tree_class: tree_class,
         body: synthesised_behavior_body(tree_class),
         supporting_evidence: validated_claims(tree_class)
+    )
+}
+
+rule ReportSuccessfulShapeCoherence {
+    when: TreeClassOccurrenceRecorded(tree_class)
+    let lifetime_occurrences = lifetime_occurrence_count(tree_class)
+    let successful_campaigns = successful_campaign_count(tree_class)
+    let successful_shapes = successful_terminal_shape_count(tree_class)
+    let distinct_shapes = distinct_successful_terminal_shape_count(tree_class)
+    let measurable = successful_campaigns > 0 and successful_shapes > 0
+    let ratio = if measurable: distinct_shapes / successful_campaigns else: null
+    let report_status = shape_coherence_report_status(
+        successful_campaigns,
+        successful_shapes,
+        distinct_shapes,
+        maximum_shape_ratio
+    )
+
+    ensures: ShapeCoherenceReported(
+        tree_class: tree_class,
+        verdict_occurrences: lifetime_occurrences,
+        successful_campaigns: successful_campaigns,
+        successful_shape_observations: successful_shapes,
+        distinct_successful_shapes: distinct_shapes,
+        ratio: ratio,
+        status: report_status,
+        recorded_at: now
     )
 }
 
