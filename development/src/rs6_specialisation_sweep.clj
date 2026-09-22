@@ -37,8 +37,15 @@
 
 (defn classify-one!
   "Drive ONE instruction through the live wedge and the R-Inject render.
-   Returns the per-instruction record."
-  [ctx pass {:keys [slug instruction]}]
+   Returns the per-instruction record.
+
+   `ctx-extra` (optional, RS-7): merged onto the wedge ctx AFTER :sheet-id /
+   :tick-id, so a caller can carry extra keys through the whole classify
+   call (e.g. rs7_traffic_sweep's `::rs7-traffic-sweep/task-slug`, which its
+   `install-tee!` reads back off ctx at the `orc/execute` / `rerank!` call
+   sites deep inside the wedge). No behaviour change when omitted."
+  ([ctx pass entry] (classify-one! ctx pass entry {}))
+  ([ctx pass {:keys [slug instruction]} ctx-extra]
   (let [sheet-id (random-uuid)
         tick-id (random-uuid)
         node {:id (random-uuid)
@@ -47,7 +54,7 @@
               :instruction instruction
               :reads [] :writes []
               :rlm {:auto-classify? true}}
-        wedge-ctx (assoc ctx :sheet-id sheet-id :tick-id tick-id)
+        wedge-ctx (merge (assoc ctx :sheet-id sheet-id :tick-id tick-id) ctx-extra)
         start (System/currentTimeMillis)
         classified-node (tp/maybe-auto-classify-and-set-context node wedge-ctx)
         rendered-node (tp/apply-r05-classifier-context classified-node wedge-ctx)
@@ -96,7 +103,7 @@
      ;; The render: the payload's :domain map (structured) and the block.
      :payload-domain (:domain structural)
      :rendered-instruction (:instruction rendered-node)
-     :classified-event classified}))
+     :classified-event classified})))
 
 (defn- freq-of [k results] (frequencies (map k results)))
 

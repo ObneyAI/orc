@@ -398,3 +398,45 @@
               structural (get-in result-node [:context :r05-classifier :structural])]
           (is (not (contains? structural :domain))
               ":domain key is absent, not nil-valued"))))))
+
+;; =============================================================================
+;; RS-7 Slice 0 characterisation — a plain :match whose ASSIGNED id happens
+;; to already BE a domain child (a newborn reached again) still carries no
+;; :domain key: maybe-assign-domain-child never ran here (classify-task is
+;; stubbed wholesale, as production dispatches it), so the render has no
+;; child line to show today even though the assigned target is itself a
+;; domain child. Pinned so Slice 1 (a domain child is a leaf on the domain
+;; axis) can flip this by name once the runtime produces a real :domain
+;; payload for this case.
+;; =============================================================================
+
+(deftest wedge-omits-domain-on-a-plain-match-whose-target-is-a-domain-child
+  (testing "RS-7 characterisation: a stubbed :match classify-task result
+            whose :assigned-tree-id is a domain child's own id still carries
+            no :domain key — not nil-valued, ABSENT."
+    (let [domain-child-id (random-uuid)
+          structural-result {:assigned-tree-id domain-child-id
+                              :confidence 0.9
+                              :was-fresh-mint? false
+                              :reasoning "deterministic match, assigned id happens to be a domain child"
+                              :top-candidates []
+                              :rerank-fallback? false
+                              :parent-tree-id nil
+                              :assigned-via :match}
+          behavioral-result {:behaviors [] :rerank-fallback? false}
+          node {:id (random-uuid)
+                :type :repl-researcher
+                :name "test"
+                :instruction "x"
+                :reads []
+                :writes []
+                :rlm {:auto-classify? true}}
+          wedge-ctx {:sheet-id (random-uuid) :tick-id (random-uuid)}]
+      (with-redefs [ontology/classify-task (constantly structural-result)
+                    ontology/classify-behaviors (constantly behavioral-result)
+                    ai.obney.grain.command-processor-v2.interface/process-command
+                    (constantly {:command-result/events []})]
+        (let [result-node (tp/maybe-auto-classify-and-set-context node wedge-ctx)
+              structural (get-in result-node [:context :r05-classifier :structural])]
+          (is (not (contains? structural :domain))
+              ":domain key is absent — no child line renders for this case today"))))))

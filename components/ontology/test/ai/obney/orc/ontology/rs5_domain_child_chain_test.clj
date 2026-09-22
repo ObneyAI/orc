@@ -446,3 +446,43 @@
           (let [desc (ontology/get-description ctx :tree-fingerprint (:target-id (first minted)))]
             (is (= label (:domain-label desc))
                 "the processor-driven mint also carries the domain label")))))))
+
+;; =============================================================================
+;; RS-7 Slice 0 characterisation — walk-down FROM the parent INTO a REAL
+;; minted domain child returns :walk-down provenance, not a landing: no
+;; :domain-label, no :domain-verdict. maybe-assign-domain-child only ever
+;; widens a :tree-class-axis :match on the ORIGINAL top-1's own axis — a
+;; walk-down result never passes through it. Pinned deterministically so
+;; Slice 1 (a domain child is a LEAF on the domain axis) can flip this by
+;; name.
+;; =============================================================================
+
+(deftest walk-down-into-a-newborn-returns-walk-down-provenance-not-a-landing
+  (testing "the PARENT is top-1 at fitness 0.8 (below specificity-threshold
+            0.9, above the match threshold 0.7) -> walk-down descends into
+            its REAL minted domain child (get-tree-class-children reads the
+            real graph edge RS-3's mint-domain-child created) ->
+            :assigned-via :walk-down, assigned id = the child, no
+            :domain-label, no :domain-verdict"
+    (with-test-ctx [ctx]
+      (let [parent-id (random-uuid)
+            child-id (random-uuid)]
+        (dispatch! ctx (mint-command parent-id child-id "marathon-training-plan"))
+        (dispatch! ctx (claim-command ctx child-id "marathon training plan: 16-week schedule"))
+        (with-redefs [ontology/search-descriptions
+                      (fn [_ _] [(tree-class-candidate parent-id 0.8 20.0)])
+                      reranker/rerank!
+                      (fn [_ opts]
+                        (mapv (fn [c] {:document-id (:document-id c)
+                                       :reasoning "walks down into the minted child"
+                                       :fitness-score 0.95})
+                              (:candidates opts)))
+                      tc/get-consolidation-total* (fn [_ _ _] 0)]
+          (let [r (ontology/classify-task ctx {:task-signature "x" :threshold 0.7})]
+            (is (= :walk-down (:assigned-via r)))
+            (is (= child-id (:assigned-tree-id r)))
+            (is (= parent-id (:parent-tree-id r)))
+            (is (not (contains? r :domain-label))
+                "walk-down provenance is not a domain landing today")
+            (is (not (contains? r :domain-verdict))
+                "maybe-assign-domain-child never ran on a :walk-down result")))))))

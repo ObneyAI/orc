@@ -1,0 +1,66 @@
+{:slug "002-recipe-scaling-v01",
+ :group "recipe-scaling",
+ :variant 1,
+ :claims [],
+ :occurrences
+ [{:assigned-tree-id #uuid "505789aa-e1f1-35ea-942a-1f8185ab3482",
+   :verdict :success}],
+ :deferred [],
+ :usage
+ {:prompt-tokens 52097,
+  :completion-tokens 2630,
+  :total-tokens 54727,
+  :by-node
+  {[{:type :leaf,
+     :node-id #uuid "fa8c6627-28c4-437c-a9b3-092867ab1574"}]
+   {:prompt-tokens 52097,
+    :completion-tokens 2630,
+    :total-tokens 54727}}},
+ :render
+ {:arm :treatment,
+  :candidates
+  [{:axis :structural,
+    :candidate-id "seed:tree:ParallelIndependent",
+    :version nil,
+    :score 0.7}
+   {:axis :structural,
+    :candidate-id "seed:tree:ParallelIndependent",
+    :version nil,
+    :score 0.7}
+   {:axis :behavioral,
+    :candidate-id "86275302-0c3d-35ae-b74e-abd4f27984eb",
+    :version 1,
+    :score 0.8}],
+  :prepend-chars 9828,
+  :prepend
+  "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: recipe-scaling); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 2 from corpus retrieval)\n#### Top match — ParallelIndependent (confidence: 0.70)\nWhy this fits: This task requires two distinct transformations on a single input: scaling ingredient quantities and analyzing spice ratios at volume. The :parallel structure with independent children fits the need to perform these two separate logical operations (math scaling vs. culinary reasoning) and aggregate them into a single result.\n\nPattern guidance (seed `:summary`):\nParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.\n\n\n#### Alternative #1 — ParallelIndependent (confidence: 0.70)\nWhy this fits: Matches the intent to perform independent transformations (scaling vs. ratio check) on one input recipe. The recommended pattern of parallel LLM calls aggregating into a final result aligns with the two-part request in the query.\n\nPattern guidance (seed `:summary`):\nParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.\n\n\nAssigned to domain child 505789aa-e1f1-35ea-942a-1f8185ab3482 (label: recipe-scaling) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 1 from corpus retrieval)\n1. Behavioral: Transformation (confidence: 0.80)\n   Why this fits: This task is primarily a math-based scaling operation (serves 6 to serves 20). The candidate recommends using :code for deterministic transformations to preserve 'byte-for-byte fidelity'. While the user also asks for spice ratio adjustments (which might require judgment), the core 'scale every ingredient' requirement is a mechanical reshape of data best handled by a :code node as described here.\n\n   Guidance (seed `:summary`):\n   Transformation is mechanical reshape of data between deterministic shapes. ALWAYS use :code (not :llm) for deterministic transformations — preserves fidelity, costs nothing, runs in ms; :llm for transformation produces non-deterministic output. For per-item independent transformations, :map-each isolates per-item failures. ALWAYS declare :output-schemas on transformation output and :input-schemas on downstream :reads so shape mismatch fails at the boundary, not deep in the consumer. Composes into etl-pipeline (sequential transform chain), parallel-sum (map-reduce transformation), sequential-pipeline shells, and map-reduce shells. Avoid for transformations that need judgment (semantic rephrasing / style shift — use :llm) or for unstructured input (extract first).\n\nCapabilities:\n  - given input data + a target shape spec, emit the input restructured to the target shape\n  - natural fit anywhere a tree needs to change data shape without semantic interpretation\n  - outputs are typically a single restructured value or a vector of per-item transformations\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** implement transformations in :code (NOT :llm) when the mapping is deterministic — preserves byte-for-byte fidelity, costs zero tokens, runs in milliseconds (confidence 1.00, evidence-count 1)\n    - Good when: the transformation rule can be expressed as a pure function over the input\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:input] :writes [:output] :fn (fn [{:keys [inputs]}] {:output (mapv (fn [r] (select-keys r [:a :b])) (:input inputs))})}]\n      ```\n\n  - **Trait:** for per-item independent transformations over a vector, use :map-each rather than a single batch :code call when the per-item work is non-trivial — supports per-item failure isolation (confidence 1.00, evidence-count 1)\n    - Good when: items can fail independently AND partial success has value\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :records :as :record :writes [:transformed]} [:code {:reads [:record] :writes [:transformed] :fn (fn [{:keys [inputs]}] {:transformed (assoc (:record inputs) :stamp \"x\")})}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** using :llm for a deterministic transformation (CSV → JSON, snake_case → camelCase) produces non-deterministic output AND wastes tokens (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation rule is fully specifiable\n    - Recommended fix: always :code for deterministic transformations; reserve :llm for transformations that need judgment (semantic-rephrasing / style-shift / domain-translation)\n\n  - **Failure mode:** transformations without :output-schemas on the downstream :reads break silently when an upstream change shifts the output shape — the consumer gets garbage instead of an error (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation feeds another stage that binds on specific fields\n    - Recommended fix: declare :output-schemas on the transformation output AND :input-schemas on the downstream :reads — shape mismatch fails loudly at the boundary, not deep in the consumer\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - CSV row → JSON object mapping per-field\n  - extracted entity records → DB-row shape with derived fields\n  - input list → output list with N filters / projections applied\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 86275302-0c3d-35ae-b74e-abd4f27984eb)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\n"},
+ :status :success,
+ :generated-tree-node-count 6,
+ :classified
+ {:outcome :matched,
+  :assigned-via :mint-domain-child,
+  :assigned-tree-id #uuid "505789aa-e1f1-35ea-942a-1f8185ab3482",
+  :parent-tree-id #uuid "0f80961b-9318-329c-91c3-8f77cda96c43",
+  :domain-label "recipe-scaling",
+  :domain-verdict
+  {:domain-coverage :uncovered,
+   :domain-label "recipe-scaling",
+   :domain-reasoning
+   "The candidate matches the structural shape of performing independent transformations on one input, but its representative uses are focused on document processing (summary/entities) rather than recipe manipulation or culinary scaling."},
+  :was-fresh-mint? true},
+ :child-after-run
+ {:claim-count 2,
+  :claim-kinds {:representative-use 1, :strength 1},
+  :concept-label "recipe-scaling",
+  :summary
+  "Representative uses: INSTRUCTION:\n\nThis chili recipe serves 6: 2 lbs ground beef, 1 onion, 2 cans beans, 1 can tomatoes, 2 tbsp chili powder. I need it to serve 20 for a work potluck -- can you scale every ingredient and note if any spice ratios should change at that volume?\n\nREADS: (none)\nWRITES: :result\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none). Strengths: emits the 26044344 worked tree for tasks of this class.",
+  :representative-uses
+  ["INSTRUCTION:\n\nThis chili recipe serves 6: 2 lbs ground beef, 1 onion, 2 cans beans, 1 can tomatoes, 2 tbsp chili powder. I need it to serve 20 for a work potluck -- can you scale every ingredient and note if any spice ratios should change at that volume?\n\nREADS: (none)\nWRITES: :result\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none)"],
+  :version 3,
+  :weakness-count 0,
+  :consolidated-from-event-count 0,
+  :strength-count 1},
+ :minted
+ [{:parent-tree-id #uuid "0f80961b-9318-329c-91c3-8f77cda96c43",
+   :child-tree-id #uuid "505789aa-e1f1-35ea-942a-1f8185ab3482",
+   :domain-label "recipe-scaling"}]}

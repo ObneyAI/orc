@@ -125,8 +125,24 @@ The four moves available to a model shown a reference behavior: use its pattern 
 _Avoid_: reuse, fork, inherit
 
 **Domain child**:
-A class minted under a shape class when a task matched that shape but the shape's declared domain covers the task's only partly or not at all. It keeps the parent's proven shape, pins the task's domain, carries one stable identity derived from the parent and its domain label, and is the identity the task's recurrence, consolidation and harvest accrue under.
+A class minted under a shape class when a task matched that shape but the shape's declared domain covers the task's only partly or not at all. It keeps the parent's proven shape, pins the task's domain, carries one stable identity derived from the shape it was born under and its domain label, is found again by that label whatever shape a later occurrence retrieves (see Domain family), and is the identity the task's recurrence, consolidation and harvest accrue under.
 _Avoid_: subclass, variant, specialised seed (a seed is authored; a domain child is minted from a judged verdict)
+
+**Domain family**:
+All occurrences of one domain within one tenant, landing on the domain child that was minted first for that domain, whatever shape a later occurrence retrieves. The family's parent is the shape it was first minted under; the shape is context for the model, the family is the identity evidence accrues under.
+_Avoid_: sibling set, cluster, label group (a family is one class, not a grouping of classes)
+
+**Merge verdict**:
+The discrete answer, with its reasons, to whether a task that would otherwise mint a new domain family belongs to an existing one shown to the judge: the named family, new, or unknown. Judged over the families' full descriptions, never over a similarity number.
+_Avoid_: merge score, dedup, fuzzy match
+
+**Covered-seed protection**:
+When the best-fitting shape would mint a domain family but another retrieved class is judged to cover the task's domain, has no families of its own, and fits well enough to match, the task is assigned to that covering class instead, and the passed-over shape is recorded. An authored class keeps its own traffic.
+_Avoid_: seed priority, fitness override
+
+**Newborn family**:
+A domain family that has been minted but has not yet recurred enough to be surfaced by the retrieval gate. It can be landed on and merged into from the moment it is born; it is shown to the model as a pattern only once it has evidence.
+_Avoid_: provisional class, draft child
 
 **Domain coverage**:
 The reranker's discrete verdict on whether a candidate's declared domain — its representative uses and guards — covers the task's domain: covered, partial, uncovered, or unknown. A verdict with its reasons, never a number; distinct from fitness, which is shape-and-intent fit.

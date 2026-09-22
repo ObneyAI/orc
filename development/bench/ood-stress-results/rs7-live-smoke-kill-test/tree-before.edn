@@ -1,0 +1,92 @@
+[{:uri "tree-class:00000000-c1c1-4001-b001-d0c0a0a0a0a1",
+  :label "00000000-c1c1-4001-b001-d0c0a0a0a0a1",
+  :broader #{"tree-class:00000000-c1c1-4001-b005-d0c0a0a0a0a5"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+  :label "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+  :broader #{"tree-class:00000000-c1c1-4001-b005-d0c0a0a0a0a5"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+  :label "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+  :broader #{"tree-class:seed:tree:ParallelIndependent"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+  :label "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+  :broader #{"tree-class:00000000-c1c1-4001-b005-d0c0a0a0a0a5"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+  :label "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+  :broader #{"tree-class:seed:tree:ChunkedExtraction"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:0682ce06-3c86-3083-92db-e2c43a66e54b",
+  :label "0682ce06-3c86-3083-92db-e2c43a66e54b",
+  :broader #{"tree-class:seed:tree:ValidationLoop"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:153f1c69-e1d8-3592-8e62-391a7fab2dac",
+  :label "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+  :broader #{"tree-class:seed:tree:ResearchThenSynthesize"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:1c0f6cd8-6187-3d8e-993e-2df630968760",
+  :label "1c0f6cd8-6187-3d8e-993e-2df630968760",
+  :broader #{"tree-class:seed:tree:MapReduce"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:24bfab75-94ed-35f8-9323-ec6e33b0440d",
+  :label "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+  :broader #{"tree-class:seed:tree:FallbackRecovery"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:5a08300e-10e3-305a-80c1-17eafea15ff7",
+  :label "5a08300e-10e3-305a-80c1-17eafea15ff7",
+  :broader #{"tree-class:seed:tree:SequentialPipeline"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :label "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :broader #{"tree-class:seed:tree:ValidationLoop"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:aef71f08-76bf-373c-862a-1250ef23f450",
+  :label "aef71f08-76bf-373c-862a-1250ef23f450",
+  :broader #{"tree-class:seed:tree:SequentialPipeline"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:c1b27691-4a1b-3ee2-bb73-595b155b99be",
+  :label "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+  :broader #{"tree-class:seed:tree:FallbackRecovery"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:c38abdbd-be30-38e7-8f81-e431cdba7a07",
+  :label "c38abdbd-be30-38e7-8f81-e431cdba7a07",
+  :broader #{"tree-class:seed:tree:MapReduce"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:d41af303-dcb2-3599-9198-0c006d1cc364",
+  :label "d41af303-dcb2-3599-9198-0c006d1cc364",
+  :broader #{"tree-class:seed:tree:ResearchThenSynthesize"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :label "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :broader #{"tree-class:seed:tree:SequentialPipeline"},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:seed:tree:ChunkedExtraction",
+  :label "seed:tree:ChunkedExtraction",
+  :broader #{},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:seed:tree:FallbackRecovery",
+  :label "seed:tree:FallbackRecovery",
+  :broader #{},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:seed:tree:MapReduce",
+  :label "seed:tree:MapReduce",
+  :broader #{},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:seed:tree:ParallelIndependent",
+  :label "seed:tree:ParallelIndependent",
+  :broader #{},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:seed:tree:ResearchThenSynthesize",
+  :label "seed:tree:ResearchThenSynthesize",
+  :broader #{},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:seed:tree:SequentialPipeline",
+  :label "seed:tree:SequentialPipeline",
+  :broader #{},
+  :provenance {:kind :system-static}}
+ {:uri "tree-class:seed:tree:ValidationLoop",
+  :label "seed:tree:ValidationLoop",
+  :broader #{},
+  :provenance {:kind :system-static}}]

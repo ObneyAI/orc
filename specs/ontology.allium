@@ -333,30 +333,77 @@ contract TaskClassification {
         -- the domain axis and the reason.
 
     @invariant DomainChildIdentityIsStable
-        -- A domain child minted under a shape class resolves to one identity
-        -- derived from that parent and the canonical domain label, so the same
-        -- domain under the same parent lands on the same class whether or not
-        -- retrieval found it — the rule BehavioralMintIdentityIsStable states
-        -- for the behavioral layer, applied to the identity layer. The label is
-        -- canonical because it is CHOSEN: the reranker is shown the parent's
-        -- existing domain children and reuses one when it fits, coining a new
-        -- label only when none does (a judged choice, never a string rule;
-        -- grill D7). Its parent edge exists in the concept graph from the moment
-        -- it is minted, and it describes itself from birth with its label and
-        -- the signature that minted it, so the walk-down can reach it and the
-        -- next occurrence can converge on it.
+        -- A domain child's identity is derived from the shape it was born under
+        -- and the canonical domain label, once, at its first mint — so every
+        -- identity minted before this arc stays valid — and a later occurrence of
+        -- the same domain FINDS it by that canonical label across all of the
+        -- tenant's domain families through the concept graph, whatever shape
+        -- retrieval scored top-1 this time (convergence grill C0/C1; ADR 0007).
+        -- The family's parent edge is its birth shape, which the render shows as
+        -- the shape the task matched. The label is canonical because it is
+        -- CHOSEN: the reranker is shown the tenant's existing family labels (a
+        -- bounded list) and reuses one when it fits, coining a new label only
+        -- when none does — a judged choice, never a string rule.
+
+    @invariant DomainFamilyDescribesItselfFromBirth
+        -- A family is born with a rich, self-contained self-description through
+        -- the claim path: its purpose (subject matter, material, output kind —
+        -- drawn from the verdict's reasoning and the task), the shape it was born
+        -- under and that shape's role, the signature that minted it, and the
+        -- slots that fill as evidence lands (worked pattern, successes,
+        -- failures, related families); its concept is embedded at birth so the
+        -- hybrid search over the tree-class ontology (graph proximity and
+        -- embedding similarity, rank-fused) finds it by meaning. Retrieval and
+        -- the merge judge compare substance, never labels alone (grill C2).
+
+    @invariant DomainFamilyMergeIsJudged
+        -- A classification that would mint a domain family first retrieves the
+        -- nearest existing families BY RANK (merge_candidate_count of them, no
+        -- similarity cutoff; an empty neighbourhood is "new" without a call) and
+        -- asks one discrete question with their full descriptions in view: same
+        -- family as one of these (named), a new family, or unknown — reason
+        -- before verdict. Same lands on that family, new mints, unknown defers on
+        -- the domain axis (reason merge_unresolved) and mints nothing. The
+        -- question is never asked on a landing or a covered match, and it is
+        -- never replaced by a threshold over a similarity number (grill C3).
+
+    @invariant CoveredSeedProtection
+        -- Before the domain axis runs, a tree-class candidate in the ranking
+        -- that is judged covered, has no domain families of its own, and is at
+        -- or above the ordinary match threshold wins the assignment over a top
+        -- match that would mint; the passed-over shape is recorded on the
+        -- classified event (domain_selection). An authored class keeps its own
+        -- traffic. A parent that already has families saying "covered" is not
+        -- evidence (the D7b finding) and never protects (grill C4).
+
+    @invariant DomainFamilyIsALeafOnTheDomainAxis
+        -- A domain family is never a shape class for the domain axis: any match
+        -- or walk-down that resolves to a family is a LANDING on it (its parent
+        -- is its own broader edge, its label its concept label, the verdict not
+        -- consulted), so there are no grandchildren and the classified event
+        -- carries the domain facts however the family was reached. A task that
+        -- reaches a family but is judged a different domain mints under the
+        -- retrieved SHAPE, never under the family (grill C5).
 
     @invariant DomainChildrenAreAlwaysConsidered
-        -- A matched shape class that has domain children is not treated as a
-        -- leaf: after EVERY tree-class match, whatever the top match's fitness
-        -- (the specificity threshold that lets a confident match skip the
-        -- walk-down does not skip this), the classification compares the judged
-        -- label against the class's existing domain children, so a repeat of a
-        -- domain lands on its child even when the coverage verdict does not
-        -- repeat. Convergence never depends on the reranker giving the same
-        -- verdict twice (grill D7). The one carve-out is the deferral above: a
-        -- blank label or a failed children lookup leaves the task on the shape
-        -- class with the deferral recorded, rather than guessing a child.
+        -- A matched shape class is never treated as a leaf on the domain axis
+        -- merely because retrieval was confident: after EVERY tree-class match,
+        -- whatever the top match's fitness (the specificity threshold that lets a
+        -- confident match skip the walk-down does not skip this), the
+        -- classification runs covered-seed protection, then the tenant-wide
+        -- family lookup by canonical label, then — only when it would mint — the
+        -- merge judge, so a repeat of a domain lands on its family even when the
+        -- coverage verdict does not repeat. The one carve-out is the deferral
+        -- above: a blank label, a failed family lookup or an unresolved merge
+        -- leaves the task on the shape class with the deferral recorded, rather
+        -- than guessing a family.
+
+    @invariant NewbornFamilyIsMatchableNotSurfaced
+        -- A family that has not yet reached the retrieval gate is kept among the
+        -- candidates a classification can land on (matching stays ungated, else a
+        -- hidden class could never recur and never be surfaced) but is not shown
+        -- to the model as a pattern until it has evidence; a curated seed at zero
+        -- occurrences is surfaced as before (grill C6).
 }
 
 contract OntologyExtraction {
@@ -613,16 +660,23 @@ config {
     -- comparison — DomainChildrenAreAlwaysConsidered); bundle_threshold is the
     -- floor below which a non-match bundles onto its nearest class rather than
     -- minting; retrieval_gate is the occurrence count a recurring tree-class
-    -- needs before it is surfaced again (a curated or newborn class at zero is
-    -- surfaced); classify_retrieval_k bounds the ranking DecidedRankingIsRecorded
-    -- records; the rerank timeout and its retry count are what produce the
-    -- timeout fallback deferral.
+    -- needs before it is surfaced again (a curated class at zero is surfaced; a
+    -- newborn family is matchable but surfaced only from the gate —
+    -- NewbornFamilyIsMatchableNotSurfaced); classify_retrieval_k bounds the
+    -- ranking DecidedRankingIsRecorded records; the rerank timeout and its retry
+    -- count are what produce the timeout fallback deferral.
+    -- Convergence grill C2/C3: merge_candidate_count bounds the families the
+    -- merge judge is shown (a rank bound, never a similarity cutoff);
+    -- family_label_list_bound bounds the tenant-wide label list the reranker is
+    -- shown (most recently minted first).
     specificity_threshold: Decimal = 0.9
     bundle_threshold: Decimal = 0.6
     retrieval_gate: Integer = 3
     classify_retrieval_k: Integer = 5
     rerank_timeout_ms: Integer = 900000
     rerank_timeout_retries: Integer = 1
+    merge_candidate_count: Integer = 5
+    family_label_list_bound: Integer = 50
 }
 
 entity Ontology {
@@ -905,61 +959,125 @@ rule SeedBaselineDescriptions {
     )
 }
 
--- R-Inject specialisation grill D2/D3/D4: the waterfall's missing step. A task
--- that matches a LEAF shape class on fitness but whose domain that class does
--- not cover gets its own identity under that leaf, so recurrence, consolidation
--- and harvest accrue per domain instead of blurring the shape class. Partial
--- coverage assigns the leaf and records the label as a claim on it; unknown
--- defers (see DomainCoverageIsJudgedNotInferred). Walk-down's own mint (a fresh
--- leaf under the deepest matched ancestor when children exist and none fits)
--- is unchanged; this rule covers the case walk-down cannot reach: a direct
--- leaf match.
--- Grill D7 (RS-P1 evidence): the reranker puts genuine domain drift in
--- `partial` and says `uncovered` rarely, so a child is minted on either.
--- `covered` stays on the leaf. The label is chosen among the leaf's EXISTING
--- domain children before a new one is coined (a judged choice, never a
--- string rule), and the identity derives from parent + that canonical label.
--- Grill D7b (RS-P1b evidence): the coverage verdict decides only a class's
--- FIRST domain child. Once a class carries children the reranker calls it
--- covered regardless (20/21, unmoved by instruction), so the verdict is not
--- consulted for it: the judged label decides — a sibling's label lands the
--- task on that child (LandOnDomainChild), a new label mints a sibling
--- (MintSiblingDomainChild). Convergence never depends on the verdict repeating.
--- The trigger is the classify contract's DECISION-TIME fact: a tree-class
--- match, with the top match's domain verdict, BEFORE the domain axis is
--- applied and before the classified event is recorded — the classified event
--- then carries whichever assignment these rules decide (the shape class or a
--- domain child), its provenance, the verdict, the children considered and any
--- deferral (DecidedRankingIsRecorded). shape_class is the matched tree-class
--- concept; domain_children(shape_class) are its narrower concepts carrying a
--- judged domain label (black box: a narrower concept whose label is non-blank
--- and not its own identifier — every other tree-class concept carries its
--- identifier as its label); canonical_domain_label(label) is the formatting
--- rule (trim, lower-case, whitespace to hyphen; null when blank — never a
--- synonym list or a match over prose); domain_child_identity(shape_class,
--- canonical_label) is the stable derivation (DomainChildIdentityIsStable).
-rule MintDomainChild {
-    when: LeafShapeMatched(occurrence, shape_class, coverage, domain_label)
-    let children = domain_children(shape_class)
-    let canonical_label = canonical_domain_label(domain_label)
-    requires: children.count = 0
+-- R-Inject specialisation grill D2/D3/D4 (ADR 0006) and the convergence grill
+-- C0–C8 (ADR 0007): a task that matches a SHAPE class on fitness but whose
+-- domain that class does not cover gets its own identity — a domain family —
+-- so recurrence, consolidation and harvest accrue per domain instead of
+-- blurring the shape class. The trigger is the classify contract's
+-- DECISION-TIME fact: a tree-class match, with the whole ranking and each
+-- candidate's domain verdict, BEFORE the domain axis is applied and before the
+-- classified event is recorded — the classified event then carries whichever
+-- assignment these rules decide (a shape class, a covering class, or a family),
+-- its provenance, the verdict, the families considered, the merge verdict and
+-- any deferral (DecidedRankingIsRecorded).
+-- shape_class is the matched tree-class concept and is never itself a family
+-- (DomainFamilyIsALeafOnTheDomainAxis); ranking is the retrieval's top-k with
+-- per-candidate verdicts. Black boxes: canonical_domain_label(label) is the
+-- formatting rule (trim, lower-case, whitespace to hyphen; null when blank —
+-- never a synonym list or a match over prose); domain_family(canonical_label)
+-- is the tenant-wide lookup of the family carrying that label through the
+-- concept graph (agent-authored tree-class concepts), null when none;
+-- covered_leaf_neighbour(ranking) is a candidate judged covered, with no
+-- families of its own, at or above the match threshold, or null;
+-- nearest_families(signature, reasoning, ranking) is the hybrid search's ranked
+-- neighbourhood bounded by merge_candidate_count; merge_verdict(...) is the
+-- judge's discrete answer over those families' full descriptions (a named
+-- family, new, or unknown); domain_child_identity(shape_class, canonical_label)
+-- is the stable derivation (DomainChildIdentityIsStable); birth_description(...)
+-- is the rich self-description of DomainFamilyDescribesItselfFromBirth.
+-- Order (DomainChildrenAreAlwaysConsidered): CoveredSeedWins → LandOnDomainFamily
+-- → MergeIntoDomainFamily → MintDomainFamily.
+rule CoveredSeedWins {
+    when: LeafShapeMatched(occurrence, shape_class, ranking, coverage, domain_label)
+    let neighbour = covered_leaf_neighbour(ranking)
+    requires: neighbour != null
     requires: coverage in {partial, uncovered}
+    requires: domain_family(canonical_domain_label(domain_label)) = null
+
+    ensures: TaskAssignedToShape(
+        shape: neighbour,
+        provenance: matched,
+        domain_selection: neighbour,
+        passed_over: shape_class,
+        minted_by: occurrence
+    )
+}
+
+rule LandOnDomainFamily {
+    when: LeafShapeMatched(occurrence, shape_class, ranking, coverage, domain_label)
+    let canonical_label = canonical_domain_label(domain_label)
     requires: canonical_label != null
+    let family = domain_family(canonical_label)
+    requires: family != null
+
+    -- The classified event's assignment IS the landing: the family's identity,
+    -- the landing provenance and the family's label; the family's parent stays
+    -- its birth shape; no concept work, no second occurrence.
+    ensures: TaskAssignedToDomainChild(
+        child: family,
+        provenance: landed_on_domain_child,
+        minted_by: occurrence
+    )
+}
+
+rule LandOnReachedDomainFamily {
+    when: DomainFamilyReached(occurrence, family)
+
+    -- A match or walk-down that resolves to a family is a landing on it, however
+    -- it was reached (DomainFamilyIsALeafOnTheDomainAxis).
+    ensures: TaskAssignedToDomainChild(
+        child: family,
+        provenance: landed_on_domain_child,
+        minted_by: occurrence
+    )
+}
+
+rule MergeIntoDomainFamily {
+    when: LeafShapeMatched(occurrence, shape_class, ranking, coverage, domain_label)
+    let canonical_label = canonical_domain_label(domain_label)
+    requires: canonical_label != null
+    requires: covered_leaf_neighbour(ranking) = null
+    requires: domain_family(canonical_label) = null
+    requires: coverage in {partial, uncovered}
+    let candidates = nearest_families(occurrence.signature, occurrence.domain_reasoning, ranking)
+    let verdict = merge_verdict(occurrence.signature, candidates)
+    requires: verdict.kind = same
+
+    ensures: TaskAssignedToDomainChild(
+        child: verdict.family,
+        provenance: landed_on_domain_child,
+        merge_verdict: verdict,
+        minted_by: occurrence
+    )
+}
+
+rule MintDomainFamily {
+    when: LeafShapeMatched(occurrence, shape_class, ranking, coverage, domain_label)
+    let canonical_label = canonical_domain_label(domain_label)
+    requires: canonical_label != null
+    requires: covered_leaf_neighbour(ranking) = null
+    requires: domain_family(canonical_label) = null
+    requires: coverage in {partial, uncovered}
+    let candidates = nearest_families(occurrence.signature, occurrence.domain_reasoning, ranking)
+    let verdict = merge_verdict(occurrence.signature, candidates)
+    requires: verdict.kind = new
     let child_identity = domain_child_identity(shape_class, canonical_label)
     let child_uri = tree_class_uri(child_identity)
 
-    -- The child concept and its parent edge are born together, before anything
-    -- references the child; minting the same identity again creates nothing.
+    -- The family's concept, its parent edge, its rich birth description and its
+    -- embedding are born together, before anything references it; minting the
+    -- same identity again creates nothing. A shape that already has families
+    -- mints a new one the same way (the verdict decided it is a new domain).
     ensures: Concept.created(
         ontology: shape_class.ontology,
         uri: child_uri,
         label: canonical_label,
-        description: domain_child_description(shape_class),
+        description: birth_description(occurrence, shape_class, canonical_label),
         scope: tree_class,
         provenance: agent_authored_provenance(occurrence),
         broader_uris: [shape_class.uri],
         indicators: [],
-        embedding: null,
+        embedding: concept_embedding(birth_description(occurrence, shape_class, canonical_label)),
         created_at: now,
         updated_at: null
     )
@@ -979,68 +1097,7 @@ rule MintDomainChild {
     ensures: TaskAssignedToDomainChild(
         child: child_identity,
         provenance: domain_child_minted,
-        minted_by: occurrence
-    )
-}
-
-rule LandOnDomainChild {
-    when: LeafShapeMatched(occurrence, shape_class, coverage, domain_label)
-    let children = domain_children(shape_class)
-    let canonical_label = canonical_domain_label(domain_label)
-    requires: children.count > 0
-    requires: canonical_label != null
-    requires: children.any(child => canonical_domain_label(child.label) = canonical_label)
-    let child = children.find(child => canonical_domain_label(child.label) = canonical_label)
-
-    -- The classified event's assignment IS the landing: the child's identity,
-    -- the landing provenance and the landed label; no concept work, no second
-    -- occurrence, no new signature claim (the child already describes itself).
-    ensures: TaskAssignedToDomainChild(
-        child: child,
-        provenance: landed_on_domain_child,
-        minted_by: occurrence
-    )
-}
-
-rule MintSiblingDomainChild {
-    when: LeafShapeMatched(occurrence, shape_class, coverage, domain_label)
-    let children = domain_children(shape_class)
-    let canonical_label = canonical_domain_label(domain_label)
-    requires: children.count > 0
-    requires: canonical_label != null
-    requires: children.none(child => canonical_domain_label(child.label) = canonical_label)
-    let child_identity = domain_child_identity(shape_class, canonical_label)
-    let child_uri = tree_class_uri(child_identity)
-
-    ensures: Concept.created(
-        ontology: shape_class.ontology,
-        uri: child_uri,
-        label: canonical_label,
-        description: domain_child_description(shape_class),
-        scope: tree_class,
-        provenance: agent_authored_provenance(occurrence),
-        broader_uris: [shape_class.uri],
-        indicators: [],
-        embedding: null,
-        created_at: now,
-        updated_at: null
-    )
-    ensures: ConceptRelationship.created(
-        source: Concept with uri = child_uri,
-        target: shape_class,
-        predicate: "skos:broader",
-        metadata: null,
-        created_at: now
-    )
-    ensures: DomainChildMinted(
-        parent: shape_class,
-        label: canonical_label,
-        identity: child_identity,
-        minted_by: occurrence
-    )
-    ensures: TaskAssignedToDomainChild(
-        child: child_identity,
-        provenance: sibling_domain_child_minted,
+        merge_verdict: verdict,
         minted_by: occurrence
     )
 }

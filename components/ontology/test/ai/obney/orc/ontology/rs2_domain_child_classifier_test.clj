@@ -473,6 +473,57 @@
 ;; resolved defers on the domain axis and records why.
 ;; =============================================================================
 
+;; =============================================================================
+;; RS-7 Slice 0 characterisation — a newborn domain child reached AGAIN as
+;; top-1: matching it mints a GRANDCHILD under it today (a domain child is
+;; NOT treated as a leaf on the domain axis by the current runtime). Pinned
+;; deterministically so Slice 1 (DomainChildIsALeafOnTheDomainAxis) can flip
+;; these two tests BY NAME instead of guessing today's behavior.
+;; =============================================================================
+
+(deftest newborn-as-top-1-match-with-partial-mints-a-grandchild-today
+  (testing "RS-7 characterisation: a NEWBORN domain child reached again as
+            top-1 (its OWN id as the candidate target), with :partial
+            coverage and a childless domain-children-fn for IT, mints a
+            GRANDCHILD under it today — :assigned-via :mint-domain-child,
+            :parent-tree-id = the newborn child itself (the grandchild path
+            Slice 1 removes by widening a domain-child match into a landing)"
+    (let [newborn-child-id (random-uuid)
+          candidate (tree-class-candidate newborn-child-id 0.95
+                      :domain-coverage :partial
+                      :domain-label "Ultra Long Run"
+                      :domain-reasoning "A more extreme variant of the newborn's own shape.")]
+      (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
+                    tc/get-consolidation-total* (fn [_ _ _] 0)]
+        (let [r (ontology/classify-task {:domain-children-fn (fn [_ _] [])}
+                                        {:task-signature "x" :threshold 0.7})]
+          (is (= :mint-domain-child (:assigned-via r)))
+          (is (= newborn-child-id (:parent-tree-id r))
+              "the newborn domain child is treated as the PARENT of a freshly
+               minted grandchild — today's runtime does not know it is
+               already a leaf on the domain axis")
+          (is (true? (:was-fresh-mint? r))))))))
+
+(deftest newborn-as-top-1-match-with-covered-is-a-plain-match-with-no-domain-label
+  (testing "RS-7 characterisation: the SAME newborn reached again as top-1,
+            but :covered coverage — a plain :match, no :domain-label, no
+            :parent-tree-id (byte-identical to any other covered no-children
+            match; the newborn's own identity is not special-cased today)"
+    (let [newborn-child-id (random-uuid)
+          candidate (tree-class-candidate newborn-child-id 0.95
+                      :domain-coverage :covered
+                      :domain-label "Marathon Training Plan"
+                      :domain-reasoning "Fully covered by the existing class.")]
+      (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
+                    tc/get-consolidation-total* (fn [_ _ _] 0)]
+        (let [r (ontology/classify-task {:domain-children-fn (fn [_ _] [])}
+                                        {:task-signature "x" :threshold 0.7})]
+          (is (= :match (:assigned-via r)))
+          (is (= newborn-child-id (:assigned-tree-id r)))
+          (is (not (contains? r :domain-label))
+              "no domain label — this is a plain match, not a landing")
+          (is (nil? (:parent-tree-id r))))))))
+
 (deftest children-lookup-failure-defers-instead-of-minting
   (testing "when the domain-children capability throws, the match is left as-is with a domain deferral naming the failure, and no child identity is minted"
     (let [class-id (random-uuid)

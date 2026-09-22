@@ -28,7 +28,7 @@
             [ai.obney.orc.ontology.core.reranker :as reranker]
             [ai.obney.orc.ontology.core.evidence-guard :as evidence-guard]
             [model-registry :as mr]
-            [ai.obney.orc.colbert.interface]
+            [ai.obney.orc.colbert.interface :as colbert]
             [ai.obney.orc.colbert.interface.schemas]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-v3.interface.schemas]
@@ -353,11 +353,14 @@
 ;; Public API
 ;; =============================================================================
 
-(defn- drive-projectors!
-  "Synchronously drive BOTH the C-2d-1 tree-class projector AND the R05a
-   behavioral-subtree projector over every :ontology/tree-description-updated
-   event in the store. Mirrors the c2e-behavioral-live-verify orchestrator
-   pattern."
+(defn drive-projectors!
+  "PUBLIC (RS-7): synchronously drive BOTH the C-2d-1 tree-class projector
+   AND the R05a behavioral-subtree projector over every
+   :ontology/tree-description-updated event in the store. Mirrors the
+   c2e-behavioral-live-verify orchestrator pattern. `rs7_traffic_sweep.clj`'s
+   `restore!` calls this after replaying a snapshot into a fresh context, so
+   the concept graph reflects the replayed events synchronously rather than
+   racing the live pubsub-subscribed processors."
   [ctx]
   (let [c2d1 (requiring-resolve
                'ai.obney.orc.ontology.core.todo-processors/on-tree-description-updated-project-concept)
@@ -433,6 +436,42 @@
   (println "  ORC RLM Benchmark Runner started (corpus seeded, index built)")
   (println "\n" (apply str (repeat 60 "=")) "\n")
   :started)
+
+(defn start-reindex-processor!
+  "RS-7: start the `:ontology/on-description-updated-maybe-reindex`
+   processor on the ALREADY-RUNNING system (`create-context` skips it by
+   default — see its `skip-procs` comment) for the `:processor` reindex
+   policy arm, which wants the faithful async-reindex path rather than the
+   harness's synchronous `{:every-k K}` trigger. Call once, after
+   `start!`. Idempotent-ish: calling twice just re-subscribes a second
+   processor instance under the same key (the first is orphaned, not
+   stopped) — callers should call it exactly once per `start!`."
+  []
+  (let [ctx @system-state
+        _ (when-not ctx (throw (ex-info "System not started — call (runner/start!) first" {})))
+        {:keys [handler-fn topics]} (get @tp/processor-registry*
+                                         :ontology/on-description-updated-maybe-reindex)
+        proc (tp/start {:event-pubsub (:event-pubsub ctx)
+                        :topics topics
+                        :handler-fn handler-fn
+                        :context ctx})]
+    (swap! system-state update :processors assoc
+           :ontology/on-description-updated-maybe-reindex proc)
+    :started))
+
+(defn active-index-id
+  "RS-7: the :index-id of the most-recently-created 'ontology-descriptions'
+   ColBERT index, or nil if none has been built yet. Mirrors
+   ontology.interface's PRIVATE `latest-ontology-descriptions-index`
+   (duplicated here because that fn is private and this is a dev-only
+   reporting need — which index a classify call resolved against — not a
+   production retrieval path)."
+  [ctx]
+  (->> (colbert/list-indexes ctx)
+       (filter #(= "ontology-descriptions" (:index-name %)))
+       (sort-by :created-at)
+       last
+       :index-id))
 
 (defn stop!
   "Stop the benchmark system."

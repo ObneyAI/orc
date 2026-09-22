@@ -39,7 +39,10 @@
        (into [])
        (filterv #(= sheet-id (:source-sheet-id %)))))
 
-(defn- child-state [ctx child-id]
+(defn child-state
+  "PUBLIC (RS-7): rs7_traffic_sweep's run-e2e! reuses this exact child-state
+   read for its own e2e records."
+  [ctx child-id]
   (when child-id
     (let [body (ontology/get-description ctx :tree-class child-id)
           claims (ontology/get-claims ctx :tree-class child-id)]
