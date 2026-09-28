@@ -25,6 +25,9 @@ instead of crammed into one prompt and hoped for. The principles below are the
 distilled lessons of building real systems this way, and most of them are about
 resisting the pull back toward "one big prompt."
 
+<p align="center"><img src="media/run-knowledge-work.gif" alt="An ORC workflow ticking while its blackboard fills" width="760"></p>
+<p align="center"><sub>A running ORC tree: each node reads and writes typed blackboard keys (the chalkboard); the tree decides what runs next. <i>Illustrative workload, real node kinds.</i></sub></p>
+
 ---
 
 ## 1. ORC is a behavior-tree engine — compose from the right node palette

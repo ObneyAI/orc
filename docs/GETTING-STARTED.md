@@ -24,6 +24,9 @@ is not "call an LLM" — it is composing the right nodes and sub-behaviors so
 your methodology is *structural*, guaranteed by the tree, rather than crammed
 into one prompt and hoped for.
 
+<p align="center"><img src="media/run-knowledge-work.gif" alt="An ORC workflow ticking while its blackboard fills" width="760"></p>
+<p align="center"><sub>A running ORC tree: each node reads and writes typed blackboard keys (the chalkboard); the tree decides what runs next. <i>Illustrative workload, real node kinds.</i></sub></p>
+
 Here's the contract-analysis workflow you'll build, drawn as a behavior tree — each leaf is a card declaring the blackboard keys it **reads** and **writes**. *(Illustrative of the full shape: you start with the flat sequence in Phase 1 and grow into routing, a `:delegate` subbehavior, and an RLM leaf.)*
 
 ```mermaid
@@ -303,9 +306,6 @@ recovers execution; it does not replay the ephemeral live stream. See
 [STREAMING.md](STREAMING.md#ordering-loss-and-reconnection).
 
 ### Seeing the tree
-
-<p align="center"><img src="media/run-knowledge-work.gif" alt="An ORC workflow ticking while its blackboard fills" width="760"></p>
-<p align="center"><sub>A running ORC tree: each node reads and writes typed blackboard keys (the chalkboard); the tree decides what runs next. <i>Illustrative workload, real node kinds.</i></sub></p>
 
 `print-tree` prints the tree structure without running it:
 

@@ -8,6 +8,9 @@ But sometimes **one step is genuinely open-ended.** You don't know up front whet
 
 **That's the one step you hand to `:repl-researcher` (RLM).** Instead of you drawing the sub-tree, the researcher node *designs and runs its own sub-tree* at runtime, inspects the result, and iterates until the step is done. The rest of your workflow stays exactly as it is — `:repl-researcher` is just another leaf node you drop into your existing sequence.
 
+<p align="center"><img src="media/ld-compose.gif" alt="A researcher designing and running its own sub-tree at runtime" width="760"></p>
+<p align="center"><sub>A researcher designing its own sub-tree at runtime, here shaped by a pattern retrieved with <a href="#pattern-injection-via-r-inject-auto-classify">R-Inject</a>. <i>Real run; domain-child labels arrive with the specialisation work.</i></sub></p>
+
 The rest of this guide walks you from your existing tree to using RLM well:
 
 1. **[When to reach for RLM](#when-to-use-rlm)** vs. a fixed `:llm` / `:code` node — the key judgment. This is the heaviest node in the palette; reserve it for genuinely unknown-shape work.
@@ -410,9 +413,6 @@ Set on the `repl-researcher` node, or alternatively under the `:rlm` map as `:rl
 This is a common "apples-to-apples" cost pattern: a high-capability main LM for tree design (e.g. `openai/gpt-5.4`) paired with a cheaper sub-LM for the per-leaf calls (e.g. `openai/gpt-5.1-chat`).
 
 ## Pattern injection via R-Inject (`:auto-classify?`)
-
-<p align="center"><img src="media/ld-compose.gif" alt="R-Inject: a retrieved pattern shaping the researcher's new tree" width="760"></p>
-<p align="center"><sub>R-Inject in action: the classifier retrieves the best-fitting pattern and the researcher composes its tree from it. <i>Real run; domain-child labels arrive with the specialisation work.</i></sub></p>
 
 > **Note:** `:auto-classify?` shapes RLM tree design — it prepends a matched corpus pattern to the researcher's context before it designs a tree. It does NOT modify instruction strings inside static `orc/llm` nodes. For instruction optimization on static LLM nodes, see [GEPA-GUIDE.md](GEPA-GUIDE.md).
 
