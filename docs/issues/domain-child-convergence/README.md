@@ -30,3 +30,10 @@ owns MergeIntoDomainFamily and the merge-dependent failure obligations of MintDo
   covered-seed protection ahead of the judge. Run 1 carried a parser defect (map vs JSON string), reported there.
 - **CV-C brief** written: `docs/build-timeline/handoff-plan/CV-C-merge-judge-HANDOFF.md`; dispatch after CV-A lands
   and is inspected.
+
+## Allium gate scope (user direction)
+
+Bundle inspections run Allium only on what the bundle touched: `allium check` and `allium analyse` on
+`specs/ontology.allium` (plus `specs/orc-service.allium` only if that spec was touched), `/weed` check-mode over the
+bundle's changed seams, and the obligation audit over the bundle's named obligations. The full-repository sweep
+(every spec under `specs/`, a full `/weed`, whole-spec `propagate`) runs once, in CV-8.
