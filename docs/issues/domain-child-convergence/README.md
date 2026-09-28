@@ -31,12 +31,14 @@ owns MergeIntoDomainFamily and the merge-dependent failure obligations of MintDo
 - **CV-C brief** written: `docs/build-timeline/handoff-plan/CV-C-merge-judge-HANDOFF.md`; dispatch after CV-A lands
   and is inspected.
 
-## Allium gate scope (user direction)
+## Gate scope (user direction, from the agent-console AGENTS.md rule)
 
-Bundle inspections run Allium only on what the bundle touched: `allium check` and `allium analyse` on
-`specs/ontology.allium` (plus `specs/orc-service.allium` only if that spec was touched), `/weed` check-mode over the
-bundle's changed seams, and the obligation audit over the bundle's named obligations. The full-repository sweep
-(every spec under `specs/`, a full `/weed`, whole-spec `propagate`) runs once, in CV-8.
+Bundle inspections run focused tests that load the working tree: the bundle's new tests and its named guard
+namespaces, with the exit status checked, plus live QA where the bundle has a live path. Allium work stays targeted
+to the behavior the bundle changed. Neither subagents nor bundle inspections run the repository-wide suite. After
+CV-8's final edit, the integration runs once: a whole `/weed`, `clojure -M:poly test :all-bricks :dev` (per-project
+poly runs are commit-sensitive and do not count), then `allium check` and `allium analyse` over every spec,
+unfiltered. Any later edit means one more full run.
 
 ## CV-B verification ledger (orchestrator `/inspect-orc`)
 
@@ -62,5 +64,4 @@ bundle's changed seams, and the obligation audit over the bundle's named obligat
   carry none (classified as an intentional gap: presentation, not domain behavior). Weed over the seam: the
   orc-service spec's closure-source statement is unchanged by this bundle; no divergence.
 - **Commit content verified in isolation:** the staged bundle alone, on a clean worktree at the parent commit, runs 216 tests and 1,076 assertions green.
-- **Not yet run:** the orc-service brick gate under poly runs once with CV-A, since the working tree carries CV-A's
-  in-flight ontology changes. No live QA for this bundle; the end-to-end subset will show the hint firing.
+- **Deferred by rule:** the full gate runs once, in CV-8. No live QA for this bundle; the end-to-end subset will show the hint firing.
