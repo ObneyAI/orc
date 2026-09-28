@@ -20,3 +20,13 @@ Spec obligations (from `allium plan` after the tend): `CoveredSeedWins` (success
 (success + 5 + 2 entity-creation), plus `DomainVerdict`/`DomainCoverage` (unchanged, covered). CV-A owns
 CoveredSeedWins, LandOnDomainFamily, LandOnReachedDomainFamily and MintDomainFamily's non-merge obligations; CV-C
 owns MergeIntoDomainFamily and the merge-dependent failure obligations of MintDomainFamily.
+
+## Ledger
+
+- **CV-P3 — DONE.** Verdict in `development/bench/ood-stress-results/rs-p3-family-merge-probe/FINDINGS.md`: both
+  arms converge 8 of 8 groups onto one family; rich arm 1 false merge in 23 (single candidate shown, shared output
+  kind only); labels arm 0 in the corrected run but 3 in run 1 (live variance). CV-C proceeds on the rich arm with
+  the instruction stating the converse (different subject matter OR different output kind = new family) and with
+  covered-seed protection ahead of the judge. Run 1 carried a parser defect (map vs JSON string), reported there.
+- **CV-C brief** written: `docs/build-timeline/handoff-plan/CV-C-merge-judge-HANDOFF.md`; dispatch after CV-A lands
+  and is inspected.
