@@ -32,6 +32,15 @@
             [ai.obney.orc.colbert.interface.schemas]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-v3.interface.schemas]
+            ;; RS7-PS: loading this registers the `:postgres` defmethod on
+            ;; `event-store-v3/start-event-store` (event_store_postgres_v3
+            ;; core.clj's `(defmethod start-event-store :postgres ...)`).
+            ;; Without this require, `{:event-store-conn {:type :postgres
+            ;; ...}}` dispatches to `:default` and throws "Unsupported
+            ;; event store type" even though the dep resolves on the
+            ;; classpath — same pattern as how orc-service's sqlite tests
+            ;; require ai.obney.grain.event-store-sqlite-v3.interface.
+            [ai.obney.grain.event-store-postgres-v3.interface]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.pubsub.interface :as pubsub]
@@ -151,13 +160,31 @@
 
 (defn create-context
   "PUBLIC (CH-1): the convergence probe already reached in here through
-   `requiring-resolve`, and the CH-1 startup-ordering test redefines it."
-  []
+   `requiring-resolve`, and the CH-1 startup-ordering test redefines it.
+
+   RS7-PS: accepts an optional options map so a caller can point the harness
+   at a durable store instead of the default in-memory one:
+     :event-store-conn - the `:conn` map passed to `es/start` (default
+                          `{:type :in-memory}`; for Postgres pass
+                          `{:type :postgres :server-name ... :port-number ...
+                          :username ... :password ... :database-name ...}` —
+                          see `ai.obney.grain.event-store-postgres-v3.interface.datasource/make-datasource`
+                          for the exact keys it reads)
+     :tenant-id         - the tenant to use (default a fresh random UUID)
+     :cache-dir         - the LMDB cache directory (default a fresh directory
+                          under `development/bench/.runner-cache/`, NOT /tmp —
+                          macOS's cleaner reaps unaccessed /tmp files after a
+                          few days, which gutted a worktree before; see
+                          `feedback_never_keep_worktrees_in_tmp`)
+   Every existing zero-arg caller keeps working unchanged."
+  ([] (create-context {}))
+  ([{:keys [event-store-conn tenant-id cache-dir]
+     :or {event-store-conn {:type :in-memory}}}]
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
-        event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
-        cache-dir (str "/tmp/orc-bench-" (random-uuid))
+        event-store (es/start {:conn event-store-conn :event-pubsub ps :logger nil})
+        cache-dir (or cache-dir (str "development/bench/.runner-cache/" (random-uuid)))
         cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "bench"}))
-        tenant-id (random-uuid)
+        tenant-id (or tenant-id (random-uuid))
         base-ctx {:event-store event-store
                   :cache cache
                   :tenant-id tenant-id
@@ -192,7 +219,7 @@
                                           :context base-ctx}))))
                     {}
                     @tp/processor-registry*)]
-    (assoc base-ctx :event-pubsub ps :processors processors)))
+    (assoc base-ctx :event-pubsub ps :processors processors))))
 
 (defn- stop-context [ctx]
   (doseq [[_ processor] (:processors ctx)] (tp/stop processor))
@@ -419,23 +446,59 @@
   (Thread/sleep 1000)
   (println "Index state:" (pr-str (ontology/get-reindex-state ctx))))
 
+(defn- tenant-has-events?
+  "RS7-PS: decide 'already seeded' from the STORE'S OWN events for this
+   tenant — never a flag file. `:limit 1` keeps this cheap (a single-row
+   read) even against a Postgres store with a large history."
+  [ctx]
+  (boolean (seq (into [] (es/read (:event-store ctx)
+                                  {:tenant-id (:tenant-id ctx) :limit 1})))))
+
 (defn start!
   "Initialize the benchmark system. Also seeds the description corpus and
    builds the ColBERT index so tasks with `:rlm {:auto-classify? true}`
-   can exercise the R05 classifier path (R-Inject)."
-  []
-  (when @system-state
-    (stop-context @system-state))
-  ;; CH-1: register every declared model AND assert the precondition BEFORE
-  ;; anything is built, so an undeclared model can never reach a live call.
-  (register-models!)
-  (let [ctx (create-context)]
-    (reset! system-state ctx)
-    (seed-corpus-and-build-index! ctx))
-  (println "\n" (apply str (repeat 60 "=")) "\n")
-  (println "  ORC RLM Benchmark Runner started (corpus seeded, index built)")
-  (println "\n" (apply str (repeat 60 "=")) "\n")
-  :started)
+   can exercise the R05 classifier path (R-Inject).
+
+   RS7-PS: accepts an optional options map, forwarded verbatim to
+   `create-context` (`:event-store-conn` / `:tenant-id` / `:cache-dir`).
+   When the connected store ALREADY holds events for the given tenant (the
+   normal case on resuming a killed run against a persistent Postgres
+   store), the corpus and padding documents are NOT re-seeded: instead the
+   existing events are projected (`drive-projectors!`, the same path
+   `rs7-traffic-sweep/restore!` uses) and the ColBERT index is rebuilt once
+   (`ont-tp/force-rebuild!`) so retrieval reflects the restored state. A
+   fresh/empty store (the default in-memory case, or a brand-new Postgres
+   database) still seeds normally. Every existing zero-arg caller keeps
+   working unchanged.
+
+   Launcher note (RS-7): for a persistent Postgres store, use ONE database
+   per ARM (e.g. `rs7_pre_fix`), created before the run with
+   `docker exec orc-rs7-postgres createdb -U orc <name>`. Pass 2 continues
+   pass 1's database and tenant (the same results-dir), because it measures
+   stability against the tree pass 1 grew; `rs7-traffic-sweep/run-pass!`
+   refuses a pass 2 on any other tenant."
+  ([] (start! {}))
+  ([opts]
+   (when @system-state
+     (stop-context @system-state))
+   ;; CH-1: register every declared model AND assert the precondition BEFORE
+   ;; anything is built, so an undeclared model can never reach a live call.
+   (register-models!)
+   (let [ctx (create-context opts)]
+     (reset! system-state ctx)
+     (if (tenant-has-events? ctx)
+       (do
+         (println "RS7-PS: existing events found for tenant" (:tenant-id ctx)
+                   "— resuming without reseeding.")
+         (drive-projectors! ctx)
+         (println "Rebuilding ColBERT description index from restored state...")
+         (ont-tp/force-rebuild! ctx)
+         (println "Index state:" (pr-str (ontology/get-reindex-state ctx))))
+       (seed-corpus-and-build-index! ctx)))
+   (println "\n" (apply str (repeat 60 "=")) "\n")
+   (println "  ORC RLM Benchmark Runner started (corpus seeded, index built)")
+   (println "\n" (apply str (repeat 60 "=")) "\n")
+   :started))
 
 (defn start-reindex-processor!
   "RS-7: start the `:ontology/on-description-updated-maybe-reindex`

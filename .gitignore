@@ -32,3 +32,7 @@ docs/issues/c2d-followups/
 
 # Resumable local state for the Allium convergence loop.
 .allium-loop/
+
+# RS7-PS: the bench runner's LMDB cache directories (one fresh dir per
+# `runner/create-context` call) — regenerated every run, never committed.
+development/bench/.runner-cache/

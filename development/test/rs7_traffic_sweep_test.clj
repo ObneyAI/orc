@@ -137,6 +137,27 @@
           (is (= 5 (count (filter #(= "fake" (get-in % [:generator :model])) (:entries m2))))))))))
 
 ;; =============================================================================
+;; rs7-traffic-sweep: pass 2 must continue pass 1's tenant (orchestrator inspection)
+;; =============================================================================
+
+(deftest pass-2-refuses-a-tenant-other-than-pass-1s
+  (let [results-dir (temp-dir! "rs7-pass2guard")
+        ctx {:tenant-id (random-uuid)}
+        opts {:corpus-path "unused" :manifest-path "unused"
+              :results-dir (str results-dir) :pass 2}]
+    (testing "no pass-1 records at all → refused before anything runs"
+      (let [e (try (rs7/run-pass! ctx opts) nil (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? e))
+        (is (= 0 (:pass-1-records (ex-data e))))))
+    (testing "pass-1 records under a DIFFERENT tenant → refused"
+      (.mkdirs (io/file results-dir "pass-1"))
+      (spit (io/file results-dir "pass-1" "001-x-v01.edn") (pr-str {:slug "001-x-v01" :pass 1 :status :ok}))
+      (spit (io/file results-dir "run.edn") (pr-str {:store {:kind :postgres :database "db" :tenant-id (random-uuid)}}))
+      (let [e (try (rs7/run-pass! ctx opts) nil (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? e))
+        (is (= (:tenant-id ctx) (:ctx-tenant (ex-data e))))))))
+
+;; =============================================================================
 ;; rs7-traffic-sweep: resume decision
 ;; =============================================================================
 
@@ -150,6 +171,57 @@
   (testing ":error is skipped unless retry-errors?"
     (is (true? (rs7/resume-decision {:status :error} false)))
     (is (false? (rs7/resume-decision {:status :error} true)))))
+
+;; =============================================================================
+;; rs7-traffic-sweep: resolve-store-opts — RS7-PS :store -> runner/start!
+;; =============================================================================
+
+(deftest resolve-store-opts-test
+  (testing "nil / :in-memory store -> the in-memory conn, no tenant-id override"
+    (is (= {:event-store-conn {:type :in-memory}} (rs7/resolve-store-opts nil nil)))
+    (is (= {:event-store-conn {:type :in-memory}}
+           (rs7/resolve-store-opts {:kind :in-memory} nil))))
+  (testing "a postgres store with no explicit tenant-id and no prior run.edn mints a fresh one"
+    (let [{:keys [event-store-conn tenant-id]} (rs7/resolve-store-opts {:kind :postgres :database "rs7_smoke"} nil)]
+      (is (= {:type :postgres :server-name "127.0.0.1" :port-number "5435"
+              :username "orc" :password nil :database-name "rs7_smoke"}
+             event-store-conn))
+      (is (uuid? tenant-id))))
+  (testing "an explicit tenant-id on the store always wins"
+    (let [explicit (random-uuid)
+          {:keys [tenant-id]} (rs7/resolve-store-opts
+                                {:kind :postgres :database "rs7_smoke" :tenant-id explicit}
+                                {:store {:kind :postgres :database "rs7_smoke" :tenant-id (random-uuid)}})]
+      (is (= explicit tenant-id))))
+  (testing "resume: no explicit tenant-id, prior run.edn's :store names the SAME database -> reuse its tenant-id"
+    (let [prior-tenant (random-uuid)
+          {:keys [tenant-id]} (rs7/resolve-store-opts
+                                {:kind :postgres :database "rs7_smoke"}
+                                {:store {:kind :postgres :database "rs7_smoke" :tenant-id prior-tenant}})]
+      (is (= prior-tenant tenant-id))))
+  (testing "prior run.edn names a DIFFERENT database -> never reused, mints fresh"
+    (let [prior-tenant (random-uuid)
+          {:keys [tenant-id]} (rs7/resolve-store-opts
+                                {:kind :postgres :database "rs7_smoke"}
+                                {:store {:kind :postgres :database "rs7_other" :tenant-id prior-tenant}})]
+      (is (not= prior-tenant tenant-id))
+      (is (uuid? tenant-id)))))
+
+;; =============================================================================
+;; rs7-traffic-sweep: maybe-read-run-edn — nil when absent, parses when present
+;; =============================================================================
+
+(deftest maybe-read-run-edn-test
+  (testing "no run.edn on disk yet -> nil, not an exception"
+    (let [dir (temp-dir! "rs7-no-run-edn")]
+      (is (nil? (rs7/maybe-read-run-edn (str dir))))))
+  (testing "a run.edn on disk -> parsed, :store intact"
+    (let [dir (temp-dir! "rs7-has-run-edn")
+          tenant (random-uuid)]
+      (spit (io/file dir "run.edn")
+            (with-out-str (pp/pprint {:store {:kind :postgres :database "rs7_smoke" :tenant-id tenant}})))
+      (is (= {:kind :postgres :database "rs7_smoke" :tenant-id tenant}
+             (:store (rs7/maybe-read-run-edn (str dir))))))))
 
 ;; =============================================================================
 ;; traffic-corpus-gen: flag-near-dups! — FAKE colbert-neighbour capability

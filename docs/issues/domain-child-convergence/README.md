@@ -123,3 +123,22 @@ unfiltered. Any later edit means one more full run.
   after the last test (26 tests, 136 assertions).
 - **Not yet run:** live QA of the rewritten reranker instruction. The RS-7 smoke on the post-fix tree exercises it
   before the post-fix arm. The full integrated gate runs once, in CV-8.
+
+## RS7-PS verification ledger (persistent Postgres store for the sweeps)
+
+- **What landed:** a dedicated local Postgres container, `orc-rs7-postgres`, on port 5435, bound to localhost with trust
+  auth and a named volume. Grain's Postgres v3 event store is added at the pinned Grain revision. The runner takes an
+  optional store connection, tenant and cache directory; its cache moved out of `/tmp`. Resuming on a store that
+  already holds the tenant's events projects them and rebuilds the index once instead of re-seeding.
+  `run.edn` is written before the first task, so a crash leaves the tenant recoverable.
+- **Implementer's live proof:** a fresh session wrote 539 events, and a resumed session on the same tenant showed
+  identical counts for every seed-producing event type, plus one index rebuild. A three-task smoke was killed after
+  task two and resumed to finish all three on the recovered tenant.
+- **Defect found in inspection and fixed:** the launcher notes said one database per arm and pass. Pass 2 measures
+  stability against the tree pass 1 grew, so a fresh pass-2 database would have seeded a new corpus and reported
+  stability against nothing. The notes now say one database per arm. `run-pass!` refuses a pass 2 unless pass-1
+  records exist and the tenant matches pass 1's. New test `pass-2-refuses-a-tenant-other-than-pass-1s`.
+- **Known limit, reported:** a task killed mid-flight may have appended part of its effects before the crash. On
+  resume it re-runs against its own partial effects. Crashes are rare, and any occurrence shows in the record
+  timestamps; the comparison reports it rather than hiding it.
+- **GREEN, re-run by the orchestrator:** 21 tests and 109 assertions across the harness and model-registry suites.

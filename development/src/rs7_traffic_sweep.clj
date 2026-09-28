@@ -16,7 +16,15 @@
    Everything here reads structured event/concept data — never a parse of
    model prose — per the standing 'no regex/phrase matching over
    model-authored prose' discipline; `flag-near-dups!`'s review flags live in
-   `traffic-corpus-gen` and are explicitly excluded from `analyse`."
+   `traffic-corpus-gen` and are explicitly excluded from `analyse`.
+
+   RS7-PS launcher note: `run-pass!`/`run-e2e!` take an optional `:store`
+   (`{:kind :in-memory}` or `{:kind :postgres :database \"<name>\"
+   :tenant-id <uuid>}`) recorded on `run.edn`/`e2e-results.edn`. Use ONE
+   Postgres database per ARM (e.g. `rs7_pre_fix`), created before the run
+   (`docker exec orc-rs7-postgres createdb -U orc rs7_pre_fix`); pass 2
+   continues pass 1's database, tenant and results-dir — see `resolve-store-opts` and the full launcher example
+   in the `(comment ...)` block at the bottom of this file."
   (:require [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.ontology.interface :as ontology]
@@ -265,6 +273,67 @@
                 (or (= :ok (:status prior))
                     (and (= :error (:status prior)) (not retry-errors?))))))
 
+;; =============================================================================
+;; :store — RS7-PS: translate `{:kind :in-memory}` / `{:kind :postgres
+;; :database "<name>" :tenant-id <uuid-or-nil>}` into `runner/start!`'s
+;; options, and record it (never credentials) on `run.edn`.
+;; =============================================================================
+
+(defn- read-run-edn [dir] (read-edn-file (io/file dir "run.edn")))
+
+(def rs7-postgres-conn-defaults
+  "RS7-PS: fixed connection coordinates of the throwaway `orc-rs7-postgres`
+   dev container — host/port/user only, per the HANDOFF ('trust auth, no
+   password; never add one to any file'). Only `:database-name` varies per
+   store; merged with `:type :postgres` by `resolve-store-opts`."
+  {:server-name "127.0.0.1"
+   :port-number "5435"
+   :username "orc"
+   :password nil})
+
+(defn resolve-store-opts
+  "PURE: translate a `:store` spec into the options map `runner/start!` /
+   `runner/create-context` accept (`:event-store-conn` / `:tenant-id`). This
+   is the function a launcher passes `:store` THROUGH to `runner/start!` —
+   see the launcher note at the bottom of this namespace.
+
+   `store` — `{:kind :in-memory}` (also the default when `store` is nil), or
+   `{:kind :postgres :database \"<name>\" :tenant-id <uuid-or-nil>}`. The
+   conn keys used (`:server-name` / `:port-number` / `:username` /
+   `:password` / `:database-name`) are exactly what
+   `ai.obney.grain.event-store-postgres-v3.interface.datasource/make-datasource`'s
+   `:password` method reads.
+
+   `prior-run-edn` — the ALREADY-LOADED contents of a previous `run.edn` at
+   the same results-dir/pass (see `maybe-read-run-edn`), or nil when none
+   exists yet. On RESUME (a Postgres store with no explicit `:tenant-id`
+   whose `:database` matches `prior-run-edn`'s recorded `:store`), the prior
+   tenant id is reused — decided from run.edn's own record, per this
+   function's contract; `runner/start!` separately decides whether to
+   RESEED from the store's own events, never from run.edn. An explicit
+   `:tenant-id` on `store` always wins over the prior run."
+  [store prior-run-edn]
+  (let [{:keys [kind database tenant-id] :or {kind :in-memory}} (or store {})]
+    (case kind
+      :in-memory {:event-store-conn {:type :in-memory}}
+      :postgres
+      (let [prior-store (:store prior-run-edn)
+            prior-tenant-id (when (= database (:database prior-store))
+                              (:tenant-id prior-store))]
+        {:event-store-conn (assoc rs7-postgres-conn-defaults
+                                  :type :postgres
+                                  :database-name database)
+         :tenant-id (or tenant-id prior-tenant-id (random-uuid))}))))
+
+(defn maybe-read-run-edn
+  "IO: `run.edn` under `results-dir`, parsed with the `time-literals`
+   readers (see `read-edn-file`), or nil when it does not exist yet (the
+   first attempt at a run). Feed the result to `resolve-store-opts` so a
+   resumed Postgres run reuses its recorded tenant id."
+  [results-dir]
+  (let [f (io/file results-dir "run.edn")]
+    (when (.exists f) (read-run-edn results-dir))))
+
 (defn- run-one-task!
   "Run `entry` through `rs6/classify-one!` on a future, bounded by
    `timeout-ms`. Never throws — a task exception or timeout becomes an
@@ -304,15 +373,39 @@
      :task-timeout-ms - default 180000
      :snapshot-every  - write an events-delta snapshot every N completed
                         tasks, PLUS always one before task 1 (default 25)
+     :store           - RS7-PS: `{:kind :in-memory}` (default, when
+                        omitted) or `{:kind :postgres :database \"<name>\"
+                        :tenant-id <uuid>}` — the store `ctx` was started
+                        against (see `resolve-store-opts`, which a caller
+                        uses to derive the `runner/start!` options THIS
+                        `ctx` came from). Recorded verbatim on `run.edn`
+                        (kind + database + `ctx`'s actual tenant id — NEVER
+                        credentials, which this map never carries anyway).
+                        Purely descriptive here: `run-pass!` does not start
+                        or stop the runner itself — `ctx` must already be
+                        running against that store when this is called.
 
    Returns `{:results-dir :records [...]}`. Writes one `<slug>.edn` per task
    (atomic), `events-snapshot-<n>.edn` every `:snapshot-every` tasks (+ one
    at n=0, before any task runs — `restore!` on THAT one reproduces
    `tree-before.edn`), `tree-before.edn` / `tree-after.edn`, and `run.edn`."
   [ctx {:keys [corpus-path manifest-path results-dir pass reindex-policy retry-errors?
-               corpus-filter task-timeout-ms snapshot-every]
+               corpus-filter task-timeout-ms snapshot-every store]
         :or {reindex-policy :none retry-errors? false
              task-timeout-ms default-task-timeout-ms snapshot-every default-snapshot-every}}]
+  ;; Pass 2 measures stability against the tree pass 1 grew, so it must run on
+  ;; pass 1's store and tenant. A pass 2 started on a fresh tenant would seed
+  ;; a new corpus and report stability against nothing, silently; refuse it.
+  (when (= 2 pass)
+    (let [prior (maybe-read-run-edn results-dir)
+          pass-1 (load-pass-records results-dir 1)]
+      (when-not (and (seq pass-1)
+                     (= (str (get-in prior [:store :tenant-id])) (str (:tenant-id ctx))))
+        (throw (ex-info "Pass 2 must continue pass 1's store and tenant (same results-dir, same database)"
+                        {:results-dir results-dir
+                         :pass-1-records (count pass-1)
+                         :pass-1-tenant (get-in prior [:store :tenant-id])
+                         :ctx-tenant (:tenant-id ctx)})))))
   (let [manifest (load-manifest manifest-path)
         corpus (load-traffic-corpus corpus-path manifest corpus-filter)
         task-order (mapv :slug corpus)
@@ -326,11 +419,35 @@
         ;; in the index that predates its own mint). A later classify that
         ;; reaches the SAME concept is "newborn-in-index?" true only once the
         ;; active index has moved past that mint-time index.
-        minted-index-at (atom {})]
+        minted-index-at (atom {})
+        ;; RS7-PS: the fields that are known BEFORE any task runs — written
+        ;; to run.edn immediately (below) so a crash mid-pass still leaves
+        ;; `:store` (kind/database/tenant-id) on disk for
+        ;; `resolve-store-opts` to resume from. `:finished-at nil` marks an
+        ;; in-flight or crashed run; the final write (below) refreshes
+        ;; :commit/:dirty?/:finished-at over the SAME map.
+        run-edn-base {:corpus-sha256 (:corpus-sha256 manifest)
+                      :task-order task-order
+                      :reindex-policy reindex-policy
+                      :parallelism 1
+                      :thresholds {:rerank-timeout-ms reranker/default-rerank-timeout-ms}
+                      :started-at started-at
+                      ;; RS7-PS: never credentials — kind/database/tenant-id
+                      ;; only. `:tenant-id` comes from `ctx` itself (the
+                      ;; store actually in use), not from `store`, so a
+                      ;; caller that passed no explicit tenant-id still
+                      ;; gets an accurate, resumable record.
+                      :store {:kind (:kind store :in-memory)
+                              :database (:database store)
+                              :tenant-id (:tenant-id ctx)}}
+        write-run-edn! (fn [extra]
+                          (spit (io/file results-dir "run.edn")
+                                (with-out-str (pp/pprint (merge run-edn-base extra)))))]
     (.mkdirs pdir)
     (spit (io/file results-dir "tree-before.edn") (with-out-str (pp/pprint (tree-classes ctx))))
     (atomic-spit! (io/file pdir "events-snapshot-0.edn")
                   (with-out-str (pp/pprint (events-since ctx boundary))))
+    (write-run-edn! {:finished-at nil})
     (try
       (let [records
             (vec
@@ -367,20 +484,12 @@
                                       (with-out-str (pp/pprint (events-since ctx boundary))))))
                     record))))]
         (spit (io/file results-dir "tree-after.edn") (with-out-str (pp/pprint (tree-classes ctx))))
-        (spit (io/file results-dir "run.edn")
-              (with-out-str
-                (pp/pprint
-                  {:commit (try (str/trim (:out (shell/sh "git" "rev-parse" "HEAD"))) (catch Throwable _ nil))
-                   :dirty? (try (not (str/blank? (:out (shell/sh "git" "status" "--porcelain")))) (catch Throwable _ nil))
-                   :corpus-sha256 (:corpus-sha256 manifest)
-                   :task-order task-order
-                   :reindex-policy reindex-policy
-                   :parallelism 1
-                   :models {:reranker-model (reranker/resolve-model ctx nil)}
-                   :thresholds {:rerank-timeout-ms reranker/default-rerank-timeout-ms}
-                   :jvm-args (vec (.getInputArguments (java.lang.management.ManagementFactory/getRuntimeMXBean)))
-                   :started-at started-at
-                   :finished-at (str (java.time.Instant/now))})))
+        (write-run-edn!
+          {:commit (try (str/trim (:out (shell/sh "git" "rev-parse" "HEAD"))) (catch Throwable _ nil))
+           :dirty? (try (not (str/blank? (:out (shell/sh "git" "status" "--porcelain")))) (catch Throwable _ nil))
+           :models {:reranker-model (reranker/resolve-model ctx nil)}
+           :jvm-args (vec (.getInputArguments (java.lang.management.ManagementFactory/getRuntimeMXBean)))
+           :finished-at (str (java.time.Instant/now))})
         {:results-dir results-dir :records records})
       (finally
         ((:restore! tee))))))
@@ -501,8 +610,6 @@
 ;; compare-runs — refuses mismatched corpora, reports changed slugs
 ;; =============================================================================
 
-(defn- read-run-edn [dir] (read-edn-file (io/file dir "run.edn")))
-
 (defn compare-runs
   "Refuses (returns `{:refused? true :reason ...}`, writes nothing) unless
    `dir-a` and `dir-b`'s `run.edn` share `:corpus-sha256` AND `:task-order`
@@ -603,8 +710,12 @@
    `run-full-bench-observation!`'s sheet-event read + `child-state`. Records
    status/usage/classified/minted/occurrence/claim events, the render
    candidates + prepend, child-after-run, and the generated tree's node
-   count. `opts`: :manifest-path :corpus-path :results-dir."
-  [ctx {:keys [manifest-path corpus-path groups results-dir]}]
+   count. `opts`: :manifest-path :corpus-path :results-dir :store (RS7-PS —
+   `{:kind :in-memory}` or `{:kind :postgres :database \"<name>\" :tenant-id
+   <uuid>}`, the store `ctx` is already running against; purely descriptive
+   — see `run-pass!`'s docstring for the same contract — and recorded,
+   never with credentials, on `e2e-results.edn`)."
+  [ctx {:keys [manifest-path corpus-path groups results-dir store]}]
   (let [manifest (load-manifest manifest-path)
         corpus (load-traffic-corpus corpus-path manifest)
         run! (requiring-resolve 'runner/run!)
@@ -658,11 +769,31 @@
                          :generated-tree-node-count (tree-node-count (:generated-tree-raw record))
                          :child-after-run (rs6-useful/child-state ctx child-id)}]
                 (spit (io/file results-dir (str "e2e-" slug ".edn")) (with-out-str (pp/pprint obs)))
-                obs))))]
-    (spit (io/file results-dir "e2e-results.edn") (with-out-str (pp/pprint results)))
-    {:results-dir results-dir :results results}))
+                obs))))
+        store-record {:kind (:kind store :in-memory)
+                      :database (:database store)
+                      :tenant-id (:tenant-id ctx)}]
+    (spit (io/file results-dir "e2e-results.edn")
+          (with-out-str (pp/pprint {:store store-record :results results})))
+    {:results-dir results-dir :store store-record :results results}))
 
 (comment
-  ;; Launcher (from the worktree root, OPENROUTER_API_KEY in the environment):
+  ;; Launcher, in-memory store (from the worktree root, OPENROUTER_API_KEY in
+  ;; the environment):
   ;; clojure -J-Djava.awt.headless=true -J-Xmx1600m -M:dev:test -e "(require 'runner) (runner/start!) (Thread/sleep 45000) (require 'rs7-traffic-sweep) (let [ctx (deref @(requiring-resolve 'runner/system-state))] (rs7-traffic-sweep/run-pass! ctx {:corpus-path traffic-corpus-gen/corpus-dir :manifest-path (str traffic-corpus-gen/corpus-dir \"/manifest.edn\") :results-dir \"development/bench/ood-stress-results/rs7-pass-1\" :pass 1 :reindex-policy {:every-k 25}})) (runner/stop!) (shutdown-agents) (System/exit 0)"
+
+  ;; Launcher, PERSISTENT Postgres store (RS7-PS) — the RS-7 arms run ~7
+  ;; hours, so a crash mid-arm should not lose the store. Rules: ONE
+  ;; database per ARM (e.g. `rs7_pre_fix`), created BEFORE the run with
+  ;; `docker exec orc-rs7-postgres createdb -U orc rs7_pre_fix`. Pass 2 runs
+  ;; with the SAME results-dir and database, so resolve-store-opts reuses
+  ;; pass 1's tenant; run-pass! refuses a pass 2 on any other tenant. `resolve-store-opts` is
+  ;; how `:store` is "passed through to runner/start!": it derives
+  ;; `runner/start!`'s `:event-store-conn`/`:tenant-id` from the SAME
+  ;; `:store` value recorded on `run.edn`, reusing the prior run's tenant
+  ;; id (via `maybe-read-run-edn`) so a resumed JVM reconnects to the exact
+  ;; tenant the killed JVM was writing to instead of minting a fresh,
+  ;; empty one. `runner/start!` itself then decides — from the store's own
+  ;; events, never from run.edn — whether to reseed or resume-in-place:
+  ;; clojure -J-Djava.awt.headless=true -J-Xmx1600m -M:dev:test -e "(require 'runner) (require 'rs7-traffic-sweep) (let [results-dir \"development/bench/ood-stress-results/rs7-pre-fix\" store {:kind :postgres :database \"rs7_pre_fix\"} {:keys [event-store-conn tenant-id]} (rs7-traffic-sweep/resolve-store-opts store (rs7-traffic-sweep/maybe-read-run-edn results-dir))] (runner/start! {:event-store-conn event-store-conn :tenant-id tenant-id}) (let [ctx (deref @(requiring-resolve 'runner/system-state))] (rs7-traffic-sweep/run-pass! ctx {:corpus-path traffic-corpus-gen/corpus-dir :manifest-path (str traffic-corpus-gen/corpus-dir \"/manifest.edn\") :results-dir results-dir :pass 1 :reindex-policy {:every-k 25} :store (assoc store :tenant-id tenant-id)}))) (runner/stop!) (shutdown-agents) (System/exit 0)"
   )
