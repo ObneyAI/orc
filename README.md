@@ -52,9 +52,9 @@ Pull a weak node's own history out of the event log, then let GEPA — reflectiv
 
 ### 5 · Remember what works (Living Descriptions)
 
-<img src="docs/media/ld-compose.gif" alt="A retrieved living description initializes and composes a new behavior tree" width="100%">
+<img src="docs/media/ld-compose.gif" alt="A catering brief, the descriptions retrieved for it, and the tree the model composes from them" width="100%">
 
-Judges' feedback is distilled into evidence-backed claims — strengths, weaknesses, when to use a pattern, when to avoid it. Those descriptions live in a graph of behaviors and are retrieved when the model designs a new tree. *(alpha)* → [Living Descriptions](docs/LIVING-DESCRIPTIONS.md) · [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
+Judges' feedback is distilled into evidence-backed claims — strengths, weaknesses, when to use a pattern, when to avoid it. Those descriptions live in a graph of behaviors and are retrieved when the model designs a new tree. Above, a brief nobody had built for (scale a 6-plate recipe to 60) is composed from two retrieved descriptions: an ETL pipeline and a parallel analysis. *(alpha)* → [Two worked examples](docs/LIVING-DESCRIPTIONS.md#watch-it-work-two-trees-nobody-had-built-before) · [Living Descriptions](docs/LIVING-DESCRIPTIONS.md) · [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
 
 ### 6 · Harvest proven behaviors
 
@@ -63,6 +63,13 @@ Judges' feedback is distilled into evidence-backed claims — strengths, weaknes
 When a pattern keeps recurring and keeps scoring well on every judge, ORC promotes it into a named, reusable behavior that other trees can delegate to — nothing relearned from scratch. *(alpha — thresholds still being calibrated)* → [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
 
 <sub>The animations are illustrative explainers of real ORC mechanisms (the workbench is an analogy); node kinds, event shapes and judge dimensions match the code. Harvest's gate values in the animation predate the current defaults (see the [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)). Full map of the docs: **[docs/README.md](docs/README.md)**.</sub>
+
+## New here?
+
+Start with **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — a progressive contract-analysis walkthrough from a bare workflow through judges, GEPA, ontology, and self-improvement. **[docs/README.md](docs/README.md)** maps every guide onto the lab loop.
+
+For production persistence and diagnostics, see **[Value Storage](docs/VALUE-STORAGE.md)**
+and **[Tracing and Correlation](docs/ORC-SERVICE-GUIDE.md#tracing-correlation-and-exact-node-io)**.
 
 ## How a run works: behavior trees
 
@@ -134,13 +141,6 @@ flowchart TB
 ```
 
 *Game `condition` → ORC `llm-condition`; game `ACTION` → an `llm`/`code` leaf; game sensors/commands → blackboard keys you **read** and **write**; a stacked game subbehavior → a `:delegate`. If you can read the game tree, you can read the ORC one. That's the entire mental model — see the [full contract-analysis walkthrough](docs/GETTING-STARTED.md).*
-
-## New here?
-
-Start with **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — a progressive contract-analysis walkthrough from a bare workflow through judges, GEPA, ontology, and self-improvement. **[docs/README.md](docs/README.md)** maps every guide onto the lab loop.
-
-For production persistence and diagnostics, see **[Value Storage](docs/VALUE-STORAGE.md)**
-and **[Tracing and Correlation](docs/ORC-SERVICE-GUIDE.md#tracing-correlation-and-exact-node-io)**.
 
 ## Pick your package
 

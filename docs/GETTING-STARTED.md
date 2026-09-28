@@ -15,10 +15,8 @@ step becomes an event-sourced fact you can query, judge, and learn from — judg
 score it, GEPA tunes the weak node's instructions, Living Descriptions remember
 what worked, and Harvest promotes proven patterns into reusable behaviors.
 
-Workflows run as **behavior trees**: you compose nodes into a tree; the engine
-ticks the tree, every step is an event-sourced fact, and the durable record is a
-read-model you can query.
-LLMs do the knowledge work *at the nodes*; the tree is the deterministic spine
+Workflows run as **behavior trees**: you compose nodes into a tree, and the
+engine ticks it. LLMs do the knowledge work *at the nodes*; the tree is the deterministic spine
 that guarantees the steps run and owns the contracts between them. The leverage
 is not "call an LLM" — it is composing the right nodes and sub-behaviors so
 your methodology is *structural*, guaranteed by the tree, rather than crammed
@@ -1429,8 +1427,8 @@ other. The corpus prepend improves tree **design**; recursive mode improves tree
 
 ### Alpha-state framing
 
-<p align="center"><img src="media/ld-compose.gif" alt="A retrieved description composing a new tree" width="760"></p>
-<p align="center"><sub>Retrieved Living Descriptions initialize and shape a brand-new tree (real run: a marathon training plan). <i>Domain-child labels arrive with the R-Inject specialisation work.</i></sub></p>
+<p align="center"><img src="media/ld-compose.gif" alt="A catering brief, the descriptions retrieved for it, and the tree the model composes from them" width="760"></p>
+<p align="center"><sub>Retrieved Living Descriptions shape a brand-new tree: a 6-plate recipe scaled for 60 becomes a scale → parallel (logistics, economics) → assemble tree. <i>Real run; see the <a href="LIVING-DESCRIPTIONS.md#watch-it-work-two-trees-nobody-had-built-before">worked examples</a>.</i></sub></p>
 
 <p align="center"><img src="media/harvest.gif" alt="A recurring pattern promoted into a reusable behavior" width="760"></p>
 <p align="center"><sub>Harvest: a recurring, well-scored, coherent pattern becomes a named behavior other workflows delegate to. <i>Alpha; illustrative workbench analogy; real gate defaults.</i></sub></p>

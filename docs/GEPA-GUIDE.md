@@ -12,6 +12,9 @@ You already have a behavior tree with an `:llm` node, and you hand-wrote its ins
 
 > **Your `:llm` node works, but the instruction is your first guess. GEPA automatically searches for a better instruction — running your tree against examples, scoring with judges, and proposing improved instructions through reflective mutation.**
 
+<p align="center"><img src="media/gepa-loop.gif" alt="GEPA candidate rewrite, quick test, full evaluation and Pareto frontier" width="760"></p>
+<p align="center"><sub>Failing examples + the judges' weakest-first feedback → a rewritten instruction → a 3-example quick test → full evaluation → a per-example Pareto frontier. <i>Illustrative texts and scores.</i></sub></p>
+
 Here is the whole arc, from the tree you already have to an instruction you didn't have to write. Each step is a few lines at the REPL.
 
 ### Your starting point
@@ -277,9 +280,6 @@ The shipped implementation is **native Clojure**. All algorithm logic (Pareto se
 ---
 
 ## How judge feedback drives mutation
-
-<p align="center"><img src="media/gepa-loop.gif" alt="GEPA candidate rewrite, quick test, full evaluation and Pareto frontier" width="760"></p>
-<p align="center"><sub>Failing examples + the judges' weakest-first feedback → a rewritten instruction → a 3-example quick test → full evaluation → a per-example Pareto frontier. <i>Illustrative texts and scores.</i></sub></p>
 
 The core GEPA claim is that mutation quality improves when the proposer sees *why* a candidate scored low — not just the number. This is the chain, verified from source:
 

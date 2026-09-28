@@ -19,8 +19,8 @@
 
 ## Start here: the same tree, now learning
 
-<p align="center"><img src="media/ld-compose.gif" alt="Retrieved descriptions composing a new tree" width="760"></p>
-<p align="center"><sub>Execution evidence → descriptions → retrieval → a better-designed tree. <i>Real run; alpha.</i></sub></p>
+<p align="center"><img src="media/ld-compose.gif" alt="A catering brief, the descriptions retrieved for it, and the tree the model composes from them" width="760"></p>
+<p align="center"><sub>Execution evidence → descriptions → retrieval → a newly composed tree for a task nobody had built for. <i>Real run; alpha. See the <a href="LIVING-DESCRIPTIONS.md#watch-it-work-two-trees-nobody-had-built-before">worked examples</a>.</i></sub></p>
 
 You already have a behavior tree. Maybe it reviews contracts, triages
 tickets, or extracts structured data. Right now it runs the same way
