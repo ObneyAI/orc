@@ -89,11 +89,18 @@
                       "candidate is the same family; \"new\" when none is; \"unknown\" when you cannot tell from what "
                       "is shown. Respond with ONLY the JSON object.")})
 
-(defn- parse-answer [raw]
-  (when (string? raw)
+(defn- parse-answer
+  "The provider returns the structured output either as a map (function
+   calling) or as a JSON string; accept both — the first probe run dropped 16
+   valid verdicts by expecting a string."
+  [raw]
+  (cond
+    (map? raw) (into {} (map (fn [[k v]] [(keyword (name k)) v])) raw)
+    (string? raw)
     (let [s (.indexOf raw "{") e (.lastIndexOf raw "}")]
       (when (and (>= s 0) (> e s))
-        (try (json/read-str (subs raw s (inc e)) :key-fn keyword) (catch Throwable _ nil))))))
+        (try (json/read-str (subs raw s (inc e)) :key-fn keyword) (catch Throwable _ nil))))
+    :else nil))
 
 (defn- ask-judge! [ctx task reasoning candidates]
   (let [result (llm/predict (:llm-provider ctx :openrouter) judge-module
