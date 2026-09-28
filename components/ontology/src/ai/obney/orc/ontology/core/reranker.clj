@@ -44,15 +44,26 @@ output). Give a discrete verdict:
   uncovered  — nothing the candidate declares names this task's subject
                matter, material or output kind; the fit, if any, is shape only
   unknown    — you cannot tell from what the candidate declares
-A candidate may carry existing-domain-children: labels of domain children
-already minted under it. They serve ONE purpose — label reuse. If one of them
-names THIS task's domain, you MUST reuse that label verbatim as domain_label
-(do not coin a variant); coin a new label only when none of the existing ones
-fits. existing-domain-children MUST NOT influence domain_coverage: coverage is
+The label names the FAMILY of task the domain belongs to: its subject matter
+and its output kind — never the instance's own material, dates, names or
+numbers. \"marathon-training-plan\" names a family; \"16-week marathon plan for
+a first-time runner starting June 3\" names one instance of it. Two tasks that
+share subject matter and output kind but differ in material (a different
+runner's numbers, a different contract's clauses) are the SAME family and
+must get the SAME label.
+
+You are shown existing-domain-labels: the tenant's own list of family labels
+already in use (bounded, most-recently-minted first) — and a candidate may
+ALSO carry existing-domain-children: labels of domain children already minted
+under that ONE candidate. Both serve ONE purpose — label reuse, never
+coverage. Reuse a listed label VERBATIM as domain_label unless this task's
+subject matter AND its output kind BOTH differ from every listed label's
+family — coin a new label only then. existing-domain-labels and
+existing-domain-children MUST NOT influence domain_coverage: coverage is
 judged solely against the candidate's OWN representative uses and content. A
-child naming this task's domain does not make its parent covered — a parent
-with a matching child is exactly the case where the task belongs to the child,
-not to the parent.
+child (or a tenant label) naming this task's domain does not make a parent
+covered — a parent with a matching child is exactly the case where the task
+belongs to the child, not to the parent.
 Write domain_reasoning BEFORE choosing the verdict: name the representative use
 or guard you matched, or state the gap. Also give domain_label: a 2-4 word
 kebab-case label of the TASK's own domain (the same label for every candidate
@@ -92,6 +103,10 @@ INPUTS DESCRIBED
                     recommended-pattern}: when this candidate is the RIGHT fit),
                   weaknesses (OPTIONAL — vector of {trait, avoid-when,
                     recommended-alternative}).
+- existing-domain-labels — a bounded JSON vector of strings: every domain
+                  family label already in use across the WHOLE tenant (not
+                  just one candidate's own children), most-recently-minted
+                  first. See DOMAIN COVERAGE below for how to use it.
 
 YOUR JOB
 Rank the candidates by how well they FIT THE INTENT, not by raw lexical
@@ -271,7 +286,7 @@ per input candidate."))
    I/O — so tests can assert on the resolved node without a real LLM
    call.
 
-   Inputs (blackboard): :query, :intent, :candidates
+   Inputs (blackboard): :query, :intent, :candidates, :existing-domain-labels
    Output (one :writes slot): :reranked-json
      — a JSON string of the reranked list (parsed back to Clojure in
        `rerank!`). We use a JSON-string output rather than a native
@@ -283,15 +298,19 @@ per input candidate."))
   [model]
   (orc/workflow (reranker-workflow-name model)
     (orc/blackboard
-      {:query         :string
-       :intent        :string
-       :candidates    [:vector candidate-schema]
-       :reranked-json :string})
+      {:query                   :string
+       :intent                  :string
+       :candidates              [:vector candidate-schema]
+       ;; CV-A item 6: the tenant-wide, bounded label list — reuse over
+       ;; coin (see the domain-coverage-section's task-family paragraph).
+       ;; A vector of plain strings; empty when no families exist yet.
+       :existing-domain-labels  [:vector :string]
+       :reranked-json           :string})
 
     (orc/llm "rerank"
       :model model
       :instruction reranker-instruction
-      :reads [:query :intent :candidates]
+      :reads [:query :intent :candidates :existing-domain-labels]
       :writes [:reranked-json]
       ;; Per-node override: use function-calling for structured output.
       ;; The project default is marker-parsing (see commit 2c00391 —
@@ -471,14 +490,21 @@ per input candidate."))
                       model resolves from the context slot
                       `:ontology-reranker-model`, and only then falls
                       back to the ratified `default-model`. See
-                      `resolve-model`."
-  [ctx {:keys [query intent candidates timeout-ms model]}]
+                      `resolve-model`.
+       :existing-domain-labels — CV-A item 6: OPTIONAL bounded vector of
+                      the tenant's existing domain-family labels, for the
+                      reranker's label-reuse instruction. Defaults to []
+                      so every existing caller (walk-down's pick-best-child,
+                      every pre-CV-A test) that supplies none still fills
+                      the blackboard's required slot."
+  [ctx {:keys [query intent candidates timeout-ms model existing-domain-labels]}]
   (let [budget-ms (resolve-timeout-ms ctx timeout-ms)
         resolved-model (resolve-model ctx model)
         sheet-id (orc/build-workflow! ctx (reranker-workflow resolved-model))
         inputs   {:query query
                   :intent intent
-                  :candidates candidates}
+                  :candidates candidates
+                  :existing-domain-labels (or existing-domain-labels [])}
         ;; RR-1: retry-on-TIMEOUT only. A timeout is transient infra (tail
         ;; latency against a fixed clock); the SAME call is re-run once,
         ;; unchanged, before the caller's fallback path is reached. Any other

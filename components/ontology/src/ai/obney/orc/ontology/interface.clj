@@ -738,6 +738,63 @@
                 (distinct))
           (get-enforcing-claims ctx granularity target-id))))
 
+(def family-label-list-bound
+  "CV-A (domain-child convergence, item 1 + item 6): the bound on the
+   tenant-wide family-label list — one number shared by the classifier's
+   tenant-wide family landing (`existing-domain-families`) and the
+   reranker's bounded `:existing-domain-labels` blackboard slot, so the two
+   never drift apart."
+  50)
+
+(defn- tree-class-uri->target-id
+  "Strip the 'tree-class:' prefix from a concept URI and parse as UUID when
+   possible. Mirrors task-classifier's private `uri->target-id` — duplicated
+   here rather than shared, matching this codebase's existing precedent for
+   this exact derivation (commands.clj's `tree-class-uri` helper)."
+  [uri]
+  (let [bare (if (and (string? uri) (clojure.string/starts-with? uri "tree-class:"))
+               (subs uri (count "tree-class:"))
+               uri)]
+    (try (java.util.UUID/fromString bare)
+         (catch Exception _ bare))))
+
+(defn existing-domain-families
+  "CV-A item 1 (`DomainChildIdentityIsStable`, `DomainChildrenAreAlwaysConsidered`):
+   every tree-class concept minted as a domain family, TENANT-WIDE across
+   every parent — provenance :agent-authored, a non-blank :label that is
+   not the concept's own bare id (the generic placeholder an ordinary,
+   non-domain tree-class concept carries as its label). Most-recently-
+   minted first, bounded by `family-label-list-bound`.
+
+   Returns [{:target-id :domain-label :parent-id} ...] — :parent-id is the
+   family's own birth shape (its first skos:broader edge), nil when the
+   concept carries none.
+
+   A genuine read failure PROPAGATES — never caught here. The classifier's
+   `:domain-families-fn` seam (and the reranker's label-list builder) decide
+   how a failure is handled; a lookup that cannot be resolved must defer,
+   never silently read as \"no families\" (DomainCoverageIsJudgedNotInferred)."
+  [ctx]
+  (let [concepts (rm/get-concepts ctx {:scope :tree-class})]
+    (->> concepts
+         (keep (fn [c]
+                 (let [label (:label c)
+                       uri (:uri c)
+                       bare (if (and (string? uri) (clojure.string/starts-with? uri "tree-class:"))
+                              (subs uri (count "tree-class:"))
+                              uri)]
+                   (when (and (string? label)
+                              (not (clojure.string/blank? label))
+                              (not= label bare))
+                     (let [broader-uri (first (:broader c))]
+                       {:target-id (tree-class-uri->target-id uri)
+                        :domain-label label
+                        :parent-id (when broader-uri (tree-class-uri->target-id broader-uri))
+                        ::created-at (:created-at c)})))))
+         (sort-by ::created-at #(compare %2 %1))
+         (take family-label-list-bound)
+         (mapv #(dissoc % ::created-at)))))
+
 (defn- existing-domain-child-labels
   "R-Inject specialisation (weed 1.1, DomainChildIdentityIsStable): the labels
    of a tree-class candidate's existing domain children — its narrower
@@ -963,11 +1020,24 @@
         ;; candidates, same order, same count — less per-candidate detail for
         ;; the non-critical (low-scoring CHILD) ones.
         prompt-candidates (shape-candidate-richness annotated)
+        ;; CV-A item 6: the tenant-wide, bounded label list — every domain
+        ;; family's own label, not one parent's children. Best-effort, like
+        ;; `existing-domain-child-labels`: a failed read simply shows the
+        ;; reranker no list rather than failing the whole rerank call — the
+        ;; classifier's OWN tenant-wide lookup (item 1) is the fail-closed
+        ;; path; this is a prompt-shaping aid only.
+        existing-domain-labels (try
+                                  (->> (existing-domain-families ctx)
+                                       (mapv :domain-label)
+                                       distinct
+                                       vec)
+                                  (catch Exception _ []))
         reranked (try
                    (reranker/rerank! ctx
                      {:query query
                       :intent rerank-intent
                       :candidates prompt-candidates
+                      :existing-domain-labels existing-domain-labels
                       :model model})
                    (catch Throwable t
                      (u/log ::rerank-failed

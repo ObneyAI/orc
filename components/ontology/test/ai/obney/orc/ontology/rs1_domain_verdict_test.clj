@@ -14,8 +14,13 @@
             [clojure.string :as str]
             [cheshire.core :as cheshire]
             [malli.core :as m]
+            [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
-            [ai.obney.orc.ontology.core.reranker :as reranker]))
+            [ai.obney.orc.ontology.core.commands]
+            [ai.obney.orc.ontology.core.reranker :as reranker]
+            [ai.obney.orc.ontology.test-helpers :as th]
+            [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.time.interface :as time]))
 
 ;; =============================================================================
 ;; RED #1 — the six-key payload parses to a validated entry carrying the
@@ -91,6 +96,47 @@
       (is (str/includes? rendered "existing-domain-children"))
       (is (str/includes? rendered "marathon-training-plan"))
       (is (str/includes? rendered "recipe-scaling")))))
+
+;; =============================================================================
+;; CV-A item 6 — apply-rerank passes the tenant-wide, bounded label list
+;; through to the reranker call as :existing-domain-labels
+;; =============================================================================
+
+(defn- mint-command [parent-id child-id label]
+  {:command/name :ontology/mint-domain-child
+   :command/id (random-uuid)
+   :command/timestamp (time/now)
+   :parent-tree-id parent-id
+   :child-tree-id child-id
+   :domain-label label
+   :source-sheet-id (random-uuid)
+   :source-tick-id (random-uuid)
+   :source-node-id (random-uuid)})
+
+(deftest rerank-inputs-carry-the-bounded-label-list
+  (testing "apply-rerank computes the tenant-wide family-label list
+            (ontology/existing-domain-families) and passes it to
+            reranker/rerank! as :existing-domain-labels — every family's
+            OWN label, not just one candidate's children"
+    (th/with-test-context [base]
+      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+            parent-a (random-uuid) parent-b (random-uuid)
+            child-a (random-uuid) child-b (random-uuid)
+            captured (atom nil)
+            candidate {:content "x" :score 0.8 :rank 1 :document-id "a"
+                       :document-metadata {:granularity :tree-class
+                                           :target-id (str (random-uuid))
+                                           :confidence 0.9 :last-update "2026"}}]
+        (cp/process-command (assoc ctx :command (mint-command parent-a child-a "marathon-training-plan")))
+        (cp/process-command (assoc ctx :command (mint-command parent-b child-b "recipe-scaling")))
+        (with-redefs [reranker/rerank!
+                      (fn [_ opts]
+                        (reset! captured opts)
+                        [{:document-id "a" :reasoning "fits" :fitness-score 0.8}])]
+          (#'ontology/apply-rerank ctx [candidate] "intent" "query" 5 nil)
+          (is (= #{"marathon-training-plan" "recipe-scaling"}
+                 (set (:existing-domain-labels @captured)))
+              "both families' own labels reached the rerank! call"))))))
 
 ;; =============================================================================
 ;; RED #2 — a missing or malformed verdict reads as :unknown, never coerced

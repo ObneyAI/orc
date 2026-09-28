@@ -460,10 +460,42 @@
 (def domain-deferral
   "RS-2's `:domain-deferral` marker: the domain axis could not be resolved.
    `:reason` is a CLOSED set (the CC-28 idiom) — a new reason must be added
-   here and to `task-classifier/domain-deferral` deliberately."
+   here and to `task-classifier/domain-deferral` deliberately.
+
+   CV-A adds `:families-lookup-failed` (the tenant-wide family lookup or the
+   family-is-leaf parent lookup threw — never read as \"no families\") and
+   `:merge-unresolved` (the merge judge answered `:unknown`, or something
+   other than `:same`/`:new` — CV-C's seam; this bundle's default merge-fn
+   never produces it, but the reason must exist for the seam contract)."
   [:map
    [:axis   [:enum :domain]]
-   [:reason [:enum :unknown-coverage :children-lookup-failed]]])
+   [:reason [:enum :unknown-coverage :children-lookup-failed
+             :families-lookup-failed :merge-unresolved]]])
+
+;; =============================================================================
+;; CV-A — covered-seed protection selection + the merge verdict
+;; =============================================================================
+
+(def domain-selection
+  "CV-A item 2 (`CoveredSeedProtection`): recorded on the classified event
+   when a covered, childless tree-class candidate in the ranking wins the
+   assignment over a top-1 that would otherwise mint — the passed-over
+   shape stays visible for audit."
+  [:map
+   [:preferred [:or :uuid :string]]
+   [:over      [:or :uuid :string]]
+   [:reason    [:enum :covered-leaf-neighbour]]])
+
+(def merge-verdict
+  "CV-A item 7 — the `:domain-merge-fn` seam's raw answer at a would-be
+   mint. `:kind :new` mints (this bundle's default, always); `:kind :same`
+   names the existing family it lands on (CV-C); anything else is
+   `:merge-unresolved`. Carried unnormalised, exactly as the seam returned
+   it — never re-derived from `:kind` alone."
+  [:map
+   [:kind      [:enum :same :new :unknown]]
+   [:family    {:optional true} [:maybe [:or :uuid :string]]]
+   [:reasoning {:optional true} [:maybe :string]]])
 
 ;; =============================================================================
 ;; CC-23 (contract TaskClassification) — bounded pre-gate ranking snapshot
@@ -795,7 +827,12 @@
     [:domain-verdict {:optional true} domain-verdict]
     [:domain-label {:optional true} [:maybe :string]]
     [:domain-children-considered {:optional true} [:vector [:maybe :string]]]
-    [:domain-deferral {:optional true} domain-deferral]]
+    [:domain-deferral {:optional true} domain-deferral]
+    ;; CV-A: covered-seed protection's selection and the merge judge's raw
+    ;; verdict, both optional (omit-not-nil) so every pre-CV-A event stays
+    ;; byte-shaped.
+    [:domain-selection {:optional true} domain-selection]
+    [:merge-verdict {:optional true} merge-verdict]]
 
    ;; RR-19: one explicit recurrence fact for a classified researcher
    ;; campaign that reached a behavior verdict. Infrastructure endings are
@@ -1670,7 +1707,11 @@
     [:domain-verdict {:optional true} domain-verdict]
     [:domain-label {:optional true} [:maybe :string]]
     [:domain-children-considered {:optional true} [:vector [:maybe :string]]]
-    [:domain-deferral {:optional true} domain-deferral]]
+    [:domain-deferral {:optional true} domain-deferral]
+    ;; CV-A: forwarded by the wedge onto the emitted task-classified event —
+    ;; see :ontology/task-classified for the shared shapes.
+    [:domain-selection {:optional true} domain-selection]
+    [:merge-verdict {:optional true} merge-verdict]]
 
    :ontology/record-tree-class-occurrence
    [:map
@@ -1738,7 +1779,11 @@
     [:domain-label   :string]
     [:source-sheet-id {:optional true} :uuid]
     [:source-tick-id  {:optional true} :uuid]
-    [:source-node-id  {:optional true} :uuid]]
+    [:source-node-id  {:optional true} :uuid]
+    ;; CV-A item 5: sent only for a genuine tenant-wide family birth (never
+    ;; the legacy per-parent sibling mint) — becomes the child concept's own
+    ;; :description and is embedded synchronously into the same event batch.
+    [:birth-description {:optional true} [:maybe :string]]]
 
    ;; -------------------------------------------------------------------------
    ;; R05c — Mint a new behavioral-subtree concept

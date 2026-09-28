@@ -500,6 +500,70 @@
      context :convergence-capture command
      #(cp/process-command (assoc context :command command)))))
 
+(declare fetch-tree-body)
+
+(defn- domain-family-birth-description
+  "CV-A item 5, as corrected in inspection: the rich, self-contained text
+   minted onto the family's OWN concept :description and embedded at birth
+   (`DomainFamilyDescribesItselfFromBirth`). Carries substance only: the
+   family's label, its purpose (the verdict's domain-reasoning), the birth
+   shape's OWN summary (the role it plays), and the birth task signature. No
+   ids: the embedding and the merge judge read this text, and an id means
+   nothing to either. Pure — no I/O."
+  [domain-label parent-summary domain-reasoning signature]
+  (str "Domain family \"" domain-label "\". "
+       "Purpose (subject matter, material, output kind): "
+       (or domain-reasoning "(no domain reasoning recorded at birth)") " "
+       "It specialises the shape: "
+       (or parent-summary "(the birth shape's summary was unavailable)") " "
+       "Birth task: " signature))
+
+(defn- birth-description-claims!
+  "CV-A item 5 (`DomainFamilyDescribesItselfFromBirth`): on a family birth
+   (the mint carries a `:merge-verdict`), record the birth claims in ONE
+   dispatch through the claim path (CC-6), never a body write:
+     :capability          — the purpose (subject matter / material / output
+                            kind), drawn from the verdict's domain-reasoning.
+     :representative-use  — the birth signature.
+   Inspection correction: no :guard claim. A guard assembles into the body's
+   :avoid-when, which the domain penalty scores tasks against; a birth-shape
+   note there is not an avoid-when condition. The birth shape lives in the
+   concept's own description instead."
+  [context class-id domain-reasoning signature]
+  (let [claim-set-version (requiring-resolve
+                            'ai.obney.orc.ontology.interface/get-claim-set-version)
+        capability-content
+        (str "Domain family born for a task whose subject matter, material "
+             "and output kind are: "
+             (or domain-reasoning "(no domain reasoning recorded at birth)"))
+        command {:command/name :ontology/record-claim-deltas
+                 :command/id (random-uuid)
+                 :command/timestamp (time/now)
+                 :granularity :tree-class
+                 :target-identifier class-id
+                 :deltas [{:operation :add
+                           :kind :capability
+                           :content capability-content
+                           :context-guard nil
+                           :recommendation nil
+                           :episodes []
+                           :from-legacy-corpus false
+                           :evidence-basis :classification-signature}
+                          {:operation :add
+                           :kind :representative-use
+                           :content signature
+                           :context-guard nil
+                           :recommendation nil
+                           :episodes []
+                           :from-legacy-corpus false
+                           :evidence-basis :classification-signature}]
+                 :evidence-event-count 0
+                 :claim-set-version
+                 (claim-set-version context :tree-class class-id)}]
+    (run-or-defer-classification-effect!
+     context :convergence-capture command
+     #(cp/process-command (assoc context :command command)))))
+
 (defn maybe-auto-classify-and-set-context
   "C-2c-2: when the node is an :rlm repl-researcher with
    :auto-classify? true and no :context already set, run the classifier
@@ -688,7 +752,13 @@
                   (some? (:domain-children-considered result))
                   (assoc :domain-children-considered (:domain-children-considered result))
                   (some? (:domain-deferral result))
-                  (assoc :domain-deferral (:domain-deferral result)))
+                  (assoc :domain-deferral (:domain-deferral result))
+                  ;; CV-A: covered-seed protection's selection and the merge
+                  ;; judge's raw verdict, both optional (omit-not-nil).
+                  (some? (:domain-selection result))
+                  (assoc :domain-selection (:domain-selection result))
+                  (some? (:merge-verdict result))
+                  (assoc :merge-verdict (:merge-verdict result)))
                 ;; RS-3: on a domain-child MINT (first child or sibling), the
                 ;; child's tree-class concept and its skos:broader edge must
                 ;; exist BEFORE anything references the child — the CV-1
@@ -697,18 +767,31 @@
                 ;; NOT a mint (no concept work; the child already exists from
                 ;; an earlier occurrence).
                 domain-mint? (contains? #{:mint-domain-child :mint-sibling-domain-child}
-                                        (:assigned-via result))]
+                                        (:assigned-via result))
+                ;; CV-A item 5: a genuine tenant-wide family birth carries a
+                ;; :merge-verdict (the merge judge ran); the LEGACY
+                ;; per-parent sibling mint never calls the merge judge, so it
+                ;; never carries one and keeps today's generic concept
+                ;; description (no embedding).
+                birth-family-mint? (and domain-mint? (some? (:merge-verdict result)))]
             (ensure-classification-active!)
             (when domain-mint?
-              (let [mint-command {:command/name :ontology/mint-domain-child
-                                  :command/id (random-uuid)
-                                  :command/timestamp (time/now)
-                                  :parent-tree-id (:parent-tree-id result)
-                                  :child-tree-id (:assigned-tree-id result)
-                                  :domain-label (:domain-label result)
-                                  :source-sheet-id (:sheet-id context)
-                                  :source-tick-id (:tick-id context)
-                                  :source-node-id (:id node)}]
+              (let [mint-command (cond-> {:command/name :ontology/mint-domain-child
+                                          :command/id (random-uuid)
+                                          :command/timestamp (time/now)
+                                          :parent-tree-id (:parent-tree-id result)
+                                          :child-tree-id (:assigned-tree-id result)
+                                          :domain-label (:domain-label result)
+                                          :source-sheet-id (:sheet-id context)
+                                          :source-tick-id (:tick-id context)
+                                          :source-node-id (:id node)}
+                                    birth-family-mint?
+                                    (assoc :birth-description
+                                           (domain-family-birth-description
+                                            (:domain-label result)
+                                            (:summary (fetch-tree-body context (:parent-tree-id result)))
+                                            (get-in result [:domain-verdict :domain-reasoning])
+                                            signature)))]
                 (run-or-defer-classification-effect!
                  context :domain-child-mint mint-command
                  #(cp/process-command (assoc context :command mint-command)))
@@ -753,7 +836,24 @@
             ;; ORIGINAL order (assign, then capture) unchanged.
             (when (and domain-mint? (:was-fresh-mint? result))
               (ensure-classification-active!)
-              (capture-classification-signature! context (:assigned-tree-id result) signature)
+              ;; CV-A item 5: a genuine tenant-wide family birth (the merge
+              ;; judge ran — :merge-verdict is on `result`) gets the rich
+              ;; three-claim self-description (the concept itself was
+              ;; already embedded AT BIRTH, in the SAME mint-domain-child
+              ;; event batch above — see its docstring for why a separate
+              ;; embed dispatch cannot work on the checkpointed path); the
+              ;; LEGACY per-parent sibling mint (no :merge-verdict — the
+              ;; merge judge never runs there) keeps its original single
+              ;; :representative-use capture, byte-identical to before.
+              (if (:merge-verdict result)
+                (do
+                  (birth-description-claims! context (:assigned-tree-id result)
+                                             (get-in result [:domain-verdict :domain-reasoning])
+                                             signature)
+                  (println (format "[DEBUG RLM] node '%s' CV-A BIRTH-DESCRIPTION recorded (capability+representative-use) for :tree-class %s"
+                                   (or (:name node) (str (:id node)))
+                                   (:assigned-tree-id result))))
+                (capture-classification-signature! context (:assigned-tree-id result) signature))
               (ensure-classification-active!)
               (println (format "[DEBUG RLM] node '%s' CONVERGENCE-CAPTURE recorded signature claim for :tree-class %s"
                                (or (:name node) (str (:id node)))
@@ -1381,9 +1481,26 @@
      ;; for it in the render, so it is never ALSO a numbered entry, and it is
      ;; recorded at most once, as the substance candidate, exactly when its
      ;; substance was rendered (CC-13: record = render).
+     ;; A family reached through the index (C5) has no parent among the
+     ;; candidates: the parent was proven by its graph edge, never retrieved.
+     ;; The parent's full entry still renders first (D5, the parent stays
+     ;; primary for a newborn), built like the consolidated child's entry: the
+     ;; parent's own body, with the top match's score and reasoning attached,
+     ;; because they are why the task arrived here.
      (let [child-id (str (:child-tree-id domain))
-           base (into [] (remove #(= child-id (str (get-in % [:document-metadata :target-id]))))
-                      (plain-match-candidates top-candidates))
+           parent-id (:parent-tree-id domain)
+           shown (into [] (remove #(= child-id (str (get-in % [:document-metadata :target-id]))))
+                       (plain-match-candidates top-candidates))
+           parent-shown? (some #(= (str parent-id) (str (get-in % [:document-metadata :target-id]))) shown)
+           parent-candidate (when (and parent-id (not parent-shown?))
+                              (when-let [parent-body (fetch-tree-body ctx parent-id)]
+                                (let [top-1 (first top-candidates)]
+                                  {:content (:summary parent-body)
+                                   :fitness-score (:fitness-score top-1)
+                                   :reasoning (:reasoning top-1)
+                                   :rerank-source (:rerank-source top-1)
+                                   :document-metadata {:granularity :tree-class :target-id parent-id}})))
+           base (if parent-candidate (into [parent-candidate] shown) shown)
            family-candidate (family-substance-candidate ctx suppress-claims? structural)]
        (cond-> base
          family-candidate (conj family-candidate)))

@@ -11,13 +11,23 @@
    `ontology/search-descriptions` to a typed payload (prior art: el3, walk-
    down, el1b, cc23). apply-rerank's OWN join is exercised one level lower,
    stubbing `reranker/rerank!` directly (prior art: rr1)."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.reranker :as reranker]
             [ai.obney.orc.ontology.core.task-classifier :as tc]
             [ai.obney.orc.ontology.test-helpers :as th]))
+
+;; Every test here is pure: no event store. The family seams' real defaults
+;; read the store and fail (deferring) without one, by design. This suite
+;; declares its world explicitly instead: no tenant-wide families, and no
+;; candidate is a family, unless a test passes its own seam on ctx.
+(use-fixtures :each
+  (fn [t]
+    (with-redefs [tc/default-domain-families-fn (fn [_ctx] [])
+                  tc/default-domain-family-parent-fn (fn [_ctx _target-id] nil)]
+      (t))))
 
 ;; =============================================================================
 ;; Cycle 1 — apply-rerank's JOIN carries the three domain keys
@@ -259,15 +269,51 @@
                  (:domain-verdict r))
               "the verdict is still CARRIED for RS-3, even though it was not CONSULTED"))))))
 
+;; Orchestrator inspection: with families present under a shape, the merge
+;; judge can still fold a new label into an existing family, and a "same"
+;; verdict naming something that is not a family defers instead of landing
+;; with no parent.
+(deftest children-present-new-label-same-verdict-lands-on-the-named-family
+  (let [class-id (random-uuid) family-id (random-uuid) family-parent (random-uuid)
+        candidate (tree-class-candidate class-id 0.95
+                    :domain-coverage :partial
+                    :domain-label "Weekly Meal Plan"
+                    :domain-reasoning "Meal planning.")
+        children [{:target-id (random-uuid) :domain-label "recipe-scaling"}]]
+    (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
+                  tc/get-consolidation-total* (fn [_ _ _] 0)]
+      (testing "same → lands on the named family, under the family's own parent"
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] children)
+                  :domain-merge-fn (fn [_ _] {:kind :same :family family-id})
+                  :domain-family-parent-fn (fn [_ id] (when (= id family-id)
+                                                        {:parent-id family-parent
+                                                         :domain-label "meal-planning"}))}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :land-on-domain-child (:assigned-via r)))
+          (is (= family-id (:assigned-tree-id r)))
+          (is (= family-parent (:parent-tree-id r)))
+          (is (= "meal-planning" (:domain-label r)))
+          (is (false? (:was-fresh-mint? r)))))
+      (testing "same naming a non-family → deferral :merge-unresolved, nothing assigned to it"
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] children)
+                  :domain-merge-fn (fn [_ _] {:kind :same :family (random-uuid)})
+                  :domain-family-parent-fn (fn [_ _] nil)}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :merge-unresolved (get-in r [:domain-deferral :reason])))
+          (is (not= :land-on-domain-child (:assigned-via r))))))))
+
 ;; =============================================================================
-;; Cycle 7 — children present, judged label is NEW → :mint-sibling-domain-child,
-;; verdict NOT consulted
+;; Cycle 7 — children present, judged label is NEW → a JUDGED family birth
+;; (ADR 0007: no unjudged sibling mint), coverage verdict NOT consulted
 ;; =============================================================================
 
 (deftest children-present-new-label-mints-sibling-domain-child
-  (testing "a judged label matching NO existing domain child → mint a sibling:
-            the derived sibling identity, :assigned-via
-            :mint-sibling-domain-child, the verdict NOT consulted"
+  (testing "a judged label matching NO existing domain child → the merge
+            judge is asked, and on :new a family is born under the shape:
+            the derived identity, :assigned-via :mint-domain-child with the
+            merge verdict carried, the coverage verdict NOT consulted"
     (let [class-id (random-uuid)
           sibling-id (random-uuid)
           candidate (tree-class-candidate class-id 0.95
@@ -278,9 +324,13 @@
           expected-id (expected-domain-child-id class-id "weekly-meal-plan")]
       (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
                     tc/get-consolidation-total* (fn [_ _ _] 0)]
-        (let [r (ontology/classify-task {:domain-children-fn (fn [_ _] children)}
+        (let [merge-calls (atom 0)
+              r (ontology/classify-task {:domain-children-fn (fn [_ _] children)
+                                         :domain-merge-fn (fn [_ _] (swap! merge-calls inc) {:kind :new})}
                                         {:task-signature "x" :threshold 0.7})]
-          (is (= :mint-sibling-domain-child (:assigned-via r)))
+          (is (= 1 @merge-calls) "the second family under a shape is judged too")
+          (is (= :mint-domain-child (:assigned-via r)))
+          (is (= {:kind :new} (:merge-verdict r)))
           (is (= expected-id (:assigned-tree-id r)) "derived from parent + the CANONICAL new label")
           (is (= class-id (:parent-tree-id r)))
           (is (= "weekly-meal-plan" (:domain-label r)))
@@ -319,7 +369,7 @@
           (is (false? @walk-down-lookup-called?)
               "walk-down's OWN children lookup is never reached — the specificity
                gate returns top-1 without descending")
-          (is (= :mint-sibling-domain-child (:assigned-via r))
+          (is (= :mint-domain-child (:assigned-via r))
               "domain children were STILL considered — the class is NOT treated as a leaf")
           (is (= expected-id (:assigned-tree-id r)))
           (is (true? (:was-fresh-mint? r))))))))
@@ -474,55 +524,256 @@
 ;; =============================================================================
 
 ;; =============================================================================
-;; RS-7 Slice 0 characterisation — a newborn domain child reached AGAIN as
-;; top-1: matching it mints a GRANDCHILD under it today (a domain child is
-;; NOT treated as a leaf on the domain axis by the current runtime). Pinned
-;; deterministically so Slice 1 (DomainChildIsALeafOnTheDomainAxis) can flip
-;; these two tests BY NAME instead of guessing today's behavior.
+;; CV-A Slice 1 flip (was RS-7 Slice 0 characterisation) — a domain family
+;; reached AGAIN as top-1 is a LEAF on the domain axis
+;; (DomainFamilyIsALeafOnTheDomainAxis): the match is a LANDING, verdict not
+;; consulted, never a grandchild. `:domain-family-parent-fn` is the seam
+;; that tells the pure classifier the reached id IS a family (its own
+;; parent + its own concept label) — durably proven with a REAL minted
+;; child in rs5's `walk-down-into-a-newborn-lands-on-it` /
+;; rs3_domain_child_durable_test; this file pins the pure-classifier shape.
 ;; =============================================================================
 
-(deftest newborn-as-top-1-match-with-partial-mints-a-grandchild-today
-  (testing "RS-7 characterisation: a NEWBORN domain child reached again as
-            top-1 (its OWN id as the candidate target), with :partial
-            coverage and a childless domain-children-fn for IT, mints a
-            GRANDCHILD under it today — :assigned-via :mint-domain-child,
-            :parent-tree-id = the newborn child itself (the grandchild path
-            Slice 1 removes by widening a domain-child match into a landing)"
-    (let [newborn-child-id (random-uuid)
+(deftest newborn-as-top-1-match-lands-on-the-family-no-grandchild
+  (testing "a domain FAMILY reached again as top-1 (its OWN id as the
+            candidate target) is a landing regardless of the judged
+            coverage — :assigned-via :land-on-domain-child, :parent-tree-id
+            = the family's OWN birth shape, :domain-label = the family's
+            own concept label, the verdict never consulted, no grandchild"
+    (let [family-parent-id (random-uuid)
+          newborn-child-id (random-uuid)
           candidate (tree-class-candidate newborn-child-id 0.95
                       :domain-coverage :partial
                       :domain-label "Ultra Long Run"
                       :domain-reasoning "A more extreme variant of the newborn's own shape.")]
       (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
                     tc/get-consolidation-total* (fn [_ _ _] 0)]
-        (let [r (ontology/classify-task {:domain-children-fn (fn [_ _] [])}
-                                        {:task-signature "x" :threshold 0.7})]
-          (is (= :mint-domain-child (:assigned-via r)))
-          (is (= newborn-child-id (:parent-tree-id r))
-              "the newborn domain child is treated as the PARENT of a freshly
-               minted grandchild — today's runtime does not know it is
-               already a leaf on the domain axis")
-          (is (true? (:was-fresh-mint? r))))))))
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] [])
+                  :domain-family-parent-fn
+                  (fn [_ target-id]
+                    (when (= target-id newborn-child-id)
+                      {:parent-id family-parent-id :domain-label "marathon-training-plan"}))}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :land-on-domain-child (:assigned-via r)))
+          (is (= newborn-child-id (:assigned-tree-id r)) "the family's own identity, unchanged")
+          (is (= family-parent-id (:parent-tree-id r))
+              "the family's OWN birth shape — never the family itself as a parent")
+          (is (= "marathon-training-plan" (:domain-label r))
+              "the family's own concept label — the :partial verdict above is never consulted")
+          (is (false? (:was-fresh-mint? r)) "a landing, never a mint — no grandchild"))))))
 
-(deftest newborn-as-top-1-match-with-covered-is-a-plain-match-with-no-domain-label
-  (testing "RS-7 characterisation: the SAME newborn reached again as top-1,
-            but :covered coverage — a plain :match, no :domain-label, no
-            :parent-tree-id (byte-identical to any other covered no-children
-            match; the newborn's own identity is not special-cased today)"
-    (let [newborn-child-id (random-uuid)
+(deftest newborn-as-top-1-match-with-covered-lands-on-the-family
+  (testing "the SAME family reached again as top-1 with a :covered verdict
+            lands identically — DomainFamilyIsALeafOnTheDomainAxis holds
+            whatever the coverage verdict says, because the verdict is not
+            consulted at all once the reached class IS the family"
+    (let [family-parent-id (random-uuid)
+          newborn-child-id (random-uuid)
           candidate (tree-class-candidate newborn-child-id 0.95
                       :domain-coverage :covered
                       :domain-label "Marathon Training Plan"
                       :domain-reasoning "Fully covered by the existing class.")]
       (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
                     tc/get-consolidation-total* (fn [_ _ _] 0)]
-        (let [r (ontology/classify-task {:domain-children-fn (fn [_ _] [])}
-                                        {:task-signature "x" :threshold 0.7})]
-          (is (= :match (:assigned-via r)))
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] [])
+                  :domain-family-parent-fn
+                  (fn [_ target-id]
+                    (when (= target-id newborn-child-id)
+                      {:parent-id family-parent-id :domain-label "marathon-training-plan"}))}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :land-on-domain-child (:assigned-via r)))
           (is (= newborn-child-id (:assigned-tree-id r)))
-          (is (not (contains? r :domain-label))
-              "no domain label — this is a plain match, not a landing")
-          (is (nil? (:parent-tree-id r))))))))
+          (is (= family-parent-id (:parent-tree-id r)))
+          (is (= "marathon-training-plan" (:domain-label r))
+              "the family's own label — landing, not a plain match with no label")
+          (is (false? (:was-fresh-mint? r))))))))
+
+;; =============================================================================
+;; CV-A item 1 — tenant-wide family landing by canonical label
+;; =============================================================================
+
+(deftest label-existing-under-another-parent-lands-on-that-family
+  (testing "top-1 = shape B (no legacy children, no covered neighbour), but
+            a domain FAMILY already exists tenant-wide under a DIFFERENT
+            shape A with the matching canonical label -> lands on A's
+            family, :parent-tree-id = A (the family's OWN birth shape),
+            never a mint under B"
+    (let [shape-a (random-uuid) shape-b (random-uuid) family-id (random-uuid)
+          candidate (tree-class-candidate shape-b 0.95
+                      :domain-coverage :partial
+                      :domain-label "Recipe Scaling"
+                      :domain-reasoning "Shares subject matter but not the output kind.")]
+      (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
+                    tc/get-consolidation-total* (fn [_ _ _] 0)]
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] [])
+                  :domain-families-fn
+                  (fn [_] [{:target-id family-id :domain-label "recipe-scaling" :parent-id shape-a}])}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :land-on-domain-child (:assigned-via r)))
+          (is (= family-id (:assigned-tree-id r)))
+          (is (= shape-a (:parent-tree-id r)) "the family's OWN parent, not shape-b")
+          (is (= "recipe-scaling" (:domain-label r)))
+          (is (false? (:was-fresh-mint? r))))))))
+
+(deftest families-lookup-failure-defers
+  (testing "when the tenant-wide :domain-families-fn throws, the match is
+            left as-is with a domain deferral naming the failure — never
+            read as \"no families\" (fail closed)"
+    (let [class-id (random-uuid)
+          candidate (tree-class-candidate class-id 0.95
+                      :domain-coverage :partial
+                      :domain-label "Marathon Training Plan"
+                      :domain-reasoning "shares the subject matter only")]
+      (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
+                    tc/get-consolidation-total* (fn [_ _ _] 0)]
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] [])
+                  :domain-families-fn (fn [_] (throw (ex-info "store unavailable" {})))}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :match (:assigned-via r)) "the pre-existing assignment is untouched")
+          (is (= class-id (:assigned-tree-id r)) "no child/family identity minted or landed")
+          (is (= {:axis :domain :reason :families-lookup-failed} (:domain-deferral r)))
+          (is (false? (:was-fresh-mint? r))))))))
+
+;; =============================================================================
+;; CV-A item 2 — CoveredSeedProtection, ordered BEFORE tenant-wide landing
+;; =============================================================================
+
+(deftest covered-leaf-neighbour-at-threshold-wins-over-a-partial-top-1
+  (testing "top-1 would mint (:partial, no tenant family, no legacy
+            children) but another :tree-class candidate in the ranking is
+            :covered, has no families of its own, and is at/above the match
+            threshold -> that candidate wins as a plain :match;
+            :domain-selection records the passed-over shape"
+    (let [top1-id (random-uuid) neighbour-id (random-uuid)
+          top1 (tree-class-candidate top1-id 0.95
+                 :domain-coverage :partial
+                 :domain-label "Marathon Training Plan"
+                 :domain-reasoning "Shares subject matter but not the output kind.")
+          neighbour (tree-class-candidate neighbour-id 0.75
+                      :domain-coverage :covered
+                      :domain-label "Legal Issue Detection"
+                      :domain-reasoning "Fully covered.")]
+      (with-redefs [ontology/search-descriptions (fn [_ _] [top1 neighbour])
+                    tc/get-consolidation-total* (fn [_ _ _] 0)]
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] [])
+                  :domain-families-fn (fn [_] [])}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :match (:assigned-via r)))
+          (is (= neighbour-id (:assigned-tree-id r)) "the covered neighbour wins, not top-1")
+          (is (false? (:was-fresh-mint? r)))
+          (is (= {:preferred neighbour-id :over top1-id :reason :covered-leaf-neighbour}
+                 (:domain-selection r))))))))
+
+(deftest covered-top-1-is-never-overridden-by-a-covered-neighbour
+  (testing "CoveredSeedWins requires a top match that would mint: a top-1
+            judged :covered keeps its own plain match even when another
+            covered, childless candidate sits in the ranking; no
+            :domain-selection is recorded"
+    (let [top1-id (random-uuid) neighbour-id (random-uuid)
+          top1 (tree-class-candidate top1-id 0.95
+                 :domain-coverage :covered
+                 :domain-label "Legal Issue Detection"
+                 :domain-reasoning "Fully covered.")
+          neighbour (tree-class-candidate neighbour-id 0.8
+                      :domain-coverage :covered
+                      :domain-label "Contract Comparison"
+                      :domain-reasoning "Also covered.")]
+      (with-redefs [ontology/search-descriptions (fn [_ _] [top1 neighbour])
+                    tc/get-consolidation-total* (fn [_ _ _] 0)]
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] [])
+                  :domain-families-fn (fn [_] [])}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :match (:assigned-via r)))
+          (is (= top1-id (:assigned-tree-id r)))
+          (is (nil? (:domain-selection r))))))))
+
+(deftest covered-neighbour-with-families-does-not-protect
+  (testing "D7b: a :covered candidate in the ranking that already HAS
+            domain families of its own is not evidence and never protects
+            — top-1 mints as usual"
+    (let [top1-id (random-uuid) neighbour-id (random-uuid)
+          top1 (tree-class-candidate top1-id 0.95
+                 :domain-coverage :partial
+                 :domain-label "Marathon Training Plan"
+                 :domain-reasoning "Shares subject matter but not the output kind.")
+          neighbour (-> (tree-class-candidate neighbour-id 0.75
+                          :domain-coverage :covered
+                          :domain-label "Legal Issue Detection"
+                          :domain-reasoning "Fully covered.")
+                        (assoc :existing-domain-children ["already-has-a-family"]))
+          expected-id (expected-domain-child-id top1-id "marathon-training-plan")]
+      (with-redefs [ontology/search-descriptions (fn [_ _] [top1 neighbour])
+                    tc/get-consolidation-total* (fn [_ _ _] 0)]
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] [])
+                  :domain-families-fn (fn [_] [])}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :mint-domain-child (:assigned-via r)) "protection did not fire")
+          (is (= expected-id (:assigned-tree-id r)))
+          (is (not (contains? r :domain-selection))))))))
+
+(deftest no-neighbour-is-byte-identical
+  (testing "no covered neighbour in the ranking at all -> byte-identical
+            mint on top-1 (plus :merge-verdict :new, CV-A item 7's shipped
+            default), no :domain-selection"
+    (let [class-id (random-uuid)
+          candidate (tree-class-candidate class-id 0.95
+                      :domain-coverage :partial
+                      :domain-label "Marathon Training Plan"
+                      :domain-reasoning "Shares subject matter but not the output kind.")
+          expected-id (expected-domain-child-id class-id "marathon-training-plan")]
+      (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
+                    tc/get-consolidation-total* (fn [_ _ _] 0)]
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] [])
+                  :domain-families-fn (fn [_] [])}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :mint-domain-child (:assigned-via r)))
+          (is (= expected-id (:assigned-tree-id r)))
+          (is (= class-id (:parent-tree-id r)))
+          (is (= "marathon-training-plan" (:domain-label r)))
+          (is (true? (:was-fresh-mint? r)))
+          (is (not (contains? r :domain-selection)))
+          (is (= {:kind :new} (:merge-verdict r))))))))
+
+(deftest protection-runs-before-family-landing
+  (testing "grill C4's stated order (protection -> exact-label landing): a
+            MIS-PARENTED family already exists tenant-wide for top-1's
+            canonical label under the WRONG shape, AND a covered, childless
+            neighbour also sits in the ranking at/above threshold — the
+            covered neighbour wins; the mis-parented family never captures
+            this task"
+    (let [top1-id (random-uuid) neighbour-id (random-uuid)
+          wrong-parent-id (random-uuid) mis-parented-family-id (random-uuid)
+          top1 (tree-class-candidate top1-id 0.95
+                 :domain-coverage :partial
+                 :domain-label "Recipe Scaling"
+                 :domain-reasoning "Shares subject matter but not the output kind.")
+          neighbour (tree-class-candidate neighbour-id 0.75
+                      :domain-coverage :covered
+                      :domain-label "Legal Issue Detection"
+                      :domain-reasoning "Fully covered.")]
+      (with-redefs [ontology/search-descriptions (fn [_ _] [top1 neighbour])
+                    tc/get-consolidation-total* (fn [_ _ _] 0)]
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] [])
+                  :domain-families-fn
+                  (fn [_] [{:target-id mis-parented-family-id
+                           :domain-label "recipe-scaling"
+                           :parent-id wrong-parent-id}])}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :match (:assigned-via r)))
+          (is (= neighbour-id (:assigned-tree-id r))
+              "the covered seed wins — the mis-parented family is never landed on")
+          (is (not= mis-parented-family-id (:assigned-tree-id r)))
+          (is (= {:preferred neighbour-id :over top1-id :reason :covered-leaf-neighbour}
+                 (:domain-selection r))))))))
 
 (deftest children-lookup-failure-defers-instead-of-minting
   (testing "when the domain-children capability throws, the match is left as-is with a domain deferral naming the failure, and no child identity is minted"

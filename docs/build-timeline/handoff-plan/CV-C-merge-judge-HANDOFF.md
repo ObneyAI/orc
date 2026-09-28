@@ -7,6 +7,17 @@ instruction's wording). Work in `/Users/darylroberts/Desktop/Code/orc-convergenc
 CV-A's brief; no commits; never edit `specs/*.allium`. Blocked by CV-A (it leaves the `:domain-merge-fn` seam with a
 default of `{:kind :new}` at the two mint points; you replace the default).
 
+## Already landed with CV-A (read the code, do not redo)
+
+- Every would-be mint, including a second family under a shape that already has one, calls the `:domain-merge-fn`
+  seam through `mint-domain-family-via-merge` in `task_classifier.clj`.
+- `:same` is already resolved through the `:domain-family-parent-fn` seam, and a `:same` naming something with no
+  family parent already defers `:merge-unresolved`. You still add the check that the named family was among the
+  candidates shown to the judge.
+- The birth description is the family's label, purpose, the parent shape's own summary and the birth task (no
+  ids); the family is embedded at birth or the birth fails. Use that description as the family's text in the
+  neighbourhood.
+
 ## Goal
 
 When a classification would mint a domain family, the nearest existing families are retrieved by rank and one

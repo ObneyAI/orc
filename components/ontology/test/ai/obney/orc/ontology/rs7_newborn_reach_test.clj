@@ -74,7 +74,10 @@
         (let [r (ontology/classify-task
                  {:domain-children-fn (fn [_ pid]
                                         (when (= pid parent-id)
-                                          [{:target-id child-id :domain-label "marathon-training-plan"}]))}
+                                          [{:target-id child-id :domain-label "marathon-training-plan"}]))
+                  ;; pure test, no store: declare the family seams explicitly
+                  :domain-families-fn (fn [_] [])
+                  :domain-family-parent-fn (fn [_ _] nil)}
                  {:task-signature "x" :threshold 0.7})]
           (is (= :land-on-domain-child (:assigned-via r)))
           (is (= child-id (:assigned-tree-id r)))
@@ -86,23 +89,27 @@
 
 ;; =============================================================================
 ;; (b) Walk-down — the parent is top-1 at moderate confidence; walk-down
-;; descends the graph into a domain child. See rs5's
-;; walk-down-into-a-newborn-returns-walk-down-provenance-not-a-landing for
-;; the REAL-event-store version of this same route.
+;; descends the graph into a domain family, which is a LEAF on the domain
+;; axis (DomainFamilyIsALeafOnTheDomainAxis): the descent is a LANDING, not
+;; a :walk-down. See rs5's
+;; walk-down-into-a-family-lands-on-it-no-walk-down-provenance for the
+;; REAL-event-store version of this same route.
 ;; =============================================================================
 
-(deftest walk-down-reaches-a-domain-child-as-walk-down-not-a-landing
+(deftest walk-down-reaches-a-domain-family-as-a-landing
   (testing "walk-down route: parent top-1 at fitness 0.8 (below
             specificity-threshold 0.9, above the match threshold 0.7) ->
-            walk-down descends into its domain child (via
-            get-narrower-concepts/get-description, pure-stubbed) ->
-            :assigned-via :walk-down, assigned id = the child,
-            :parent-tree-id = the parent, no :domain-label"
+            walk-down descends into its domain family (via
+            get-narrower-concepts/get-description, pure-stubbed) -> the
+            family-is-leaf check (:domain-family-parent-fn) widens the
+            result into a landing: :assigned-via :land-on-domain-child,
+            assigned id = the family, :parent-tree-id = the family's OWN
+            birth shape, :domain-label = the family's own label"
     (let [parent-id (random-uuid)
           child-id (random-uuid)
           candidate (tree-class-candidate parent-id 0.8
                       :domain-coverage :partial
-                      :domain-label "irrelevant — a walk-down is not a :match"
+                      :domain-label "irrelevant — a landing on a family never consults the verdict"
                       :domain-reasoning "irrelevant")]
       (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
                     tc/get-consolidation-total* (fn [_ _ _] 0)
@@ -111,63 +118,82 @@
                       (if (= uri (str "tree-class:" parent-id))
                         #{(str "tree-class:" child-id)}
                         #{}))
-                    ontology/get-description (fn [_ _ _] {:summary "the domain child's pattern"})
+                    ontology/get-description (fn [_ _ _] {:summary "the domain family's pattern"})
                     reranker/rerank!
                     (fn [_ opts]
                       (mapv (fn [c] {:document-id (:document-id c)
-                                     :reasoning "walks down into the domain child"
+                                     :reasoning "walks down into the domain family"
                                      :fitness-score 0.95})
                             (:candidates opts)))]
-        (let [r (ontology/classify-task {:domain-children-fn (fn [_ _] [])}
-                                        {:task-signature "x" :threshold 0.7})]
-          (is (= :walk-down (:assigned-via r)))
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] [])
+                  :domain-family-parent-fn
+                  (fn [_ target-id]
+                    (when (= target-id child-id)
+                      {:parent-id parent-id :domain-label "marathon-training-plan"}))}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :land-on-domain-child (:assigned-via r)))
           (is (= child-id (:assigned-tree-id r)))
-          (is (= parent-id (:parent-tree-id r)))
-          (is (not (contains? r :domain-label))
-              "walk-down provenance is not a domain landing today"))))))
+          (is (= parent-id (:parent-tree-id r))
+              "the family's own birth shape — here the same id it walked down from")
+          (is (= "marathon-training-plan" (:domain-label r))
+              "a landing carries the family's own label"))))))
 
 ;; =============================================================================
-;; (c) Index match — the domain child is ITSELF the top-1 search candidate.
-;; A :covered verdict is a plain match on the child; a :partial verdict
-;; mints a GRANDCHILD under it (today's runtime does not treat a domain
-;; child as a leaf on the domain axis). Same scenario as rs2's
+;; (c) Index match — the domain family is ITSELF the top-1 search candidate.
+;; DomainFamilyIsALeafOnTheDomainAxis: whatever the judged coverage, this is
+;; a LANDING on the family, never a grandchild. Same scenario as rs2's
 ;; newborn-as-top-1-match-* tests, pinned here under the reach-route
 ;; enumeration.
 ;; =============================================================================
 
-(deftest index-match-on-the-domain-child-itself-is-a-plain-match
-  (testing "index-match route: the domain child is itself top-1 (high
-            confidence, skips walk-down), :covered coverage -> a plain
-            :match ON THE CHILD, no :domain-label, no :parent-tree-id"
-    (let [child-id (random-uuid)
+(deftest index-match-on-the-domain-family-itself-is-a-landing-covered
+  (testing "index-match route: the domain family is itself top-1 (high
+            confidence, skips walk-down), :covered coverage -> a landing ON
+            THE FAMILY, its own label, its own birth shape as :parent-tree-id"
+    (let [parent-id (random-uuid)
+          child-id (random-uuid)
           candidate (tree-class-candidate child-id 0.95
                       :domain-coverage :covered
                       :domain-label "Marathon Training Plan"
                       :domain-reasoning "Fully covered by the existing class.")]
       (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
                     tc/get-consolidation-total* (fn [_ _ _] 0)]
-        (let [r (ontology/classify-task {:domain-children-fn (fn [_ _] [])}
-                                        {:task-signature "x" :threshold 0.7})]
-          (is (= :match (:assigned-via r)))
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] [])
+                  :domain-family-parent-fn
+                  (fn [_ target-id]
+                    (when (= target-id child-id)
+                      {:parent-id parent-id :domain-label "marathon-training-plan"}))}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :land-on-domain-child (:assigned-via r)))
           (is (= child-id (:assigned-tree-id r)))
-          (is (not (contains? r :domain-label)))
-          (is (nil? (:parent-tree-id r))))))))
+          (is (= "marathon-training-plan" (:domain-label r)))
+          (is (= parent-id (:parent-tree-id r))))))))
 
-(deftest index-match-on-the-domain-child-itself-with-partial-mints-a-grandchild
-  (testing "index-match route: the domain child is itself top-1, :partial
-            coverage -> mints a GRANDCHILD under it -> :assigned-via
-            :mint-domain-child, :parent-tree-id = the domain child itself"
-    (let [child-id (random-uuid)
+(deftest index-match-on-the-domain-family-itself-is-a-landing-partial-no-grandchild
+  (testing "index-match route: the domain family is itself top-1, :partial
+            coverage -> STILL a landing, never a grandchild — the verdict is
+            not consulted once the reached class IS the family"
+    (let [parent-id (random-uuid)
+          child-id (random-uuid)
           candidate (tree-class-candidate child-id 0.95
                       :domain-coverage :partial
                       :domain-label "Ultra Long Run"
-                      :domain-reasoning "A more extreme variant of the child's own shape.")]
+                      :domain-reasoning "A more extreme variant of the family's own shape.")]
       (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
                     tc/get-consolidation-total* (fn [_ _ _] 0)]
-        (let [r (ontology/classify-task {:domain-children-fn (fn [_ _] [])}
-                                        {:task-signature "x" :threshold 0.7})]
-          (is (= :mint-domain-child (:assigned-via r)))
-          (is (= child-id (:parent-tree-id r))
-              "the domain child reached via the index is treated as the
-               PARENT of a freshly minted grandchild")
-          (is (true? (:was-fresh-mint? r))))))))
+        (let [r (ontology/classify-task
+                 {:domain-children-fn (fn [_ _] [])
+                  :domain-family-parent-fn
+                  (fn [_ target-id]
+                    (when (= target-id child-id)
+                      {:parent-id parent-id :domain-label "marathon-training-plan"}))}
+                 {:task-signature "x" :threshold 0.7})]
+          (is (= :land-on-domain-child (:assigned-via r))
+              "a landing, never a :mint-domain-child — no grandchild")
+          (is (= child-id (:assigned-tree-id r)))
+          (is (= parent-id (:parent-tree-id r))
+              "the family's OWN birth shape — never the family itself as a parent")
+          (is (= "marathon-training-plan" (:domain-label r)))
+          (is (false? (:was-fresh-mint? r))))))))

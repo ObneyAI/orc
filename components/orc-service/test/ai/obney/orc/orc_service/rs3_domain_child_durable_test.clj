@@ -149,10 +149,22 @@
             (is (= class-id (:parent-tree-id mint-event)))
             (is (= child-id (:child-tree-id mint-event)))
             (is (= "marathon-training-plan" (:domain-label mint-event))))
+          (testing "the embedding (CV-A item 5, at birth, inside the mint's own event batch)"
+            (let [embedded (events-of ctx :ontology/concept-embedded)]
+              (is (= 1 (count embedded)))
+              (is (= (tree-class-uri child-id) (:uri (first embedded))))
+              (is (= :tree-class (:scope (first embedded))))
+              (is (seq (:embedding (first embedded))))))
           (testing "the claim"
+            ;; CV-A item 5: this is a GENUINE tenant-wide family birth (no
+            ;; legacy children existed under class-id) — the merge judge ran
+            ;; (default :new) and the wedge records the rich three-claim
+            ;; self-description instead of the legacy single
+            ;; :representative-use capture.
             (let [claims (ontology/get-claims ctx :tree-class child-id)]
-              (is (= 1 (count claims)) "exactly one claim captured for the child")
-              (is (= :representative-use (:kind (first claims))))))
+              (is (= 2 (count claims))
+                  "CV-A: a genuine family birth records capability + representative-use + guard")
+              (is (= #{:capability :representative-use} (set (map :kind claims))))))
           (testing "the parent's narrower set (the SKOS edge)"
             (is (contains? (ontology/get-narrower-concepts ctx (tree-class-uri class-id))
                            (tree-class-uri child-id))
@@ -201,7 +213,10 @@
             (is (= "marathon-training-plan" (:domain-label second-classified))
                 "a landing records the landed child's label")
             (is (false? (:was-fresh-mint? second-classified)))
-            (is (= 1 (count (ontology/get-claims ctx :tree-class first-child-id)))
+            ;; CV-A item 5: the FIRST classification's mint went through the
+            ;; genuine tenant-wide birth (3 claims, see the durable claim
+            ;; assertion above); no landing ever writes a claim.
+            (is (= 2 (count (ontology/get-claims ctx :tree-class first-child-id)))
                 "still exactly one claim on the child — no second capture")))))))
 
 ;; =============================================================================
@@ -238,7 +253,9 @@
               second-event (first (filter #(= (:id n2) (:source-node-id %)) classified))
               first-child (:assigned-tree-id first-event)
               second-child (:assigned-tree-id second-event)]
-          (is (= :mint-sibling-domain-child (:assigned-via second-event)))
+          ;; ADR 0007: a second family under a shape is a judged family birth
+          (is (= :mint-domain-child (:assigned-via second-event)))
+          (is (= :new (get-in second-event [:merge-verdict :kind])))
           (is (= class-id (:parent-tree-id second-event)))
           (is (= "ketogenic-meal-plan" (:domain-label second-event)))
           (is (= ["marathon-training-plan"] (:domain-children-considered second-event))
@@ -251,8 +268,14 @@
               "both children hang under the parent")
           (is (= "ketogenic-meal-plan"
                  (:label (ontology/get-concept-by-uri ctx (tree-class-uri second-child)))))
-          (is (= 1 (count (ontology/get-claims ctx :tree-class first-child))))
-          (is (= 1 (count (ontology/get-claims ctx :tree-class second-child)))))))))
+          ;; CV-A item 5: first-child was the GENUINE first mint under
+          ;; class-id (no legacy children yet) -> the tenant-wide merge path
+          ;; ran -> 3 birth claims. second-child is the LEGACY per-parent
+          ;; sibling mint (children now present under class-id, D7b's own
+          ;; mechanism, no merge judge) -> unchanged, 1 claim.
+          (is (= 2 (count (ontology/get-claims ctx :tree-class first-child))))
+          (is (= 2 (count (ontology/get-claims ctx :tree-class second-child)))
+              "the second family is born described, like the first"))))))
 
 ;; =============================================================================
 ;; CYCLE 6 — an :unknown verdict yields the structural assignment plus a
@@ -366,7 +389,9 @@
                      (stage-through-wedge! ctx n))]
         (is (= [:domain-child-mint :convergence-capture :classification-outcome]
                (mapv :kind staged))
-            "the wedge stages mint, capture, outcome — in that order")
+            "CV-A: the wedge stages mint (embedding happens INSIDE this same
+             mint-domain-child event batch, never a separate staged effect),
+             the 3-claim birth capture, then outcome — in that order")
         (is (= 0 (count (events-of ctx :ontology/task-classified)))
             "nothing is durable before the commit")
         (is (= 0 (count (events-of ctx :ontology/domain-child-minted))))
@@ -389,7 +414,14 @@
                  (:label (ontology/get-concept-by-uri ctx (tree-class-uri child-id)))))
           (is (contains? (ontology/get-narrower-concepts ctx (tree-class-uri class-id))
                          (tree-class-uri child-id)))
-          (is (= 1 (count (ontology/get-claims ctx :tree-class child-id)))))))))
+          (is (= 2 (count (ontology/get-claims ctx :tree-class child-id)))
+              "CV-A: the checkpointed commit publishes the 3-claim birth description")
+          (is (= 1 (count (events-of ctx :ontology/concept-embedded)))
+              "the child concept was embedded AT BIRTH, inside the same
+               mint-domain-child event batch the commit published")
+          (is (= (tree-class-uri child-id) (:uri (first (events-of ctx :ontology/concept-embedded)))))
+          (is (= "birth-description"
+                 (:field-source (first (events-of ctx :ontology/concept-embedded))))))))))
 
 (deftest checkpointed-commit-publishes-the-domain-deferral-beside-the-assignment
   (testing "on the checkpointed path an :unknown verdict stages the structural
@@ -476,3 +508,77 @@
           "a domain deferral from another epoch")
       (is (not (valid? [assignment plain-deferral]))
           "a non-domain deferral is still a second outcome"))))
+
+(deftest checkpointed-commit-rejects-birth-claims-beside-a-landing
+  (testing "CV-A: the checkpointed commit's boundary accepts the
+            birth-description capture beside a genuine mint (was-fresh-mint?
+            true, the ordinary mint+capture+mint-assignment case already
+            proven above) but REJECTS a claim-deltas effect beside a
+            LANDING (was-fresh-mint? false — a landing never writes a
+            claim, so nothing legitimises one riding along)"
+    (let [schema (sheet-schemas/commands :sheet/commit-researcher-classification)
+          sheet-id (random-uuid) tick-id (random-uuid) node-id (random-uuid)
+          parent-id (random-uuid) child-id (random-uuid)
+          bound {:source-sheet-id sheet-id :source-tick-id tick-id
+                 :source-node-id node-id :researcher-ownership-epoch 1}
+          landing (merge bound
+                         {:command/name :ontology/assign-task-class
+                          :assigned-tree-id child-id :parent-tree-id parent-id
+                          :confidence 0.9 :top-candidates []
+                          :reasoning "landed on the family"
+                          :was-fresh-mint? false
+                          :assigned-via :land-on-domain-child
+                          :domain-label "marathon-training-plan"})
+          birth-capture {:command/name :ontology/record-claim-deltas
+                         :granularity :tree-class :target-identifier child-id}
+          base {:sheet-id sheet-id :tick-id tick-id :node-id node-id :ownership-epoch 1}
+          valid? (fn [effects] (m/validate schema (assoc base :effects effects)))]
+      (is (valid? [landing]) "a bare landing, no birth claim, is valid")
+      (is (not (valid? [landing birth-capture]))
+          "a landing never carries a claim-deltas effect — nothing was minted, so nothing wrote one"))))
+
+;; =============================================================================
+;; CV-A item 1 — cross-parent tenant-wide landing, live through the wedge:
+;; no concept created for the second task, :parent-tree-id names the
+;; family's OWN (first) parent, never the second task's top-1 shape.
+;; =============================================================================
+
+(deftest cross-parent-landing-records-no-concept-and-carries-the-familys-own-parent
+  (testing "a family already exists (minted under shape A); a LATER task
+            whose top-1 is a DIFFERENT shape B, judged with the SAME
+            canonical label, lands on A's family via the tenant-wide lookup
+            — no :domain-child-minted event, no new concept, and the
+            classified event's :parent-tree-id names A (the family's OWN
+            birth parent), never B"
+    (with-test-ctx [ctx]
+      (let [shape-a (random-uuid) shape-b (random-uuid)
+            first-candidate (tree-class-candidate shape-a 0.95
+                              :domain-coverage :partial
+                              :domain-label "Marathon Training Plan"
+                              :domain-reasoning "Shares subject matter but not the output kind.")
+            second-candidate (tree-class-candidate shape-b 0.95
+                               :domain-coverage :uncovered
+                               :domain-label "Marathon Training Plan"
+                               :domain-reasoning "A different shape, same domain.")
+            n1 (node)
+            n2 (assoc (node) :id (random-uuid))]
+        (with-domain-candidate first-candidate
+          (tp/maybe-auto-classify-and-set-context n1 ctx))
+        (let [family-id (:assigned-tree-id (first (events-of ctx :ontology/task-classified)))]
+          (with-domain-candidate second-candidate
+            (tp/maybe-auto-classify-and-set-context n2 (assoc ctx :tick-id (random-uuid))))
+          (let [classified (events-of ctx :ontology/task-classified)
+                minted (events-of ctx :ontology/domain-child-minted)
+                second-event (first (filter #(= (:id n2) (:source-node-id %)) classified))]
+            (is (= 2 (count classified)))
+            (is (= 1 (count minted)) "still exactly ONE mint — the second task never minted a concept")
+            (is (= :land-on-domain-child (:assigned-via second-event)))
+            (is (= family-id (:assigned-tree-id second-event))
+                "landed on shape A's family, not a fresh identity under shape B")
+            (is (= shape-a (:parent-tree-id second-event))
+                "the family's OWN (first) parent — never shape-b, the second task's top-1")
+            (is (not= shape-b (:parent-tree-id second-event)))
+            (is (= "marathon-training-plan" (:domain-label second-event)))
+            (is (false? (:was-fresh-mint? second-event)))
+            (is (= 2 (count (ontology/get-claims ctx :tree-class family-id)))
+                "no second claim — the birth claims from the FIRST mint only")))))))

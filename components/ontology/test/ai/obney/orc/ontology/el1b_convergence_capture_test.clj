@@ -211,6 +211,26 @@
         (is (not (surfaced? below)) "below gate: NOT surfaced as a reference")
         (is (surfaced? at-gate) "at/above gate: surfaces as a reference")))))
 
+(deftest gate-hides-newborn-family-at-total-zero
+  (testing "CV-A item 4 (NewbornFamilyIsMatchableNotSurfaced): a total-0
+            :tree-class candidate that IS a newborn domain family
+            (:newborn?-fn true) is matched (accrual stays ungated) but
+            EXCLUDED from the surfaced :top-candidates — distinct from
+            gate-passes-curated-seed-tree-class-at-total-zero, where the
+            SAME total-0 candidate is NOT a newborn and still surfaces"
+    (let [family (random-uuid)]
+      (with-redefs [ontology/search-descriptions
+                    (fn [_ _] [(tree-class-candidate family 0.95 25.0)])
+                    tc/get-consolidation-total* (totals-fn {family 0})]
+        (let [r (ontology/classify-task
+                 {:newborn?-fn (fn [_ id] (= id family))}
+                 {:task-signature "x" :threshold 0.7 :retrieval-gate 3 :walk-down? false})]
+          (is (= :matched (:outcome r)) "a newborn family at total 0 is still matchable")
+          (is (= family (:assigned-tree-id r)))
+          (is (empty? (filterv #(= family (-> % :document-metadata :target-id))
+                               (:top-candidates r)))
+              "hidden from the surfaced reference set — a newborn, not a curated seed"))))))
+
 (deftest gate-does-not-filter-tree-fingerprint
   (testing "the gate only applies to the :tree-class axis; :tree-fingerprint candidates are untouched"
     (let [fp (random-uuid)]

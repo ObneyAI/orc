@@ -277,10 +277,14 @@
 ;; =============================================================================
 
 (deftest cycle2-retrieval-gate-band-on-the-domain-child
-  (testing "total 0 (just-minted): matched and surfaced; total 2 (0 < total <
-            gate): still matched (accrual is gate-independent) but filtered
-            from :top-candidates; total 3 (>= gate): matched and surfaced
-            again"
+  (testing "total 0 (just-minted): matched but NOT surfaced (CV-A item 4,
+            NewbornFamilyIsMatchableNotSurfaced — a newborn domain FAMILY at
+            total 0 is matchable-for-accrual but hidden from the surfaced
+            references; a curated seed at 0 still surfaces, see el1b's
+            gate-passes-curated-seed-tree-class-at-total-zero); total 2
+            (0 < total < gate): still matched (accrual is gate-independent)
+            but filtered from :top-candidates; total 3 (>= gate): matched
+            and surfaced"
     (with-test-ctx [ctx]
       (let [parent-id (random-uuid)
             child-id (random-uuid)]
@@ -293,7 +297,8 @@
                                                 :walk-down? false})]
             (is (= :matched (:outcome r0)))
             (is (= child-id (:assigned-tree-id r0)))
-            (is (surfaced? r0 child-id) "total 0: surfaced (curated/new-mint band)"))
+            (is (not (surfaced? r0 child-id))
+                "total 0: matched but NOT surfaced — a newborn family, not a curated seed"))
 
           (dotimes [_ 2]
             (verdict-occurrence! ctx (random-uuid) (random-uuid) (random-uuid) child-id :success))
@@ -448,22 +453,24 @@
                 "the processor-driven mint also carries the domain label")))))))
 
 ;; =============================================================================
-;; RS-7 Slice 0 characterisation — walk-down FROM the parent INTO a REAL
-;; minted domain child returns :walk-down provenance, not a landing: no
-;; :domain-label, no :domain-verdict. maybe-assign-domain-child only ever
-;; widens a :tree-class-axis :match on the ORIGINAL top-1's own axis — a
-;; walk-down result never passes through it. Pinned deterministically so
-;; Slice 1 (a domain child is a LEAF on the domain axis) can flip this by
-;; name.
+;; CV-A Slice 1 flip (was RS-7 Slice 0 characterisation) — walk-down FROM
+;; the parent INTO a REAL minted domain family lands on it
+;; (DomainFamilyIsALeafOnTheDomainAxis): the family-is-leaf check
+;; (`:domain-family-parent-fn`, defaulting to a real read of the walked-into
+;; class's own concept — agent-authored provenance, its own label, its own
+;; skos:broader parent) widens the walk-down result into a landing BEFORE
+;; the rest of the domain axis ever runs.
 ;; =============================================================================
 
-(deftest walk-down-into-a-newborn-returns-walk-down-provenance-not-a-landing
+(deftest walk-down-into-a-family-lands-on-it-no-walk-down-provenance
   (testing "the PARENT is top-1 at fitness 0.8 (below specificity-threshold
             0.9, above the match threshold 0.7) -> walk-down descends into
-            its REAL minted domain child (get-tree-class-children reads the
-            real graph edge RS-3's mint-domain-child created) ->
-            :assigned-via :walk-down, assigned id = the child, no
-            :domain-label, no :domain-verdict"
+            its REAL minted domain family (get-tree-class-children reads the
+            real graph edge RS-3's mint-domain-child created) -> the
+            family-is-leaf check widens this into a landing:
+            :assigned-via :land-on-domain-child, assigned id = the family,
+            :parent-tree-id = the family's OWN birth shape, :domain-label =
+            the family's own concept label"
     (with-test-ctx [ctx]
       (let [parent-id (random-uuid)
             child-id (random-uuid)]
@@ -474,15 +481,15 @@
                       reranker/rerank!
                       (fn [_ opts]
                         (mapv (fn [c] {:document-id (:document-id c)
-                                       :reasoning "walks down into the minted child"
+                                       :reasoning "walks down into the minted family"
                                        :fitness-score 0.95})
                               (:candidates opts)))
                       tc/get-consolidation-total* (fn [_ _ _] 0)]
           (let [r (ontology/classify-task ctx {:task-signature "x" :threshold 0.7})]
-            (is (= :walk-down (:assigned-via r)))
+            (is (= :land-on-domain-child (:assigned-via r)))
             (is (= child-id (:assigned-tree-id r)))
-            (is (= parent-id (:parent-tree-id r)))
-            (is (not (contains? r :domain-label))
-                "walk-down provenance is not a domain landing today")
-            (is (not (contains? r :domain-verdict))
-                "maybe-assign-domain-child never ran on a :walk-down result")))))))
+            (is (= parent-id (:parent-tree-id r))
+                "the family's own birth shape — here the same id it walked down from")
+            (is (= "marathon-training-plan" (:domain-label r))
+                "a landing carries the family's own label")
+            (is (false? (:was-fresh-mint? r)))))))))

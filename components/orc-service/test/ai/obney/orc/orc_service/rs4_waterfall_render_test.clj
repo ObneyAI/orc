@@ -640,6 +640,10 @@
                                  :weaknesses [] :representative-uses []
                                  :avoid-when [] :version 2
                                  :consolidated-from-event-count 0}
+                       parent-id {:summary "MarathonShape sequences weekly load toward a race date."
+                                  :capabilities [] :strengths [] :weaknesses []
+                                  :representative-uses [] :avoid-when [] :version 5
+                                  :consolidated-from-event-count 7}
                        other-id {:summary "Other shape summary." :capabilities []
                                  :strengths [] :weaknesses [] :representative-uses []
                                  :avoid-when [] :version 1 :consolidated-from-event-count 3}}
@@ -655,8 +659,15 @@
       (is (= 1 (count (filter #{(str other-id)} structural-ids))))
       (is (= 1 (count (re-seq (re-pattern (java.util.regex.Pattern/quote strength-trait)) instruction)))
           "the family's substance renders once")
-      (is (str/includes? instruction "top 1 from corpus retrieval")
-          "only the other shape is a numbered entry"))))
+      (is (= 1 (count (filter #{(str parent-id)} structural-ids)))
+          "the parent, reached by its graph edge and never retrieved, is recorded once")
+      (is (str/includes? instruction "MarathonShape sequences weekly load toward a race date.")
+          "the parent's full entry renders although it was not a retrieval candidate")
+      (is (< (str/index-of instruction "MarathonShape sequences weekly load")
+             (str/index-of instruction (str "Assigned to domain child " child-id)))
+          "the parent's entry comes before the child line")
+      (is (str/includes? instruction "top 2 from corpus retrieval")
+          "the parent and the other shape are the numbered entries; the family is not"))))
 
 (deftest consolidated-family-unchanged
   (testing "CV-B guard: a CONSOLIDATED domain child's render is untouched by

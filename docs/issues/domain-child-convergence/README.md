@@ -65,3 +65,61 @@ unfiltered. Any later edit means one more full run.
   orc-service spec's closure-source statement is unchanged by this bundle; no divergence.
 - **Commit content verified in isolation:** the staged bundle alone, on a clean worktree at the parent commit, runs 216 tests and 1,076 assertions green.
 - **Deferred by rule:** the full gate runs once, in CV-8. No live QA for this bundle; the end-to-end subset will show the hint firing.
+
+## CV-A verification ledger (orchestrator `/inspect-orc`)
+
+- **Scope:** tenant-wide family lookup and landing by label, covered-seed protection, a family as a leaf on the
+  domain axis, newborns matchable but not surfaced at zero, a merge seam at every would-be mint (default `new`),
+  the family born with a rich description and an embedding, the reranker told the task-family granularity and
+  shown the tenant's label list.
+- **RED:** the implementer ran the unmodified guard suite after implementing, not before, and reported it. Exactly
+  the intended flips failed; each later test went red then green on its own.
+- **Defects found in inspection and fixed:**
+  1. **The second family under a shape skipped the judge.** A new label under a shape that already had families
+     took the old unjudged sibling mint: no merge judge, no birth description, no embedding. The spec has had no
+     sibling rule since ADR 0007. That arm now goes through the merge-judged mint. New test: the judge is called
+     for that case and its `same` verdict lands on the named family.
+  2. **Store-less fail-open.** The family and family-parent lookups answered "no families" when the context had no
+     event store, so a missing store would have minted instead of deferring. Removed; the pure suites now declare
+     their world through the seams. Real-store coverage of both lookups exists (the cross-parent landing and the
+     walk-down-into-family tests).
+  3. **Unembedded births were silent.** A failed embedding skipped the embedding event and minted anyway. The
+     birth now fails loudly, matching the existing embed command. New test: nothing lands.
+  4. **The birth text named the parent shape by id,** in the concept description and in a guard claim. The guard
+     claim also landed in the body's avoid-when list, which the domain penalty scores against. The guard claim
+     is removed (two birth claims: capability and representative use). The description now carries the family
+     label, its purpose, the parent shape's own summary and the birth task, with no ids.
+  5. **A `same` verdict naming a non-family** landed with no parent and bypassed the parent seam. It now defers
+     `merge-unresolved`. New test.
+  6. **Render gap across CV-A and CV-B.** A family reached through the index has no parent among the candidates,
+     so the newborn render showed no parent entry. The render now builds the parent's entry from its body with
+     the top match's score and reasoning, first, and records it. Test extended.
+- **Spec tended (orchestrator):** `CoveredSeedWins` no longer requires the absence of a family, and
+  `LandOnDomainFamily` now yields to protection, matching decision C4's order. The outcome enum comment now says
+  the sibling outcome is history only. `allium check` on the ontology spec: 0 errors, 8 warnings, 45 info;
+  `analyse`: 0 findings.
+- **Obligation audit (scoped to this bundle): 15 obligations, 15 covered, 0 uncovered.**
+  - CoveredSeedWins success: `covered-leaf-neighbour-at-threshold-wins-over-a-partial-top-1`. Failure 1, no
+    neighbour: `no-neighbour-is-byte-identical`, `covered-neighbour-with-families-does-not-protect`. Failure 2,
+    top-1 covered: `covered-top-1-is-never-overridden-by-a-covered-neighbour` (added in inspection).
+  - LandOnDomainFamily success: `label-existing-under-another-parent-lands-on-that-family` and the store-backed
+    `cross-parent-landing-records-no-concept-and-carries-the-familys-own-parent`. Failure 1, no label:
+    `blank-label-defers-instead-of-minting-no-children`. Failure 2, no family:
+    `no-children-partial-verdict-mints-domain-child`. Failure 3, protection applies:
+    `protection-runs-before-family-landing`.
+  - LandOnReachedDomainFamily success: the two index-match tests, the walk-down tests, and the store-backed
+    `walk-down-into-a-family-lands-on-it-no-walk-down-provenance`.
+  - MintDomainFamily success: `no-children-partial-verdict-mints-domain-child`,
+    `partial-verdict-no-children-mints-domain-child-durably`. Failures 1–4: blank label, covered neighbour, existing
+    family, covered or unknown coverage (the tests named above plus `no-children-unknown-verdict-defers`). Entity
+    creation 1–2: `mint-domain-child-births-the-child-concept-and-parent-edge` and
+    `checkpointed-commit-publishes-a-domain-child-mint-atomically`.
+  - Owned by CV-C: `MintDomainFamily` failure 5 (verdict not `new`) and all six `MergeIntoDomainFamily`
+    obligations.
+- **Weed over the seam:** `:domain-children-considered` is populated only on the per-parent arms, not on the
+  tenant-wide landing or protection paths. It is schema-optional; classified as an intentional gap, since the
+  tenant-wide label list is the evidence those paths use.
+- **GREEN, re-run by the orchestrator:** 42 namespaces, 369 tests, 2,241 assertions, then the rs2 suite again
+  after the last test (26 tests, 136 assertions).
+- **Not yet run:** live QA of the rewritten reranker instruction. The RS-7 smoke on the post-fix tree exercises it
+  before the post-fix arm. The full integrated gate runs once, in CV-8.

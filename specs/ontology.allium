@@ -481,9 +481,12 @@ enum ConceptScope {
 -- assigned_via provenance; uncertain is the deferral outcome (its own event,
 -- never an assignment). Contract return types here are NOMINAL — the code
 -- returns richer maps carrying these outcomes, not bare enum values.
--- R-Inject specialisation: the three domain-child provenances a tree-class
--- match can widen into (rules MintDomainChild, LandOnDomainChild,
--- MintSiblingDomainChild).
+-- R-Inject specialisation: the domain-child provenances a tree-class match can
+-- widen into. Since ADR 0007 every birth is a judged family birth
+-- (MintDomainFamily, domain_child_minted) and every recurrence a landing
+-- (LandOnDomainFamily, LandOnReachedDomainFamily, MergeIntoDomainFamily,
+-- landed_on_domain_child). sibling_domain_child_minted is produced by no
+-- rule; it stays only so events recorded before ADR 0007 still read.
 enum ClassificationOutcome {
     matched | bundled | walked_down | minted | uncertain
     | domain_child_minted | landed_on_domain_child | sibling_domain_child_minted
@@ -992,7 +995,9 @@ rule CoveredSeedWins {
     let neighbour = covered_leaf_neighbour(ranking)
     requires: neighbour != null
     requires: coverage in {partial, uncovered}
-    requires: domain_family(canonical_domain_label(domain_label)) = null
+    -- Protection runs first, whether or not a family already carries the
+    -- label (grill C4 order: protection, then landing, then merge, then mint),
+    -- so a mis-parented family never captures a later in-domain task.
 
     ensures: TaskAssignedToShape(
         shape: neighbour,
@@ -1009,6 +1014,7 @@ rule LandOnDomainFamily {
     requires: canonical_label != null
     let family = domain_family(canonical_label)
     requires: family != null
+    requires: covered_leaf_neighbour(ranking) = null or coverage = covered
 
     -- The classified event's assignment IS the landing: the family's identity,
     -- the landing provenance and the family's label; the family's parent stays
