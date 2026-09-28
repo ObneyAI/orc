@@ -11,7 +11,8 @@
 
    Walk-down classifier behavior + consolidator parent-inference live
    in C-2d-2; live verify in C-2d-3."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [ai.obney.orc.ontology.core.read-models :as rm]
+            [clojure.test :refer [deftest testing is]]
             [malli.core :as m]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
@@ -225,7 +226,7 @@
         (Thread/sleep 100)
         (run-tree-class-processor! ctx)
         (Thread/sleep 100)
-        (let [concepts (rmp/project ctx :ontology/concepts)
+        (let [concepts (rm/get-concept-map ctx)
               target-uri (str "tree-class:" target-id)
               parent-uri (str "tree-class:" parent-id)
               target-concept (get concepts target-uri)
@@ -315,7 +316,7 @@
         (Thread/sleep 500)
         (run-tree-class-processor! ctx)
         (Thread/sleep 200)
-        (let [concepts (rmp/project ctx :ontology/concepts)
+        (let [concepts (rm/get-concept-map ctx)
               tree-class-concepts (filter #(= :tree-class (:scope %)) (vals concepts))
               concepts-with-broader (filter #(seq (:broader %)) tree-class-concepts)
               top-level (filter #(empty? (:broader %)) tree-class-concepts)

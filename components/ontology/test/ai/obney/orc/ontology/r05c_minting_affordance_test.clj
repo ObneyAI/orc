@@ -14,7 +14,8 @@
    - Minted concept appears in :ontology/concepts after R05a processor runs
    - Skos:broader link projected when :parent-behavior provided
    - Hand-authored mint path with :provenance :human-authored works"
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [ai.obney.orc.ontology.core.read-models :as rm]
+            [clojure.test :refer [deftest testing is]]
             [malli.core :as m]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
@@ -320,7 +321,7 @@
 
       (drive-r05a-processor! ctx)
 
-      (let [concepts (rmp/project ctx :ontology/concepts)
+      (let [concepts (rm/get-concept-map ctx)
             child-events (filter #(= "child-behavior" (:name %))
                                  (into [] (es/read (:event-store ctx)
                                                    {:tenant-id (:tenant-id ctx)

@@ -32,7 +32,8 @@
    removed rather than tuned. The prompt-level anti-recency FRAMING stays on
    the legacy body path, where whole-body rewriting is still how that path
    works and gradual movement is still the right instruction."
-  (:require [malli.core :as m]
+  (:require [ai.obney.orc.ontology.core.read-models :as rm]
+            [malli.core :as m]
             [malli.error :as me]
             [cheshire.core :as json]
             [clojure.string :as str]
@@ -1458,7 +1459,7 @@
           tree-class-ontology-id (java.util.UUID/nameUUIDFromBytes
                                   (.getBytes "tree-class-ontology" "UTF-8"))
           shell-uri (str "tree-class:" shell-id)
-          concepts (rmp/project context :ontology/concepts)]
+          concepts (rm/get-concept-map context)]
       (when-not (ontology/ontology-exists? context behavioral-ontology-id)
         (ontology/create-ontology! context
                                    {:command/id behavioral-ontology-id

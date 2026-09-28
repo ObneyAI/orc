@@ -627,3 +627,14 @@ prove isolation, lineage, terminal fencing, or durable recovery.
   counts, with elapsed time only as supporting evidence.
 - Existing unit/integration coverage may supply helpers, but each checked item
   must prove its complete workflow-level contract.
+
+## Standalone ontology extraction
+
+- [x] Source extraction submits tenant/ontology-scoped contributions through the standalone API and preserves schema, instances and source provenance.
+- [x] Build start is durable before extraction; a later source failure records failure while retaining earlier accepted contributions.
+- [x] ORC embedding generation persists qualified vectors in standalone concepts and scoped queries retrieve them.
+- [x] ORC claims, tree-class hierarchy and behavioral composition retain their behavior over the standalone graph.
+
+Extraction verification: standalone 20 tests / 123 assertions; ORC focused
+regression 156 tests / 836 assertions, all passing. All 76 ontology test
+namespaces load. Live model execution was not part of this extraction check.

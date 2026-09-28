@@ -34,7 +34,7 @@ obneyai/orc-evaluation                  ;; lib name = the package name
 | **`projects/orc-service`** | The engine: behavior-tree DSL, runtime, idempotent restart recovery, streaming, bounded telemetry export, RLM (`:repl-researcher`), inline value storage, and the external-storage protocol | No |
 | **`projects/orc-evaluation`** | Engine + LLM-as-judge evaluation (grounding, reasoning, completeness, instruction-following) | No |
 | **`projects/orc-gepa`** | Engine + evaluation + GEPA prompt optimization (Pareto + reflective mutation) | No |
-| **`projects/orc-ontology`** | Engine + general-purpose event-sourced concept graph, DJL embeddings, evolutionary builder, self-improving write-side | **Yes** (DJL, in-JVM) |
+| **`projects/orc-ontology`** | Engine + standalone ontology integration, DJL embeddings, source extraction, self-improving write-side | **Yes** (DJL, in-JVM) |
 | **`projects/orc-colbert`** | The pure-JVM ColBERT signal — the optional Layer-5 late-interaction upgrade. Add alongside `orc-ontology`. | **Yes** (DJL OnnxRuntime, in-JVM; ~133MB model download on first use) |
 | **`projects/orc-mcp-sheet-builder`** | Engine + dynamic tree generation from MCP tool schemas (Layer 8, standalone) | No |
 | **`projects/orc`** | The umbrella — everything above. The full self-improving loop. | Yes |
@@ -94,7 +94,7 @@ obneyai/orc-gepa {:git/url "https://github.com/ObneyAI/orc.git"
 
 ## orc-ontology
 
-The engine plus the general-purpose ontology: an event-sourced concept graph,
+The engine plus the ORC application layer over the standalone `ai.obney/ontology` library:
 DJL embeddings (in-JVM, `all-MiniLM-L6-v2` by default, any HuggingFace
 sentence-transformer via `:model-id`), a supported custom graph lifecycle, the
 evolutionary builder (ingest CSV/JSON/SQL/text or deterministic N-Triples RDF),
@@ -108,7 +108,16 @@ including source/concept/history/statistics queries. Learned descriptions and
 source extractions retain model provenance when model evidence is available.
 The public lifecycle API creates empty ontologies, validates concept/update/relationship
 mutations, returns stable identities, and supports command-ID retry reconciliation.
-`evolve` can add registered sources to those manually created ontologies.
+`evolve` extracts sources and submits versioned contributions to those ontologies.
+
+The standalone library owns graph persistence, resolution, predicates, scoped
+search and RDF snapshots. It depends on Grain and Clojure only. ORC retains
+source extraction workflows, model adapters, task classification, claims,
+Living Descriptions and harvesting. The local dependency in
+`components/ontology/deps.edn` expects a sibling `ontology-exp` checkout; replace
+that coordinate with a pinned library release when publishing the extraction.
+This is a clean break: old evolutionary graph events and registry APIs are not
+replayed. See [the migration boundary](ONTOLOGY-EXTRACTION.md).
 
 ```clojure
 obneyai/orc-ontology {:git/url "https://github.com/ObneyAI/orc.git"

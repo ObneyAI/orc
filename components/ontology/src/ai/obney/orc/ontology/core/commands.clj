@@ -10,7 +10,8 @@
    - Embedding concepts and profiles (Phase 4)
 
    All commands emit events that are processed by read models."
-  (:require [ai.obney.orc.ontology.core.read-models :as rm]
+  (:require [ai.obney.ontology.interface :as ontology]
+            [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.evidence-guard :as guard]
             [ai.obney.orc.ontology.core.static-ontology :as static]
             [ai.obney.orc.ontology.core.classifier :as classifier]
@@ -49,55 +50,19 @@
 (defn tenant-scoped? [ctx]
   (some? (:tenant-id ctx)))
 
-(def supported-relationship-predicates
-  #{"skos:broader" "skos:narrower" "skos:related" "behavior:composes-into"})
 
-(defn- concept-by-id [ctx ontology-id concept-id]
-  (some #(when (and (= ontology-id (:ontology-id %))
-                    (= concept-id (:id %))) %)
-        (rm/get-concepts ctx {:ontology-id ontology-id})))
 
-(defn- missing-broader-uri [ctx ontology-id broader]
-  (some #(when-not (rm/get-concept-by-uri ctx ontology-id %) %) broader))
 
-(defn- broader-reaches?
-  [ctx ontology-id start-uri target-uri]
-  (loop [pending [start-uri] seen #{}]
-    (if-let [uri (peek pending)]
-      (cond
-        (= uri target-uri) true
-        (contains? seen uri) (recur (pop pending) seen)
-        :else (let [parents (:broader (rm/get-concept-by-uri ctx ontology-id uri))]
-                (recur (into (pop pending) parents) (conj seen uri))))
-      false)))
+
+
+
+
 
 ;; =============================================================================
 ;; Static Ontology Initialization
 ;; =============================================================================
 
-(defcommand :ontology create-ontology
-  "Create an initially empty custom ontology."
-  {:authorized? tenant-scoped?}
-  [{{:keys [name scope description base-uri] command-id :command/id} :command
-    :as ctx}]
-  (if-let [existing (and command-id (rm/get-ontology ctx command-id))]
-    {:command-result/events []
-     :command-result/data {:ontology-id (:ontology-id existing)}}
-    (if-not (nonblank? name)
-    (anomaly ::anom/incorrect "Ontology name must be nonblank")
-    (let [ontology-id (or command-id (generate-uuid))
-          now (now-str)]
-      {:command-result/events
-       [(->event
-         {:type :ontology/ontology-created
-          :tags #{[:ontology ontology-id]}
-          :body (cond-> {:ontology-id ontology-id
-                         :name name
-                         :scope scope
-                         :created-at now}
-                  description (assoc :description description)
-                  base-uri (assoc :base-uri base-uri))})]
-       :command-result/data {:ontology-id ontology-id}}))))
+
 
 (defcommand :ontology initialize-static-ontology
   "Initialize the static ontology by emitting concept-created events.
@@ -150,6 +115,8 @@
                                      {:type :ontology/relationship-created
                                       :tags #{[:ontology ontology-id]}
                                       :body {:relationship-id (generate-uuid)
+                                             :source-ontology-id ontology-id
+                                             :target-ontology-id ontology-id
                                              :source-uri (:source rel)
                                              :target-uri (:target rel)
                                              :predicate (:predicate rel)
@@ -362,196 +329,11 @@
 ;; Concept Extension Commands
 ;; =============================================================================
 
-(defcommand :ontology create-concept
-  "Create a new concept in the ontology."
-  {:authorized? tenant-scoped?}
-  [{{:keys [ontology-id uri label description scope broader indicators provenance]
-     command-name :command/name command-id :command/id} :command
-    :as ctx}]
-  (cond
-    (and command-id (concept-by-id ctx ontology-id command-id))
-    {:command-result/events []
-     :command-result/data {:ontology-id ontology-id :concept-id command-id :uri uri}}
 
-    (and command-name (not (rm/ontology-exists? ctx ontology-id)))
-    (anomaly ::anom/not-found (str "Ontology not found: " ontology-id))
 
-    (not-every? nonblank? [uri label description])
-    (anomaly ::anom/incorrect "Concept URI, label, and description must be nonblank")
 
-    (rm/get-concept-by-uri ctx ontology-id uri)
-    (anomaly ::anom/conflict (str "Concept URI already exists in ontology: " uri))
 
-    (missing-broader-uri ctx ontology-id (or broader []))
-    (anomaly ::anom/not-found "Every broader URI must exist in the same ontology")
 
-    :else
-    (let [concept-id (or command-id (generate-uuid))
-          now (now-str)
-          scope-kw (if (keyword? scope) scope (keyword scope))
-          provenance (or provenance {:kind :human-authored})]
-      {:command-result/events
-       [(->event
-         {:type :ontology/concept-created
-          :tags #{[:ontology ontology-id]
-                  [:concept concept-id]}
-          :body {:ontology-id ontology-id
-                 :concept-id concept-id
-                 :uri uri
-                 :label label
-                 :description description
-                 :scope scope-kw
-                 :broader (vec (or broader []))
-                 :indicators (vec (or indicators []))
-                 :provenance provenance
-                 :created-at now}})]
-       :command-result/data {:ontology-id ontology-id
-                             :concept-id concept-id
-                             :uri uri}})))
-
-(defcommand :ontology update-concept
-  "Update the mutable descriptive fields of an existing concept."
-  {:authorized? tenant-scoped?}
-  [{{:keys [ontology-id concept-id changes] command-id :command/id} :command
-    :keys [event-store tenant-id] :as ctx}]
-  (let [concept (concept-by-id ctx ontology-id concept-id)
-        retried (some #(when (= command-id (:update-id %)) %)
-                      (into [] (es/read event-store
-                                       (cond-> {:types #{:ontology/concept-updated}}
-                                         tenant-id (assoc :tenant-id tenant-id)))))
-        changed (select-keys changes [:label :description :broader :indicators])]
-    (cond
-      retried
-      {:command-result/events []
-       :command-result/data {:ontology-id ontology-id
-                             :concept-id concept-id
-                             :uri (:uri concept)}}
-
-      (not (rm/ontology-exists? ctx ontology-id))
-      (anomaly ::anom/not-found (str "Ontology not found: " ontology-id))
-
-      (nil? concept)
-      (anomaly ::anom/not-found (str "Concept not found: " concept-id))
-
-      (empty? changed)
-      (anomaly ::anom/incorrect "At least one permitted field must change")
-
-      (or (and (contains? changed :label) (not (nonblank? (:label changed))))
-          (and (contains? changed :description) (not (nonblank? (:description changed)))))
-      (anomaly ::anom/incorrect "Updated label and description must be nonblank")
-
-      (and (:broader changed)
-           (missing-broader-uri ctx ontology-id (:broader changed)))
-      (anomaly ::anom/not-found "Every broader URI must exist in the same ontology")
-
-      (and (:broader changed)
-           (some #(broader-reaches? ctx ontology-id % (:uri concept))
-                 (:broader changed)))
-      (anomaly ::anom/incorrect "The update would create a broader-concept cycle")
-
-      (= changed (select-keys concept (keys changed)))
-      (anomaly ::anom/conflict "The requested update does not change the concept")
-
-      :else
-      (let [now (now-str)]
-        {:command-result/events
-         [(->event {:type :ontology/concept-updated
-                    :tags #{[:ontology ontology-id] [:concept concept-id]}
-                    :body {:update-id command-id
-                           :ontology-id ontology-id
-                           :concept-id concept-id
-                           :changes changed
-                           :updated-at now}})]
-         :command-result/data {:ontology-id ontology-id
-                               :concept-id concept-id
-                               :uri (:uri concept)}}))))
-
-(defcommand :ontology create-relationship
-  "Create a relationship between two concepts."
-  {:authorized? tenant-scoped?}
-  [{{:keys [source-ontology-id target-ontology-id source-uri target-uri predicate metadata]
-     command-name :command/name command-id :command/id} :command
-    :keys [event-store tenant-id] :as ctx}]
-  (let [source (rm/get-concept-by-uri ctx source-ontology-id source-uri)
-        target (rm/get-concept-by-uri ctx target-ontology-id target-uri)
-        relationship-events (into []
-                                  (es/read event-store
-                                           (cond-> {:types #{:ontology/relationship-created}}
-                                             tenant-id (assoc :tenant-id tenant-id))))
-        retried (some #(when (= command-id (:relationship-id %)) %) relationship-events)
-        projected-duplicate? (contains? (get source
-                                             (case predicate
-                                               "skos:broader" :broader
-                                               "skos:narrower" :narrower
-                                               "skos:related" :related
-                                               "behavior:composes-into" :composes-into
-                                               :related)
-                                             #{})
-                                        target-uri)
-        duplicate? (some #(and (= source-ontology-id (:source-ontology-id %))
-                               (= target-ontology-id (:target-ontology-id %))
-                               (= source-uri (:source-uri %))
-                               (= target-uri (:target-uri %))
-                               (= predicate (:predicate %)))
-                         relationship-events)]
-    (cond
-      retried
-      {:command-result/events []
-       :command-result/data {:relationship-id command-id
-                             :source-ontology-id (:source-ontology-id retried)
-                             :target-ontology-id (:target-ontology-id retried)
-                             :source-uri (:source-uri retried)
-                             :target-uri (:target-uri retried)
-                             :predicate (:predicate retried)}}
-
-      (and command-name (not (rm/ontology-exists? ctx source-ontology-id)))
-      (anomaly ::anom/not-found (str "Source ontology not found: " source-ontology-id))
-      (and command-name (not (rm/ontology-exists? ctx target-ontology-id)))
-      (anomaly ::anom/not-found (str "Target ontology not found: " target-ontology-id))
-      (nil? source) (anomaly ::anom/not-found (str "Source concept not found: " source-uri))
-      (nil? target) (anomaly ::anom/not-found (str "Target concept not found: " target-uri))
-      (not (nonblank? predicate)) (anomaly ::anom/incorrect "Relationship predicate must be nonblank")
-      (not (contains? supported-relationship-predicates predicate))
-      (anomaly ::anom/incorrect (str "Unsupported relationship predicate: " predicate))
-      (and (not= source-ontology-id target-ontology-id)
-           (not= "behavior:composes-into" predicate))
-      (anomaly ::anom/incorrect "Cross-ontology relationships require an explicitly supported predicate")
-      (and (= source-ontology-id target-ontology-id) (= source-uri target-uri))
-      (anomaly ::anom/incorrect "Self relationships are not supported")
-      (and (= source-ontology-id target-ontology-id)
-           (= predicate "skos:broader")
-           (broader-reaches? ctx source-ontology-id target-uri source-uri))
-      (anomaly ::anom/incorrect "The relationship would create a broader-concept cycle")
-      (and (= source-ontology-id target-ontology-id)
-           (= predicate "skos:narrower")
-           (broader-reaches? ctx source-ontology-id source-uri target-uri))
-      (anomaly ::anom/incorrect "The relationship would create a broader-concept cycle")
-      (or duplicate? projected-duplicate?)
-      (anomaly ::anom/conflict "Relationship already exists")
-      :else
-      (let [relationship-id (or command-id (generate-uuid))
-            now (now-str)]
-        {:command-result/events
-         [(->event
-           {:type :ontology/relationship-created
-            :tags (cond-> #{[:relationship relationship-id]
-                            [:ontology source-ontology-id]}
-                    (not= source-ontology-id target-ontology-id)
-                    (conj [:ontology target-ontology-id]))
-            :body (cond-> {:relationship-id relationship-id
-                           :source-ontology-id source-ontology-id
-                           :target-ontology-id target-ontology-id
-                           :source-uri source-uri
-                           :target-uri target-uri
-                           :predicate predicate
-                           :created-at now}
-                    metadata (assoc :metadata metadata))})]
-         :command-result/data {:relationship-id relationship-id
-                               :source-ontology-id source-ontology-id
-                               :target-ontology-id target-ontology-id
-                               :source-uri source-uri
-                               :target-uri target-uri
-                               :predicate predicate}}))))
 
 ;; =============================================================================
 ;; Discovery Commands
@@ -601,102 +383,47 @@
                :dimensions dims
                :configured-at now}})]}))
 
+(defn- embed-stored-concept! [ctx concept fields]
+  (let [text (embedding/concept->embedding-text concept (or (some-> fields set) #{:label :description}))
+        vector (embedding/embed-text text)]
+    (if-not vector
+      {::anom/category ::anom/fault ::anom/message "Failed to generate embedding" :uri (:uri concept)}
+      (let [result (ontology/update-concept! ctx (:ontology-id concept) (:id concept)
+                     {:embedding (mapv double vector) :embedding-model embedding/default-model-id})]
+        (if (::anom/category result) result
+            {:uri (:uri concept) :ontology-id (:ontology-id concept)
+             :dimensions (count vector) :text-embedded text})))))
+
 (defcommand :ontology embed-concept
-  "Generate and store embedding for a concept.
-
-   Args:
-   - uri: The concept URI to embed
-   - fields: Optional set of fields to include (:label :description :indicators :triggers)"
-  [{{:keys [uri fields]} :command
-    :keys [event-store] :as ctx}]
-  (let [;; Get the concept from static ontology or event store
-        concept (or (static/get-concept-by-uri uri)
-                    (rm/get-concept-by-uri ctx uri))
-        _ (when-not concept
-            (throw (ex-info "Concept not found" {:uri uri
-                                                 ::anom/category ::anom/not-found})))
-
-        ;; Prepare text for embedding
-        fields-set (or (when fields (set fields)) #{:label :description})
-        text (embedding/concept->embedding-text concept fields-set)
-
-        ;; Generate embedding
-        embedding-vec (embedding/embed-text text)
-        _ (when-not embedding-vec
-            (throw (ex-info "Failed to generate embedding" {:uri uri
-                                                            ::anom/category ::anom/fault})))
-
-        concept-id (or (:id concept) (generate-uuid))
-        now (now-str)]
-    {:command-result/data {:uri uri
-                            :dimensions (count embedding-vec)
-                            :text-embedded text}
-     :command-result/events
-     [(->event
-       {:type :ontology/concept-embedded
-        :tags #{[:concept concept-id]}  ;; Only UUID-based tags allowed
-        :body {:concept-id concept-id
-               :uri uri
-               :ontology-id (:ontology-id concept)
-               :scope (:scope concept)
-               :text-embedded text
-               :field-source (name (first fields-set))
-               :embedding embedding-vec
-               :model-id embedding/default-model-id
-               :embedded-at now}})]}))
+  "Generate a model vector in ORC and persist it through the ontology API.
+   ontology-id is required when a URI is present in more than one ontology."
+  [{{:keys [ontology-id uri fields]} :command :as ctx}]
+  (if-let [concept (if ontology-id
+                    (ontology/get-concept-by-uri ctx ontology-id uri)
+                    (ontology/get-concept-by-uri ctx uri))]
+    (let [result (embed-stored-concept! ctx concept fields)]
+      (if (::anom/category result) result
+          {:command-result/data result :command-result/events []}))
+    {::anom/category ::anom/not-found
+     ::anom/message "Concept not found or URI is ambiguous; supply ontology-id"
+     :uri uri :ontology-id ontology-id}))
 
 (defcommand :ontology embed-concepts-batch
-  "Embed multiple concepts in batch.
-
-   Args:
-   - scope: Optional scope to filter concepts (:failure :success :problem)
-   - uris: Optional specific URIs to embed (otherwise all in scope)
-   - fields: Optional set of fields to include"
-  [{{:keys [scope uris fields]} :command
-    :keys [event-store] :as ctx}]
-  (let [;; Get concepts to embed
-        concepts (cond
-                   (seq uris)
-                   (keep #(or (static/get-concept-by-uri %)
-                              (rm/get-concept-by-uri ctx %))
-                         uris)
-
-                   scope
-                   (static/get-concepts-by-scope scope)
-
-                   :else
-                   (static/get-all-static-concepts))
-
-        fields-set (or (when fields (set fields)) #{:label :description})
-        now (now-str)
-
-        ;; Generate events for each concept
-        events (reduce
-                 (fn [acc concept]
-                   (let [text (embedding/concept->embedding-text concept fields-set)
-                         embedding-vec (embedding/embed-text text)
-                         concept-id (or (:id concept) (generate-uuid))]
-                     (if embedding-vec
-                       (conj acc
-                             (->event
-                              {:type :ontology/concept-embedded
-                               :tags #{[:concept concept-id]}  ;; Only UUID-based tags allowed
-                               :body {:concept-id concept-id
-                                      :uri (:uri concept)
-                                      :ontology-id (:ontology-id concept)
-                                      :scope (:scope concept)
-                                      :text-embedded text
-                                      :field-source (name (first fields-set))
-                                      :embedding embedding-vec
-                                      :model-id embedding/default-model-id
-                                      :embedded-at now}}))
-                       acc)))
-                 []
-                 concepts)]
-
-    {:command-result/data {:embedded-count (count events)
-                            :total-concepts (count concepts)}
-     :command-result/events events}))
+  "Embed stored concepts selected by ontology IDs, scope, and optional URIs.
+   Each vector update is a separate validated ontology command."
+  [{{:keys [ontology-id ontology-ids scope uris fields]} :command :as ctx}]
+  (let [concepts (cond->> (ontology/get-concepts ctx
+                            (cond-> {} ontology-id (assoc :ontology-id ontology-id)
+                                       ontology-ids (assoc :ontology-ids ontology-ids)
+                                       scope (assoc :scope scope)))
+                   (seq uris) (filterv #(contains? (set uris) (:uri %))))
+        result (reduce (fn [count concept]
+                         (let [result (embed-stored-concept! ctx concept fields)]
+                           (if (::anom/category result) (reduced result) (inc count))))
+                       0 concepts)]
+    (if (map? result) result
+        {:command-result/data {:embedded-count result :total-concepts (count concepts)}
+         :command-result/events []})))
 
 (defcommand :ontology embed-tree-profile
   "Generate and store embedding for a tree profile summary."

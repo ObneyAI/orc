@@ -17,7 +17,8 @@
    - end-to-end: after seed-all! + R05a processor drive, the concept
      graph contains behavioral-subtree:<investigation-id> with the
      expected behavior:composes-into edges to the 3 abstract patterns"
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [ai.obney.orc.ontology.core.read-models :as rm]
+            [clojure.test :refer [deftest testing is]]
             [malli.core :as m]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
@@ -212,7 +213,7 @@
   (with-test-ctx [ctx]
     (seeds/seed-all! ctx)
     (drive-behavioral-subtree-processor! ctx)
-    (let [concepts (rmp/project ctx :ontology/concepts)
+    (let [concepts (rm/get-concept-map ctx)
           investigation-uri (str "behavioral-subtree:" seeds/investigation-behavior-id)
           ci (get-in concepts [investigation-uri :composes-into] #{})]
 

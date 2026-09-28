@@ -6,7 +6,8 @@
    - Failure Ontology: Why things go wrong (Hallucination, InstructionViolation, etc.)
    - Success Ontology: What makes things work (StructuralPatterns, InstructionPatterns)
    - Problem Domain: What types of problems exist (Classification, InformationRetrieval)"
-  (:require [ai.obney.grain.schema-util.interface :refer [defschemas]]))
+  (:require [ai.obney.ontology.interface]
+            [ai.obney.grain.schema-util.interface :refer [defschemas]]))
 
 ;; =============================================================================
 ;; Shared Domain Schemas
@@ -456,63 +457,17 @@
    ;; Ontology Lifecycle Events
    ;; -------------------------------------------------------------------------
 
-   :ontology/ontology-created
-   [:map
-    [:ontology-id :uuid]
-    [:name :string]
-    [:scope ontology-scope]
-    [:description {:optional true} :string]
-    [:base-uri {:optional true} :string]
-    [:created-at :string]]
+
 
    ;; -------------------------------------------------------------------------
    ;; Concept Events
    ;; -------------------------------------------------------------------------
 
-   :ontology/concept-created
-   [:map
-    [:ontology-id :uuid]
-    [:concept-id :uuid]
-    [:uri :string]                        ;; e.g., "failure:Hallucination"
-    [:label :string]
-    [:description :string]
-    [:scope ontology-scope]
-    [:broader {:optional true} [:vector :string]]  ;; Parent URIs
-    [:indicators {:optional true} [:vector :string]]  ;; Text patterns
-    [:provenance {:optional true}
-     [:map
-      [:kind [:enum :human-authored :agent-authored :source-extracted :imported :system-static]]
-      [:source-reference {:optional true} :string]
-      [:created-by {:optional true} :string]
-      [:trace-id {:optional true} :uuid]]]
-    [:created-at :string]]
 
-   :ontology/concept-updated
-   [:map
-    [:update-id :uuid]
-    [:ontology-id :uuid]
-    [:concept-id :uuid]
-    [:changes
-     [:map
-      [:label {:optional true} :string]
-      [:description {:optional true} :string]
-      [:broader {:optional true} [:vector :string]]
-      [:indicators {:optional true} [:vector :string]]]]
-    [:updated-at :string]]
 
-   :ontology/relationship-created
-   [:map
-    [:relationship-id :uuid]
-    [:source-ontology-id {:optional true} :uuid]
-    [:target-ontology-id {:optional true} :uuid]
-    [:source-uri :string]
-    [:target-uri :string]
-    [:predicate :string]                  ;; "skos:broader", "skos:related", "owl:causes"
-    [:metadata {:optional true}
-     [:map
-      [:source-reference {:optional true} :string]
-      [:trace-id {:optional true} :uuid]]]
-    [:created-at :string]]
+
+
+
 
    ;; -------------------------------------------------------------------------
    ;; Tree Profile Events
@@ -1229,16 +1184,7 @@
     [:dimensions :int]                    ;; 384
     [:configured-at :string]]
 
-   :ontology/concept-embedded
-   [:map
-    [:uri :string]                        ;; "failure:Hallucination" or "onet:11-1011.00"
-    [:ontology-id {:optional true} :uuid] ;; Links to evolutionary ontology
-    [:concept-id {:optional true} :uuid]  ;; Legacy individual concept ID
-    [:text-embedded :string]              ;; Source text that was embedded
-    [:field-source :string]               ;; "label+description" or "triggers"
-    [:embedding [:vector :double]]        ;; 384-dim vector (MUST be :double, not Float)
-    [:model-id :string]
-    [:embedded-at :string]]
+
 
    :ontology/tree-profile-embedded
    [:map
@@ -1299,51 +1245,13 @@
 ;; =============================================================================
 
 (defschemas commands
-  {:ontology/create-ontology
-   [:map
-    [:name :string]
-    [:scope ontology-scope]
-    [:description {:optional true} :string]
-    [:base-uri {:optional true} :string]]
+  {
 
-   :ontology/create-concept
-   [:map
-    [:ontology-id :uuid]
-    [:uri :string]
-    [:label :string]
-    [:description :string]
-    [:scope ontology-scope]
-    [:broader {:optional true} [:vector :string]]
-    [:indicators {:optional true} [:vector :string]]
-    [:provenance {:optional true}
-     [:map
-      [:kind [:enum :human-authored :agent-authored :source-extracted :imported :system-static]]
-      [:source-reference {:optional true} :string]
-      [:created-by {:optional true} :string]
-      [:trace-id {:optional true} :uuid]]]]
 
-   :ontology/update-concept
-   [:map
-    [:ontology-id :uuid]
-    [:concept-id :uuid]
-    [:changes
-     [:map
-      [:label {:optional true} :string]
-      [:description {:optional true} :string]
-      [:broader {:optional true} [:vector :string]]
-      [:indicators {:optional true} [:vector :string]]]]]
 
-   :ontology/create-relationship
-   [:map
-    [:source-ontology-id :uuid]
-    [:target-ontology-id :uuid]
-    [:source-uri :string]
-    [:target-uri :string]
-    [:predicate :string]
-    [:metadata {:optional true}
-     [:map
-      [:source-reference {:optional true} :string]
-      [:trace-id {:optional true} :uuid]]]]
+
+
+
 
    :ontology/initialize-static-ontology
    [:map
@@ -1621,7 +1529,7 @@
    ;;      audit-trail event
    ;;   2. :ontology/tree-description-updated — so the R05a reactive
    ;;      processor projects the concept (and any :composes-into edges
-   ;;      / :parent-behavior skos:broader link) into :ontology/concepts.
+   ;;      / :parent-behavior skos:broader link) into the standalone concept graph.
    ;;
    ;; :scope :behavioral-subtree is stamped by the handler. Callers may
    ;; omit it from :body; if they explicitly pass a non-:behavioral-subtree
@@ -1957,71 +1865,19 @@
    ;; Source Registry Events
    ;; -------------------------------------------------------------------------
 
-   :evolutionary/source-registered
-   [:map
-    [:source-id :uuid]
-    [:source-uri :string]
-    [:source-type source-type]
-    [:content-hash :string]                  ;; SHA-256
-    [:file-size :int]
-    [:namespace :string]
-    [:metadata {:optional true} [:map-of :keyword :any]]
-    [:registered-at :string]]
 
-   :evolutionary/source-stats-updated
-   [:map
-    [:source-id :uuid]
-    [:concepts-extracted :int]
-    [:triples-generated :int]
-    [:entities-resolved :int]
-    [:updated-at :string]]
+
+
 
    ;; -------------------------------------------------------------------------
    ;; Concept Extraction Events
    ;; -------------------------------------------------------------------------
 
-   :evolutionary/concepts-extracted
-   [:map
-    [:source-id :uuid]
-    [:ontology-id :uuid]
-    [:concepts [:vector [:map
-                         [:uri :string]
-                         [:label :string]
-                         [:definition {:optional true} :string]
-                         [:entity-type :string]
-                         [:alt-labels {:optional true} [:vector :string]]
-                         [:source-id {:optional true} :uuid]
-                         [:confidence {:optional true} :double]]]]
-    [:model-provenance {:optional true} [:maybe :map]]
-    [:extracted-at :string]]
 
-   :evolutionary/relationships-extracted
-   [:map
-    [:source-id :uuid]
-    [:ontology-id :uuid]
-    [:relationships [:vector [:map
-                              [:subject :string]
-                              [:predicate :string]
-                              [:object :string]
-                              [:confidence {:optional true} :double]]]]
-    [:extracted-at :string]]
 
-   :evolutionary/schema-extracted
-   [:map
-    [:source-id :uuid]
-    [:ontology-id :uuid]
-    [:classes [:vector [:map
-                        [:uri :string]
-                        [:label :string]]]]
-    [:object-properties [:vector [:map
-                                  [:uri :string]
-                                  [:domain :string]
-                                  [:range :string]]]]
-    [:datatype-properties [:vector [:map
-                                    [:uri :string]
-                                    [:domain :string]
-                                    [:datatype :string]]]]
-    [:extracted-at :string]]
+
+
+
 
    ;; -------------------------------------------------------------------------
    ;; T-box/A-box Events (OWL Schema + Individuals)
@@ -2062,61 +1918,19 @@
    ;; Entity Resolution Events
    ;; -------------------------------------------------------------------------
 
-   :evolutionary/entities-resolved
-   [:map
-    [:ontology-id :uuid]
-    [:resolution-mode resolution-mode]
-    [:matches [:vector [:map
-                        [:source1-uri :string]
-                        [:source2-uri :string]
-                        [:similarity-score :double]
-                        [:match-type match-type]]]]
-    [:canonical-map [:map-of :string :string]]
-    [:alignment-triples [:vector [:tuple :string :string :string]]]
-    [:exact-matches :int]
-    [:semantic-matches :int]
-    [:resolved-at :string]]
 
-   :evolutionary/canonical-uri-assigned
-   [:map
-    [:original-uri :string]
-    [:canonical-uri :string]
-    [:reason :string]
-    [:assigned-at :string]]
+
+
 
    ;; -------------------------------------------------------------------------
    ;; Graph Evolution Events
    ;; -------------------------------------------------------------------------
 
-   :evolutionary/graph-merged
-   [:map
-    [:ontology-id :uuid]
-    [:source-ids [:vector :uuid]]
-    [:triples-before :int]
-    [:triples-after :int]
-    [:concepts-added :int]
-    [:concepts-merged :int]
-    [:merged-at :string]]
 
-   :evolutionary/schema-extended
-   [:map
-    [:ontology-id :uuid]
-    [:extensions [:vector [:map
-                           [:uri :string]
-                           [:element-type schema-element-type]
-                           [:label :string]
-                           [:source-id :uuid]]]]
-    [:extended-at :string]]
 
-   :evolutionary/ttl-snapshot-created
-   [:map
-    [:ontology-id :uuid]
-    [:snapshot-id :uuid]
-    [:format ttl-format]
-    [:ttl-string :string]
-    [:triple-count :int]
-    [:checksum :string]
-    [:created-at :string]]
+
+
+
 
    ;; -------------------------------------------------------------------------
    ;; Build Orchestration Events
@@ -2200,18 +2014,9 @@
    ;; Source Management Commands
    ;; -------------------------------------------------------------------------
 
-   :evolutionary/register-source
-   [:map
-    [:source-uri :string]
-    [:source-type source-type]
-    [:content {:optional true} :string]       ;; For text/json sources
-    [:namespace {:optional true} :string]
-    [:metadata {:optional true} [:map-of :keyword :any]]]
 
-   :evolutionary/check-source-processed
-   [:map
-    [:source-uri {:optional true} :string]
-    [:content {:optional true} :string]]      ;; Compute hash from content
+
+         ;; Compute hash from content
 
    ;; -------------------------------------------------------------------------
    ;; Extraction Pipeline Commands
@@ -2321,46 +2126,25 @@
 ;; =============================================================================
 
 (defschemas evolutionary-queries
-  {:evolutionary/get-source
-   [:map
-    [:source-id :string]]
+  {
 
-   :evolutionary/get-source-by-hash
-   [:map
-    [:content-hash :string]]
 
-   :evolutionary/was-processed?
-   [:map
-    [:source-uri {:optional true} :string]
-    [:content {:optional true} :string]]
 
-   :evolutionary/all-sources
-   [:map
-    [:source-type {:optional true} source-type]]
 
-   :evolutionary/get-all-concepts
-   [:map
-    [:ontology-id :uuid]]
 
-   :evolutionary/get-concepts-by-source
-   [:map
-    [:source-id :string]]
 
-   :evolutionary/get-concepts-by-type
-   [:map
-    [:entity-type :string]]
 
-   :evolutionary/get-canonical-uri
-   [:map
-    [:uri :string]]
 
-   :evolutionary/get-all-canonical-mappings
-   [:map
-    [:ontology-id {:optional true} :uuid]]
 
-   :evolutionary/get-evolution-state
-   [:map
-    [:ontology-id :uuid]]
+
+
+
+
+
+
+
+
+
 
    :evolutionary/get-build-history
    [:map
@@ -2376,70 +2160,21 @@
    ;; Evolutionary Ontology Builder Read Models
    ;; -------------------------------------------------------------------------
 
-   :evolutionary/source-registry
-   [:map-of :string                            ;; source-id -> source-entry
-    [:map
-     [:source-id :string]
-     [:source-uri :string]
-     [:source-type source-type]
-     [:content-hash :string]
-     [:file-size :int]
-     [:namespace :string]
-     [:metadata {:optional true} [:map-of :keyword :any]]
-     [:concepts-extracted {:optional true} :int]
-     [:triples-generated {:optional true} :int]
-     [:entities-resolved {:optional true} :int]
-     [:registered-at :string]]]
 
-   :evolutionary/content-hash-index
-   [:map-of :string :string]                   ;; content-hash -> source-id
 
-   :evolutionary/concept-graph
-   [:map-of :string                            ;; uri -> concept-with-relationships
-    [:map
-     [:uri :string]
-     [:label :string]
-     [:definition {:optional true} :string]
-     [:entity-type :string]
-     [:source-id :string]
-     [:alt-labels {:optional true} [:vector :string]]
-     [:relationships [:vector [:map
-                               [:predicate :string]
-                               [:object :string]
-                               [:confidence {:optional true} :double]]]]]]
+                      ;; content-hash -> source-id
 
-   :evolutionary/canonical-uri-map
-   [:map-of :string :string]                   ;; original-uri -> canonical-uri
 
-   :evolutionary/evolution-state
-   [:map
-    [:ontology-id :uuid]
-    [:total-sources :int]
-    [:total-concepts :int]
-    [:total-triples :int]
-    [:schema-extensions [:vector [:map
-                                  [:uri :string]
-                                  [:element-type schema-element-type]
-                                  [:source-id :string]]]]
-    [:last-evolved-at {:optional true} :string]]
+
+                      ;; original-uri -> canonical-uri
+
+
 
    ;; -------------------------------------------------------------------------
    ;; Original ORC Optimization Read Models
    ;; -------------------------------------------------------------------------
 
-   :ontology/concepts
-   [:map-of :string                       ;; URI -> Concept
-    [:map
-     [:uri :string]
-     [:id :uuid]
-     [:label :string]
-     [:description :string]
-     [:scope ontology-scope]
-     [:broader [:set :string]]
-     [:narrower [:set :string]]
-     [:related [:set :string]]
-     [:indicators [:vector :string]]
-     [:created-at :string]]]
+
 
    :ontology/tree-profile
    [:map
@@ -2526,14 +2261,7 @@
 
    ;; Embedding Read Models (Phase 4)
 
-   :ontology/concept-embeddings
-   [:map-of :string                       ;; URI -> embedding data
-    [:map
-     [:uri :string]
-     [:embedding [:vector :double]]
-     [:text-embedded :string]
-     [:model-id :string]
-     [:embedded-at :string]]]
+
 
    :ontology/embedding-config
    [:map-of ontology-scope                ;; scope -> model config

@@ -926,7 +926,7 @@
 ;;
 ;; When a :ontology/tree-description-updated event lands with a
 ;; :parent-tree-id in its body, project the parent/child relationship
-;; into the :ontology/concepts graph as SKOS broader/narrower. Both
+;; into the standalone concept graph as SKOS broader/narrower. Both
 ;; concepts are created lazily if not already present. Idempotent.
 ;;
 ;; URI scheme: tree-class:<target-id> where target-id is either a UUID
@@ -955,6 +955,7 @@
              :command/id ontology-id
              :command/timestamp (time/now)
              :name name
+             :predicate-policies {"behavior:composes-into" {:cross-ontology? true}}
              :scope scope
              :description (str "ORC managed " name)
              :base-uri base-uri}))))
@@ -965,7 +966,7 @@
    into existence. Returns the URI."
   [context target-id]
   (let [uri (tree-class-uri target-id)
-        concepts (rmp/project context :ontology/concepts)]
+        concepts (rm/get-concept-map context)]
     (when-not (contains? concepts uri)
       (ensure-system-ontology! context tree-class-ontology-id
                                "Tree class ontology" :tree-class "tree-class:")
@@ -987,7 +988,7 @@
 (defn on-tree-description-updated-project-concept
   "C-2d-1: when a :ontology/tree-description-updated event with a
    :parent-tree-id lands, project the parent/child relationship into
-   the :ontology/concepts graph as a skos:broader link. Lazy-init both
+   the standalone concept graph as a skos:broader link. Lazy-init both
    concepts. Idempotent — re-running on the same event sees the
    existing :broader link and skips the redundant emit.
 
@@ -1005,7 +1006,7 @@
             ;; sees the just-created concepts. Re-running on the same
             ;; event observes the parent already in :broader and skips
             ;; the redundant create-relationship emit.
-            concepts (rmp/project context :ontology/concepts)
+            concepts (rm/get-concept-map context)
             already-linked? (contains? (get-in concepts [target-uri :broader])
                                        parent-uri)]
         (when-not already-linked?
@@ -1023,7 +1024,7 @@
 (defprocessor :ontology on-tree-description-updated-project-concept
   {:topics #{:ontology/tree-description-updated}}
   "C-2d-1: project :parent-tree-id from tree-description-updated events
-   into the :ontology/concepts graph as a skos:broader relationship,
+   into the standalone concept graph as a skos:broader relationship,
    creating concepts on-demand for both endpoints."
   [context]
   (on-tree-description-updated-project-concept context))
@@ -1067,7 +1068,7 @@
    :ontology/create-concept to bring it into existence. Returns the URI."
   [context target-id]
   (let [uri (behavioral-subtree-uri target-id)
-        concepts (rmp/project context :ontology/concepts)]
+        concepts (rm/get-concept-map context)]
     (when-not (contains? concepts uri)
       (ensure-system-ontology! context behavioral-subtree-ontology-id
                                "Behavioral subtree ontology" :behavioral-subtree
@@ -1108,7 +1109,7 @@
 
         (when parent-behavior
           (let [parent-uri (ensure-behavioral-subtree-concept! context parent-behavior)
-                concepts (rmp/project context :ontology/concepts)
+                concepts (rm/get-concept-map context)
                 already-linked? (contains? (get-in concepts [target-uri :broader])
                                            parent-uri)]
             (when-not already-linked?
@@ -1126,7 +1127,7 @@
         (doseq [shell-id composes-into]
           (let [shell-uri (tree-class-uri shell-id)
                 _ (ensure-tree-class-concept! context shell-id)
-                concepts (rmp/project context :ontology/concepts)
+                concepts (rm/get-concept-map context)
                 already-linked? (contains?
                                   (get-in concepts [target-uri :composes-into])
                                   shell-uri)]
@@ -1145,7 +1146,7 @@
 (defprocessor :ontology on-behavioral-subtree-description-updated-project-concept
   {:topics #{:ontology/tree-description-updated}}
   "R05a: project :scope :behavioral-subtree tree-description-updated
-   events into the :ontology/concepts graph as behavioral-subtree
+   events into the standalone concept graph as behavioral-subtree
    concepts + skos:broader (parent-behavior) + behavior:composes-into
    (each entry in :composes-into) edges."
   [context]

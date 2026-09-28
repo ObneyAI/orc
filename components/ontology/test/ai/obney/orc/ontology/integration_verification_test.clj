@@ -12,6 +12,8 @@
             [ai.obney.orc.ontology.sheets.json-ontology :as json-ont]
             [ai.obney.orc.ontology.sheets.unified-ontology :as unified]
             [ai.obney.orc.ontology.core.read-models :as rm]
+            [ai.obney.ontology.interface :as graph]
+            [ai.obney.orc.ontology.graph-test-support :as g]
             [ai.obney.orc.ontology.core.evolutionary-builder :as evo]
             [clojure.string :as str]))
 
@@ -187,103 +189,42 @@
 (def ontology-b #uuid "bbbb0000-0000-0000-0000-000000000002")
 
 (deftest concepts-projection-stores-ontology-id
-  (testing "concept-created events preserve ontology-id in projection"
-    (let [events [{:event/type :ontology/concept-created
-                   :ontology-id ontology-a
-                   :concept-id (random-uuid)
-                   :uri "person:alice"
-                   :label "Alice"
-                   :description "Test person"
-                   :scope :person
-                   :broader []
-                   :indicators []
-                   :created-at "2026-06-01T00:00:00Z"}
-                  {:event/type :ontology/concept-created
-                   :ontology-id ontology-b
-                   :concept-id (random-uuid)
-                   :uri "org:acme"
-                   :label "Acme Corp"
-                   :description "Test org"
-                   :scope :organization
-                   :broader []
-                   :indicators []
-                   :created-at "2026-06-01T00:00:00Z"}]
-          state (rm/concepts {} events)]
-      (is (= ontology-a (:ontology-id (get state "person:alice"))))
-      (is (= ontology-b (:ontology-id (get state "org:acme")))))))
+  (g/with-context [ctx]
+    (let [a (g/ontology! ctx "People") b (g/ontology! ctx "Organizations")]
+      (g/concept! ctx a "person:alice" "Alice" {:scope :person})
+      (g/concept! ctx b "org:acme" "Acme Corp" {:scope :organization})
+      (is (= a (:ontology-id (graph/get-concept-by-uri ctx a "person:alice"))))
+      (is (= b (:ontology-id (graph/get-concept-by-uri ctx b "org:acme")))))))
 
 (deftest get-concepts-filtering-logic-correct
-  (testing "filtering by ontology-id works correctly"
-    ;; Test the filtering logic that get-concepts uses
-    (let [concepts {"person:alice" {:uri "person:alice"
-                                     :label "Alice"
-                                     :ontology-id ontology-a
-                                     :scope :person}
-                    "org:acme" {:uri "org:acme"
-                                :label "Acme Corp"
-                                :ontology-id ontology-b
-                                :scope :organization}
-                    "person:bob" {:uri "person:bob"
-                                  :label "Bob"
-                                  :ontology-id ontology-a
-                                  :scope :person}}
-          ;; Simulate the filtering logic from get-concepts
-          filter-fn (fn [{:keys [ontology-id ontology-ids scope]}]
-                      (let [ont-id-set (cond
-                                         ontology-ids (set ontology-ids)
-                                         ontology-id #{ontology-id}
-                                         :else nil)]
-                        (cond->> (vals concepts)
-                          scope (filter #(= scope (:scope %)))
-                          ont-id-set (filter #(contains? ont-id-set (:ontology-id %))))))]
-
-      ;; Single ontology-id
-      (is (= 2 (count (filter-fn {:ontology-id ontology-a})))
-          "ontology-a should have 2 concepts")
-      (is (= 1 (count (filter-fn {:ontology-id ontology-b})))
-          "ontology-b should have 1 concept")
-
-      ;; Multiple ontology-ids
-      (is (= 3 (count (filter-fn {:ontology-ids [ontology-a ontology-b]})))
-          "both ontologies should have 3 concepts")
-
-      ;; Combined with scope
-      (is (= 2 (count (filter-fn {:ontology-id ontology-a :scope :person})))
-          "ontology-a persons should be 2")
-
-      ;; No filter returns all
-      (is (= 3 (count (filter-fn {})))
-          "no filter should return all 3"))))
+  (g/with-context [ctx]
+    (let [a (g/ontology! ctx "People") b (g/ontology! ctx "Organizations")]
+      (g/concept! ctx a "person:alice" "Alice" {:scope :person})
+      (g/concept! ctx a "person:bob" "Bob" {:scope :person})
+      (g/concept! ctx b "org:acme" "Acme Corp" {:scope :organization})
+      (is (= 2 (count (rm/get-concepts ctx {:ontology-id a}))))
+      (is (= 1 (count (rm/get-concepts ctx {:ontology-id b}))))
+      (is (= 3 (count (rm/get-concepts ctx {:ontology-ids [a b]}))))
+      (is (= 2 (count (rm/get-concepts ctx {:ontology-id a :scope :person}))))
+      (is (= 3 (count (rm/get-concepts ctx)))))))
 
 (deftest concept-embeddings-preserve-ontology-id
-  (testing "concept-embedded events preserve ontology-id"
-    (let [events [{:event/type :ontology/concept-embedded
-                   :ontology-id ontology-a
-                   :uri "person:alice"
-                   :concept-id (random-uuid)
-                   :embedding [0.1 0.2 0.3]
-                   :text-embedded "Alice"
-                   :field-source :label
-                   :model-id "text-embedding-3-small"
-                   :embedded-at "2026-06-01T00:00:00Z"}]
-          state (rm/concept-embeddings {} events)
-          embedding (get state "person:alice")]
-      (is (some? embedding))
-      (is (= ontology-a (:ontology-id embedding))))))
-
-;; =============================================================================
-;; Summary Test
-;; =============================================================================
+  (g/with-context [ctx]
+    (let [a (g/ontology! ctx "Embeddings")]
+      (g/concept! ctx a "person:alice" "Alice"
+                  {:embedding [0.1 0.2 0.3] :embedding-model "fixture-model"})
+      (let [embedding (graph/get-concept-by-uri ctx a "person:alice")]
+        (is (some? (:embedding embedding)))
+        (is (= a (:ontology-id embedding)))))))
 
 (deftest feature-completeness-summary
-  (testing "ORC-001: JSON extraction sheet is complete"
-    (is (some? json-ont/json-to-ontology-pipeline) "pipeline defined")
-    (is (fn? json-ont/analyze-json-structure) "structure analysis works")
-    (is (fn? json-ont/build-json-ontology-pipeline!) "builder function exists")
-    (is (fn? json-ont/run-json-to-ontology) "run function exists"))
-
-  (testing "ORC-002: Ontology-id scoping is complete"
-    ;; The get-concepts function signature includes ontology-id params
-    (let [docstring (-> #'rm/get-concepts meta :doc)]
-      (is (str/includes? docstring "ontology-id") "docstring mentions ontology-id")
-      (is (str/includes? docstring "ontology-ids") "docstring mentions ontology-ids"))))
+  (testing "JSON extraction remains ORC-owned"
+    (is (some? json-ont/json-to-ontology-pipeline))
+    (is (fn? json-ont/analyze-json-structure))
+    (is (fn? json-ont/build-json-ontology-pipeline!))
+    (is (fn? json-ont/run-json-to-ontology)))
+  (testing "Graph access is a consumer of the standalone public API"
+    (g/with-context [ctx]
+      (let [oid (g/ontology! ctx "Boundary")]
+        (g/concept! ctx oid "urn:scoped" "Scoped")
+        (is (= "Scoped" (:label (first (rm/get-concepts ctx {:ontology-id oid})))))))))

@@ -7,6 +7,7 @@
             [clojure.set]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.ontology.interface :as ontology]
+            [ai.obney.ontology.interface :as graph]
             [ai.obney.orc.ontology.interface.evolutionary :as evolutionary]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.evolutionary-commands]
@@ -28,6 +29,22 @@
 
 (defn- events-of [ctx type]
   (filterv #(= type (event-type %)) (live/events ctx)))
+
+(defn- contribution-extractions [ctx]
+  ;; A contribution keeps its submitted candidates separately from merged graph
+  ;; state. Canonicalize candidates for per-source post-import assertions.
+  (mapv (fn [event]
+          (let [body (event-body event)
+                source (:source body)
+                original (mapv #(assoc % :source-id (:source-id source))
+                               (get-in body [:input :concepts]))
+                canonical (:canonical-map body)]
+            (assoc event :body
+                   (assoc body :source-id (:source-id source)
+                          :original-concepts original
+                          :concepts (mapv #(update % :uri (fn [uri] (get canonical uri uri))) original)
+                          :model-provenance (get-in source [:producer :model-provenance])))))
+        (events-of ctx :ontology/contribution-imported)))
 
 (defn- assert-all-model-calls-pinned! [ctx]
   (let [calls (live/model-completions ctx)]
@@ -62,8 +79,8 @@
                                       "archive channel,retention\n")}]
               result (evolutionary/build-from-sources
                       ctx {:sources sources :config (build-config ontology-id)})
-              registrations (events-of ctx :evolutionary/source-registered)
-              extractions (events-of ctx :evolutionary/concepts-extracted)
+              registrations (graph/get-sources ctx ontology-id)
+              extractions (contribution-extractions ctx)
               completions (events-of ctx :evolutionary/build-completed)]
           (is (not (anomaly? result)) (pr-str result))
           (is (= ontology-id (:ontology-id result)))
@@ -80,13 +97,13 @@
             (is (seq (:calls provenance)))
             (is (every? #(pos? (get-in % [:usage :total-tokens] 0))
                         (:calls provenance))))
-          (is (= (set (map (comp :source-id event-body) registrations))
+          (is (= (set (map :source-id registrations))
                  (set (map (comp :source-id event-body) extractions))))
           (assert-all-model-calls-pinned! ctx)
           (is (:valid? (ontology/validate-turtle (:ttl-output result))))
-          (let [mappings (evolutionary/get-all-canonical-mappings ctx)
+          (let [mappings (evolutionary/get-all-canonical-mappings ctx ontology-id)
                 concepts-by-uri (->> extractions
-                                     (mapcat (comp :concepts event-body))
+                                     (mapcat (comp :original-concepts event-body))
                                      (map (juxt :uri identity))
                                      (into {}))
                 source-sets (->> mappings
@@ -105,7 +122,8 @@
           ;; scripted model. No partial ontology snapshot may become current.
           (let [_ (live/register-openrouter-auth-failure!)
                 before-terminal-count (count (events-of ctx :evolutionary/build-completed))
-                before-snapshot-count (count (events-of ctx :evolutionary/ttl-snapshot-created))
+                before-contribution-count (count (events-of ctx :ontology/contribution-imported))
+                before-snapshot (graph/export-snapshot ctx ontology-id)
                 failed (try
                          (evolutionary/build-from-sources
                           ctx
@@ -118,11 +136,13 @@
                 "induced extraction failure must be visible to the caller")
             (is (= before-terminal-count
                    (count (events-of ctx :evolutionary/build-completed))))
-            (is (= before-snapshot-count
-                   (count (events-of ctx :evolutionary/ttl-snapshot-created)))
-                "failed build must publish no current snapshot"))
+            (is (= before-contribution-count
+                   (count (events-of ctx :ontology/contribution-imported)))
+                "failed extraction must commit no contribution")
+            (is (= before-snapshot (graph/export-snapshot ctx ontology-id))
+                "failed extraction must leave the current graph snapshot unchanged"))
 
-          (let [registrations-before-retry (count (events-of ctx :evolutionary/source-registered))
+          (let [registrations-before-retry (count (graph/get-sources ctx ontology-id))
                 retry-source "A valid recovery precursor requiring extraction."
                 _ (live/register-openrouter!)
                 retry (evolutionary/evolve
@@ -135,7 +155,7 @@
                                 :config (build-config ontology-id)})]
             (is (uuid? (:build-id retry)))
             (is (= (inc registrations-before-retry)
-                   (count (events-of ctx :evolutionary/source-registered)))
+                   (count (graph/get-sources ctx ontology-id)))
                 "Atomic failure stored no source; recovery registers it exactly once")
             (is (= 1 (count (filter #(= (:build-id retry) (:build-id (event-body %)))
                                     (events-of ctx :evolutionary/build-completed))))
@@ -159,7 +179,7 @@
                                                      "Sentinel Queue is a durable priority queue that routes "
                                                      "urgent work before routine work.")}]
                              :config config})
-              baseline-extraction (last (events-of ctx :evolutionary/concepts-extracted))
+              baseline-extraction (last (contribution-extractions ctx))
               baseline-concepts (:concepts (event-body baseline-extraction))
               baseline-source (:source-id (event-body baseline-extraction))
               incremental (evolutionary/evolve
@@ -171,7 +191,7 @@
                                                          "Aurora Escalator is the only genuinely new named concept. "
                                                          "Extract exactly these two named concepts.")}]
                                 :config config})
-              all-extractions (events-of ctx :evolutionary/concepts-extracted)
+              all-extractions (contribution-extractions ctx)
               incremental-extraction (last all-extractions)
               incremental-concepts (:concepts (event-body incremental-extraction))
               baseline-uris (set (map :uri baseline-concepts))
@@ -179,8 +199,8 @@
               shared-uris (clojure.set/intersection baseline-uris incremental-uris)
               new-uris (clojure.set/difference incremental-uris baseline-uris)
               incremental-source (:source-id (event-body incremental-extraction))
-              resolution (last (events-of ctx :evolutionary/entities-resolved))
-              snapshots (events-of ctx :evolutionary/ttl-snapshot-created)]
+              resolution (last (events-of ctx :ontology/contribution-imported))
+              contributions (events-of ctx :ontology/contribution-imported)]
           (is (not (anomaly? baseline)) (pr-str baseline))
           (is (not (anomaly? incremental)) (pr-str incremental))
           (is (uuid? (:build-id baseline)))
@@ -204,11 +224,12 @@
           (is (= #{"Aurora Escalator"}
                  (set (map :label (filter #(contains? new-uris (:uri %))
                                          incremental-concepts)))))
-          (is (= 2 (count snapshots)))
+          (is (= 2 (count contributions)))
           (is (:valid? (ontology/validate-turtle (:ttl-output incremental))))
           (is (= (:ttl-output incremental)
-                 (:ttl-string (event-body (last snapshots))))
-              "public result and durable snapshot must be byte-identical")
+                 (:ttl-output (graph/export-snapshot ctx ontology-id
+                                (get-in (event-body (last contributions)) [:result :revision]))))
+              "public result and replayed committed graph revision must be byte-identical")
           (is (= #{baseline-source incremental-source}
                  (set (map (comp :source-id event-body) all-extractions)))
               "both source mappings remain queryable")

@@ -10,7 +10,8 @@
    1. concepts - Ontology concept graph with relationships
    2. tree-profiles - Per-tree strengths, weaknesses, problem mappings
    3. node-experiences - Aggregated patterns by node type"
-  (:require [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
+  (:require [ai.obney.ontology.interface :as ontology]
+            [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
             [clojure.set :as set]
             [clojure.string :as str]))
 
@@ -45,15 +46,7 @@
   "Events that affect the ontology lifecycle"
   #{:ontology/ontology-created})
 
-(def concept-events
-  "Events that affect the concept graph read model"
-  #{;; Domain events (from commands)
-    :ontology/concept-created
-    :ontology/concept-updated
-    :ontology/relationship-created
-    ;; Evolutionary events (from builder)
-    :evolutionary/concepts-extracted
-    :evolutionary/relationships-extracted})
+(def concept-events ontology/graph-event-types)
 
 (def tree-profile-events
   "Events that affect tree profile read model"
@@ -105,207 +98,23 @@
 ;; Ontology Lifecycle Projection
 ;; =============================================================================
 
-(defmulti ontologies* (fn [_state event] (:event/type event)))
-
-(defmethod ontologies* :ontology/ontology-created
-  [state event]
-  (assoc state (:ontology-id event)
-         (cond-> {:ontology-id (:ontology-id event)
-                  :name (:name event)
-                  :scope (:scope event)
-                  :created-at (str (:created-at event))}
-           (contains? event :description) (assoc :description (:description event))
-           (contains? event :base-uri) (assoc :base-uri (:base-uri event)))))
-
-(defmethod ontologies* :default [state _] state)
-
-(defn ontologies [initial-state events]
-  (reduce ontologies* initial-state events))
-
-(defreadmodel :ontology ontologies
-  {:events ontology-events, :version 1}
-  [state event] (ontologies* state event))
-
-;; =============================================================================
-;; Concepts Projection
-;; =============================================================================
-;; Builds the concept graph with broader/narrower/related relationships
-
-(defmulti concepts*
-  "Apply event to concepts read model.
-   State: {uri -> concept-map}"
-  (fn [_state event] (:event/type event)))
-
-(defmethod concepts* :ontology/concept-created
-  [state event]
-  (let [uri (:uri event)
-        existing (get state uri)
-        state (if (and existing (not= (:ontology-id existing) (:ontology-id event)))
-                (-> state
-                    (dissoc uri)
-                    (assoc [(:ontology-id existing) uri] existing))
-                state)]
-    (assoc state uri
-         {:uri uri
-          :id (:concept-id event)
-          :ontology-id (:ontology-id event)
-          :label (:label event)
-          :description (:description event)
-          :scope (:scope event)
-          :broader (set (or (:broader event) []))
-          :narrower #{}
-          :related #{}
-          :indicators (or (:indicators event) [])
-          :provenance (or (:provenance event) {:kind :system-static})
-          :created-at (str (:created-at event))
-          ::projection-order (count state)})))
-
-(defmethod concepts* :ontology/concept-updated
-  [state event]
-  (if-let [[concept-key _] (some #(when (= (:concept-id event) (:id (val %))) %)
-                                  state)]
-    (update state concept-key merge
-            (cond-> (:changes event)
-              (contains? (:changes event) :broader)
-              (update :broader set)
-              true
-              (assoc :updated-at (str (:updated-at event)))))
-    state))
-
-(defn- concept-keys-for-uri [state uri ontology-id]
-  (->> state
-       (keep (fn [[k concept]]
-               (when (and (= uri (:uri concept))
-                          (or (nil? ontology-id) (= ontology-id (:ontology-id concept))))
-                 k)))))
-
-(defn- update-concepts-by-uri [state uri ontology-id field target-uri]
-  (reduce #(update-in %1 [%2 field] (fnil conj #{}) target-uri)
-          state
-          (concept-keys-for-uri state uri ontology-id)))
-
-(defmethod concepts* :ontology/relationship-created
-  [state event]
-  (let [{:keys [source-uri target-uri predicate source-ontology-id target-ontology-id]} event]
-    (case predicate
-      "skos:broader"
-      (-> state
-          (update-concepts-by-uri source-uri source-ontology-id :broader target-uri)
-          (update-concepts-by-uri target-uri target-ontology-id :narrower source-uri))
-
-      "skos:narrower"
-      (-> state
-          (update-concepts-by-uri source-uri source-ontology-id :narrower target-uri)
-          (update-concepts-by-uri target-uri target-ontology-id :broader source-uri))
-
-      "skos:related"
-      (-> state
-          (update-concepts-by-uri source-uri source-ontology-id :related target-uri)
-          (update-concepts-by-uri target-uri target-ontology-id :related source-uri))
-
-      ;; R05a — behavior:composes-into is the bridge from behavioral
-      ;; subtrees (Layer 2) to structural shells (Layer 1). The behavior
-      ;; carries an outgoing :composes-into set of shell URIs; the shell
-      ;; carries an incoming :composed-by set of behavior URIs. R05b's
-      ;; classify-behaviors traverses these edges when narrowing
-      ;; candidates by structural-context.
-      "behavior:composes-into"
-      (-> state
-          (update-concepts-by-uri source-uri source-ontology-id :composes-into target-uri)
-          (update-concepts-by-uri target-uri target-ontology-id :composed-by source-uri))
-
-      ;; Other predicates (owl:causes, etc.) - store as related
-      (update-concepts-by-uri state source-uri source-ontology-id :related target-uri))))
-
-;; -----------------------------------------------------------------------------
-;; Evolutionary Event Handlers
-;; -----------------------------------------------------------------------------
-;; These handlers process events from the evolutionary ontology builder,
-;; allowing concepts extracted from JSON/CSV/SQL/text sources to be queryable
-;; through the same read model as domain-created concepts.
-
-(defmethod concepts* :evolutionary/concepts-extracted
-  [state event]
-  ;; event has :concepts vector, each with :uri :label :definition :entity-type etc
-  (let [ontology-id (:ontology-id event)]
-    (reduce (fn [acc concept]
-              (let [uri (:uri concept)]
-                (let [existing-key (first (concept-keys-for-uri acc uri ontology-id))
-                      existing (get acc existing-key)
-                      uri-existing (get acc uri)
-                      acc (if (and uri-existing
-                                   (not= (:ontology-id uri-existing) ontology-id))
-                            (-> acc
-                                (dissoc uri)
-                                (assoc [(:ontology-id uri-existing) uri] uri-existing))
-                            acc)]
-                  (if existing
-                    acc
-                    (assoc acc uri
-                           {:uri uri
-                            ;; Extraction has no separate create command. Use
-                            ;; ontology-scoped URI identity so replay is stable.
-                            :id (java.util.UUID/nameUUIDFromBytes
-                                 (.getBytes (str ontology-id "|" uri) "UTF-8"))
-                            :ontology-id ontology-id
-                            :label (:label concept)
-                            :description (or (:definition concept) "")
-                            :scope (keyword (or (:entity-type concept) "entity"))
-                            :broader #{}
-                            :narrower #{}
-                            :related #{}
-                            :indicators []
-                            :provenance {:kind :source-extracted
-                                         :source-reference (some-> (:source-id concept) str)}
-                            :alt-labels (or (:alt-labels concept) [])
-                            :confidence (:confidence concept 1.0)
-                            :source-id (:source-id concept)
-                            :created-at (:extracted-at event)
-                            ::projection-order (count acc)})))))
-            state
-            (:concepts event))))
-
-(defmethod concepts* :evolutionary/relationships-extracted
-  [state event]
-  ;; event has :relationships vector, each with :subject :predicate :object
-  (let [ontology-id (:ontology-id event)]
-    (reduce (fn [acc {:keys [subject predicate object]}]
-            (case predicate
-              "skos:broader"
-              (-> acc
-                  (update-concepts-by-uri subject ontology-id :broader object)
-                  (update-concepts-by-uri object ontology-id :narrower subject))
-
-              "skos:narrower"
-              (-> acc
-                  (update-concepts-by-uri subject ontology-id :narrower object)
-                  (update-concepts-by-uri object ontology-id :broader subject))
-
-              "skos:related"
-              (-> acc
-                  (update-concepts-by-uri subject ontology-id :related object)
-                  (update-concepts-by-uri object ontology-id :related subject))
-
-              ;; Other predicates - store as related by default
-              (update-concepts-by-uri acc subject ontology-id :related object)))
-          state
-          (:relationships event))))
-
-(defmethod concepts* :default [state _] state)
-
-(defn concepts
-  "Build concepts graph from events."
-  [initial-state events]
-  (reduce concepts* initial-state events))
-
-(defreadmodel :ontology concepts
-  {:events concept-events, :version 2}  ;; v2: Added evolutionary event support
-  [state event] (concepts* state event))
-
-;; =============================================================================
-;; Tree Profiles Projection
-;; =============================================================================
-;; Builds per-tree profiles with strengths, weaknesses, problem mappings
+(defn get-concept-map
+  "ORC vocabulary view over the standalone tenant graph. Qualified identities
+   are retained when URIs collide; composition is interpreted by ORC."
+  [ctx]
+  (let [concepts (ontology/get-concepts ctx)
+        frequencies (frequencies (map :uri concepts))]
+    (into {} (map (fn [c]
+                    [(if (= 1 (get frequencies (:uri c))) (:uri c)
+                         [(:ontology-id c) (:uri c)])
+                     (assoc c :composes-into
+                            (set (map second (get-in c [:relations "behavior:composes-into"])))
+                            :composed-by
+                            (set (keep (fn [source]
+                                         (when (contains? (get-in source [:relations "behavior:composes-into"] #{})
+                                                          [(:ontology-id c) (:uri c)])
+                                           (:uri source))) concepts)))])
+                  concepts))))
 
 (defmulti tree-profiles*
   "Apply event to tree profiles read model.
@@ -2378,58 +2187,18 @@
 ;; Query Helpers
 ;; =============================================================================
 
-(defn get-concepts
-  "Get all concepts, optionally filtered by scope and/or ontology-id.
+(defn get-concepts [ctx & [opts]] (ontology/get-concepts ctx (or opts {})))
 
-   Options:
-     :scope       - Filter by concept scope
-     :broader-uri - Filter by concepts with this URI in their broader set
-     :ontology-id - Filter by single ontology-id
-     :ontology-ids - Filter by multiple ontology-ids (returns union)"
-  [ctx & [{:keys [scope broader-uri ontology-id ontology-ids]}]]
-  (let [normalize-id #(if (string? %)
-                        (java.util.UUID/nameUUIDFromBytes (.getBytes ^String % "UTF-8"))
-                        %)
-        all-concepts (map #(dissoc % ::projection-order)
-                          (vals (rmp/project ctx :ontology/concepts)))
-        ont-id-set (cond
-                     ontology-ids (set (map normalize-id ontology-ids))
-                     ontology-id #{(normalize-id ontology-id)}
-                     :else nil)]
-    (cond->> all-concepts
-      scope (filter #(= scope (:scope %)))
-      broader-uri (filter #(contains? (:broader %) broader-uri))
-      ont-id-set (filter #(contains? ont-id-set (:ontology-id %))))))
+(def get-ontology ontology/get-ontology)
 
-(defn get-ontology [ctx ontology-id]
-  (get (rmp/project ctx :ontology/ontologies) ontology-id))
+(def list-ontologies ontology/list-ontologies)
 
-(defn list-ontologies [ctx]
-  (->> (rmp/project ctx :ontology/ontologies)
-       vals
-       (sort-by (juxt :created-at :ontology-id))
-       vec))
-
-(defn ontology-exists? [ctx ontology-id]
-  (boolean (get-ontology ctx ontology-id)))
+(def ontology-exists? ontology/ontology-exists?)
 
 (defn get-concept-by-uri
-  "Get a concept by ontology identity and URI. The legacy two-argument form
-   returns a value only when the URI is globally unambiguous."
-  ([ctx uri]
-   (let [matches (filter #(= uri (:uri %))
-                         (vals (rmp/project ctx :ontology/concepts)))]
-     (when (= 1 (count matches))
-       (dissoc (first matches) ::projection-order))))
-  ([ctx ontology-id uri]
-   (let [normalized-id (if (string? ontology-id)
-                         (java.util.UUID/nameUUIDFromBytes (.getBytes ^String ontology-id "UTF-8"))
-                         ontology-id)]
-     (some->> (vals (rmp/project ctx :ontology/concepts))
-              (filter #(and (= uri (:uri %))
-                            (= normalized-id (:ontology-id %))))
-              first
-              (#(dissoc % ::projection-order))))))
+  ([ctx uri] (let [matches (filter #(= uri (:uri %)) (ontology/get-concepts ctx))]
+               (when (= 1 (count matches)) (first matches))))
+  ([ctx oid uri] (ontology/get-concept-by-uri ctx oid uri)))
 
 (defn get-tree-profile
   "Get profile for a specific tree."
@@ -2472,12 +2241,12 @@
 (defn get-narrower-concepts
   "Get all concepts that are narrower than the given URI."
   [ctx uri]
-  (get-in (rmp/project ctx :ontology/concepts) [uri :narrower] #{}))
+  (get-in (get-concept-map ctx) [uri :narrower] #{}))
 
 (defn get-broader-concepts
   "Get all concepts that are broader than the given URI."
   [ctx uri]
-  (get-in (rmp/project ctx :ontology/concepts) [uri :broader] #{}))
+  (get-in (get-concept-map ctx) [uri :broader] #{}))
 
 ;; =============================================================================
 ;; Statistics
@@ -2486,7 +2255,7 @@
 (defn concept-statistics
   "Get statistics about the concept graph."
   [ctx]
-  (let [concept-graph (rmp/project ctx :ontology/concepts)
+  (let [concept-graph (get-concept-map ctx)
         by-scope (group-by :scope (vals concept-graph))]
     {:total-concepts (count concept-graph)
      :by-scope (into {} (map (fn [[k v]] [k (count v)]) by-scope))
@@ -2520,40 +2289,9 @@
 
 (def embedding-events
   "Events that affect embedding read models"
-  #{:ontology/concept-embedded
-    :ontology/tree-profile-embedded
+  #{:ontology/tree-profile-embedded
     :ontology/evaluation-embedded
     :ontology/embedding-model-configured})
-
-(defmulti concept-embeddings*
-  "Apply event to concept embeddings read model.
-   State: {uri -> {:embedding [...] :text-embedded ... :model-id ...}}"
-  (fn [_state event] (:event/type event)))
-
-(defmethod concept-embeddings* :ontology/concept-embedded
-  [state event]
-  ;; v3 event store flattens body fields to top level
-  (let [{:keys [uri concept-id embedding text-embedded field-source model-id embedded-at ontology-id]} event]
-    (assoc state uri
-           {:uri uri
-            :concept-id concept-id
-            :ontology-id ontology-id
-            :embedding embedding
-            :text-embedded text-embedded
-            :field-source field-source
-            :model-id model-id
-            :embedded-at (str embedded-at)})))
-
-(defmethod concept-embeddings* :default [state _] state)
-
-(defn concept-embeddings
-  "Build concept embeddings from events."
-  [initial-state events]
-  (reduce concept-embeddings* initial-state events))
-
-(defreadmodel :ontology concept-embeddings
-  {:events #{:ontology/concept-embedded}, :version 1}
-  [state event] (concept-embeddings* state event))
 
 (defmulti tree-profile-embeddings*
   "Apply event to tree profile embeddings read model.
@@ -2607,29 +2345,22 @@
 ;; Embedding Query Helpers
 ;; =============================================================================
 
-(defn get-concept-embedding
-  "Get embedding for a specific concept by URI."
-  [ctx uri]
-  (get (rmp/project ctx :ontology/concept-embeddings {:tags #{[:uri uri]}}) uri))
-
 (defn get-all-concept-embeddings
-  "Get all concept embeddings, optionally filtered by scope and/or ontology-id.
+  "Read vectors from standalone concepts, filtered before indexing.
+   Unique URIs retain URI keys; colliding URIs use [ontology-id uri] keys."
+  [ctx & [opts]]
+  (let [concepts (filterv :embedding (ontology/get-concepts ctx (or opts {})))
+        counts (frequencies (map :uri concepts))]
+    (into {} (map (fn [c]
+                    [(if (= 1 (get counts (:uri c))) (:uri c) [(:ontology-id c) (:uri c)])
+                     (assoc (select-keys c [:uri :ontology-id :scope :embedding])
+                            :concept-id (:id c) :model-id (:embedding-model c))])) concepts)))
 
-   Options:
-     :scope       - Filter by concept scope
-     :ontology-id - Filter by single ontology-id
-     :ontology-ids - Filter by multiple ontology-ids (returns union)"
-  [ctx & [{:keys [scope ontology-id ontology-ids]}]]
-  (let [all-embeddings (if scope
-                         (rmp/project ctx :ontology/concept-embeddings {:tags #{[:scope scope]}})
-                         (rmp/project ctx :ontology/concept-embeddings))
-        ont-id-set (cond
-                     ontology-ids (set ontology-ids)
-                     ontology-id #{ontology-id}
-                     :else nil)]
-    (if ont-id-set
-      (into {} (filter #(contains? ont-id-set (:ontology-id (val %))) all-embeddings))
-      all-embeddings)))
+(defn get-concept-embedding
+  "Read a stored vector; qualify the ontology when the URI is ambiguous."
+  ([ctx uri] (get (get-all-concept-embeddings ctx) uri))
+  ([ctx ontology-id uri]
+   (get (get-all-concept-embeddings ctx {:ontology-id ontology-id}) uri)))
 
 (defn get-tree-profile-embedding
   "Get embedding for a specific tree profile."
@@ -2649,7 +2380,7 @@
 (defn embedding-statistics
   "Get statistics about embeddings."
   [ctx]
-  (let [embeddings (rmp/project ctx :ontology/concept-embeddings)
+  (let [embeddings (get-all-concept-embeddings ctx)
         profile-embs (rmp/project ctx :ontology/tree-profile-embeddings)
         configs (rmp/project ctx :ontology/embedding-config)]
     {:concept-embeddings-count (count embeddings)

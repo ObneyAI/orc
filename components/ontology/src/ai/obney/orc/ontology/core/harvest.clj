@@ -584,7 +584,7 @@
    rather than creating an orphan."
   [ctx class-id]
   (when-let [behavior-id (latest-classified-behavior-id ctx class-id)]
-    (let [concepts (rmp/project ctx :ontology/concepts)]
+    (let [concepts (rm/get-concept-map ctx)]
       (loop [uri (behavioral-subtree-uri behavior-id)
              id  behavior-id
              seen #{}]

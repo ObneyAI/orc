@@ -53,7 +53,7 @@
   [{:keys [event-store] :as ctx}]
   (let [;; Get concepts from event store or use static
         concepts (if event-store
-                   (rmp/project ctx :ontology/concepts)
+                   (rm/get-concept-map ctx)
                    ;; Build from static ontology
                    (reduce (fn [acc concept]
                              (assoc acc (:uri concept)

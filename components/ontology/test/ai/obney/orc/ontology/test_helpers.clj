@@ -201,7 +201,7 @@
 (defn get-concept-count
   "Get the number of concepts in the event store."
   [ctx]
-  (count (rmp/project ctx :ontology/concepts)))
+  (count (rm/get-concept-map ctx)))
 
 (defn get-tree-profile
   "Get a tree profile from the event store."

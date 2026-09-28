@@ -1,40 +1,13 @@
 -- allium: 3
 -- ontology.allium
 --
--- ORC's event-sourced semantic memory: static and learned concepts, Living
--- Descriptions, hybrid retrieval, and batch or incremental ontology building.
+-- ORC owns learning, classification and source-extraction coordination.
+-- Graph entities and lifecycle belong to the standalone ontology project.
+
+use "../../ontology-exp/specs/ontology.allium" as graph
 
 external entity OntologyConsumer {}
 external entity EvaluationTrace { tree_id: String }
-
-value ConceptDefinition {
-    uri: String
-    label: String
-    description: String
-    scope: ConceptScope
-    broader_uris: List<String>
-    indicators: List<String>
-    provenance: ConceptProvenance
-}
-
-value ConceptProvenance {
-    kind: ConceptOriginKind
-    source_reference: String?
-    created_by: String?
-    trace_identifier: String?
-}
-
-value ConceptChanges {
-    label: String?
-    description: String?
-    broader_uris: List<String>?
-    indicators: List<String>?
-}
-
-value RelationshipMetadata {
-    source_reference: String?
-    trace_identifier: String?
-}
 
 value ModelProvenance {
     trace_identifier: String
@@ -285,9 +258,23 @@ contract OntologyExtraction {
     @invariant SourceAwareExtraction
         -- CSV, JSON, SQL, RDF, and text retain provenance and use their extractor.
 
-    @invariant DeterministicRdfImport
-        -- N-Triples RDF import is deterministic: URI resources receive stable
-        -- ontology-scoped identities and graph predicates join the same concept graph.
+    @invariant GraphContributionBoundary
+        -- Extraction emits neutral concepts, relationships, schema, instances,
+        -- source hashes and opaque producer provenance. Each extracted source
+        -- is imported immediately through the demanded graph contribution
+        -- contract; deterministic RDF parsing and resolution belong to that
+        -- provider. ORC owns retries and build status.
+
+    @invariant ContributionAtomicity
+        -- Each accepted source contribution is atomic. A later source failure
+        -- retains previously accepted contributions; the build is not a single
+        -- graph transaction. A failed source commits no partial contribution.
+        -- Final snapshot export follows all successful or skipped sources.
+
+    @invariant DurableBuildOutcome
+        -- Persist build start before source loading or extraction. Exceptions
+        -- durably fail the running build with a reason. Complete only after
+        -- successful final export; never label a partially failed build complete.
 
     @invariant LearnedArtifactModelProvenance
         -- Model-derived descriptions and source extractions retain the resolved
@@ -295,12 +282,13 @@ contract OntologyExtraction {
 }
 
 contract CustomOntologyMutation {
-    create_concept: (ontology: Ontology, definition: ConceptDefinition) -> Concept
-    update_concept: (ontology: Ontology, concept: Concept, changes: ConceptChanges) -> Concept
-    create_relationship: (source: Concept, target: Concept, predicate: String, metadata: RelationshipMetadata) -> ConceptRelationship
+    create_concept: (ontology: graph/Ontology, definition: graph/ConceptDefinition) -> graph/Concept
+    agent_vocabulary: (scope: ConceptScope, origin: ConceptOriginKind) -> Any
+    update_concept: (ontology: graph/Ontology, concept: graph/Concept, changes: graph/ConceptChanges) -> graph/Concept
+    create_relationship: (source: graph/Concept, target: graph/Concept, predicate: String, metadata: graph/RelationshipMetadata) -> graph/ConceptRelationship
     -- Declared because BehavioralMintIdentityIsStable below constrains it: the
     -- contract could not previously name the operation its own invariant governs.
-    mint_behavioral_subtree: (parent: Concept, name: String, body: DescriptionBody) -> Concept
+    mint_behavioral_subtree: (parent: graph/Concept, name: String, body: DescriptionBody) -> graph/Concept
 
     @invariant TenantScopedMutation
         -- Every mutation resolves ontology and concept identity within the
@@ -328,22 +316,6 @@ contract CustomOntologyMutation {
         -- Repeated behavioral mints with the same name and parent resolve to
         -- one stable concept identity. Every invocation remains represented by
         -- its own provenance audit; idempotency does not erase retry evidence.
-}
-
-contract ScopedConceptLookup {
-    get_ontology: (ontology_identifier: String) -> Ontology?
-    list_ontologies: () -> List<Ontology>
-    ontology_exists: (ontology_identifier: String) -> Boolean
-    get_concept: (ontology: Ontology, uri: String) -> Concept?
-    list_concepts: (ontology: Ontology) -> List<Concept>
-
-    @invariant AmbiguityRejected
-        -- A URI without ontology context resolves only when it identifies one
-        -- concept globally; an ambiguous unscoped lookup returns no concept.
-
-    @invariant CanonicalOntologyIdentity
-        -- Equivalent supported external representations of an ontology
-        -- identifier resolve to the same ontology identity.
 }
 
 enum ConceptScope {
@@ -516,42 +488,6 @@ config {
     floor_comparison_tolerance: Decimal = 0.000000001
 }
 
-entity Ontology {
-    name: String
-    scope: ConceptScope
-    description: String?
-    base_uri: String?
-    created_at: Timestamp
-
-    concepts: Concept with ontology = this
-    builds: OntologyBuild with ontology = this
-}
-
-entity Concept {
-    ontology: Ontology
-    uri: String
-    label: String
-    description: String
-    scope: ConceptScope
-    provenance: ConceptProvenance
-    broader_uris: List<String>
-    indicators: List<String>
-    embedding: List<Decimal>?
-    created_at: Timestamp
-    updated_at: Timestamp?
-
-    outgoing: ConceptRelationship with source = this
-    incoming: ConceptRelationship with target = this
-}
-
-entity ConceptRelationship {
-    source: Concept
-    target: Concept
-    predicate: String
-    metadata: RelationshipMetadata?
-    created_at: Timestamp
-}
-
 entity TreeProfile {
     tree_id: String
     strengths: List<Principle>
@@ -648,19 +584,8 @@ entity ConsolidationPolicy {
     evidence_token_budget: Integer?
 }
 
-entity RegisteredSource {
-    source_identifier: String
-    source_uri: String?
-    source_type: SourceType
-    content_hash: String
-    namespace: String?
-    registered_at: Timestamp
-
-    extractions: SourceExtraction with source = this
-}
-
 entity OntologyBuild {
-    ontology: Ontology
+    ontology: graph/Ontology
     mode: BuildMode
     status: BuildStatus
     configuration: BuildConfiguration
@@ -683,91 +608,11 @@ entity OntologyBuild {
 
 entity SourceExtraction {
     build: OntologyBuild
-    source: RegisteredSource
+    source: SourceSpecification
     extracted_concept_count: Integer
     extracted_relationship_count: Integer
     extracted_schema: Any
     model_provenance: ModelProvenance?
-}
-
-entity CanonicalMapping {
-    ontology: Ontology
-    source_uri: String
-    canonical_uri: String
-    match_type: String
-    similarity: Decimal
-}
-
-rule InitializeOntology {
-    when: InitializeOntologyRequested(consumer, name, scope, description, base_uri)
-    requires: nonblank(name)
-
-    ensures: Ontology.created(
-        name: name,
-        scope: scope,
-        description: description,
-        base_uri: base_uri,
-        created_at: now
-    )
-}
-
-rule AddConcept {
-    when: ConceptCreationRequested(ontology, definition)
-    requires: nonblank(definition.uri)
-    requires: nonblank(definition.label)
-    requires: nonblank(definition.description)
-    requires: ontology.concepts.none(concept => concept.uri = definition.uri)
-    requires: definition.broader_uris.all(uri => ontology.concepts.any(concept => concept.uri = uri))
-
-    ensures: Concept.created(
-        ontology: ontology,
-        uri: definition.uri,
-        label: definition.label,
-        description: definition.description,
-        scope: definition.scope,
-        provenance: definition.provenance,
-        broader_uris: definition.broader_uris,
-        indicators: definition.indicators,
-        embedding: null,
-        created_at: now,
-        updated_at: null
-    )
-}
-
-rule UpdateConcept {
-    when: ConceptUpdateRequested(ontology, concept, changes)
-    requires: concept.ontology = ontology
-    requires: changes.label != null or changes.description != null or changes.broader_uris != null or changes.indicators != null
-    requires: changes.label = null or nonblank(changes.label)
-    requires: changes.description = null or nonblank(changes.description)
-    requires: changes.broader_uris = null or changes.broader_uris.all(uri => ontology.concepts.any(candidate => candidate.uri = uri))
-    ensures:
-        if changes.label != null:
-            concept.label = changes.label
-        if changes.description != null:
-            concept.description = changes.description
-        if changes.broader_uris != null:
-            concept.broader_uris = changes.broader_uris
-        if changes.indicators != null:
-            concept.indicators = changes.indicators
-        concept.updated_at = now
-}
-
-rule LinkConcepts {
-    when: RelationshipCreationRequested(source, target, predicate, metadata)
-    requires: source != target
-    requires: nonblank(predicate)
-    requires: predicate in {"skos:broader", "skos:narrower", "skos:related", "behavior:composes-into"}
-    requires: predicate = "behavior:composes-into" or source.ontology = target.ontology
-    requires: source.outgoing.none(relationship => relationship.target = target and relationship.predicate = predicate)
-
-    ensures: ConceptRelationship.created(
-        source: source,
-        target: target,
-        predicate: predicate,
-        metadata: metadata,
-        created_at: now
-    )
 }
 
 -- Tree profiles are fed only by the consumer-facing strength and weakness
@@ -1189,7 +1034,7 @@ rule MintNovelBehavior {
 rule SearchOntologyMemory {
     when: OntologySearchRequested(consumer, ontology, query, scopes, limit, rerank)
     requires: limit > 0
-    let graph_candidates = spreading_activation(ontology, query, scopes)
+    let graph_candidates = query_graph_library(ontology, query, scopes)
     let semantic_candidates = embedding_search(ontology, query, scopes)
     let fused = reciprocal_rank_fusion(graph_candidates, semantic_candidates)
 
@@ -1212,7 +1057,7 @@ rule SearchLivingDescriptions {
 rule StartBatchBuild {
     when: BuildFromSourcesRequested(consumer, name, scope, sources, configuration)
     requires: sources.count > 0
-    let ontology = new_ontology(name, scope, configuration.base_uri)
+    let ontology = create_graph_ontology(consumer, name, scope, configuration.base_uri)
 
     ensures: OntologyBuild.created(
         ontology: ontology,
@@ -1250,56 +1095,49 @@ rule StartIncrementalBuild {
     ensures: SourcesSubmittedForExtraction(build: created, sources: sources)
 }
 
-rule RegisterUniqueSource {
-    when: SourceRegistrationRequested(build, specification, content_hash)
-    requires: no_registered_source_has_hash(content_hash)
-
-    ensures: RegisteredSource.created(
-        source_identifier: new_identifier(),
-        source_uri: specification.source_uri,
-        source_type: specification.source_type,
-        content_hash: content_hash,
-        namespace: specification.namespace,
-        registered_at: now
+rule ImportSourceExtraction {
+    when: SourceExtractionCompleted(build, source, concepts, relationships, schema, model_provenance)
+    requires: build.status = running
+    ensures: GraphContributionImportRequested(
+        build: build,
+        contribution: neutral_source_contribution(build, source, concepts, relationships, schema, model_provenance)
     )
-    ensures: SourceExtractionRequested(build: build, source: created)
-}
-
-rule SkipDuplicateSource {
-    when: SourceRegistrationRequested(build, specification, content_hash)
-    requires: no_registered_source_has_hash(content_hash) = false
-
-    ensures: DuplicateSourceSkipped(build: build, source: source_with_hash(content_hash))
 }
 
 rule RecordSourceExtraction {
-    when: SourceExtractionCompleted(build, source, concepts, relationships, schema, model_provenance)
+    when: GraphContributionImportCompleted(build, contribution)
     requires: build.status = running
-
+    let submitted = submitted_graph(contribution)
     ensures: SourceExtraction.created(
         build: build,
-        source: source,
-        extracted_concept_count: concepts.count,
-        extracted_relationship_count: relationships.count,
-        extracted_schema: schema,
-        model_provenance: model_provenance
+        source: source_specification(contribution),
+        extracted_concept_count: submitted.concepts.count,
+        extracted_relationship_count: submitted.relationships.count,
+        extracted_schema: submitted.schema,
+        model_provenance: producer_model_provenance(contribution)
     )
-    ensures: ExtractedGraphContributionRecorded(
-        build: build,
-        source: source,
-        concepts: concepts,
-        relationships: relationships
-    )
+    @guidance
+        -- The durable extraction audit is the accepted contribution's original
+        -- input and source producer provenance. It need not be duplicated as an
+        -- ORC graph event. Producer provenance retains resolved models, trace
+        -- identity and per-call usage; the graph treats that payload as opaque.
 }
 
-rule ResolveAndMergeBuild {
+rule SnapshotCompletedSourceImports {
     when: AllBuildSourcesExtracted(build)
     requires: build.status = running
-    let resolution = resolve_entities_by_type_then_similarity(build)
+    requires: all_source_contributions_committed_or_skipped(build)
+    ensures: TurtleSnapshotRequested(build: build, revision: current_graph_revision(build.ontology))
+}
 
-    ensures: CanonicalMappingsRecorded(build: build, resolution: resolution)
-    ensures: UnifiedGraphMerged(build: build, resolution: resolution)
-    ensures: TurtleSnapshotRequested(build: build)
+rule RequestSourceExtraction {
+    when: SourceRegistrationRequested(build, specification, content_hash)
+    requires: build.status = running
+    ensures: SourceExtractionRequested(build: build,
+        source: source_descriptor(build.ontology, specification, content_hash))
+    @guidance
+        -- Re-extraction is caller policy. Source hashes do not globally suppress
+        -- a new interpretation; contribution keys protect graph commit retries.
 }
 
 rule CompleteBuild {
@@ -1323,24 +1161,6 @@ rule FailBuild {
     ensures: build.completed_at = now
     ensures: build.failure_reason = reason
     ensures: OntologyBuildFailed(build: build, reason: reason)
-}
-
-invariant ConceptUrisAreUniqueWithinOntology {
-    for a in Concepts:
-        for b in Concepts:
-            a != b and a.ontology = b.ontology implies a.uri != b.uri
-}
-
-invariant RelationshipsStayWithinOntology {
-    for relationship in ConceptRelationships:
-        relationship.predicate != "behavior:composes-into" implies
-            relationship.source.ontology = relationship.target.ontology
-}
-
-invariant RelationshipEdgesAreUnique {
-    for a in ConceptRelationships:
-        for b in ConceptRelationships:
-            a != b implies a.source != b.source or a.target != b.target or a.predicate != b.predicate
 }
 
 invariant DescriptionHistoryIsAppendOnly {
@@ -1410,17 +1230,6 @@ invariant ClaimsCarryResolvableProvenance {
         or declared_basis(claim) != judged_occurrences
 }
 
-invariant ContentHashesDeduplicateSources {
-    for a in RegisteredSources:
-        for b in RegisteredSources:
-            a != b implies a.content_hash != b.content_hash
-}
-
-invariant BuildResolutionScoresAreBounded {
-    for mapping in CanonicalMappings:
-        mapping.similarity >= 0 and mapping.similarity <= 1
-}
-
 invariant CompletedBuildHasSnapshot {
     for build in OntologyBuilds:
         build.status = completed implies
@@ -1431,35 +1240,39 @@ surface SemanticMemory {
     facing consumer: OntologyConsumer
 
     provides:
-        InitializeOntologyRequested(consumer, name, scope, description, base_uri)
-        ConceptCreationRequested(ontology, definition)
-        ConceptUpdateRequested(ontology, concept, changes)
-        RelationshipCreationRequested(source, target, predicate, metadata)
         BaselineCorpusSeedingRequested(consumer)
         LearnedRuleExtractionRequested(tree_profile, minimum_confidence)
         OntologySearchRequested(consumer, ontology, query, scopes, limit, rerank)
         DescriptionSearchRequested(consumer, intent, granularities, limit, rerank)
         BuildFromSourcesRequested(consumer, name, scope, sources, configuration)
         EvolveOntologyRequested(consumer, ontology, sources, configuration)
+        SourceRegistrationRequested(build, specification, content_hash)
+        SourceExtractionCompleted(build, source, concepts, relationships, schema, model_provenance)
+        AllBuildSourcesExtracted(build)
+        GraphContributionImportCompleted(build, contribution)
+        TurtleSnapshotCreated(build, ttl_output, triple_count, checksum, resolution)
+        OntologyBuildCannotContinue(build, reason)
 
     exposes:
-        Ontology
-        Concept
-        ConceptRelationship
+        graph/Ontology
+        graph/Concept
+        graph/ConceptRelationship
         TreeProfile
         LivingDescription
-        RegisteredSource
+        graph/RegisteredSource
         OntologyBuild
-        CanonicalMapping
+        graph/CanonicalMapping
 
     contracts:
         demands TextEmbedding
         demands SemanticReranking
         fulfils OntologyExtraction
-        fulfils ScopedConceptLookup
+        demands graph/ScopedConceptLookup
+        demands graph/GraphContributions
+        demands graph/CustomOntologyMutation
 
     @guarantee ScopedMemory
-        -- Concept identity and traversal remain ontology scoped. Compatibility
+        -- graph/Concept identity and traversal remain ontology scoped. Compatibility
         -- URI lookup never guesses when multiple ontologies contain the URI.
 
     @guarantee TenantBoundary
@@ -1472,8 +1285,8 @@ surface SemanticMemory {
         -- and snapshots remain reconstructable from events.
 
     @guarantee RetrySafeMutation
-        -- Repeating a lifecycle mutation with the same command identity returns
-        -- the same generated domain identity and appends no duplicate mutation.
+        -- Graph lifecycle retry safety is supplied by graph/CustomOntologyMutation.
+        -- ORC delegates graph operations directly to that public boundary.
 
     @guarantee UnifiedManualAndExtractedGraph
         -- Evolution recognizes manually created ontology and concept events;

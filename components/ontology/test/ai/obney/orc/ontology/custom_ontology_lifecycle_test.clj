@@ -19,6 +19,12 @@
       (is (uuid? ontology-id))
       (is (= {:ontology-id ontology-id
               :name "Sormo principal ontology"
+              :revision 1
+              :predicate-policies {"skos:broader" {:hierarchical? true :inverse "skos:narrower"}
+                                   "skos:narrower" {:inverse "skos:broader"}
+                                   "skos:related" {:symmetric? true}
+                                   "owl:sameAs" {:symmetric? true}
+                                   "rdfs:subClassOf" {:hierarchical? true}}
               :scope :custom
               :description "Persistent principal concepts"
               :base-uri "urn:sormo:principal:"
@@ -226,8 +232,9 @@
                     ctx ontology-id "urn:sormo:imported")]
       (is (not (anomaly? evolved)) (pr-str evolved))
       (is (= (:concept-id manual) (:id manual-after)))
-      (is (= "Principal canonical concept" (:label manual-after)))
-      (is (= :human-authored (get-in manual-after [:provenance :kind])))
+      ;; Additive upserts preserve identity while applying the new interpretation.
+      (is (= "Extracted duplicate label" (:label manual-after)))
+      (is (= :source-extracted (get-in manual-after [:provenance :kind])))
       (is (uuid? (:id imported)))
       (is (= "Imported concept" (:label imported)))
       (is (= "Imported description" (:description imported)))
@@ -280,7 +287,7 @@
       (is (= 1 (count (filter #(and (= :ontology/concept-created (:event/type %))
                                     (= concept-command-id (:concept-id %)))
                               events))))
-      (is (= 1 (count (filter #(= update-id (:update-id %)) events))))
+      (is (= 1 (count (filter #(= update-id (:request-id %)) events))))
       (is (= 1 (count (filter #(= relationship-id (:relationship-id %)) events))))
       (is (= (:concept-id parent)
              (:id (ontology/get-concept-by-uri ctx ontology-id "urn:retry:parent")))))))

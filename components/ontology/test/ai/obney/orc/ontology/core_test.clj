@@ -11,6 +11,8 @@
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.core.static-ontology :as static]
             [ai.obney.orc.ontology.core.read-models :as rm]
+            [ai.obney.ontology.interface :as graph]
+            [ai.obney.orc.ontology.graph-test-support :as g]
             [ai.obney.orc.ontology.core.serialization :as serialization]
             [ai.obney.orc.ontology.core.classifier :as classifier]
             [ai.obney.orc.ontology.core.commands :as cmd]
@@ -70,48 +72,22 @@
 ;; =============================================================================
 
 (deftest test-concepts-projection
-  (testing "Builds concept graph from events"
-    (let [events [{:event/type :ontology/concept-created
-                   :uri "test:Concept1"
-                   :concept-id (random-uuid)
-                   :ontology-id (random-uuid)
-                   :label "Test Concept"
-                   :description "A test concept"
-                   :scope :custom
-                   :broader []
-                   :indicators ["test" "example"]
-                   :created-at "2024-01-01T00:00:00Z"}]
-          result (rm/concepts {} events)]
-      (is (contains? result "test:Concept1"))
-      (is (= "Test Concept" (get-in result ["test:Concept1" :label])))
-      (is (= ["test" "example"] (get-in result ["test:Concept1" :indicators])))))
-
-  (testing "Handles relationship creation"
-    (let [events [{:event/type :ontology/concept-created
-                   :uri "test:Parent"
-                   :concept-id (random-uuid)
-                   :ontology-id (random-uuid)
-                   :label "Parent"
-                   :description "Parent concept"
-                   :scope :custom
-                   :created-at "2024-01-01T00:00:00Z"}
-                  {:event/type :ontology/concept-created
-                   :uri "test:Child"
-                   :concept-id (random-uuid)
-                   :ontology-id (random-uuid)
-                   :label "Child"
-                   :description "Child concept"
-                   :scope :custom
-                   :created-at "2024-01-01T00:00:00Z"}
-                  {:event/type :ontology/relationship-created
-                   :relationship-id (random-uuid)
-                   :source-uri "test:Child"
-                   :target-uri "test:Parent"
-                   :predicate "skos:broader"
-                   :created-at "2024-01-01T00:00:00Z"}]
-          result (rm/concepts {} events)]
-      (is (contains? (get-in result ["test:Child" :broader]) "test:Parent"))
-      (is (contains? (get-in result ["test:Parent" :narrower]) "test:Child")))))
+  (g/with-context [ctx]
+    (let [oid (g/ontology! ctx "Projection")]
+      (g/concept! ctx oid "test:Concept1" "Test Concept"
+                  {:indicators ["test" "example"]})
+      (let [concept (graph/get-concept-by-uri ctx oid "test:Concept1")]
+        (is (some? concept))
+        (is (= "Test Concept" (:label concept)))
+        (is (= ["test" "example"] (:indicators concept))))
+      (g/concept! ctx oid "test:Parent" "Parent")
+      (g/concept! ctx oid "test:Child" "Child")
+      (g/successful! (graph/create-relationship! ctx
+                      {:source-ontology-id oid :target-ontology-id oid
+                       :source-uri "test:Child" :target-uri "test:Parent"
+                       :predicate "skos:broader"}))
+      (is (contains? (:broader (graph/get-concept-by-uri ctx oid "test:Child")) "test:Parent"))
+      (is (contains? (:narrower (graph/get-concept-by-uri ctx oid "test:Parent")) "test:Child")))))
 
 (deftest test-tree-profiles-projection
   (testing "Records tree strengths"
@@ -417,87 +393,41 @@
 ;; =============================================================================
 
 (deftest full-export-integration-test
-  (testing "full-export returns TTL from event-sourced data"
+  (testing "full-export combines standalone graph data with ORC-owned profiles"
     (h/with-test-context [ctx]
-      ;; Seed a concept via command
-      (let [ontology-id (random-uuid)]
-        (h/run-and-apply! ctx
-                          (fn [c]
-                            (cmd/ontology-create-concept
-                             (assoc c :command (h/make-concept-data
-                                                :uri "failure:TestHallucination"
-                                                :label "Test Hallucination"
-                                                :description "A hallucination failure type"
-                                                :scope :failure
-                                                :indicators ["hallucinated" "made up"])))))
-        ;; Seed a tree profile
+      (let [oid (g/ontology! ctx "Export")]
+        (g/concept! ctx oid "failure:TestHallucination" "Test Hallucination"
+                    {:scope :failure :indicators ["hallucinated" "made up"]})
         (h/setup-test-tree! ctx)
-        ;; Seed a node pattern
-        (let [node-id (random-uuid)
-              sheet-id (random-uuid)]
+        (let [node-id (random-uuid) sheet-id (random-uuid)]
           (h/run-and-apply! ctx
-                            (fn [c]
-                              (cmd/ontology-record-node-pattern
-                               (assoc c :command (h/make-node-pattern-data node-id sheet-id))))))
-        ;; Call full-export
+            (fn [c] (cmd/ontology-record-node-pattern
+                      (assoc c :command (h/make-node-pattern-data node-id sheet-id))))))
         (let [ttl (serialization/full-export ctx)]
           (is (string? ttl))
           (is (str/includes? ttl "skos:Concept"))
           (is (str/includes? ttl "Test Hallucination"))
           (is (str/includes? ttl "tree:TreeProfile"))
           (is (str/includes? ttl "pattern:LearnedPattern"))))))
-
-  (testing "full-export with scope filter only includes matching concepts"
+  (testing "scope filter excludes concepts with other scopes"
     (h/with-test-context [ctx]
-      ;; Seed failure and success concepts
-      (h/run-and-apply! ctx
-                        (fn [c]
-                          (cmd/ontology-create-concept
-                           (assoc c :command (h/make-concept-data
-                                              :uri "failure:ScopedFailure"
-                                              :label "Scoped Failure"
-                                              :description "A failure concept"
-                                              :scope :failure)))))
-      (h/run-and-apply! ctx
-                        (fn [c]
-                          (cmd/ontology-create-concept
-                           (assoc c :command (h/make-concept-data
-                                              :uri "success:ScopedSuccess"
-                                              :label "Scoped Success"
-                                              :description "A success concept"
-                                              :scope :success)))))
-      ;; Export only failure scope
-      (let [ttl (serialization/full-export ctx {:scope :failure})]
-        (is (str/includes? ttl "Scoped Failure"))
-        (is (not (str/includes? ttl "Scoped Success")))))))
+      (let [oid (g/ontology! ctx "Scoped export")]
+        (g/concept! ctx oid "failure:ScopedFailure" "Scoped Failure" {:scope :failure})
+        (g/concept! ctx oid "success:ScopedSuccess" "Scoped Success" {:scope :success})
+        (let [ttl (serialization/full-export ctx {:scope :failure})]
+          (is (str/includes? ttl "Scoped Failure"))
+          (is (not (str/includes? ttl "Scoped Success"))))))))
 
 (deftest build-concept-graph-integration-test
-  (testing "build-concept-graph uses read model projection from event store"
-    (h/with-test-context [ctx]
-      ;; Seed concepts via commands
-      (h/run-and-apply! ctx
-                        (fn [c]
-                          (cmd/ontology-create-concept
-                           (assoc c :command (h/make-concept-data
-                                              :uri "test:Parent"
-                                              :label "Parent"
-                                              :description "Parent concept"
-                                              :scope :custom)))))
-      (h/run-and-apply! ctx
-                        (fn [c]
-                          (cmd/ontology-create-concept
-                           (assoc c :command (h/make-concept-data
-                                              :uri "test:Child"
-                                              :label "Child"
-                                              :description "Child concept"
-                                              :scope :custom
-                                              :broader ["test:Parent"])))))
-      ;; Build graph from event store
-      (let [graph (retrieval/build-concept-graph ctx)]
-        (is (some? graph))
-        (is (map? graph)))))
-
-  (testing "build-concept-graph falls back to static ontology without event store"
-    (let [graph (retrieval/build-concept-graph {})]
-      (is (some? graph))
-      (is (map? graph)))))
+  (testing "ORC graph retrieval reads the standalone event-backed graph"
+    (g/with-context [ctx]
+      (let [oid (g/ontology! ctx "Graph")]
+        (g/concept! ctx oid "test:Parent" "Parent")
+        (g/concept! ctx oid "test:Child" "Child" {:broader ["test:Parent"]})
+        (let [result (retrieval/build-concept-graph ctx)]
+          (is (some? result))
+          (is (map? result))))))
+  (testing "ORC static vocabulary remains usable without an event store"
+    (let [result (retrieval/build-concept-graph {})]
+      (is (some? result))
+      (is (map? result)))))

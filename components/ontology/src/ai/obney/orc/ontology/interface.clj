@@ -15,7 +15,8 @@
    - TTL/SKOS/OWL serialization for graph database export
    - Embedding generation and semantic search (Phase 4)
    - Hybrid search combining graph BFS + embeddings via RRF"
-  (:require [ai.obney.orc.ontology.core.static-ontology :as static]
+  (:require [ai.obney.ontology.interface :as ontology]
+            [ai.obney.orc.ontology.core.static-ontology :as static]
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.serialization :as serialization]
             [ai.obney.orc.ontology.core.classifier :as classifier]
@@ -141,38 +142,15 @@
 (defn ontology-exists? [ctx ontology-id]
   (rm/ontology-exists? ctx ontology-id))
 
-(defn- process-ontology-command [ctx command-name params]
-  (let [command-id (or (:command/id params) (random-uuid))
-        result (cp/process-command
-                (assoc ctx :command
-                       (merge {:command/id command-id
-                               :command/timestamp (or (:command/timestamp params) (time/now))
-                               :command/name command-name}
-                              (dissoc params :command/id :command/timestamp))))]
-    (if (:cognitect.anomalies/category result)
-      result
-      (merge (:command-result/data result)
-             {:events (:command-result/events result)}))))
 
-(defn create-ontology! [ctx params]
-  (process-ontology-command ctx :ontology/create-ontology params))
 
-(defn create-concept! [ctx ontology-id concept]
-  (process-ontology-command ctx :ontology/create-concept
-                            (assoc concept :ontology-id ontology-id)))
+(def create-ontology! ontology/create-ontology!)
 
-(defn update-concept!
-  ([ctx ontology-id concept-id changes]
-   (update-concept! ctx ontology-id concept-id changes nil))
-  ([ctx ontology-id concept-id changes command-meta]
-   (process-ontology-command ctx :ontology/update-concept
-                             (merge {:ontology-id ontology-id
-                                     :concept-id concept-id
-                                     :changes changes}
-                                    command-meta))))
+(def create-concept! ontology/create-concept!)
 
-(defn create-relationship! [ctx relationship]
-  (process-ontology-command ctx :ontology/create-relationship relationship))
+(def update-concept! ontology/update-concept!)
+
+(def create-relationship! ontology/create-relationship!)
 
 (defn get-concepts
   "Get concepts from the event-sourced concept graph.
@@ -1496,10 +1474,7 @@
 ;; Read Model Builders (for direct use in tests/REPL)
 ;; =============================================================================
 
-(defn build-concepts
-  "Build concept graph from events."
-  [initial-state events]
-  (rm/concepts initial-state events))
+
 
 (defn build-tree-profiles
   "Build tree profiles from events."
@@ -1967,7 +1942,7 @@
 ;; =============================================================================
 
 (defn preload-ontology-cache!
-  "Preload ontology read models into L1 cache for fast first queries.
+  "Read the standalone graph and preload cached ORC read models.
 
    Call this at application startup to avoid cold-start latency.
    Grain's rmp/project provides L1/L2 caching, but the first call
@@ -1984,11 +1959,11 @@
    - :elapsed-ms - time taken to preload"
   [ctx]
   (let [start (System/currentTimeMillis)]
-    ;; Force projection of all read models - this populates L1 cache
-    (rmp/project ctx :ontology/concepts)
+    ;; Read the standalone graph; the remaining ORC projections populate L1 cache.
+    (rm/get-concept-map ctx)
     (rmp/project ctx :ontology/tree-profiles)
     (rmp/project ctx :ontology/node-experiences)
-    (rmp/project ctx :ontology/concept-embeddings)
+    (rm/get-all-concept-embeddings ctx)
     (rmp/project ctx :ontology/tree-profile-embeddings)
     (rmp/project ctx :ontology/ontology-colbert-indexes)
 

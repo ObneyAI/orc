@@ -4,7 +4,9 @@
    Issue 001: Verify ontology-id normalization produces valid UUID tags.
    Issue 004: Integration test for full Grain compliance."
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.ontology.core.evolutionary-builder :as builder]))
+            [ai.obney.orc.ontology.core.evolutionary-builder :as builder]
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.ontology.interface :as ontology]))
 
 ;; =============================================================================
 ;; Issue 001: UUID Normalization Tests
@@ -38,46 +40,25 @@
       (is (= original-uuid result)
           "UUID should pass through unchanged"))))
 
-(deftest duplicate-content-is-deduplicated-within-one-registration-batch
-  (let [source {:type "text" :content "same immutable source"}
-        result (builder/register-sources
-                {:source-registry {} :content-hash-index {}}
-                [source source])]
-    (is (= 2 (count (:registered result))))
-    (is (= [false true] (mapv :already-registered? (:registered result)))
-        "the second input must observe the first registration immediately")
-    (is (= 1 (count (:events result)))
-        "duplicate content emits one registration event")))
-
-;; =============================================================================
-;; Issue 004: Integration Test - Grain Schema Compliance
-;; =============================================================================
-;;
-;; NOTE: This integration test requires:
-;; 1. OPENROUTER_API_KEY environment variable set
-;; 2. Full LLM infrastructure (JSON extraction uses ORC sheets)
-;;
-;; The test is skipped if requirements aren't met. For CI/CD, ensure the
-;; API key is available or run the simpler unit tests only.
-;;
-;; The key behaviors verified here:
-;; - String ontology-ids are normalized to UUIDs in event tags
-;; - A-box individuals include :label field
-;; - No schema validation anomalies returned
-
-(deftest grain-schema-compliance-integration
-  ;; This test requires full LLM infrastructure which is complex to set up
-  ;; in the polylith test runner. The unit tests (Issues 001-003) verify
-  ;; the individual components. This integration test documents the expected
-  ;; behavior but is skipped in automated runs.
-  ;;
-  ;; To run manually with LLM:
-  ;; 1. Start a REPL with :dev alias
-  ;; 2. Configure LiteLLM router with OpenRouter
-  ;; 3. Create context with :llm-provider :openrouter
-  ;; 4. Call build-from-sources and verify events
-  (testing "documents expected Grain compliance behavior"
-    (println "NOTE: grain-schema-compliance-integration requires manual verification")
-    (println "      Unit tests verify: UUID normalization, label extraction")
-    (println "      See docs/issues/004-integration-test-grain-compliance.md")
-    (is true "Integration test documents expected behavior")))
+(deftest duplicate-content-is-deduplicated-within-one-build
+  (let [store (es/start {:conn {:type :in-memory} :event-pubsub nil :logger nil})
+        ctx {:event-store store :tenant-id (random-uuid)}
+        calls (atom 0)
+        source {:type "text" :content "same immutable source"}]
+    (try
+      (with-redefs [builder/extract-from-source
+                    (fn [_ source-id _ _ _]
+                      (swap! calls inc)
+                      {:concepts [{:uri "urn:a" :label "A" :definition "Definition"
+                                   :source-id source-id}] :relationships []})]
+        (let [result (builder/build-from-sources ctx
+                       {:sources [source source]
+                        :config {:ontology-id "my-test-ontology"
+                                 :enable-colbert? false :enable-embeddings? false}})
+              oid (:ontology-id result)]
+          (is (= (normalize-ontology-id "my-test-ontology") oid))
+          (is (= 1 @calls) "A second input sees the first committed contribution immediately")
+          (is (= 1 (count (ontology/get-sources ctx oid))))
+          (is (= 1 (:new-sources-processed result)))
+          (is (= 1 (count (ontology/get-contributions ctx oid))))))
+      (finally (es/stop store)))))

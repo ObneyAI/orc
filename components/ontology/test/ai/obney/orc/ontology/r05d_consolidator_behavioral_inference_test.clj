@@ -9,7 +9,8 @@
    - dispatch-observed-composes-into-edges! grows behavior:composes-into
      edges when inferred (behavior, shell) pairs aren't yet in the graph
    - idempotency: re-running edge growth doesn't duplicate"
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [ai.obney.orc.ontology.core.read-models :as rm]
+            [clojure.test :refer [deftest testing is]]
             [malli.core :as m]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
@@ -280,7 +281,7 @@
               :indicators []}))))
 
 (defn- count-composes-into [ctx behavior-uri]
-  (count (get-in (rmp/project ctx :ontology/concepts)
+  (count (get-in (rm/get-concept-map ctx)
                  [behavior-uri :composes-into] #{})))
 
 ;; =============================================================================
@@ -308,7 +309,7 @@
                         'ai.obney.orc.ontology.core.consolidator/dispatch-observed-composes-into-edges!)]
         (dispatch! ctx shell-id [behavior-id-1 behavior-id-2]))
 
-      (let [concepts (rmp/project ctx :ontology/concepts)]
+      (let [concepts (rm/get-concept-map ctx)]
         (testing "behavior 1's composes-into now includes the shell"
           (is (contains? (get-in concepts [behavior-uri-1 :composes-into] #{})
                          shell-uri)
@@ -359,6 +360,6 @@
         (dispatch! ctx shell-id [])
         (testing "shell concept has no :composed-by set after empty dispatches"
           (let [shell-uri (str "tree-class:" shell-id)]
-            (is (empty? (get-in (rmp/project ctx :ontology/concepts)
+            (is (empty? (get-in (rm/get-concept-map ctx)
                                 [shell-uri :composed-by] #{}))
                 "No edges created for nil/empty input")))))))

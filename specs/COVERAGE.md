@@ -18,7 +18,7 @@ are represented in a checked Allium specification.
 | `langfuse` | Trace destination adapter | `observability.allium` | Distilled and checked with the managed exporter lifecycle exposed by `orc-service` |
 | `llm` | Structured provider prediction and streaming | `llm.allium` | Distilled and checked |
 | `mcp-sheet-builder` | Workflow generation and portable MCP transport lifecycle | `mcp-sheet-builder.allium`, `mcp-client.allium` | Distilled, specified, and verified through DET-E2E-145 |
-| `ontology` | Ontology discovery, evolution, and retrieval | `ontology.allium` | Distilled and checked |
+| `ontology` | Agent learning, classification, extraction and build coordination; graph library consumer | `ontology.allium` plus `../../ontology-exp/specs/ontology.allium` | Split ownership; graph contracts imported |
 | `orc-service` | Behavior-tree execution and RLM runtime | `orc-service.allium` | Distilled and checked |
 | `predict-rlm-image-tools` | Image benchmark deterministic transforms | `predict-rlm-tools.allium` | Distilled and checked |
 | `predict-rlm-invoice-tools` | Invoice workbook transform | `predict-rlm-tools.allium` | Distilled and checked |
@@ -952,3 +952,54 @@ assembly into a second creation fact. DET-E2E-258 verifies creation, stale,
 duplicate and advancing publications through command, event and projection
 read-back. Its named `TraceRefreshNeverRegresses` obligation is covered (one
 obligation, one covered, zero uncovered).
+
+## Ontology extraction ownership (18 September 2026)
+
+Graph lifecycle, tenant-qualified identity, predicate policy, source versions,
+contribution idempotency/revision, canonical resolution/merge, deterministic RDF,
+scoped search and export now belong to the standalone ontology specification at
+`../../ontology-exp/specs/ontology.allium`. ORC's ontology specification retains
+all claim, description, classification, recurrence, consolidation, harvest,
+proven-pattern and extraction/build obligations. Each completed source extraction requests its own graph contribution import
+immediately. Build completion follows final export after all sources are
+committed or skipped; extraction does not mutate library projections directly. Source hashes no longer globally suppress a new
+interpretation. Caller extraction policy and graph contribution retry identity
+are separate responsibilities. No backward compatibility is required.
+
+Validate both modules together from ORC using:
+
+```sh
+allium check specs ../ontology-exp/specs
+allium analyse specs ../ontology-exp/specs
+```
+
+The current combined 13-spec result is 232 diagnostics: 198 information,
+34 warnings, 0 errors, and 0 process findings. ORC's ontology module accounts
+for 49 diagnostics (44 information and 5 warnings); the new library contributes
+17 (16 information and 1 external-caller source-hint warning). Its retained
+fields are descriptive/provenance output, and its caller is intentionally
+application-independent. The ORC ontology residuals comprise 26 unused fields,
+18 externally supplied learning triggers, 3 unused value declarations and
+2 unused entities. The extraction/build completion triggers now have an explicit
+provider surface. The previous ontology module had 69 diagnostics (62
+information and 7 warnings). Earlier whole-repository baselines above are
+historical and must not be quoted as the current result.
+
+These are structural diagnostics, not a statement that every implementation
+obligation has been executed. Keep integration gates and test outcomes in the
+E2E checklist. Do not reduce retained learning obligations to silence warnings.
+
+Final workflow alignment: durable build start precedes source loading and
+extraction; each accepted source commits atomically through the library. A
+later extraction/import failure records a failed build while retaining earlier
+accepted contributions. `AllBuildSourcesExtracted` requests final export only
+after all source contributions are committed or skipped. Extraction audit uses
+the contribution's original input plus opaque full producer model provenance,
+including resolved models, trace identity and per-call usage. Resolution that
+would collapse distinct existing graph identities is rejected by the library.
+
+The final measured diagnostic totals remain 232 across 13 modules: 198
+information, 34 warnings, 0 errors; analyse reports 0 findings. The ORC ontology
+module retains 44 information and 5 warnings, while the standalone graph module
+retains 16 information and 1 warning. Raw outputs were refreshed in the
+standalone project's `evidence/extraction-combined-spec-{check,analyse}.json`.

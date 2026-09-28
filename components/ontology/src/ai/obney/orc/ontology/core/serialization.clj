@@ -8,7 +8,8 @@
    - concepts->turtle: Serialize concept graph to SKOS
    - tree-profile->turtle: Serialize tree profile as OWL individuals
    - full-export: Complete ontology export with all layers"
-  (:require [clojure.string :as str]
+  (:require [ai.obney.orc.ontology.core.read-models :as rm]
+            [clojure.string :as str]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]))
 
 ;; =============================================================================
@@ -325,7 +326,7 @@
            :or {include-profiles? true
                 include-experiences? true
                 base-uri "http://obney.ai/workshop/ontology/"}}]]
-  (let [concept-graph (rmp/project ctx :ontology/concepts)
+  (let [concept-graph (rm/get-concept-map ctx)
         filtered-concepts (if scope
                             (into {} (filter (fn [[_ c]] (= scope (:scope c))) concept-graph))
                             concept-graph)

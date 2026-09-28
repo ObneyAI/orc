@@ -16,7 +16,8 @@
      concepts PLUS the expected behavior:composes-into edges
 
    R02 stays UNCHANGED — no R02 seeds deprecated, no R02 tests modified."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [ai.obney.orc.ontology.core.read-models :as rm]
+            [clojure.test :refer [deftest testing is]]
             [malli.core :as m]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
@@ -254,7 +255,7 @@
     (let [behavior-id (random-uuid)
           _ (emit-behavioral-subtree-description! ctx behavior-id {})
           _ (run-behavioral-subtree-processor! ctx)
-          concepts (rmp/project ctx :ontology/concepts)
+          concepts (rm/get-concept-map ctx)
           uri (behavioral-subtree-uri behavior-id)]
       (testing "concept exists at behavioral-subtree:<id> URI"
         (is (contains? concepts uri)
@@ -276,7 +277,7 @@
               ctx behavior-id
               {:composes-into [shell-id-1 shell-id-2]})
           _ (run-behavioral-subtree-processor! ctx)
-          concepts (rmp/project ctx :ontology/concepts)
+          concepts (rm/get-concept-map ctx)
           behavior-uri (behavioral-subtree-uri behavior-id)
           shell-uri-1 (tree-class-uri shell-id-1)
           shell-uri-2 (tree-class-uri shell-id-2)
@@ -297,7 +298,7 @@
             ctx behavior-id-2
             {:composes-into [shell-str]})
           (run-behavioral-subtree-processor! ctx)
-          (let [concepts (rmp/project ctx :ontology/concepts)
+          (let [concepts (rm/get-concept-map ctx)
                 uri (behavioral-subtree-uri behavior-id-2)
                 ci (get-in concepts [uri :composes-into] #{})]
             (is (contains? ci (tree-class-uri shell-str))
@@ -316,7 +317,7 @@
       (emit-behavioral-subtree-description! ctx child-id
                                             {:parent-behavior parent-id})
       (run-behavioral-subtree-processor! ctx)
-      (let [concepts (rmp/project ctx :ontology/concepts)
+      (let [concepts (rm/get-concept-map ctx)
             parent-uri (behavioral-subtree-uri parent-id)
             child-uri (behavioral-subtree-uri child-id)]
         (testing "child's :broader set contains parent's URI"
@@ -343,10 +344,10 @@
         {:composes-into [shell-id]
          :parent-behavior parent-id})
       (run-behavioral-subtree-processor! ctx)
-      (let [concepts-after-first (rmp/project ctx :ontology/concepts)
+      (let [concepts-after-first (rm/get-concept-map ctx)
             ;; Re-run on the same events; should be a no-op.
             _ (run-behavioral-subtree-processor! ctx)
-            concepts-after-second (rmp/project ctx :ontology/concepts)
+            concepts-after-second (rm/get-concept-map ctx)
             behavior-uri (behavioral-subtree-uri behavior-id)]
         (testing "re-running on the same event doesn't change concept count"
           (is (= (count concepts-after-first) (count concepts-after-second))
@@ -375,7 +376,7 @@
                                         {:tenant-id (:tenant-id ctx)
                                          :types #{:ontology/tree-description-updated}}))]
               (c2d1-handler (assoc ctx :event e)))
-          concepts (rmp/project ctx :ontology/concepts)
+          concepts (rm/get-concept-map ctx)
           tree-class-uri-1 (tree-class-uri behavior-id)
           behavioral-uri (behavioral-subtree-uri behavior-id)]
       (testing "C-2d-1 processor doesn't project the behavioral concept under tree-class:<id>"
@@ -541,7 +542,7 @@
     (let [seed-all! (requiring-resolve 'ai.obney.orc.ontology.test-support.seed-descriptions/seed-all!)
           _ (seed-all! ctx)
           _ (drive-both-processors! ctx)
-          concepts (rmp/project ctx :ontology/concepts)
+          concepts (rm/get-concept-map ctx)
           by-scope (group-by :scope (vals concepts))]
 
       (testing "tree-class concept count UNCHANGED from R02 baseline (23 tree-class concepts)"

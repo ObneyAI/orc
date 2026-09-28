@@ -1,34 +1,8 @@
 (ns ai.obney.orc.ontology.core.evolutionary-builder
-  "Evolutionary Ontology Builder - Orchestrates the complete pipeline.
-
-   This is the main entry point for building ontologies from multiple sources.
-   Matches Python's evolutionary_ontology_builder.py with EXACT 1:1 parity.
-
-   Architecture:
-   ┌─────────────────────────────────────────────────────────────────────────┐
-   │  Layer 1: EXTRACTION (delegates to existing ORC sheets)                 │
-   │    csv_ontology.clj, ontology_exploration.clj, unified_ontology.clj    │
-   ├─────────────────────────────────────────────────────────────────────────┤
-   │  Layer 2: RESOLUTION (this namespace)                                   │
-   │    source_registry.clj, entity_resolver.clj                            │
-   ├─────────────────────────────────────────────────────────────────────────┤
-   │  Layer 3: EVOLUTION (this namespace)                                    │
-   │    graph_evolver.clj                                                    │
-   └─────────────────────────────────────────────────────────────────────────┘
-
-   Usage:
-     ;; Batch mode - build from scratch
-     (evolutionary/build-from-sources ctx
-       {:sources [{:path 'data.csv' :type 'csv'}]
-        :config {:base-uri 'http://example.org/'}})
-
-     ;; Incremental mode - extend existing
-     (evolutionary/evolve ctx
-       {:ontology-id existing-id
-        :sources [{:path 'new-data.csv' :type 'csv'}]})"
-  (:require [ai.obney.orc.ontology.core.source-registry :as source-registry]
-            [ai.obney.orc.ontology.core.entity-resolver :as entity-resolver]
-            [ai.obney.orc.ontology.core.graph-evolver :as graph-evolver]
+  "ORC source loading and extraction workflows connected to the ontology contribution API."
+  (:require [ai.obney.orc.ontology.core.build-lifecycle :as lifecycle]
+            [ai.obney.ontology.interface :as ontology]
+            [ai.obney.ontology.algorithms :as algorithms]
             [ai.obney.orc.ontology.core.colbert-indexer :as colbert-indexer]
             [ai.obney.orc.ontology.core.field-analyzer :as field-analyzer]
             [ai.obney.orc.ontology.core.embedding :as embedding]
@@ -513,92 +487,7 @@
                        :source-id source-id
                        :status (:status result)})))))
 
-(def ^:private rdf-type-uri
-  "http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
-
-(def ^:private rdf-label-uris
-  #{"http://www.w3.org/2000/01/rdf-schema#label"
-    "http://www.w3.org/2004/02/skos/core#prefLabel"})
-
-(def ^:private rdf-description-uris
-  #{"http://www.w3.org/2000/01/rdf-schema#comment"
-    "http://www.w3.org/2004/02/skos/core#definition"})
-
-(def ^:private rdf-predicate-aliases
-  {"http://www.w3.org/2004/02/skos/core#broader" "skos:broader"
-   "http://www.w3.org/2004/02/skos/core#narrower" "skos:narrower"
-   "http://www.w3.org/2004/02/skos/core#related" "skos:related"})
-
-(defn- rdf-uri-label [uri]
-  (let [tail (last (str/split uri #"[/#:]"))]
-    (if (str/blank? tail) uri tail)))
-
-(defn- parse-ntriples-line [line-number line]
-  (when-not (or (str/blank? line) (str/starts-with? (str/trim line) "#"))
-    (if-let [[_ subject predicate object-uri literal]
-             (re-matches
-              #"\s*<([^>]+)>\s+<([^>]+)>\s+(?:<([^>]+)>|\"((?:\\.|[^\"])*)\"(?:@[A-Za-z0-9-]+|\^\^<[^>]+>)?)\s*\.\s*"
-              line)]
-      {:subject subject
-       :predicate predicate
-       :object-uri object-uri
-       :literal (some-> literal
-                        (str/replace "\\\"" "\"")
-                        (str/replace "\\n" "\n")
-                        (str/replace "\\\\" "\\"))}
-      (throw (ex-info "Malformed N-Triples statement"
-                      {:line line-number :statement line})))))
-
-(defn extract-concepts-from-rdf
-  "Deterministically import an RDF graph encoded as N-Triples.
-
-   URI subjects become concepts. URI objects also become concepts so every
-   imported edge has a resolvable endpoint. rdfs:label/skos:prefLabel and
-   rdfs:comment/skos:definition populate descriptive fields; SKOS graph
-   predicates are normalized to the relationship vocabulary used by ORC."
-  [source-id content _config]
-  (when-not (string? content)
-    (throw (ex-info "RDF import requires N-Triples string content"
-                    {:source-id source-id})))
-  (let [triples (->> (str/split-lines content)
-                     (map-indexed #(parse-ntriples-line (inc %1) %2))
-                     (remove nil?)
-                     vec)
-        uri-objects (keep :object-uri triples)
-        uris (into #{} (concat (map :subject triples) uri-objects))
-        labels (into {} (keep (fn [{:keys [subject predicate literal]}]
-                                (when (and literal (contains? rdf-label-uris predicate))
-                                  [subject literal])))
-                     triples)
-        descriptions (into {} (keep (fn [{:keys [subject predicate literal]}]
-                                      (when (and literal
-                                                 (contains? rdf-description-uris predicate))
-                                        [subject literal])))
-                           triples)
-        types (into {} (keep (fn [{:keys [subject predicate object-uri]}]
-                               (when (and (= rdf-type-uri predicate) object-uri)
-                                 [subject (rdf-uri-label object-uri)])))
-                    triples)
-        concepts (mapv (fn [uri]
-                         {:uri uri
-                          :label (get labels uri (rdf-uri-label uri))
-                          :definition (get descriptions uri "Imported RDF concept")
-                          :entity-type (get types uri "Concept")
-                          :source-id source-id
-                          :confidence 1.0})
-                       (sort uris))
-        relationships (->> triples
-                           (keep (fn [{:keys [subject predicate object-uri]}]
-                                   (when (and object-uri (not= rdf-type-uri predicate))
-                                     {:subject subject
-                                      :predicate (get rdf-predicate-aliases predicate predicate)
-                                      :object object-uri
-                                      :confidence 1.0})))
-                           vec)]
-    {:concepts concepts
-     :relationships relationships
-     :tbox {:classes [] :object-properties [] :datatype-properties []}
-     :abox []}))
+(def extract-concepts-from-rdf algorithms/extract-concepts-from-rdf)
 
 (defn extract-from-source
   "Extract concepts and relationships from a source.
@@ -652,592 +541,161 @@
 ;; Build Pipeline
 ;; =============================================================================
 
-(defn register-sources
-  "Register all sources, returning registration results and events."
-  ([read-models sources]
-   (register-sources read-models sources nil))
-  ([read-models sources ontology-id]
-  (let [result
-        (reduce (fn [{:keys [registered events registry-state]} source]
-            (let [{:keys [path content type]} source
-                  content-loaded (when (and path (nil? content))
-                                   (load-source-content (assoc source :type type)))
-                  actual-content (or content (:content content-loaded))
-                  db-path (:db-path content-loaded)  ;; For SQL sources
+(defn- require-result! [result]
+  (if (:cognitect.anomalies/category result)
+    (throw (ex-info (:cognitect.anomalies/message result) result))
+    result))
 
-                  result (source-registry/register-source!
-                           registry-state
-                           {:source-uri path
-                            :source-type type
-                            :content actual-content})
-                  emitted-events (cond->> (:events result)
-                                   ontology-id
-                                   (mapv #(update % :event/tags
-                                                  (fnil conj #{})
-                                                  [:ontology ontology-id])))
-                  next-events (into events emitted-events)
-                  ;; Make registrations earlier in this same batch visible to
-                  ;; later inputs. Otherwise duplicate content in positions N
-                  ;; and N+1 is only deduplicated on a future command.
-                  next-registry-state
-                  (reduce (fn [state event]
-                            {:source-registry
-                             (source-registry/source-registry-projection
-                              (:source-registry state) event)
-                             :content-hash-index
-                             (source-registry/content-hash-index-projection
-                              (:content-hash-index state) event)})
-                          registry-state
-                          emitted-events)]
+(defn- prepare-source [source]
+  (let [loaded (load-source-content source)
+        content (:content loaded)]
+    {:source source :loaded-content content :db-path (:db-path loaded)
+     :source-id (or (:source-id source) (random-uuid))
+     :content-hash (if (:db-path loaded)
+                     ;; Hash database bytes, never its path or an attempted text decoding.
+                     (let [digest (java.security.MessageDigest/getInstance "SHA-256")]
+                       (with-open [in (io/input-stream (:db-path loaded))]
+                         (let [buffer (byte-array 8192)]
+                           (loop []
+                             (let [n (.read in buffer)]
+                               (when (pos? n) (.update digest buffer 0 n) (recur))))))
+                       (apply str (map #(format "%02x" (bit-and % 0xff)) (.digest digest))))
+                     (algorithms/sha256 content))}))
 
-              {:registered (conj registered
-                                 (assoc result
-                                        :source source
-                                        :loaded-content actual-content
-                                        :db-path db-path))  ;; Preserve db-path for SQL
-               :events next-events
-               :registry-state next-registry-state}))
-          {:registered []
-           :events []
-           :registry-state read-models}
-          sources)]
-    (dissoc result :registry-state))))
+(defn- extraction-model-provenance [ctx extraction]
+  (or (:model-provenance extraction)
+      (when-let [trace-id (:trace-id extraction)]
+        (let [calls (->> (event-store/read (:event-store ctx)
+                                         {:tenant-id (:tenant-id ctx)
+                                          :types #{:sheet/node-execution-completed}})
+                         (into [])
+                         (filter #(and (= trace-id (:tick-id %)) (:model %)))
+                         vec)]
+          (when (seq calls)
+            {:trace-id trace-id :models (vec (distinct (map :model calls)))
+             :calls (mapv #(select-keys % [:node-id :model :usage]) calls)})))))
 
-(defn extract-from-all-sources
-  "Extract concepts from all registered sources.
-
-   Args:
-     ctx - Context with :event-store (needed for ORC sheet execution)
-     registered-sources - Vector of registration results
-     config - Configuration options"
-  [ctx registered-sources config]
-  (reduce (fn [{:keys [all-concepts all-relationships all-tbox all-abox events]} reg]
-            (let [{:keys [source-id loaded-content source db-path]} reg
-                  ;; Merge db-path into config for SQL sources
-                  source-config (if db-path
-                                  (assoc config :db-path db-path :path (:path source))
-                                  config)
-                  extraction (extract-from-source
-                               ctx
-                               source-id
-                               (:type source)
-                               loaded-content
-                               source-config)
-                  model-calls (when-let [trace-id (:trace-id extraction)]
-                                (->> (event-store/read
-                                      (:event-store ctx)
-                                      {:tenant-id (:tenant-id ctx)
-                                       :types #{:sheet/node-execution-completed}})
-                                     (into [])
-                                     (filter #(and (= trace-id (:tick-id %)) (:model %)))
-                                     vec))
-                  model-provenance (when (seq model-calls)
-                                     {:trace-id (:trace-id extraction)
-                                      :models (vec (distinct (map :model model-calls)))
-                                      :calls (mapv #(select-keys % [:node-id :model :usage])
-                                                   model-calls)})
-                  ;; Tag concepts with source-id (may already be tagged by ORC extraction)
-                  tagged-concepts (mapv #(if (:source-id %)
-                                           %
-                                           (assoc % :source-id source-id))
-                                        (:concepts extraction))
-
-                  ;; Get T-box and A-box from extraction
-                  tbox (:tbox extraction)
-                  abox (:abox extraction)
-
-                  ;; Create extraction events (concepts + relationships)
-                  base-events [(->event {:type :evolutionary/concepts-extracted
-                                         :tags #{[:source source-id]
-                                                 [:ontology (:ontology-id config)]}
-                                         :body {:source-id source-id
-                                                :ontology-id (:ontology-id config)
-                                                :concepts tagged-concepts
-                                                :model-provenance model-provenance
-                                                :extracted-at (str (java.time.Instant/now))}})
-                               (->event {:type :evolutionary/relationships-extracted
-                                         :tags #{[:source source-id]
-                                                 [:ontology (:ontology-id config)]}
-                                         :body {:source-id source-id
-                                                :ontology-id (:ontology-id config)
-                                                :relationships (:relationships extraction)
-                                                :extracted-at (str (java.time.Instant/now))}})]
-
-                  ;; Add T-box event if we have schema data (classes/properties)
-                  tbox-event (when (or (seq (:classes tbox))
-                                       (seq (:object-properties tbox))
-                                       (seq (:datatype-properties tbox)))
-                               (->event {:type :evolutionary/tbox-extracted
-                                         :tags #{[:source source-id]
-                                                 [:ontology (:ontology-id config)]}
-                                         :body {:source-id source-id
-                                                :ontology-id (:ontology-id config)
-                                                :classes (vec (:classes tbox))
-                                                :object-properties (vec (:object-properties tbox))
-                                                :datatype-properties (vec (:datatype-properties tbox))
-                                                :extracted-at (str (java.time.Instant/now))}}))
-
-                  ;; Add A-box event if we have individuals
-                  abox-event (when (seq abox)
-                               (->event {:type :evolutionary/abox-extracted
-                                         :tags #{[:source source-id]
-                                                 [:ontology (:ontology-id config)]}
-                                         :body {:source-id source-id
-                                                :ontology-id (:ontology-id config)
-                                                :individuals (vec abox)
-                                                :extracted-at (str (java.time.Instant/now))}}))
-
-                  ;; Combine all events
-                  extract-events (cond-> base-events
-                                   tbox-event (conj tbox-event)
-                                   abox-event (conj abox-event))]
-
-              {:all-concepts (into all-concepts tagged-concepts)
-               :all-relationships (into all-relationships (:relationships extraction))
-               :all-tbox (merge-with into all-tbox tbox)
-               :all-abox (into all-abox abox)
-               :events (into events extract-events)}))
-          {:all-concepts [] :all-relationships [] :all-tbox {} :all-abox [] :events []}
-          (filter (complement :already-registered?) registered-sources)))
-
-;; =============================================================================
-;; Main Entry Points
-;; =============================================================================
-
-(defn build-from-sources
-  "Build ontology from sources in BATCH mode.
-
-   This builds a complete ontology from scratch:
-   1. Register all sources (with deduplication)
-   2. Extract concepts from each source
-   3. Resolve entities across sources (batch mode)
-   4. Merge into unified graph
-   5. Generate TTL snapshot
-   6. Create ColBERT index (optional, if :enable-colbert? true)
-
-   Args:
-     ctx - Context with :event-store
-     params - {:sources [{:path :type :content}...]
-               :config {:base-uri :similarity-threshold ...
-                        :enable-colbert? true  ;; Enable ColBERT indexing
-                        :colbert-fields [:description :tasks :skills]  ;; or nil for auto-detect
-                        :colbert-index-name \"my-index\"}}
-
-   Returns:
-     {:ontology-id uuid
-      :build-id uuid
-      :total-sources int
-      :total-concepts int
-      :total-triples int
-      :entities-resolved int
-      :ttl-output string
-      :colbert-index-id uuid  ;; if ColBERT enabled
-      :colbert-fields [...]   ;; detected/used fields
-      :events [...]}"
-  [{:keys [event-store] :as ctx} {:keys [sources config]}]
-  (let [config (merge default-config config)
-        ;; Normalize ontology-id to UUID for Grain schema compliance (Issue 001)
-        ontology-id (normalize-ontology-id (or (:ontology-id config) (java.util.UUID/randomUUID)))
-        build-id (java.util.UUID/randomUUID)
-        config (assoc config :ontology-id ontology-id)
-
-        lifecycle-event (->event {:type :ontology/ontology-created
-                                  :tags #{[:ontology ontology-id]}
-                                  :body {:ontology-id ontology-id
-                                         :name (or (:name config) (str "Source ontology " ontology-id))
-                                         :scope :custom
-                                         :description "Ontology built from registered sources"
-                                         :base-uri (:base-uri config)
-                                         :created-at (str (java.time.Instant/now))}})
-
-        ;; Build start event
-        start-event (->event {:type :evolutionary/build-started
-                              :tags #{[:ontology ontology-id]
-                                      [:build build-id]}
-                              :body {:build-id build-id
-                                     :ontology-id ontology-id
-                                     :mode "batch"
-                                     :source-count (count sources)
-                                     :config config
-                                     :started-at (str (java.time.Instant/now))}})
-
-        start-time (System/currentTimeMillis)
-
-        ;; Phase 1: Load existing read models
-        existing-events (into []
-                              (event-store/read event-store
-                                                (cond-> {:types #{:evolutionary/source-registered}
-                                                         :tags #{[:ontology ontology-id]}}
-                                                  (:tenant-id ctx)
-                                                  (assoc :tenant-id (:tenant-id ctx)))))
-        read-models (source-registry/build-read-models existing-events)
-
-        ;; Phase 2: Register sources
-        {:keys [registered events]} (register-sources read-models sources ontology-id)
-        registration-events events
-
-        ;; Phase 3: Extract from sources (using ORC sheets)
-        {:keys [all-concepts all-relationships all-tbox all-abox events]}
-        (extract-from-all-sources ctx registered config)
-        extraction-events events
-
-        ;; Phase 4: Entity resolution (batch mode)
-        resolution-result (entity-resolver/resolve-within-batch
-                            all-concepts
-                            {:similarity-threshold (:similarity-threshold config)
-                             :emit-owl-sameAs? (:emit-owl-sameAs? config)})
-        resolution-event (entity-resolver/emit-entities-resolved-event
-                           ontology-id :batch resolution-result)
-
-        ;; Phase 5: Graph evolution
-        source-ids (mapv :source-id registered)
-        evolution-result (graph-evolver/evolve-graph!
-                           {:ontology-id ontology-id
-                            :source-ids source-ids
-                            :extracted-concepts all-concepts
-                            :extracted-relationships all-relationships
-                            :resolution-result resolution-result})
-        evolution-events (:events evolution-result)
-
-        ;; Phase 6: Generate TTL snapshot (OWL with T-box/A-box if available)
-        snapshot-result (graph-evolver/generate-owl-ttl-snapshot
-                          {:tbox all-tbox
-                           :abox all-abox
-                           :concepts (:concepts (:graph evolution-result))
-                           :relationships (:relationships (:graph evolution-result))}
-                          {:base-uri (:base-uri config)
-                           :include-metadata? (:include-metadata? config)})
-        snapshot-event (graph-evolver/emit-ttl-snapshot-event
-                         ontology-id snapshot-result :turtle)
-
-        ;; Phase 7: ColBERT indexing (optional)
-        colbert-result (when (:enable-colbert? config)
-                         (try
-                           (colbert-indexer/index-concepts! ctx
-                             all-concepts
-                             {:index-name (or (:colbert-index-name config)
-                                              (str "ontology-" (subs (str ontology-id) 0 8)))
-                              :colbert-fields (:colbert-fields config)
-                              :auto-detect-colbert-fields (:auto-detect-colbert-fields? config)})
-                           (catch Exception e
-                             (println "[WARNING] ColBERT indexing failed:" (.getMessage e))
-                             nil)))
-
-        ;; Emit ColBERT index event if successful
-        _ (when colbert-result
-            (colbert-indexer/emit-colbert-indexed-event! ctx
-              {:ontology-id ontology-id
-               :index-id (:index-id colbert-result)
-               :index-name (:index-name colbert-result)
-               :document-count (:document-count colbert-result)
-               :colbert-fields (:colbert-fields colbert-result)}))
-
-        ;; Phase 8: Embedding indexing (for RRF search)
+(defn- extract-and-contribute! [ctx ontology-id build-id config prepared]
+  (let [{:keys [source source-id content-hash loaded-content db-path]} prepared
+        extraction (extract-from-source ctx source-id
+                     (or (:type source) (algorithms/detect-source-type (:path source)))
+                     loaded-content (cond-> config db-path (assoc :db-path db-path :path (:path source))))
+        concepts (mapv #(-> %
+                            (assoc :description (or (:description %) (:definition %) "")
+                                   :scope (or (:scope %) (:entity-type %) :custom))
+                            (dissoc :definition)) (:concepts extraction))
         embedding-result (when (:enable-embeddings? config)
                            (try
-                             (mu/log ::embedding-concepts-start
-                                     :concept-count (count all-concepts)
-                                     :ontology-id ontology-id)
-                             (embedding/embed-concepts-batch!
-                               all-concepts
-                               {:embedding-fields (or (:embedding-fields config)
-                                                      (:colbert-fields colbert-result))
-                                :auto-detect? (:auto-detect-embedding-fields? config)
-                                :ctx ctx})  ;; Pass context for LLM-driven field detection
+                             (embedding/embed-concepts-batch! concepts
+                               {:embedding-fields (:embedding-fields config)
+                                :auto-detect? (:auto-detect-embedding-fields? config) :ctx ctx})
                              (catch Exception e
-                               (mu/log ::embedding-failed :error (.getMessage e))
-                               nil)))
+                               (mu/log ::embedding-failed :error (.getMessage e)) nil)))
+        embeddings (into {} (map (juxt :uri identity)) (:embeddings embedding-result))
+        concepts (mapv (fn [c]
+                         (if-let [e (get embeddings (:uri c))]
+                           (assoc c :embedding (mapv double (:embedding e))
+                                    :embedding-model (:model-id embedding-result)) c)) concepts)
+        result (require-result!
+                 (ontology/import-contribution! ctx
+                   {:ontology-id ontology-id :contribution-id (random-uuid)
+                    :expected-revision (ontology/get-revision ctx ontology-id)
+                    :source {:source-id source-id :content-hash content-hash
+                             :uri (:path source) :type (:type source)
+                             :producer {:application "orc" :build-reference (str build-id)
+                                        :trace-reference (some-> (:trace-id extraction) str)
+                                        :model-provenance (extraction-model-provenance ctx extraction)}}
+                    :concepts concepts :relationships (vec (:relationships extraction))
+                    :tbox (or (:tbox extraction) {}) :abox (vec (:abox extraction))
+                    :rdf-triples (vec (:rdf-triples extraction))
+                    :resolution-policy {:match-labels? true
+                                        :similarity-threshold (:similarity-threshold config)}}))]
+    {:result result :embedding-result embedding-result}))
 
-        ;; Emit embedding events if successful and there are actual embeddings
-        ;; 1. Summary event for tracking (only if embeddings were generated)
-        embedding-summary-event (when (and embedding-result
-                                           (pos? (:embedded-count embedding-result 0)))
-                                  (->event {:type :evolutionary/concepts-embedded
-                                            :tags #{[:ontology ontology-id]
-                                                    [:build build-id]}
-                                            :body {:ontology-id ontology-id
-                                                   :build-id build-id
-                                                   :embedded-count (:embedded-count embedding-result)
-                                                   :embedding-fields (or (:fields-used embedding-result) [])
-                                                   :model-id (:model-id embedding-result)
-                                                   :embedded-at (str (java.time.Instant/now))}}))
+(defn- run-source-workflow! [ctx ontology-id sources config mode]
+  (let [build-id (random-uuid)
+        started (System/currentTimeMillis)
+        config (assoc (merge default-config config) :ontology-id ontology-id)]
+    (lifecycle/record! ctx :evolutionary/build-started
+                       {:build-id build-id :ontology-id ontology-id :mode mode
+                        :source-count (count sources) :config config
+                        :started-at (str (java.time.Instant/now))})
+    (try
+      (let [results (reduce (fn [results source]
+                              (let [prepared (prepare-source source)
+                                    prior (ontology/get-sources ctx ontology-id)]
+                                (if (and (not (:reextract? config))
+                                         (some #(= (:content-hash prepared) (:content-hash %)) prior))
+                                  results
+                                  (conj results (extract-and-contribute! ctx ontology-id build-id config prepared)))))
+                            [] sources)
+            snapshot (ontology/export-snapshot ctx ontology-id)
+            concepts (:concepts snapshot)
+            colbert-result (when (:enable-colbert? config)
+                             (try
+                               (colbert-indexer/index-concepts! ctx concepts
+                                 {:index-name (or (:colbert-index-name config)
+                                                  (str "ontology-" (subs (str ontology-id) 0 8)))
+                                  :colbert-fields (:colbert-fields config)
+                                  :auto-detect-colbert-fields (:auto-detect-colbert-fields? config)})
+                               (catch Exception e
+                                 (mu/log ::colbert-index-failed :error (.getMessage e)) nil)))
+            _ (when colbert-result
+                (colbert-indexer/emit-colbert-indexed-event! ctx
+                  {:ontology-id ontology-id :index-id (:index-id colbert-result)
+                   :index-name (:index-name colbert-result) :document-count (:document-count colbert-result)
+                   :colbert-fields (:colbert-fields colbert-result)}))
+            entities-resolved (count (filter (fn [[a b]] (not= a b)) (ontology/get-canonical-mappings ctx ontology-id)))
+            summary {:ontology-id ontology-id :build-id build-id
+                     :total-sources (count (ontology/get-sources ctx ontology-id))
+                     :new-sources-processed (count results)
+                     :total-concepts (count concepts) :total-triples (:triple-count snapshot)
+                     :entities-resolved entities-resolved :revision (:revision snapshot)
+                     :ttl-output (:ttl-output snapshot) :checksum (:checksum snapshot)
+                     :duration-ms (- (System/currentTimeMillis) started)}]
+        (lifecycle/record! ctx :evolutionary/build-completed
+                           (assoc summary :completed-at (str (java.time.Instant/now))))
+        (assoc summary :colbert-index-id (:index-id colbert-result)
+                       :colbert-fields (:colbert-fields colbert-result) :events []))
+      (catch Exception e
+        (lifecycle/record! ctx :evolutionary/build-failed
+                           {:ontology-id ontology-id :build-id build-id
+                            :error (or (.getMessage e) "Build failed") :failed-at-stage "source-workflow"
+                            :failed-at (str (java.time.Instant/now))})
+        (throw e)))))
 
-        ;; 2. Per-concept events with actual vectors (for read model caching/cold-start)
-        embedding-concept-events (when (and embedding-result (seq (:embeddings embedding-result)))
-                                   (let [fields-used (:fields-used embedding-result)
-                                         model-id (:model-id embedding-result)
-                                         embedded-at (str (java.time.Instant/now))]
-                                     (mapv (fn [{:keys [uri embedding text-embedded]}]
-                                             (->event {:type :ontology/concept-embedded
-                                                       :tags #{[:ontology ontology-id]
-                                                               [:concept uri]}
-                                                       :body {:uri uri
-                                                              :ontology-id ontology-id
-                                                              :embedding (mapv double embedding)  ;; CRITICAL: ensure :double
-                                                              :text-embedded text-embedded
-                                                              :field-source (str/join "+" (map name fields-used))
-                                                              :model-id model-id
-                                                              :embedded-at embedded-at}}))
-                                           (:embeddings embedding-result))))
-
-        ;; Build completion
-        duration-ms (- (System/currentTimeMillis) start-time)
-        completion-event (->event {:type :evolutionary/build-completed
-                                   :tags #{[:ontology ontology-id]
-                                           [:build build-id]}
-                                   :body {:build-id build-id
-                                          :ontology-id ontology-id
-                                          :total-sources (count source-ids)
-                                          :total-concepts (count (:concepts (:graph evolution-result)))
-                                          :total-triples (:triple-count snapshot-result)
-                                          :entities-resolved (+ (:exact-matches resolution-result)
-                                                                (:semantic-matches resolution-result))
-                                          :colbert-index-id (:index-id colbert-result)
-                                          :embedded-count (:embedded-count embedding-result)
-                                          :duration-ms duration-ms
-                                          :completed-at (str (java.time.Instant/now))}})
-
-        ;; Collect all events (embedding events may be nil)
-        all-events (concat [lifecycle-event start-event]
-                           registration-events
-                           extraction-events
-                           [resolution-event]
-                           evolution-events
-                           [snapshot-event]
-                           (when embedding-summary-event [embedding-summary-event])
-                           (or embedding-concept-events [])
-                           [completion-event])]
-
-    {:ontology-id ontology-id
-     :build-id build-id
-     :total-sources (count source-ids)
-     :total-concepts (count (:concepts (:graph evolution-result)))
-     :total-triples (:triple-count snapshot-result)
-     :entities-resolved (+ (:exact-matches resolution-result)
-                           (:semantic-matches resolution-result))
-     :resolution-stats {:exact-matches (:exact-matches resolution-result)
-                        :semantic-matches (:semantic-matches resolution-result)
-                        :unmatched (count (:unmatched resolution-result))}
-     :schema-extensions (:schema-extensions evolution-result)
-     :ttl-output (:ttl-string snapshot-result)
-     :colbert-index-id (:index-id colbert-result)
-     :colbert-fields (:colbert-fields colbert-result)
-     :embedding-result embedding-result  ;; NEW: Include embedding result
-     :duration-ms duration-ms
-     :events all-events}))
+(defn build-from-sources
+  "ORC loads and extracts sources; the ontology service owns graph contributions."
+  [ctx {:keys [sources config]}]
+  (let [config (merge default-config config)
+        requested-id (some-> (:ontology-id config) normalize-ontology-id)
+        created (require-result!
+                  (ontology/create-ontology! ctx
+                    (cond-> {:name (or (:name config) "Source ontology") :scope :custom
+                             :description "Ontology built from source contributions"
+                             :base-uri (:base-uri config)
+                             :predicate-policies (or (:predicate-policies config) {})}
+                      requested-id (assoc :command/id requested-id))))]
+    (run-source-workflow! ctx (:ontology-id created) sources config "batch")))
 
 (defn evolve
-  "Evolve existing ontology with new sources (INCREMENTAL mode).
+  "Run new extraction work and submit it to an existing standalone ontology."
+  [ctx {:keys [ontology-id sources config]}]
+  (let [ontology-id (normalize-ontology-id ontology-id)]
+    (when-not (ontology/ontology-exists? ctx ontology-id)
+      (throw (ex-info "Ontology not found"
+                      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+                       :cognitect.anomalies/message "Ontology not found" :ontology-id ontology-id})))
+    (doseq [[predicate policy] (:predicate-policies config)
+            :when (not (get-in (ontology/get-ontology ctx ontology-id) [:predicate-policies predicate]))]
+      (require-result! (ontology/register-predicate! ctx ontology-id predicate policy)))
+    (run-source-workflow! ctx ontology-id sources config "incremental")))
 
-   This extends an existing ontology:
-   1. Load existing state from events
-   2. Register new sources (skip already processed)
-   3. Extract with TBox context from existing ontology
-   4. Resolve entities (incremental - prefer existing URIs)
-   5. Merge into existing graph
-   6. Generate new TTL snapshot
+(defn get-build-result [ctx build-id]
+  (first (into [] (event-store/read (:event-store ctx)
+                                   {:tenant-id (:tenant-id ctx)
+                                    :types #{:evolutionary/build-completed}
+                                    :tags #{[:build build-id]}}))))
 
-   Args:
-     ctx - Context with :event-store
-     params - {:ontology-id uuid
-               :sources [{:path :type :content}...]
-               :config {...}}
-
-   Returns: Same as build-from-sources"
-  [{:keys [event-store] :as ctx} {:keys [ontology-id sources config]}]
-  (let [config (merge default-config config)
-        ;; Normalize ontology-id to UUID for Grain schema compliance (Issue 001)
-        ontology-id (normalize-ontology-id ontology-id)
-        build-id (java.util.UUID/randomUUID)
-        config (assoc config :ontology-id ontology-id)
-
-        ;; Load existing state
-        existing-events (into []
-                              (event-store/read event-store
-                                                (cond-> {:types #{:ontology/ontology-created
-                                                                  :ontology/concept-created
-                                                                  :ontology/relationship-created
-                                                                  :evolutionary/source-registered
-                                                                  :evolutionary/concepts-extracted
-                                                                  :evolutionary/relationships-extracted
-                                                                  :evolutionary/entities-resolved}
-                                                         :tags #{[:ontology ontology-id]}}
-                                                  (:tenant-id ctx)
-                                                  (assoc :tenant-id (:tenant-id ctx)))))
-
-        read-models (source-registry/build-read-models existing-events)
-
-        ;; Get existing labels/URIs for incremental resolution
-        existing-concept-events (filter #(contains? #{:ontology/concept-created
-                                                      :evolutionary/concepts-extracted}
-                                                    (:event/type %))
-                                        existing-events)
-        existing-concepts (->> existing-concept-events
-                               (mapcat #(if (= :ontology/concept-created (:event/type %))
-                                          [(cond-> {:uri (:uri %)
-                                                    :label (:label %)
-                                                    :definition (:description %)
-                                                    :entity-type (name (:scope %))
-                                                    :concept-id (:concept-id %)
-                                                    :provenance (:provenance %)}
-                                             (:created-at %) (assoc :created-at (:created-at %)))]
-                                          (or (get-in % [:body :concepts])
-                                              (:concepts %))))
-                               vec)
-        existing-uris (set (map :uri existing-concepts))
-        existing-relationships (->> existing-events
-                                    (filter #(contains? #{:ontology/relationship-created
-                                                         :evolutionary/relationships-extracted}
-                                                       (:event/type %)))
-                                    (mapcat #(if (= :ontology/relationship-created (:event/type %))
-                                               [{:subject (:source-uri %)
-                                                 :predicate (:predicate %)
-                                                 :object (:target-uri %)}]
-                                               (or (get-in % [:body :relationships])
-                                                   (:relationships %))))
-                                    vec)
-
-        ;; Build start event
-        start-event (->event {:type :evolutionary/build-started
-                              :tags #{[:ontology ontology-id]
-                                      [:build build-id]}
-                              :body {:build-id build-id
-                                     :ontology-id ontology-id
-                                     :mode "incremental"
-                                     :source-count (count sources)
-                                     :config config
-                                     :started-at (str (java.time.Instant/now))}})
-
-        start-time (System/currentTimeMillis)
-
-        ;; Register new sources (will skip duplicates)
-        {:keys [registered events]} (register-sources read-models sources ontology-id)
-        registration-events events
-
-        ;; Extract only from new sources (using ORC sheets)
-        new-sources (filter (complement :already-registered?) registered)
-
-        {:keys [all-concepts all-relationships all-tbox all-abox events]}
-        (extract-from-all-sources ctx new-sources config)
-        extraction-events events
-
-        ;; Incremental entity resolution
-        resolution-result (entity-resolver/resolve-incremental
-                            all-concepts
-                            existing-concepts
-                            existing-uris
-                            {:similarity-threshold (:similarity-threshold config)
-                             :prefer-existing-uris? true})
-        resolution-event (entity-resolver/emit-entities-resolved-event
-                           ontology-id :incremental resolution-result)
-
-        ;; Load existing graph for merging
-        existing-graph-events (into []
-                                    (event-store/read event-store
-                                                      (cond-> {:types #{:evolutionary/graph-merged}
-                                                               :tags #{[:ontology ontology-id]}}
-                                                        (:tenant-id ctx)
-                                                        (assoc :tenant-id (:tenant-id ctx)))))
-        ;; For simplicity, rebuild from concepts (full graph would need more state)
-        existing-graph {:concepts (into {} (map (juxt :uri identity) existing-concepts))
-                        :relationships existing-relationships}
-
-        ;; Graph evolution
-        source-ids (mapv :source-id new-sources)
-        evolution-result (graph-evolver/evolve-graph!
-                           {:ontology-id ontology-id
-                            :source-ids source-ids
-                            :extracted-concepts all-concepts
-                            :extracted-relationships all-relationships
-                            :resolution-result resolution-result
-                            :existing-graph existing-graph})
-        evolution-events (:events evolution-result)
-
-        ;; Generate new TTL snapshot (OWL with T-box/A-box if available)
-        snapshot-result (graph-evolver/generate-owl-ttl-snapshot
-                          {:tbox all-tbox
-                           :abox all-abox
-                           :concepts (:concepts (:graph evolution-result))
-                           :relationships (:relationships (:graph evolution-result))}
-                          {:base-uri (:base-uri config)
-                           :include-metadata? (:include-metadata? config)})
-        snapshot-event (graph-evolver/emit-ttl-snapshot-event
-                         ontology-id snapshot-result :turtle)
-
-        ;; Build completion
-        duration-ms (- (System/currentTimeMillis) start-time)
-        completion-event (->event {:type :evolutionary/build-completed
-                                   :tags #{[:ontology ontology-id]
-                                           [:build build-id]}
-                                   :body {:build-id build-id
-                                          :ontology-id ontology-id
-                                          :total-sources (+ (count (:source-registry read-models))
-                                                            (count new-sources))
-                                          :total-concepts (count (:concepts (:graph evolution-result)))
-                                          :total-triples (:triple-count snapshot-result)
-                                          :entities-resolved (+ (:exact-matches resolution-result)
-                                                                (:semantic-matches resolution-result))
-                                          :duration-ms duration-ms
-                                          :completed-at (str (java.time.Instant/now))}})
-
-        all-events (concat [start-event]
-                           registration-events
-                           extraction-events
-                           [resolution-event]
-                           evolution-events
-                           [snapshot-event completion-event])]
-
-    {:ontology-id ontology-id
-     :build-id build-id
-     :total-sources (+ (count (:source-registry read-models)) (count new-sources))
-     :new-sources-processed (count new-sources)
-     :total-concepts (count (:concepts (:graph evolution-result)))
-     :total-triples (:triple-count snapshot-result)
-     :entities-resolved (+ (:exact-matches resolution-result)
-                           (:semantic-matches resolution-result))
-     :ttl-output (:ttl-string snapshot-result)
-     :duration-ms duration-ms
-     :events all-events}))
-
-;; =============================================================================
-;; Convenience Functions
-;; =============================================================================
-
-(defn get-build-result
-  "Get the result of a completed build by build-id."
-  [event-store build-id]
-  (let [events (into [] (event-store/read event-store
-                                          {:types #{:evolutionary/build-completed}
-                                           :tags #{[:build build-id]}}))]
-    (some-> events first :body)))
-
-(defn get-ontology-ttl
-  "Get the latest TTL snapshot for an ontology."
-  [event-store ontology-id]
-  (let [events (into [] (event-store/read event-store
-                                          {:types #{:evolutionary/ttl-snapshot-created}
-                                           :tags #{[:ontology ontology-id]}}))]
-    (some-> events last :body)))
-
-(comment
-  ;; Example usage
-
-  ;; Build from CSV sources
-  (build-from-sources ctx
-    {:sources [{:path "/path/to/occupations.csv" :type "csv"}
-               {:path "/path/to/programs.csv" :type "csv"}]
-     :config {:base-uri "http://bryc.ai/ontology#"
-              :similarity-threshold 0.85}})
-
-  ;; Build from inline content
-  (build-from-sources ctx
-    {:sources [{:content "Software Developer, writes code"
-                :type "text"}]
-     :config {:base-uri "http://example.org/"}})
-
-  ;; Incremental evolution
-  (evolve ctx
-    {:ontology-id (random-uuid)  ;; Use actual ontology-id from build-from-sources
-     :sources [{:path "/path/to/new-data.csv" :type "csv"}]})
-
-  ,)
+(defn get-ontology-ttl [ctx ontology-id]
+  (:ttl-output (ontology/export-snapshot ctx ontology-id)))

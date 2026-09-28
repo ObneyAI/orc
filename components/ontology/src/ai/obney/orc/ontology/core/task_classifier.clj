@@ -25,7 +25,8 @@
    Distinct from `core/classifier.clj` which is the evaluation-dimension
    classifier (maps low judge scores to failure URIs); this namespace
    is the TASK classifier (maps task signatures to tree-class UUIDs)."
-  (:require [clojure.string]
+  (:require [ai.obney.orc.ontology.core.read-models :as rm]
+            [clojure.string]
             [clojure.set]
             [malli.core :as m]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]
@@ -947,7 +948,7 @@
         ;; behavior is the best semantic fit, it should not be hidden
         ;; from the model because of a missing composes-into edge.
         filtered (if structural-context
-                   (let [concepts (rmp/project ctx :ontology/concepts)
+                   (let [concepts (rm/get-concept-map ctx)
                          shell-uri (str "tree-class:" structural-context)
                          composer-uris (get-in concepts [shell-uri :composed-by] #{})
                          composer? (fn [c]

@@ -1,5 +1,6 @@
 {:paths ["src" "resources"]
- :deps {ai.djl/api {:mvn/version "0.31.1"}
+ :deps {ai.obney/ontology {:local/root "../../../ontology-exp"}
+        ai.djl/api {:mvn/version "0.31.1"}
         ai.djl.huggingface/tokenizers {:mvn/version "0.31.1"}
         ai.djl.pytorch/pytorch-engine {:mvn/version "0.31.1"}
         org.clojure/data.csv {:mvn/version "1.1.0"}
