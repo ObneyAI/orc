@@ -40,6 +40,20 @@
   (:import [java.io StringWriter]))
 
 ;; =============================================================================
+;; CV-B (C7): closure-rejection message, exported
+;; =============================================================================
+
+(def quoted-inline-function-source-message
+  "The rejection message emit-tree!-fn throws when a checkpointed campaign's
+   :code node carries an already-evaluated closure instead of quoted (fn ...)
+   source. Exported (not private) and used BOTH at the throw site below and
+   by the executor's diagnose-parse-error reactive hint, so the two stay
+   byte-identical by construction and the hint can key off this constant's
+   text (or the ex-data :requirement keyword) instead of a regex over prose."
+  (str "Durable emit-tree! code nodes require quoted (fn ...) source; an "
+       "already-evaluated closure cannot be recorded as durable source"))
+
+;; =============================================================================
 ;; Input Preview (Variable Space vs Token Space)
 ;; =============================================================================
 
@@ -656,9 +670,7 @@
                         (when (and durable-source-required? live-inline-closure?)
                           (throw
                            (ex-info
-                            (str "Durable emit-tree! code nodes require quoted "
-                                 "(fn ...) source; an already-evaluated closure "
-                                 "cannot be recorded as durable source")
+                            quoted-inline-function-source-message
                             {:requirement :quoted-inline-function-source})))
                         ;; Preserve the authored source first. Compile only
                         ;; quoted inline code-node function forms for execution.
@@ -1030,6 +1042,11 @@
    - :stdout - Captured stdout
    - :result - Evaluation result
    - :error - Error message if failed
+   - :error-data - CV-B (C7): (ex-data e) when the thrown exception carries
+     structured ex-data (e.g. emit-tree!-fn's {:requirement
+     :quoted-inline-function-source}), else nil. Carried alongside :error so
+     the executor's reactive hint can key off the requirement keyword instead
+     of parsing the message.
    - :final-output - The validated output from final! (if called)
    - :sub-llm-usage - Aggregated token usage from all sub-LLM calls"
   [{:keys [sci-ctx final-output usage-tracker]} code-string]
@@ -1049,5 +1066,17 @@
          :raw-result nil
          :error-class (.getName (class e))
          :error (.getMessage e)
+         ;; CV-B (C7) root cause: SCI wraps a throw from evaluated code in
+         ;; its OWN sci/error ex-info ({:type :sci/error :line ... :column
+         ;; ... :message ... :sci.impl/callstack ...}) — (ex-data e) on the
+         ;; CAUGHT exception is that wrapper, not the original throw's
+         ;; ex-data. The original ex-info (e.g. emit-tree!-fn's
+         ;; {:requirement :quoted-inline-function-source}) survives one
+         ;; level down as the wrapper's cause. Prefer the cause's ex-data
+         ;; when present (our own domain data) and fall back to the
+         ;; wrapper's (still useful for SCI's own errors, which have no
+         ;; deeper cause) — verified live: a raw (ex-data e) here silently
+         ;; lost the requirement keyword on every checkpointed rejection.
+         :error-data (or (ex-data (ex-cause e)) (ex-data e))
          :final-output @final-output
          :sub-llm-usage @usage-tracker}))))

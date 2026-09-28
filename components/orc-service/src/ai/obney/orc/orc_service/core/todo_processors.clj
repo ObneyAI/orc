@@ -1311,6 +1311,36 @@
        "\n"
        (format-domain-shape-context-line ctx suppress-claims? (:parent-tree-id domain))))
 
+(defn- family-substance-candidate
+  "CV-B (C7): the family's OWN candidate for the NEWBORN branch — added
+   ALONGSIDE the parent's plain-match candidates (never in place of them),
+   so the injection record (CC-13, via structural-display-candidates ->
+   injected-candidates) names both the parent shape the task matched AND
+   the family's own accrued substance rendered beneath the child line.
+
+   Fetches the family's body ONCE (fetch-tree-body) here; the returned
+   candidate stashes the fetched body under :family-body so format-
+   structural-section's newborn branch can render the same substance
+   without a second fetch. :document-metadata carries :granularity
+   :tree-class (a tree-class read, like the consolidated candidate) and
+   :target-id the child — the id CC-13 records a version for.
+
+   Returns nil (no candidate, nothing rendered beneath the child line) when
+   the family has no substance beyond its birth line — format-seed-body
+   returns nil/blank for a body with no capabilities, strengths, weaknesses,
+   or representative uses, and D5 says the parent stays primary either way."
+  [ctx suppress-claims? {:keys [domain top-candidates]}]
+  (let [{:keys [child-tree-id]} domain
+        top-1 (first top-candidates)
+        family-body (fetch-tree-body ctx child-tree-id)]
+    (when (seq (format-seed-body family-body traits-per-seed-cap suppress-claims?))
+      {:content (:summary family-body)
+       :fitness-score (:fitness-score top-1)
+       :reasoning (:reasoning top-1)
+       :rerank-source (:rerank-source top-1)
+       :document-metadata {:granularity :tree-class :target-id child-tree-id}
+       :family-body family-body})))
+
 (defn- structural-display-candidates
   "The structural candidates the render actually puts in front of the model.
 
@@ -1329,26 +1359,47 @@
    (consolidated-domain-child-candidate) — so the injection record names
    the child it showed, at the child's own body version.
 
+   CV-B (C7): the newborn branch APPENDS the family's own candidate
+   (family-substance-candidate) after the parent's plain-match candidates,
+   when the family has substance beyond its birth line. Byte-identical to
+   RS-4 when it does not.
+
+   `suppress-claims?` (default false via the 2-arity form) is the claim-only
+   holdout arm — threaded through so a candidate is only ever counted as
+   'shown' under the SAME arm the render actually used (CC-13's single
+   source of truth).
+
    CC-13: single source of truth for the render AND for the injection record.
    A record of 'what was injected' computed from a different filter than the
    render's would be a measurement of something that never happened."
-  [ctx {:keys [was-fresh-mint? top-candidates domain] :as structural}]
-  (cond
-    (and domain (not (domain-child-consolidated? ctx (:child-tree-id domain))))
-    (plain-match-candidates top-candidates)
+  ([ctx structural] (structural-display-candidates ctx false structural))
+  ([ctx suppress-claims? {:keys [was-fresh-mint? top-candidates domain] :as structural}]
+   (cond
+     (and domain (not (domain-child-consolidated? ctx (:child-tree-id domain))))
+     ;; The family itself can be among top-candidates (a later task that
+     ;; reached the family by match lands on it, C5). The child line stands
+     ;; for it in the render, so it is never ALSO a numbered entry, and it is
+     ;; recorded at most once, as the substance candidate, exactly when its
+     ;; substance was rendered (CC-13: record = render).
+     (let [child-id (str (:child-tree-id domain))
+           base (into [] (remove #(= child-id (str (get-in % [:document-metadata :target-id]))))
+                      (plain-match-candidates top-candidates))
+           family-candidate (family-substance-candidate ctx suppress-claims? structural)]
+       (cond-> base
+         family-candidate (conj family-candidate)))
 
-    domain
-    [(consolidated-domain-child-candidate ctx structural)]
+     domain
+     [(consolidated-domain-child-candidate ctx structural)]
 
-    was-fresh-mint?
-    []
+     was-fresh-mint?
+     []
 
-    :else
-    (plain-match-candidates top-candidates)))
+     :else
+     (plain-match-candidates top-candidates))))
 
 (defn- format-structural-section [ctx suppress-claims? structural]
   (let [{:keys [was-fresh-mint? rerank-fallback? domain]} structural
-        candidates (structural-display-candidates ctx structural)]
+        candidates (structural-display-candidates ctx suppress-claims? structural)]
     (cond
       ;; RS-4: branch on a domain assignment BEFORE the fresh-mint check.
       ;; RS-2 stamps :was-fresh-mint? true on a domain mint, and until this
@@ -1359,18 +1410,34 @@
 
       ;; Newborn domain child: the parent's plain-match entry (every
       ;; candidate that clears the display floor) then the child line — the
-      ;; child line is the assignment and renders regardless.
+      ;; child line is the assignment and renders regardless. CV-B (C7):
+      ;; `candidates` may carry a trailing family-substance candidate
+      ;; (structural-display-candidates); it renders separately, beneath the
+      ;; child line, via format-seed-body — NOT through the numbered
+      ;; Top-match/Alternative# loop below, so it is filtered out of both
+      ;; the count and the loop by target-id.
       domain
-      (str "### Structural patterns (top "
-           (count candidates)
-           " from corpus retrieval)\n"
-           (when rerank-fallback?
-             "Classifier reranker fell back to similarity scoring; treat suggestions with caution and prioritize your own reading of the task.\n\n")
-           (->> candidates
-                (map-indexed (fn [i c] (format-structural-candidate ctx suppress-claims? (inc i) c)))
-                (str/join "\n"))
-           "\n"
-           (format-domain-child-line domain))
+      (let [child-tree-id (:child-tree-id domain)
+            parent-candidates (remove #(= (str child-tree-id)
+                                          (str (get-in % [:document-metadata :target-id])))
+                                      candidates)
+            family-candidate (some #(when (= (str child-tree-id)
+                                             (str (get-in % [:document-metadata :target-id])))
+                                       %)
+                                    candidates)
+            family-substance (:family-body family-candidate)]
+        (str "### Structural patterns (top "
+             (count parent-candidates)
+             " from corpus retrieval)\n"
+             (when rerank-fallback?
+               "Classifier reranker fell back to similarity scoring; treat suggestions with caution and prioritize your own reading of the task.\n\n")
+             (->> parent-candidates
+                  (map-indexed (fn [i c] (format-structural-candidate ctx suppress-claims? (inc i) c)))
+                  (str/join "\n"))
+             "\n"
+             (format-domain-child-line domain)
+             (when family-substance
+               (or (format-seed-body family-substance traits-per-seed-cap suppress-claims?) ""))))
 
       ;; No high-confidence match — caller fresh-minted at root.
       was-fresh-mint?
@@ -1761,11 +1828,17 @@
    independently, and 'this turn saw behaviour X at v4' is the granularity an
    attribution needs. Reads the same bodies the render reads (best-effort —
    an unavailable body records a nil version rather than dropping the
-   candidate, because the candidate WAS shown)."
-  [ctx {:keys [structural behavioral]}]
+   candidate, because the candidate WAS shown).
+
+   `suppress-claims?` (default false via the 2-arity form) threads the same
+   holdout arm the render used into structural-display-candidates, so a
+   CV-B family candidate is recorded exactly when its substance was actually
+   shown under THIS arm — cc13's single-source rule."
+  ([ctx payload] (injected-candidates ctx false payload))
+  ([ctx suppress-claims? {:keys [structural behavioral]}]
   (vec
     (concat
-      (for [c (structural-display-candidates ctx structural)
+      (for [c (structural-display-candidates ctx suppress-claims? structural)
             :let [tid (get-in c [:document-metadata :target-id])]
             :when (some? tid)]
         {:axis :structural
@@ -1783,7 +1856,7 @@
         {:axis :behavioral
          :candidate-id (str bid)
          :version (:version (fetch-behavioral-body ctx bid))
-         :score (some-> (:confidence b) double)}))))
+         :score (some-> (:confidence b) double)})))))
 
 (defn- tick-parent-id
   "The tick that spawned `tick-id`, or nil at the root.
@@ -1948,7 +2021,7 @@
             ;; The candidate set is recorded on BOTH arms — a holdout row that
             ;; did not say what it was denied could not be compared against a
             ;; treated row that got it.
-            candidates (injected-candidates ctx payload)]
+            candidates (injected-candidates ctx suppress-claims? payload)]
         (record-injection! ctx
           (cond-> {:node-id (:id node)
                    :arm arm

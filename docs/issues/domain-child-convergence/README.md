@@ -37,3 +37,30 @@ Bundle inspections run Allium only on what the bundle touched: `allium check` an
 `specs/ontology.allium` (plus `specs/orc-service.allium` only if that spec was touched), `/weed` check-mode over the
 bundle's changed seams, and the obligation audit over the bundle's named obligations. The full-repository sweep
 (every spec under `specs/`, a full `/weed`, whole-spec `propagate`) runs once, in CV-8.
+
+## CV-B verification ledger (orchestrator `/inspect-orc`)
+
+- **Scope:** family body beneath the child line, the family recorded as an injection candidate, a preventive
+  pitfalls bullet in checkpointed campaigns, and a reactive closure-rejection hint keyed on the sandbox's ex-data
+  keyword with a fallback on the sandbox's own exported message constant.
+- **RED, re-run by the orchestrator at HEAD** in a throwaway worktree: the family-substance render test fails; the
+  no-substance and consolidated guards pass, as they should; the hint suite cannot load without the new constant.
+  The implementer reported, faithfully, that it had skipped its own pre-implementation RED run.
+- **Defect found in inspection and fixed:** a later task that reaches the newborn family by match carries the
+  family in its top candidates. The injection record then listed the family twice, and its substance never
+  rendered, because the render's lookup found the plain candidate first. The newborn branch now removes the family
+  from the numbered candidates before appending its substance candidate. The new test
+  `reached-family-renders-once-and-is-recorded-once` failed without the fix, on both symptoms, and passes with it.
+- **Coverage added in inspection:** the hint still fires after a checkpoint resume, from the durable record's
+  175-character error excerpt of the enhanced error. The durable record is built from an allowlist, so the ex-data
+  never reaches an event.
+- **GREEN, re-run by the orchestrator:** 216 tests over 15 namespaces (the new suites, every named guard, and the
+  implementer's breadth set) with one failure, the orchestrator's own excerpt test using the wrong record shape;
+  corrected and the hint suite re-run green (8 tests, 14 assertions).
+- **Allium, scoped:** `allium check` on the orc-service spec shows 0 errors, 2 warnings, 43 info; `analyse` shows 0
+  findings. No spec file changed. Obligation audit: 0 obligations, because the render text and the repair hint
+  carry none (classified as an intentional gap: presentation, not domain behavior). Weed over the seam: the
+  orc-service spec's closure-source statement is unchanged by this bundle; no divergence.
+- **Commit content verified in isolation:** the staged bundle alone, on a clean worktree at the parent commit, runs 216 tests and 1,076 assertions green.
+- **Not yet run:** the orc-service brick gate under poly runs once with CV-A, since the working tree carries CV-A's
+  in-flight ontology changes. No live QA for this bundle; the end-to-end subset will show the hint firing.

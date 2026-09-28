@@ -1847,9 +1847,26 @@
      reported column.
    - 'EOF while reading' — code truncated mid-form; usually a brace or
      paren never closed.
-   - 'Could not resolve symbol' — usually a typo or missing require."
-  [error]
-  (cond
+   - 'Could not resolve symbol' — usually a typo or missing require.
+   - CV-B (C7, reactive closure hint): the sandbox's own
+     :quoted-inline-function-source requirement — checked FIRST via the
+     ex-data keyword when `error-data` is available, falling back to a
+     literal (str/includes?) check against the sandbox's exported message
+     constant when only the message text survives (never a regex over
+     prose, since the message is our own template text, not model-authored)."
+  ([error] (diagnose-parse-error error nil))
+  ([error error-data]
+   (cond
+    (or (= :quoted-inline-function-source (:requirement error-data))
+        (str/includes? (or error "") rlm-sandbox/quoted-inline-function-source-message))
+    (str "Diagnostic hint: this is the durable-checkpoint closure-rejection guard. "
+         "Write every `:code` node's `:fn` as a literal quoted `(fn ...)` form "
+         "inside THIS `emit-tree!` call — never bind the tree or a function to a "
+         "name first and pass the name in. An already-evaluated closure cannot be "
+         "recorded as durable source, so the whole tree is rejected before it is "
+         "appended; re-emit the tree with the `:fn` written inline as `(fn "
+         "[{:keys [inputs]}] ...)`.")
+
     (re-find #"(?i)unmatched delimiter" error)
     (str "Diagnostic hint: an 'Unmatched delimiter' error in (emit-tree! [...]) "
          "almost always means a nested map schema (e.g. inside :output-schemas) "
@@ -1868,7 +1885,7 @@
          "emit-tree!, final!, get-input, get-var, store!) are bound. "
          "Don't reference clojure.core fns by alias.")
 
-    :else nil))
+    :else nil)))
 
 (defn- format-error-with-context
   "R-6: For SCI parse errors with [line col] markers, append the offending
@@ -1880,9 +1897,14 @@
    (Unmatched delimiter / EOF while reading / Could not resolve symbol).
 
    Non-parse errors (or codes that don't have the indicated line) pass
-   through with just the error message + the diagnostic hint when known."
-  [code error]
-  (let [hint (diagnose-parse-error (or error ""))
+   through with just the error message + the diagnostic hint when known.
+
+   `error-data` (CV-B / C7) is the history entry's :error-data, when present
+   — carried through to diagnose-parse-error so the reactive closure-rejection
+   hint can key off the sandbox's own ex-data requirement keyword."
+  ([code error] (format-error-with-context code error nil))
+  ([code error error-data]
+  (let [hint (diagnose-parse-error (or error "") error-data)
         hint-line (when hint (str "\n" hint))]
     (if-let [[line col] (parse-error-position error)]
       (let [lines (str/split (or code "") #"\n")
@@ -1895,7 +1917,7 @@
                "  " (apply str (repeat (dec col) " ")) "^"
                hint-line)
           (str "Error: " error hint-line)))
-      (str "Error: " error hint-line))))
+      (str "Error: " error hint-line)))))
 
 (defn- build-iteration-history
   "Format iteration history for LLM context.
@@ -1925,7 +1947,10 @@
                                  (str "Reasoning: " reasoning "\n"))
                                (when-let [error-excerpt (:error-excerpt entry)]
                                  (str "Error [" (:error-class entry) "]: "
-                                      error-excerpt "\n"))
+                                      error-excerpt "\n"
+                                      (when-let [hint (diagnose-parse-error
+                                                        error-excerpt (:error-data entry))]
+                                        (str hint "\n"))))
                                (when-let [result-profile (:result-profile entry)]
                                  (str "Result profile: " (pr-str result-profile) "\n"))
                                (when-let [stdout-profile (:stdout-profile entry)]
@@ -1948,7 +1973,7 @@
                              "Code:\n```clojure\n" code "\n```\n"
                              (when (seq stdout) (str "Output:\n" stdout "\n"))
                              (cond
-                               error (format-error-with-context code error)
+                               error (format-error-with-context code error (:error-data entry))
                                ;; Tree iterations: the eval result is just the
                                ;; compiled tree object (the model already sees
                                ;; its own emit-tree! code above) — show the
@@ -2496,6 +2521,11 @@
   ([node inputs-preview history blackboard sandbox-vars-map var-creation-times mcp-tools
     {:keys [function-calling? mint-behavior-contract]}]
   (let [rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
+        ;; CV-B (C7): whether this campaign persists a durable checkpoint —
+        ;; scopes the preventive closure-rejection pitfall bullet below, since
+        ;; a non-checkpointed campaign never hits execute-rlm-code's
+        ;; durable-source-required? guard.
+        checkpointed? (boolean (:checkpointed? rlm-config))
         available-code-nodes (get rlm-config :available-code-nodes)
         has-mcp? (boolean (seq mcp-tools))
         mcp-tool-list (str/join ", " mcp-tools)
@@ -3003,6 +3033,13 @@
                       "call. Double-check that every name your `:fn` body references is "
                       "either in `(:keys [...])` destructured from `inputs`, in a `let` "
                       "binding inside the fn, or a sandbox primitive.\n"
+                      (if checkpointed?
+                        (str "- **In a checkpointed campaign, write every `:code` node's `:fn` "
+                             "as a literal quoted `(fn ...)` inside the `emit-tree!` call — "
+                             "never bind the tree or a function to a name first.** An "
+                             "already-evaluated closure cannot be recorded as durable source "
+                             "and the tree is rejected.\n")
+                        "")
                       "- **`(get-in m [...])` on nil returns nil silently.** If your "
                       "`:reads` brings in a value that's nil (because a prior step "
                       "failed), `(get-in nil [:k1 :k2])` returns nil instead of throwing. "
@@ -4255,6 +4292,11 @@
                                             :stdout (:stdout exec-result)
                                             :error-class (:error-class exec-result)
                                             :error enhanced-error
+                                            ;; CV-B (C7): carried alongside :error so the next
+                                            ;; iteration's build-iteration-history rendering can
+                                            ;; key diagnose-parse-error's reactive hint off the
+                                            ;; sandbox's own ex-data requirement keyword.
+                                            :error-data (:error-data exec-result)
                                             :vars-created []})]
                     (or (checkpoint-result (inc iteration) error-history
                                            attempt-start-ms)
