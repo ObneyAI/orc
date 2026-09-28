@@ -1,21 +1,80 @@
 # Living Descriptions — how ORC trees and nodes learn to describe themselves
 
-> **A running explainer.** This doc grows alongside the Category C work. It explains, in layered detail, how ORC builds up self-knowledge about the workflows it runs — what each tree and each node is good at, what it tends to fail at, and how those descriptions evolve over time as the system observes more events.
->
-> Audiences: non-technical stakeholders (Part 1), developers using ORC (Part 2), implementers maintaining the system (Part 3).
->
-> **⚠ Alpha-stage capability.** The Living Descriptions system is
-> functional end-to-end but the corpus + classifier interplay is still
-> being investigated for out-of-distribution behavior. See the
-> [Current capabilities and known limitations](SELF-IMPROVING-LOOP.md#current-capabilities-and-known-limitations)
-> section of the consumer guide for what's solid today and what's
-> rough.
+In the ORC lab, judges don't just score a run; they explain it. **Living Descriptions** turn those explanations into evidence-backed knowledge about every node, tree shape and behavior: what it is good at, when it fails, when to use it and when to avoid it. When a brand-new task arrives, ORC retrieves the descriptions that fit, and the model composes a new tree from them.
 
-> **Consumer entry point:** For a progressive introduction to the self-improving loop, see [SELF-IMPROVING-LOOP.md](SELF-IMPROVING-LOOP.md). This doc covers the architecture and implementation detail — three granularities, four anti-recency safeguards, and the consolidation pipeline.
+<p align="center"><img src="media/ld-feedback-to-claims.gif" alt="Judge feedback highlighted and turned into strengths, weaknesses and guards" width="760"></p>
+<p align="center"><sub>Judges' feedback becomes evidence-backed claims (strengths, capabilities, good-when, weaknesses, avoid-when) that describe the node. <i>Judge sentences illustrative; claim texts from a real description.</i></sub></p>
+
+> **⚠ Alpha-stage capability.** Living Descriptions work end to end, but how the corpus and the classifier behave on out-of-distribution tasks is still being investigated. See [Honest status today](SELF-IMPROVING-LOOP.md#honest-status-today--solid-vs-rough) for what is solid and what is rough.
+
+This guide is layered: stakeholders read [Part 1](#part-1--the-30-second-story-for-stakeholders), developers using ORC read [Part 2](#part-2--the-developer-mental-model), and implementers read [Part 3](#part-3--implementers-view-architecture--status). For a hands-on introduction to the whole self-improving loop, start with [SELF-IMPROVING-LOOP.md](SELF-IMPROVING-LOOP.md).
 
 ## Part 1 — The 30-second story (for stakeholders)
 
-ORC runs LLM-powered workflows as **behavior trees** — structured plans of LLM calls, code transforms, parallel branches, and so on. When the same workflow runs many times, the **Living Descriptions** system automatically captures what each tree and node is good at, when it tends to fail, and what to prefer or avoid — building up self-knowledge from real execution evidence, not hand-written docs. A human-authored seed corpus starts the system on day one; as workflows run, descriptions evolve: successes gain confidence and failures get actionable, principle-shaped lessons. When a developer builds a new workflow, the system surfaces relevant prior patterns as design inspiration. The result: ORC gets smarter over time without needing developers to babysit it — see [Part 2](#part-2--the-developer-mental-model) for how.
+ORC is a laboratory for building AI workflows: they run as **behavior trees** — structured plans of LLM calls, code transforms, parallel branches, and so on — and every execution is recorded and judged. When the same workflow runs many times, the **Living Descriptions** system automatically captures what each tree and node is good at, when it tends to fail, and what to prefer or avoid — building up self-knowledge from real execution evidence, not hand-written docs. A human-authored seed corpus starts the system on day one; as workflows run, descriptions evolve: successes gain confidence and failures get actionable, principle-shaped lessons. When a developer builds a new workflow, the system surfaces relevant prior patterns as design inspiration. The result: ORC gets smarter over time without needing developers to babysit it — see [Part 2](#part-2--the-developer-mental-model) for how.
+
+### Watch it work: two trees nobody had built before
+
+Descriptions only matter if they change what gets built. These are two real benchmark runs (`gemini-3-flash-preview`, with the behavior library switched on via `:auto-classify? true`)), retrieving from ORC's shipped seed descriptions. Neither task's domain appears anywhere in those seeds; only its general shape does.
+
+#### 1 · Scale a ratatouille recipe from 6 plates to 60
+
+<p align="center"><img src="media/ld-compose.gif" alt="The recipe brief, the retrieved ETL and Analysis descriptions, and the tree the model composes from them" width="760"></p>
+<p align="center"><sub>The brief, the descriptions retrieved for it, and the tree composed from them. <i>Real run; the drill-in on the logistics node is an illustrative breakdown.</i></sub></p>
+
+**The brief.** A restaurant's chef-tested ratatouille feeds 6, and now they're catering for 60. It isn't ×10: a 12-inch pan holds about 6 plates, bigger pots heat unevenly, salt doesn't scale linearly with the vegetables, big batches get over-stirred and mashed, the knife work needs stations, and they need hold times and a cost. Wanted back: `{:scaled-ingredients :revised-technique :workflow :timing :cost-estimate :pitfalls-and-mitigations}`.
+
+**What was retrieved.** The *ETL pipeline* shape (fit 0.95), whose worked pattern is a sequence of stages with named intermediates, and the *Analysis* behavior, whose description says: *"for multi-dimensional analysis, fan out per-dimension `:llm` stages via `:parallel`."*
+
+**What the model said, before writing any tree:**
+
+> *"I am adopting the ETL Pipeline structural pattern … I will also incorporate the Analysis behavioral pattern by using a `:parallel` block to handle orthogonal dimensions like `logistics` (workflow/timing) and `economics` (costing) separately … I rejected a single-pass LLM call because it would likely fail to account for the specific non-linear scaling constraints (like salt ratios and cookware capacity)."*
+
+**The tree it built:**
+
+```clojure
+[:sequence
+ [:llm      {:writes [:scaled_base]}]   ; scale the recipe: seasoning, batches, cookware
+ [:parallel
+  [:llm     {:writes [:logistics]}]     ; workflow and timing
+  [:llm     {:writes [:economics]}]]    ; costing
+ [:code     {:writes [:result]}]]       ; assemble the catering package
+```
+
+Without the library, the same model built a two-step tree: one LLM call that did all of it, then a formatting step.
+
+#### 2 · Build a 16-week marathon training plan
+
+<p align="center"><img src="media/ld-marathon.gif" alt="The marathon brief, the retrieved ETL and iterative-refinement descriptions, and the composed tree" width="760"></p>
+<p align="center"><sub>Same library, different composition: a sequential plan with a critique-and-revise stage. <i>Real run; the drill-in on review &amp; revise is an illustrative breakdown.</i></sub></p>
+
+**The brief.** A 38-year-old recreational runner at 25 miles a week wants a 4:00 marathon and has a history of Achilles tendinopathy. The plan must build to 55–60 miles a week, cut back every 4th week, taper for 3 weeks, calibrate paces to the goal, include Achilles-safe strength work, and account for 6,200 ft altitude with no track. Wanted back: `{:week-by-week :paces :strength-program :red-flags}`.
+
+**What was retrieved.** *ETL pipeline* (fit 0.92) and *Iterative refinement* (draft → critique → revise), whose description says an *"explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them."*
+
+**What the model said:**
+
+> *"I am adopting the ETL (Extract, Transform, Load) pattern combined with Iterative Refinement (draft-critique-revise) … I am skipping the `map-each` pattern for individual weeks because the schedule requires global consistency (e.g., volume ramps and cutback cycles) that is better handled by a model looking at the full timeline."*
+
+**The tree it built:** calibrate paces → draft 16 weeks → review & revise → load.
+
+```clojure
+[:sequence
+ [:llm  {:writes [:calibrations]}]    ; paces and strength protocol first
+ [:llm  {:writes [:draft_plan]}]      ; the full 16-week schedule
+ [:llm  {:writes [:final_content]}]   ; critique ramps, cutbacks, Achilles safety; revise
+ [:code {:writes [:result]}]]         ; package the requested map
+```
+
+Here the model reached a similar shape without the library too; the retrieved descriptions changed its *argument* (what to adopt, what to reject and why) more than its topology.
+
+**Same library, two compositions.** The recipe became a *parallel* fan-out of independent analyses; the marathon became a *sequential* draft-and-refine plan. The model is combining described pieces, not replaying one template.
+
+### What happens next
+
+Each of these runs is itself new evidence. Its judged executions feed the descriptions it drew on (see [How descriptions evolve](#how-descriptions-evolve)), and when nothing in the library fits a task, the model can contribute a new behavior with the `(mint-behavior! ...)` sandbox primitive, which later tasks can retrieve.
+
+**Honest limits.** Retrieved descriptions are prepended to the model's prompt, so they cost tokens and time. On ORC's R-Inject benchmark tasks the overhead ranged from +20% tokens on a large RFP to +657% on a short employment agreement, and wall-clock time roughly doubled or tripled, because the model builds more elaborate trees. The proportional cost is highest on small tasks.
 
 ## Part 2 — The developer mental model
 

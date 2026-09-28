@@ -12,6 +12,9 @@ Everything in ORC starts from one idea: **you build a workflow by composing node
 - **As your methodology grows, factor reusable pieces into their own sheets and `:delegate` to them.** A step that has become its own little methodology — "summarize a document", "score a candidate", "extract entities" — graduates into its own sheet. Your central tree then `:delegate`s to it. Your primary tree becomes a *composition of subbehaviors* rather than one giant flat list of leaves. This is the same move you make when you extract a function out of a long block of code.
 - **When one step is genuinely open-ended, reach for `:repl-researcher`.** Some work can't be laid out as a fixed tree ahead of time — the right shape depends on what the data turns out to be. That's where the exploratory `:repl-researcher` node earns its weight: the model designs (and re-designs) a tree at runtime.
 
+<p align="center"><img src="media/run-knowledge-work.gif" alt="An ORC workflow ticking while its blackboard fills" width="760"></p>
+<p align="center"><sub>A running ORC tree: each node reads and writes typed blackboard keys (the chalkboard); the tree decides what runs next. <i>Illustrative workload, real node kinds.</i></sub></p>
+
 Read the rest of the guide in that order — it goes from simple, to composed, to exploratory, then to the cross-cutting concerns you add on top.
 
 ### How to read this guide

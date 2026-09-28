@@ -12,6 +12,9 @@ You already have a behavior tree with an `:llm` node, and you hand-wrote its ins
 
 > **Your `:llm` node works, but the instruction is your first guess. GEPA automatically searches for a better instruction — running your tree against examples, scoring with judges, and proposing improved instructions through reflective mutation.**
 
+<p align="center"><img src="media/gepa-loop.gif" alt="GEPA candidate rewrite, quick test, full evaluation and Pareto frontier" width="760"></p>
+<p align="center"><sub>Failing examples + the judges' weakest-first feedback → a rewritten instruction → a 3-example quick test → full evaluation → a per-example Pareto frontier. <i>Illustrative texts and scores.</i></sub></p>
+
 Here is the whole arc, from the tree you already have to an instruction you didn't have to write. Each step is a few lines at the REPL.
 
 ### Your starting point
@@ -44,6 +47,9 @@ So the only requirement to make a node optimizable is that it has a stable `:nam
 > If your tree has several `:llm` nodes, GEPA optimizes them all at once (round-robin per component), each keyed by its node name. To optimize exactly one node, point GEPA at a sheet that contains only that node — see [Optimizing inside a subbehavior](#optimizing-inside-a-subbehavior).
 
 ### Step 2 — build a trainset and valset from examples you already have
+
+<p align="center"><img src="media/gepa-dataset.gif" alt="A node's past executions pulled from the event store into practice and exam sets" width="760"></p>
+<p align="center"><sub>The event store already holds each node's real inputs, outputs and judge scores, keyed by node — the raw material for a trainset (failures to learn from) and a valset (the exam). <i>Illustrative.</i></sub></p>
 
 GEPA needs example inputs to run your tree against. An example is a flat map whose keys match your node's `:reads` (string keys). You almost certainly already have a handful of representative inputs — past tickets, sample questions, fixtures from a test.
 

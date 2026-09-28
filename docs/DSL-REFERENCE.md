@@ -135,6 +135,9 @@ Nodes are the building blocks of workflows. There are two categories:
 
 ### Execution Model
 
+<p align="center"><img src="media/run-knowledge-work.gif" alt="An ORC tree ticking with a live blackboard" width="760"></p>
+<p align="center"><sub>A tick walks the tree; every node reads and writes declared blackboard keys. <i>Illustrative workload, real node kinds.</i></sub></p>
+
 1. **Build phase** - Workflow definition is stored in the event store
 2. **Execute phase** - Engine traverses the tree, running nodes
 3. **Success/Failure** - Each node returns success or failure

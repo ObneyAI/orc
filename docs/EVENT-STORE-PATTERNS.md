@@ -124,6 +124,9 @@ materializes its events into a vector.
 
 ## Overview
 
+<p align="center"><img src="media/bt-robot-events.gif" alt="A behavior tree's decisions streaming into an event store" width="760"></p>
+<p align="center"><sub>Every tick lands in the event store; read models project it into whatever view you need.</sub></p>
+
 The Grain v3 event store provides:
 
 - **Immutable Event Log** - Every state change is recorded as an event

@@ -6,6 +6,9 @@ LLM-as-judge evaluation for ORC sheet service executions, with GEPA-compatible f
 
 ## Start here: make the tree you already have better
 
+<p align="center"><img src="media/judges.gif" alt="Judges scoring node outputs asynchronously" width="760"></p>
+<p align="center"><sub>Judges score the nodes that matter while the work keeps running. <i>Illustrative.</i></sub></p>
+
 You have a behavior tree. Maybe it's a `:sequence` of `:llm` nodes — survey a
 document, diff it, classify the changes, summarize. It runs. The tree completes.
 Each `:llm` node produces output.

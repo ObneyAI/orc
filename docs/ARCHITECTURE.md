@@ -267,6 +267,9 @@ start event, and is idempotent; completed effects are not scheduled again.
 
 ## Node Execution Behaviors
 
+<p align="center"><img src="media/bt-games.gif" alt="A game guard's behavior tree ticking" width="760"></p>
+<p align="center"><sub>The same tick semantics game AI has used for decades: sequences run in order, fallbacks try the next path, conditions decide, actions do.</sub></p>
+
 ### Sequence
 
 ```mermaid
