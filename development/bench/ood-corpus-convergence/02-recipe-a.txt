@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: recipe (off-domain); variant a of 3 — the same domain re-asked with a different concrete instance.
+A small restaurant has a chef-tested ratatouille recipe that yields 6 plates. Scale it to 60 plates for a catering event: scaled ingredient quantities (seasoning does not scale linearly), a revised batch-cooking technique for the larger volume, a prep workflow with station setup, and a cost estimate per plate. Output: {:scaled-ingredients ... :technique ... :workflow ... :cost-per-plate ...}

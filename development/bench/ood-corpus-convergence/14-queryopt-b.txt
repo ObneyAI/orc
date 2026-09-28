@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: queryopt (off-domain); variant b of 3 — the same domain re-asked with a different concrete instance.
+A MySQL 8 dashboard query aggregating page views by day and country for the last 30 days takes 18 seconds on a 400-million-row events table. From the query, EXPLAIN output and schema, find the cause (full scan, missing covering index, function on the indexed column), propose the fix including a possible summary table, estimate the gain and give the final SQL. Output: {:diagnosis ... :indexes [...] :rewritten-query ... :expected-plan ...}

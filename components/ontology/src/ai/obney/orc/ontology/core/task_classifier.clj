@@ -217,6 +217,10 @@
   ((requiring-resolve 'ai.obney.orc.ontology.interface/get-description)
    ctx granularity target-id))
 
+(defn- get-concept-by-uri [ctx uri]
+  ((requiring-resolve 'ai.obney.orc.ontology.interface/get-concept-by-uri)
+   ctx uri))
+
 (defn- rerank! [ctx opts]
   ((requiring-resolve 'ai.obney.orc.ontology.core.reranker/rerank!)
    ctx opts))
@@ -294,17 +298,33 @@
 (defn- get-tree-class-children
   "Return the children of `parent-target-id` as {:target-id :description}
    maps. Reads the concepts read-model for narrower URIs and pulls each
-   child's description from the descriptions read-model. Children
-   without a description are dropped (the rerank step needs content)."
+   child's description from the descriptions read-model, trying :tree-class
+   scope FIRST (RS-3: a runtime-emergent domain child describes itself
+   through the CV-1 signature claim route, which lands under :tree-class —
+   C-Loop-1) and falling back to :tree-fingerprint (the seeded instances,
+   C-2d-1's projector). RS-P2's Q-c finding: reading :tree-fingerprint only
+   made every domain child invisible to this walk even though its parent
+   edge existed. Children without a description under EITHER scope are
+   dropped (the rerank step needs content).
+
+   RS-5 (gap A): each returned map also carries `:scope` — the SCOPE the
+   description was actually found under (`:tree-class` or
+   `:tree-fingerprint`), never hardcoded — so `pick-best-child` can stamp
+   the synthetic candidate's `:document-metadata :granularity` with the
+   scope it was read under instead of a hardcoded axis."
   [ctx parent-target-id]
   (let [parent-uri (str tree-class-uri-prefix parent-target-id)
         child-uris (or (get-narrower-concepts ctx parent-uri) #{})]
     (vec
       (keep (fn [child-uri]
               (let [child-id (uri->target-id child-uri)
-                    desc (get-description ctx :tree-fingerprint child-id)]
+                    tree-class-desc (get-description ctx :tree-class child-id)
+                    scope (if tree-class-desc :tree-class :tree-fingerprint)
+                    desc (or tree-class-desc
+                             (get-description ctx :tree-fingerprint child-id))]
                 (when desc
                   {:target-id child-id
+                   :scope scope
                    :description desc})))
             child-uris))))
 
@@ -314,14 +334,22 @@
    that meets the auto-classify threshold, or nil if no child does.
 
    RR-2: `model` is an OPTIONAL reranker :model override, threaded
-   straight through to `rerank!`'s own :model opt — nil is a no-op."
+   straight through to `rerank!`'s own :model opt — nil is a no-op.
+
+   RS-5 (gap A): each candidate's `:document-metadata :granularity` is the
+   SCOPE `get-tree-class-children` actually read the child's description
+   under (`:scope`, RS-5) — `:tree-class` for a runtime-emergent domain
+   child (CV-1's signature route) or `:tree-fingerprint` for a seeded
+   instance — never a hardcoded axis. Defaults to `:tree-fingerprint` when
+   a caller-supplied child map carries no `:scope` (defensive; every child
+   `get-tree-class-children` returns carries one)."
   [ctx intent children threshold model]
   (when (seq children)
     (let [candidates (mapv (fn [c]
                              {:content (or (-> c :description :summary) "")
                               :score 0.0
                               :document-id (str (:target-id c))
-                              :document-metadata {:granularity :tree-fingerprint
+                              :document-metadata {:granularity (or (:scope c) :tree-fingerprint)
                                                   :target-id (:target-id c)
                                                   :confidence 1.0
                                                   :last-update "—"}})
@@ -609,6 +637,186 @@
            :report report)
     result))
 
+;; =============================================================================
+;; RS-2 (ADR 0006, D7b) — domain-child assignment after a :tree-class :match
+;;
+;; After the existing match/bundle/walk-down/deferral logic above has
+;; produced an outcome, apply the assigned candidate's RS-1 domain verdict
+;; (:domain-coverage/:domain-label/:domain-reasoning, carried onto the
+;; candidate by interface.clj's apply-rerank JOIN) and produce the
+;; domain-child assignment the spec's three rules describe:
+;;
+;;   MintDomainChild        — no domain children yet; coverage partial/
+;;                            uncovered → mint the first one.
+;;   LandOnDomainChild      — domain children exist; the judged label
+;;                            matches one → assign to it (verdict NOT
+;;                            consulted; D7b).
+;;   MintSiblingDomainChild — domain children exist; the judged label is
+;;                            new → mint a sibling (verdict NOT consulted).
+;;
+;; Pure: no event is recorded here (RS-3 does that); the result map carries
+;; everything RS-3 needs (:domain-verdict, :domain-children-considered, and
+;; on a deferral :domain-deferral).
+;; =============================================================================
+
+(defn- canonicalize-domain-label
+  "RS-2: the ONLY normalisation applied to the reranker's JUDGED
+   :domain-label — trim, lower-case, then collapse internal whitespace runs
+   to a single hyphen. A FORMATTING rule, not a matching rule: no synonym
+   lists, no fuzzy/regex matching over model prose (D7/D7b). A nil or blank
+   label canonicalises to nil, which callers below treat as an absent label
+   (`DomainCoverageIsJudgedNotInferred` — no child is ever minted from an
+   empty label)."
+  [label]
+  (when (and (string? label) (not (clojure.string/blank? label)))
+    (let [canonical (-> label
+                        clojure.string/trim
+                        clojure.string/lower-case
+                        (clojure.string/replace #"\s+" "-"))]
+      (when-not (clojure.string/blank? canonical) canonical))))
+
+(defn- stable-domain-child-identity
+  "RS-2's `stable_domain_child_identity` (@invariant
+   DomainChildIdentityIsStable): the domain-child identity derived
+   DETERMINISTICALLY from the parent tree-class id + the CANONICAL (chosen)
+   label — same task, same label, same identity every time. Same
+   derivation as `commands.clj`'s private `stable-uuid-from`
+   (`UUID/nameUUIDFromBytes` over a namespaced string); copied here as a
+   one-liner rather than importing `commands` into this pure ns."
+  [parent-id canonical-label]
+  (java.util.UUID/nameUUIDFromBytes
+    (.getBytes (str "domain-child:" parent-id ":" canonical-label) "UTF-8")))
+
+(defn- default-domain-children-fn
+  "The real default for the `:domain-children-fn` injected capability: the
+   existing domain children of a :tree-class parent, as
+   {:target-id :domain-label} maps. Reads the parent's narrower concepts
+   (the same graph edge walk-down's own child lookup uses) and each
+   child's CONCEPT :label — RS-3's `:ontology/mint-domain-child` stamps the
+   judged domain label directly onto the child's tree-class concept at
+   birth (RS-P2: the command path, never a description body write — CC-6).
+   A child whose :label is blank, or equals its own id (the generic
+   placeholder `ensure-tree-class-concept!` lazy-creates for an ordinary,
+   non-domain tree-class concept it happens to have as a narrower — never a
+   judged domain label), is excluded — absent -> no children.
+
+   Does NOT fail open. A store failure here is not \"no children yet\" —
+   reading it that way would mint a fresh sibling for a domain that already
+   has a child (the scatter this arc exists to prevent). The failure
+   propagates and `assign-domain-child` turns it into a domain-axis deferral
+   (`:children-lookup-failed`) that leaves the pre-existing assignment
+   untouched and mints nothing (DomainCoverageIsJudgedNotInferred: what
+   cannot be resolved defers and records why)."
+  [ctx parent-target-id]
+  (let [parent-uri (str tree-class-uri-prefix parent-target-id)
+        child-uris (or (get-narrower-concepts ctx parent-uri) #{})]
+    (vec
+      (keep (fn [child-uri]
+              (let [child-id (uri->target-id child-uri)
+                    concept (get-concept-by-uri ctx child-uri)
+                    label (:label concept)]
+                (when (and (string? label) (not (clojure.string/blank? label))
+                           (not= label (str child-id)))
+                  {:target-id child-id :domain-label label})))
+            child-uris))))
+
+(defn- domain-deferral
+  "RS-2's `:domain-deferral` marker: the domain axis could not be resolved
+   (coverage :unknown/missing/malformed, a blank/nil label where a child
+   would have been minted — 'no child from an empty label' — or a failed
+   children lookup). No child is created; the pre-existing match/walk-down
+   assignment is left exactly as it was, and the reason is recorded."
+  ([] (domain-deferral :unknown-coverage))
+  ([reason] {:axis :domain :reason reason}))
+
+(defn- assign-domain-child
+  "RS-2: apply MintDomainChild / LandOnDomainChild / MintSiblingDomainChild
+   to a :match result already known to be on the :tree-class axis, with
+   `parent-id` = the assigned class and `verdict` = the assigned
+   candidate's {:domain-coverage :domain-label :domain-reasoning} (RS-1).
+
+   Every branch carries :domain-verdict (the RAW verdict, unnormalised) and
+   :domain-children-considered (the RAW labels the seam returned) so RS-3
+   can record them."
+  [ctx result parent-id verdict]
+  (let [children-fn (or (:domain-children-fn ctx) default-domain-children-fn)
+        children (try (or (children-fn ctx parent-id) [])
+                      (catch Throwable t
+                        (u/log ::domain-children-lookup-failed
+                               :parent-target-id parent-id
+                               :error (.getMessage t))
+                        ::lookup-failed))
+        lookup-failed? (= ::lookup-failed children)
+        children (if lookup-failed? [] children)
+        considered (mapv :domain-label children)
+        canonical-label (canonicalize-domain-label (:domain-label verdict))
+        coverage (:domain-coverage verdict)
+        base (-> result
+                (assoc :domain-verdict verdict)
+                (assoc :domain-children-considered considered))]
+    (cond
+      ;; A failed lookup is not knowledge of \"no children\": defer, mint nothing.
+      lookup-failed?
+      (assoc base :domain-deferral (domain-deferral :children-lookup-failed))
+
+      (seq children)
+      ;; DomainChildrenAreAlwaysConsidered: a matched class with domain
+      ;; children is NOT a leaf. D7b: the coverage verdict decides only the
+      ;; class's FIRST child; with children present, only the judged label
+      ;; decides (sibling reuse vs mint) — the verdict is NOT consulted.
+      (if-not canonical-label
+        (assoc base :domain-deferral (domain-deferral))
+        (if-let [existing (some (fn [c]
+                                  (when (= canonical-label
+                                          (canonicalize-domain-label (:domain-label c)))
+                                    c))
+                                children)]
+          (-> base
+              (assoc :assigned-tree-id (:target-id existing))
+              (assoc :assigned-via :land-on-domain-child)
+              (assoc :parent-tree-id parent-id)
+              ;; RS-4 inspection: the landed child's label is a fact of the
+              ;; outcome (the spec's TaskClassified carries domain_label on
+              ;; every rule); the R-Inject render names the child by it.
+              (assoc :domain-label canonical-label)
+              (assoc :was-fresh-mint? false))
+          (-> base
+              (assoc :assigned-tree-id (stable-domain-child-identity parent-id canonical-label))
+              (assoc :assigned-via :mint-sibling-domain-child)
+              (assoc :parent-tree-id parent-id)
+              (assoc :domain-label canonical-label)
+              (assoc :was-fresh-mint? true))))
+
+      :else
+      (case coverage
+        :covered base
+
+        (:partial :uncovered)
+        (if-not canonical-label
+          (assoc base :domain-deferral (domain-deferral))
+          (-> base
+              (assoc :assigned-tree-id (stable-domain-child-identity parent-id canonical-label))
+              (assoc :assigned-via :mint-domain-child)
+              (assoc :parent-tree-id parent-id)
+              (assoc :domain-label canonical-label)
+              (assoc :was-fresh-mint? true)))
+
+        (assoc base :domain-deferral (domain-deferral))))))
+
+(defn- maybe-assign-domain-child
+  "RS-2 entry point: after the existing match/bundle/walk-down/deferral
+   logic produces `result`, widen a :tree-class-axis :match with the
+   MintDomainChild/LandOnDomainChild/MintSiblingDomainChild outcome.
+   :bundle, walk-down's own :mint, :uncertain, and a :tree-fingerprint-axis
+   :match pass through UNTOUCHED — this only ever widens a :tree-class
+   :match."
+  [ctx result top-1]
+  (if (and (= :match (:assigned-via result))
+           (= :tree-class (-> top-1 :document-metadata :granularity)))
+    (assign-domain-child ctx result (:assigned-tree-id result)
+                         (select-keys top-1 [:domain-coverage :domain-label :domain-reasoning]))
+    result))
+
 (defn classify-task
   "Pure classification function: given a task signature + optional
    parent-context summary + threshold, returns a tree-class
@@ -718,8 +926,15 @@
                              (rerank-fallback?* top-1))]
     ;; CC-20 (ADR 0027): every classification reports what its confidence
     ;; gate did — log-confidence-gate! wraps the result and returns it.
+    ;; RS-2: maybe-assign-domain-child widens a :tree-class-axis :match with
+    ;; the domain-child outcome BEFORE the gate report is computed/logged —
+    ;; :bundle, walk-down's own :mint, :uncertain, and a :tree-fingerprint
+    ;; match pass through it untouched (only :assigned-via :match on top-1's
+    ;; own axis ever changes).
     (log-confidence-gate!
-     (cond
+     (maybe-assign-domain-child
+      ctx
+      (cond
       ;; EL-3 (ADR 0015): the reranker FELL BACK to raw ColBERT — we do NOT
       ;; KNOW the fit. De-conflate uncertainty from novelty: this is NOT a
       ;; confident no-match. Detect-and-defer — return :outcome :uncertain
@@ -838,6 +1053,7 @@
                          :else :walk-down))
                 (assoc :outcome :matched)
                 (assoc :rerank-fallback? rerank-fallback?))))))
+      top-1)
      threshold)))
 
 ;; =============================================================================

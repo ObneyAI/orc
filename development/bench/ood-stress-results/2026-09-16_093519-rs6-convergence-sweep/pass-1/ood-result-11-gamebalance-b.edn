@@ -1,0 +1,338 @@
+{:assigned-tree-id #uuid "9b3858ee-aaa6-4a1e-b9a5-2819164001ef",
+ :tick-id #uuid "b11128ae-2cc4-41d2-b6f9-7a4bef4f192c",
+ :slug "11-gamebalance-b",
+ :parent-tree-id nil,
+ :domain-label nil,
+ :outcome :novel,
+ :domain-deferral nil,
+ :domain-verdict nil,
+ :node-id #uuid "6f34b4a4-c608-40d3-a652-c554c9408a0c",
+ :top-1
+ {:target-id "seed:tree:ParallelIndependent",
+  :fitness-score 0.3,
+  :rerank-source :reranker,
+  :domain-coverage :uncovered,
+  :domain-label "game-weapon-balancing"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "9b3858ee-aaa6-4a1e-b9a5-2819164001ef",
+  :classified-at "2026-09-16T09:38:45.149285-05:00",
+  :reasoning
+  "While the task involves iteration, it is not a simple extraction over a document; it requires complex multi-step reasoning (simulate, iterate, adjust). The ParallelIndependent structure is generally a poor fit for sequential iteration, but it is ranked higher than Chunked-Extraction because it lacks a specific domain guard that actively forbids the generation and tuning logic present in the query.",
+  :outcome :novel,
+  :source-node-id #uuid "6f34b4a4-c608-40d3-a652-c554c9408a0c",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "bf47c816-2833-320e-9fbd-6ae109275ab0",
+    :confidence 0.9,
+    :was-fresh-mint? false,
+    :reasoning
+    "This task is a complex design and simulation problem involving multiple interacting variables (damage, rate of fire, range fall-off, reload). The candidate's recommended-pattern for 'iterative-refinement (draft -> critique -> finalize)' perfectly matches the task's requirement to 'iterate until no class exceeds 35% pick rate'. The output requirement for specific data structures (:adjustments, :pick-rate-matrix) aligns with the strength of structuring output for downstream bindable fields.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "b11128ae-2cc4-41d2-b6f9-7a4bef4f192c",
+  :event/tags
+  #{[:description-target #uuid "9b3858ee-aaa6-4a1e-b9a5-2819164001ef"]
+    [:tick #uuid "b11128ae-2cc4-41d2-b6f9-7a4bef4f192c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T14:38:45.149456Z",
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "wall-time equals the slowest child instead of the sum of all children",
+      :good-when
+      "the same source data needs 2-3+ independent transformations AND children's latencies are similar AND children's :writes don't overlap",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:document] :writes [:summary]}] [:llm {:reads [:document] :writes [:entities]}] [:llm {:reads [:document] :writes [:key-dates]}]] [:final {:keys [:summary :entities :key-dates]}]]"}],
+    :avoid-when
+    ["the work is per-item over a collection — use :map-each (collection iteration), not :parallel (independent transformations)"
+     "any child depends on any other child's output — use :sequence"
+     "only one child exists — drop the :parallel wrapper"
+     "any two children declare the same key in their :writes"
+     "one child is dramatically slower than the others AND a downstream node needs all children's results"
+     "a child's :reads include a key another sibling writes to"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ParallelIndependent",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.731207-05:00"},
+    :domain-label "game-weapon-balancing",
+    :content
+    "ParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.",
+    :domain-coverage :uncovered,
+    :rank 8,
+    :reasoning
+    "While the task involves iteration, it is not a simple extraction over a document; it requires complex multi-step reasoning (simulate, iterate, adjust). The ParallelIndependent structure is generally a poor fit for sequential iteration, but it is ranked higher than Chunked-Extraction because it lacks a specific domain guard that actively forbids the generation and tuning logic present in the query.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "two children with overlapping :writes race — the surviving value is non-deterministic",
+      :avoid-when
+      "any two children declare the same key in their :writes",
+      :recommended-alternative
+      "give each child a distinct :writes key; OR use :sequence so writes happen in order; OR aggregate via :code after the :parallel"}
+     {:trait
+      "uneven child latencies mean the parallel speedup is bottlenecked by the slowest",
+      :avoid-when
+      "one child is dramatically slower than the others AND a downstream node needs all children's results",
+      :recommended-alternative
+      "split the slow child into smaller pieces via :map-each so its work parallelizes too; OR restructure so the slow child runs in :sequence with a downstream node that doesn't need siblings' results"}
+     {:trait
+      "children cannot read each other's outputs — they execute concurrently",
+      :avoid-when
+      "a child's :reads include a key another sibling writes to",
+      :recommended-alternative
+      "use :sequence to chain dependent computations; OR ensure each child reads only from blackboard keys set BEFORE the :parallel"}],
+    :domain-reasoning
+    "The task is about game design and balancing, which is not mentioned in the representative uses for this structural pattern.",
+    :cos-good 0.9982196109934967,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9951528826201129,
+    :score 445.22531918913194,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.3,
+    :document-id ":tree-class:\"seed:tree:ParallelIndependent\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9982196109934967,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "wall-time equals the slowest child instead of the sum of all children",
+      :good-when
+      "the same source data needs 2-3+ independent transformations AND children's latencies are similar AND children's :writes don't overlap",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:document] :writes [:summary]}] [:llm {:reads [:document] :writes [:entities]}] [:llm {:reads [:document] :writes [:key-dates]}]] [:final {:keys [:summary :entities :key-dates]}]]"}],
+    :avoid-when
+    ["the work is per-item over a collection — use :map-each (collection iteration), not :parallel (independent transformations)"
+     "any child depends on any other child's output — use :sequence"
+     "only one child exists — drop the :parallel wrapper"
+     "any two children declare the same key in their :writes"
+     "one child is dramatically slower than the others AND a downstream node needs all children's results"
+     "a child's :reads include a key another sibling writes to"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ParallelIndependent",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.714214-05:00"},
+    :domain-label "game-weapon-balancing",
+    :content
+    "ParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.",
+    :domain-coverage :uncovered,
+    :rank 9,
+    :reasoning
+    "This fingerprint shares the same structural properties as its tree-class. It is not a direct fit for a simulation/iteration loop, but it does not carry the 'extraction-only' guard found in the other candidates.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "two children with overlapping :writes race — the surviving value is non-deterministic",
+      :avoid-when
+      "any two children declare the same key in their :writes",
+      :recommended-alternative
+      "give each child a distinct :writes key; OR use :sequence so writes happen in order; OR aggregate via :code after the :parallel"}
+     {:trait
+      "uneven child latencies mean the parallel speedup is bottlenecked by the slowest",
+      :avoid-when
+      "one child is dramatically slower than the others AND a downstream node needs all children's results",
+      :recommended-alternative
+      "split the slow child into smaller pieces via :map-each so its work parallelizes too; OR restructure so the slow child runs in :sequence with a downstream node that doesn't need siblings' results"}
+     {:trait
+      "children cannot read each other's outputs — they execute concurrently",
+      :avoid-when
+      "a child's :reads include a key another sibling writes to",
+      :recommended-alternative
+      "use :sequence to chain dependent computations; OR ensure each child reads only from blackboard keys set BEFORE the :parallel"}],
+    :domain-reasoning
+    "The candidate focuses on independent transformations of data, not game balance simulations.",
+    :cos-good 0.9982196109934967,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9951528826201129,
+    :score 445.22531918913194,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.3,
+    :document-id ":tree-fingerprint:\"seed:tree:ParallelIndependent\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9982196109934967,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the bounded-:max-concurrency :map-each pattern is the canonical solution for chunked extraction",
+      :good-when
+      "the input is a document larger than ~5KB AND extraction is per-chunk independent",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:per-chunk-result]}]] [:aggregate {:from :results :writes [:all-results]}] [:final {:keys [:all-results]}]]"}
+     {:trait
+      "extending the skeleton with a final synthesis :llm produces a coherent summary alongside the per-chunk results",
+      :good-when
+      "the task requires both per-chunk extracted data AND a top-level synthesis",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :all-results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:items]}]] [:aggregate {:from :all-results :writes [:items]}] [:llm {:reads [:document :all-results] :writes [:summary]}] [:final {:keys [:all-results :summary]}]]"}],
+    :avoid-when
+    ["input is small (<5KB) — single :llm without chunking is simpler"
+     "extraction requires cross-chunk context (e.g. detecting trends across the whole document) — chunked-extraction loses that context; consider a non-chunked single-pass :llm or a two-pass tree that does cross-chunk reasoning"
+     "the work is generation (writing new content) rather than extraction — chunked-extraction is an extraction pattern"
+     "input is a document with >6 chunks AND :max-concurrency is unset OR set higher than provider rate-limit tolerance"
+     "the tree has :map-each but no :aggregate AND a downstream node expects per-key flat data"
+     "the input document is less than ~5KB AND the work fits in a single :llm context window"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.713080-05:00"},
+    :domain-label "game-weapon-balancing",
+    :content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :domain-coverage :uncovered,
+    :rank 3,
+    :reasoning
+    "This candidate is sharply down-ranked because its 'avoid-when' explicitly states 'the work is generation (writing new content) rather than extraction'. The task is a complex tuning and simulation generation task, not a document extraction task. Additionally, it lacks context for cross-iteration dependencies.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded :max-concurrency on the :map-each exhausts sub-LLM rate limits on documents with 6+ chunks",
+      :avoid-when
+      "input is a document with >6 chunks AND :max-concurrency is unset OR set higher than provider rate-limit tolerance",
+      :recommended-alternative
+      "always set :max-concurrency to 3 on the :map-each parent (safe default across major LLM providers); tune higher only after measuring against the specific provider's rate limit"}
+     {:trait
+      "skipping the :aggregate step means downstream consumers see a raw vector of per-iteration maps — usually not the shape they want",
+      :avoid-when
+      "the tree has :map-each but no :aggregate AND a downstream node expects per-key flat data",
+      :recommended-alternative
+      "always include :aggregate after :map-each (or use :code with explicit merge logic for non-default consolidation)"}
+     {:trait
+      "very small documents (<5KB) don't benefit from chunking — chunked-extraction adds overhead with no win",
+      :avoid-when
+      "the input document is less than ~5KB AND the work fits in a single :llm context window",
+      :recommended-alternative
+      "use a single :llm node directly without :chunk-document / :map-each / :aggregate"}],
+    :domain-reasoning
+    "The task matches the guard 'the work is generation (writing new content) rather than extraction — chunked-extraction is an extraction pattern'.",
+    :cos-good 0.9962452433765876,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9971997012342309,
+    :score 445.3788832396996,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.05,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9962452433765876,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the bounded-:max-concurrency :map-each pattern is the canonical solution for chunked extraction",
+      :good-when
+      "the input is a document larger than ~5KB AND extraction is per-chunk independent",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:per-chunk-result]}]] [:aggregate {:from :results :writes [:all-results]}] [:final {:keys [:all-results]}]]"}
+     {:trait
+      "extending the skeleton with a final synthesis :llm produces a coherent summary alongside the per-chunk results",
+      :good-when
+      "the task requires both per-chunk extracted data AND a top-level synthesis",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :all-results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:items]}]] [:aggregate {:from :all-results :writes [:items]}] [:llm {:reads [:document :all-results] :writes [:summary]}] [:final {:keys [:all-results :summary]}]]"}],
+    :avoid-when
+    ["input is small (<5KB) — single :llm without chunking is simpler"
+     "extraction requires cross-chunk context (e.g. detecting trends across the whole document) — chunked-extraction loses that context; consider a non-chunked single-pass :llm or a two-pass tree that does cross-chunk reasoning"
+     "the work is generation (writing new content) rather than extraction — chunked-extraction is an extraction pattern"
+     "input is a document with >6 chunks AND :max-concurrency is unset OR set higher than provider rate-limit tolerance"
+     "the tree has :map-each but no :aggregate AND a downstream node expects per-key flat data"
+     "the input document is less than ~5KB AND the work fits in a single :llm context window"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.729911-05:00"},
+    :domain-label "game-weapon-balancing",
+    :content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :domain-coverage :uncovered,
+    :rank 4,
+    :reasoning
+    "This candidate is sharply down-ranked because its 'avoid-when' explicitly states 'the work is generation (writing new content) rather than extraction'. The query asks to propose changes and simulate effects, which is generative engineering/design, matching the domain guard.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded :max-concurrency on the :map-each exhausts sub-LLM rate limits on documents with 6+ chunks",
+      :avoid-when
+      "input is a document with >6 chunks AND :max-concurrency is unset OR set higher than provider rate-limit tolerance",
+      :recommended-alternative
+      "always set :max-concurrency to 3 on the :map-each parent (safe default across major LLM providers); tune higher only after measuring against the specific provider's rate limit"}
+     {:trait
+      "skipping the :aggregate step means downstream consumers see a raw vector of per-iteration maps — usually not the shape they want",
+      :avoid-when
+      "the tree has :map-each but no :aggregate AND a downstream node expects per-key flat data",
+      :recommended-alternative
+      "always include :aggregate after :map-each (or use :code with explicit merge logic for non-default consolidation)"}
+     {:trait
+      "very small documents (<5KB) don't benefit from chunking — chunked-extraction adds overhead with no win",
+      :avoid-when
+      "the input document is less than ~5KB AND the work fits in a single :llm context window",
+      :recommended-alternative
+      "use a single :llm node directly without :chunk-document / :map-each / :aggregate"}],
+    :domain-reasoning
+    "The task matches the guard 'the work is generation (writing new content) rather than extraction — chunked-extraction is an extraction pattern'.",
+    :cos-good 0.9962452433765876,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9971997012342309,
+    :score 445.3788832396996,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.05,
+    :document-id
+    ":tree-class:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9962452433765876,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :event/id #uuid "01a0aaa7-e59d-7085-ad84-19371f778a89",
+  :confidence 0.3,
+  :source-sheet-id #uuid "bd65178a-cdc8-4ec7-ade4-75f8e136702d",
+  :ranked-candidates
+  [{:target-id "seed:tree:ParallelIndependent",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 445.22531918913194}
+   {:target-id "seed:tree:ParallelIndependent",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 445.22531918913194}
+   {:target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.05,
+    :score 445.3788832396996}
+   {:target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.05,
+    :score 445.3788832396996}],
+  :was-fresh-mint? true,
+  :assigned-via :mint},
+ :deferred-events [],
+ :domain-children-considered nil,
+ :sheet-id #uuid "bd65178a-cdc8-4ec7-ade4-75f8e136702d",
+ :payload-domain nil,
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns\nNo high-confidence structural match was returned by the classifier. Design at the abstract pattern level — the structural shape is the primary signal you have. The behavioral suggestions below reflect what the task ACCOMPLISHES.\n\n### Behavioral competencies (top 1 from corpus retrieval)\n1. Behavioral: Code-building (confidence: 0.90)\n   Why this fits: This task is a complex design and simulation problem involving multiple interacting variables (damage, rate of fire, range fall-off, reload). The candidate's recommended-pattern for 'iterative-refinement (draft -> critique -> finalize)' perfectly matches the task's requirement to 'iterate until no class exceeds 35% pick rate'. The output requirement for specific data structures (:adjustments, :pick-rate-matrix) aligns with the strength of structuring output for downstream bindable fields.\n\n   Guidance (seed `:summary`):\n   Code-building produces executable code / scripts / config from a spec. Always structure output as :map with :file-path / :language / :imports / :code — downstream automated stages bind on these. For non-trivial code, iterate via draft → critique → refined-code; single-pass produces higher defect rates. NEVER feed code-building a raw goal — always pipe through a design stage first so the input is a spec, not an open-ended ask. For long files (>200 lines), scaffold then :map-each per-section to preserve cross-section consistency. Composes into iterative-refinement (draft → critique → finalize) and sequential-pipeline (design → code → validate) shells. Avoid for mechanical transformation (use transformation) or code review (use critique).\n\nCapabilities:\n  - given a spec + constraints + (optionally) examples, produce executable code / scripts / config as the artifact\n  - natural fit at the tail of a tree after design has produced the spec, before validation gates the result\n  - outputs are typically code strings with :file-path / :language / :imports / :tests so downstream stages can persist or execute\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** structure the code output as :map with :file-path / :language / :imports / :code so downstream stages (validation / persistence / execution) can bind on specific fields rather than re-parse a code blob (confidence 1.00, evidence-count 1)\n    - Good when: the code feeds automated downstream stages (linting, test runs, file writes)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:spec] :writes [:artifact] :output-schemas {:artifact [:map [:file-path :string] [:language :string] [:imports [:vector :string]] [:code :string]]}}]\n      ```\n\n  - **Trait:** iterate code via draft → critique → refined-code when the code is non-trivial — single-pass code has higher defect rates than draft-critique-refine for the same prompt (confidence 1.00, evidence-count 1)\n    - Good when: the code involves multiple interacting decisions (error handling / edge cases / type contracts)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:spec] :writes [:draft-code]}] [:llm {:reads [:draft-code :spec] :writes [:critique]}] [:llm {:reads [:draft-code :critique] :writes [:refined-code]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** code-building without an explicit :spec input (just a goal string) produces code that maps to the model's first guess at what the goal meant — divergence from intent surfaces only at test time (confidence 1.00, evidence-count 1)\n    - Avoid when: the goal is ambiguous OR the consequences of wrong-interpretation are expensive\n    - Recommended fix: always pipe code-building's :reads through a design stage first; the design's :spec field is the input to code-building, not the raw goal\n\n  - **Failure mode:** single-shot generation of a long file (>200 lines) produces code with internal inconsistencies — function signatures mismatch their callers, imports declared but unused (confidence 1.00, evidence-count 1)\n    - Avoid when: the artifact is a long file with multiple cohesive sections\n    - Recommended fix: scaffold via :code-built outline (top-of-file imports / function-declarations / glue), then :map-each per-section generation, then :code-stitched final — preserves consistency across sections\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - function implementation from a typed spec + examples\n  - config file generation from a deployment plan\n  - test case generation from a behavior specification\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent bf47c816-2833-320e-9fbd-6ae109275ab0)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nBalance a multiplayer shooter's four weapon classes (SMG, rifle, shotgun, sniper) whose pick rates are 47%, 29%, 9% and 15% and whose kill/death ratios are 1.4, 1.0, 0.7 and 1.1. Propose changes to damage, rate of fire, range fall-off and reload, simulate the expected effect on pick rate and K/D over 50,000 matches, iterate until no class exceeds 35% pick rate, and report the final tuning. Output: {:adjustments [...] :pick-rate-matrix ... :rationale ...}",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? false},
+ :elapsed-ms 12246,
+ :confidence 0.3,
+ :was-fresh-mint? true,
+ :assigned-via :mint}

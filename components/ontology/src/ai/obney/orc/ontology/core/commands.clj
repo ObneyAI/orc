@@ -554,6 +554,119 @@
                                :predicate predicate}}))))
 
 ;; =============================================================================
+;; RS-3 — birth a domain child through ONE command
+;; =============================================================================
+;;
+;; RS-P2's verdict: the claim path cannot carry a parent, and the description
+;; projector ignores :tree-class-scoped bodies — ensuring both tree-class
+;; concepts and dispatching a skos:broader relationship (no description body)
+;; produced the edge with NO second body writer (CC-6). This command is that
+;; COMMAND path, as ONE dispatch: it lazy-creates the parent's tree-class
+;; concept exactly as `ensure-tree-class-concept!` does (todo_processors.clj),
+;; creates the child's tree-class concept with :label = the judged domain
+;; label, and creates the skos:broader edge — emitting only the events that
+;; are actually missing, so a repeat mint of the SAME identity (same parent +
+;; same canonical label, per `stable-domain-child-identity`) emits nothing new
+;; (@invariant DomainChildIdentityIsStable: "its parent edge exists in the
+;; concept graph from the moment it is minted, and it describes itself from
+;; birth with its label").
+;;
+;; `tree-class-ontology-id` is duplicated here rather than shared, matching
+;; this codebase's existing precedent (consolidator.clj derives its own copy
+;; of the same deterministic UUID) — a command handler cannot dispatch a
+;; nested command the way a processor's `ensure-tree-class-concept!` does, so
+;; the lazy-create is inlined as direct event construction instead.
+
+(def ^:private tree-class-ontology-id
+  "Stable UUID for the dedicated tree-class ontology (mirrors
+   todo_processors.clj's identically-derived constant)."
+  (java.util.UUID/nameUUIDFromBytes (.getBytes "tree-class-ontology" "UTF-8")))
+
+(defn- tree-class-uri [target-id]
+  (str "tree-class:" target-id))
+
+(defcommand :ontology mint-domain-child
+  "RS-3: birth a domain child under a tree-class parent through ONE command
+   — the child's tree-class concept (labelled with the judged domain label)
+   and its skos:broader edge to the parent, plus the audit-trail
+   :ontology/domain-child-minted event. Dispatched by the wedge BEFORE the
+   CV-1 signature claim and BEFORE :ontology/assign-task-class, so the
+   concept and edge exist before anything references the child."
+  [{{:keys [parent-tree-id child-tree-id domain-label
+            source-sheet-id source-tick-id source-node-id]} :command
+    :as ctx}]
+  (let [parent-uri (tree-class-uri parent-tree-id)
+        child-uri (tree-class-uri child-tree-id)
+        now (now-str)
+        parent-concept (rm/get-concept-by-uri ctx tree-class-ontology-id parent-uri)
+        child-concept (rm/get-concept-by-uri ctx tree-class-ontology-id child-uri)
+        already-linked? (contains? (:broader child-concept) parent-uri)
+        parent-concept-event
+        (when-not parent-concept
+          (->event
+           {:type :ontology/concept-created
+            :tags #{[:ontology tree-class-ontology-id] [:concept (random-uuid)]}
+            :body {:ontology-id tree-class-ontology-id
+                   :concept-id (random-uuid)
+                   :uri parent-uri
+                   :label (str parent-tree-id)
+                   :description (str "Tree-class concept for " parent-tree-id)
+                   :scope :tree-class
+                   :broader []
+                   :indicators []
+                   :provenance {:kind :system-static}
+                   :created-at now}}))
+        child-concept-event
+        (when-not child-concept
+          (->event
+           {:type :ontology/concept-created
+            :tags #{[:ontology tree-class-ontology-id] [:concept (random-uuid)]}
+            :body {:ontology-id tree-class-ontology-id
+                   :concept-id (random-uuid)
+                   :uri child-uri
+                   :label domain-label
+                   :description (str "Domain child of " parent-tree-id)
+                   :scope :tree-class
+                   :broader [parent-uri]
+                   :indicators []
+                   :provenance {:kind :agent-authored}
+                   :created-at now}}))
+        relationship-event
+        (when-not already-linked?
+          (->event
+           {:type :ontology/relationship-created
+            :tags #{[:relationship (random-uuid)] [:ontology tree-class-ontology-id]}
+            :body {:relationship-id (random-uuid)
+                   :source-ontology-id tree-class-ontology-id
+                   :target-ontology-id tree-class-ontology-id
+                   :source-uri child-uri
+                   :target-uri parent-uri
+                   :predicate "skos:broader"
+                   :created-at now}}))
+        already-minted? (and (some? child-concept) already-linked?)]
+    (if already-minted?
+      {:command-result/events []}
+      {:command-result/events
+       (into [] (remove nil?)
+             [parent-concept-event
+              child-concept-event
+              relationship-event
+              (->event
+               {:type :ontology/domain-child-minted
+                :tags #{[:tree-class-child child-tree-id]
+                        [:description-target child-tree-id]}
+                :body (cond-> {:parent-tree-id parent-tree-id
+                               :child-tree-id child-tree-id
+                               :domain-label domain-label
+                               :minted-at now}
+                        source-sheet-id (assoc :source-sheet-id source-sheet-id)
+                        source-tick-id (assoc :source-tick-id source-tick-id)
+                        source-node-id (assoc :source-node-id source-node-id))})])
+       :command-result/data {:parent-tree-id parent-tree-id
+                             :child-tree-id child-tree-id
+                             :domain-label domain-label}})))
+
+;; =============================================================================
 ;; Discovery Commands
 ;; =============================================================================
 
@@ -1454,8 +1567,10 @@
   [{{:keys [source-sheet-id source-tick-id source-node-id
             assigned-tree-id confidence top-candidates reasoning
             was-fresh-mint? parent-tree-id rerank-failed?
-            behavioral-subtrees ranked-candidates assigned-via
-            researcher-ownership-epoch classification-context]} :command
+            behavioral-subtrees ranked-candidates assigned-via outcome
+            researcher-ownership-epoch classification-context
+            domain-verdict domain-label domain-children-considered
+            domain-deferral]} :command
     :keys [event-store tenant-id]}]
   (let [existing (es/read event-store
                           {:tenant-id tenant-id
@@ -1497,7 +1612,21 @@
                   (some? ranked-candidates)
                   (assoc :ranked-candidates ranked-candidates)
                   (some? assigned-via)
-                  (assoc :assigned-via assigned-via))})]
+                  (assoc :assigned-via assigned-via)
+                  ;; RS-6: the three-state outcome, when the caller supplied it.
+                  (some? outcome)
+                  (assoc :outcome outcome)
+                  ;; RS-3: the domain-child facts — all optional
+                  ;; (omit-not-nil), forwarded from the wedge onto the
+                  ;; classified event.
+                  (some? domain-verdict)
+                  (assoc :domain-verdict domain-verdict)
+                  (some? domain-label)
+                  (assoc :domain-label domain-label)
+                  (some? domain-children-considered)
+                  (assoc :domain-children-considered domain-children-considered)
+                  (some? domain-deferral)
+                  (assoc :domain-deferral domain-deferral))})]
        :command-result/cas
        (task-classification-occurrence-cas
         source-sheet-id source-tick-id source-node-id
@@ -1737,24 +1866,54 @@
 ;; CC-23 (contract TaskClassification) — deferral is a positive fact
 ;; =============================================================================
 
+(defn- domain-deferral-recorded-for-occurrence?
+  "RS-6 weed (ClassificationIsOnePerCampaign): true when the stream already
+   carries a domain-axis deferral for this campaign occurrence. Command ids
+   are not part of the identity: a retried tick carries a fresh one."
+  [events source-sheet-id source-tick-id]
+  (boolean
+   (some (fn [event]
+           (and (= :ontology/task-classification-deferred (:event/type event))
+                (= :domain-coverage (:fallback-source event))
+                (= source-sheet-id (:source-sheet-id event))
+                (= source-tick-id (:source-tick-id event))))
+         events)))
+
 (defcommand :ontology record-task-classification-deferral
   "CC-23, the spec's DeferralIsVisible: record a classification that
-   DEFERRED — the semantic reranker fell back, so fitness is unknown.
-   'Uncertain' and 'nothing happened' are different facts; counting
-   :ontology/task-classification-deferred events IS the deferral rate,
-   never an inference from missing :ontology/task-classified events.
+   DEFERRED on an axis. On the fitness axes (:colbert-fallback,
+   :timeout-fallback) the semantic reranker fell back, fitness is unknown,
+   and the wedge withholds assignment. On the domain axis
+   (:domain-coverage, RS-3) the verdict could not be resolved: the
+   structural assignment STANDS and this deferral rides beside it for the
+   same occurrence — at most once per occurrence (a retried tick emits
+   nothing new). 'Uncertain' and 'nothing happened' are different facts;
+   counting :ontology/task-classification-deferred events PARTITIONED BY
+   :fallback-source is the per-axis deferral rate, never an inference from
+   missing :ontology/task-classified events and never a count that mixes
+   the axes.
 
-   ONE command per deferred classification, dispatched by the classify
-   CALL SITE (the C-2c-2 wedge) — the classify fn itself stays a pure
-   decision fn. A deferral structurally cannot ride
-   :ontology/assign-task-class (it REQUIRES an :assigned-tree-id), which
-   is why this is its own command + event.
+   ONE command per deferred axis, dispatched by the classify CALL SITE (the
+   C-2c-2 wedge) — the classify fn itself stays a pure decision fn. A
+   fitness-axis deferral structurally cannot ride
+   :ontology/assign-task-class (it REQUIRES an :assigned-tree-id), which is
+   why this is its own command + event.
 
    The [:tick source-tick-id] tag mirrors :ontology/task-classified so a
-   tick's outcome — assigned OR deferred — is one tag-query away."
+   tick's outcome is one tag-query away — a tick may carry an assignment
+   AND a domain-axis deferral."
   [{{:keys [source-sheet-id source-tick-id source-node-id
             fallback-source ranked-candidates reasoning
-            researcher-ownership-epoch classification-context]} :command}]
+            researcher-ownership-epoch classification-context]} :command
+    :keys [event-store tenant-id]}]
+  (if (and (= :domain-coverage fallback-source)
+           (domain-deferral-recorded-for-occurrence?
+            (into [] (es/read event-store
+                              {:tenant-id tenant-id
+                               :types #{:ontology/task-classification-deferred}
+                               :tags #{[:tick source-tick-id]}}))
+            source-sheet-id source-tick-id))
+    {:command-result/events []}
   (cond->
    {:command-result/events
     [(->event
@@ -1774,7 +1933,7 @@
    (some? researcher-ownership-epoch)
    (assoc :command-result/cas
           (active-researcher-classification-cas
-           source-tick-id source-node-id researcher-ownership-epoch))))
+           source-tick-id source-node-id researcher-ownership-epoch)))))
 
 ;; =============================================================================
 ;; R05c — Mint a new behavioral-subtree concept
