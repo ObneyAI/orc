@@ -26,68 +26,41 @@ Behavior trees are one design decision inside ORC — the one that gives every s
 
 ## The lab loop
 
-<table>
-<tr>
-<td width="46%"><img src="docs/media/run-knowledge-work.gif" alt="An ORC tree running a desk agent: an invoice, then a contract" width="100%"></td>
-<td>
+### 1 · Build and run
 
-**1 · Build and run**
+<img src="docs/media/run-knowledge-work.gif" alt="An ORC tree running a desk agent: an invoice, then a contract" width="100%">
 
 Workflows are plain Clojure data: a tree of `llm`, `code`, `condition`, `delegate`, `map-each`, `parallel` and more, each declaring what it **reads** and **writes** on a typed blackboard. Nodes that reach the edge of their authority can block and hand off to a human, then resume. → [Getting Started](docs/GETTING-STARTED.md) · [DSL Reference](docs/DSL-REFERENCE.md)
 
-</td>
-</tr>
-<tr>
-<td width="46%"><img src="docs/media/bt-robot-events.gif" alt="Every tick of a tree lands in an event store" width="100%"></td>
-<td>
+### 2 · Every step is evidence
 
-**2 · Every step is evidence**
+<img src="docs/media/bt-robot-events.gif" alt="Every tick of a tree lands in an event store" width="100%">
 
 ORC runs on Grain's event sourcing. Every tick — the input a node saw, what it decided, each value it wrote — is an immutable event (in-memory, SQLite, or Postgres). Read models organize that history any way you need: semantic search over embeddings (which are themselves events), a concept graph, per-node datasets. → [Architecture](docs/ARCHITECTURE.md) · [Event Store Patterns](docs/EVENT-STORE-PATTERNS.md)
 
-</td>
-</tr>
-<tr>
-<td width="46%"><img src="docs/media/judges.gif" alt="A panel of judges scoring a node's output: evidence first, then a score" width="100%"></td>
-<td>
+### 3 · Judge
 
-**3 · Judge**
+<img src="docs/media/judges.gif" alt="A panel of judges scoring a node's output: evidence first, then a score" width="100%">
 
 Turn a human standard into judges that watch the nodes that matter — grounding, instruction following, reasoning, completeness. Judges write evidence before they commit to a score, and run as event processors: the work never waits on them. → [Judge Architecture](docs/JUDGE-ARCHITECTURE.md) · [Evaluation](docs/EVALUATION-COMPONENT.md)
 
-</td>
-</tr>
-<tr>
-<td width="46%"><img src="docs/media/gepa-loop.gif" alt="GEPA: candidate instructions redlined, quick-tested, and kept on a Pareto frontier" width="100%"></td>
-<td>
+### 4 · Improve one node's instructions (GEPA)
 
-**4 · Improve one node's instructions (GEPA)**
+<img src="docs/media/gepa-loop.gif" alt="GEPA: candidate instructions redlined, quick-tested, and kept on a Pareto frontier" width="100%">
 
 Pull a weak node's own history out of the event log, then let GEPA — reflective prompt optimization, in Clojure — rewrite just that node's instruction. Candidates must pass a quick test before a full evaluation, and a Pareto frontier keeps those that are best at *something*. → [GEPA Guide](docs/GEPA-GUIDE.md)
 
-</td>
-</tr>
-<tr>
-<td width="46%"><img src="docs/media/ld-compose.gif" alt="A retrieved living description initializes and composes a new behavior tree" width="100%"></td>
-<td>
+### 5 · Remember what works (Living Descriptions)
 
-**5 · Remember what works (Living Descriptions)**
+<img src="docs/media/ld-compose.gif" alt="A retrieved living description initializes and composes a new behavior tree" width="100%">
 
 Judges' feedback is distilled into evidence-backed claims — strengths, weaknesses, when to use a pattern, when to avoid it. Those descriptions live in a graph of behaviors and are retrieved when the model designs a new tree. *(alpha)* → [Living Descriptions](docs/LIVING-DESCRIPTIONS.md) · [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
 
-</td>
-</tr>
-<tr>
-<td width="46%"><img src="docs/media/harvest.gif" alt="Recurring successful shape promoted into a reusable behavior used by other workflows" width="100%"></td>
-<td>
+### 6 · Harvest proven behaviors
 
-**6 · Harvest proven behaviors**
+<img src="docs/media/harvest.gif" alt="Recurring successful shape promoted into a reusable behavior used by other workflows" width="100%">
 
-When a pattern keeps recurring, keeps scoring well, and keeps the same shape, ORC promotes it into a named, reusable behavior that other trees can delegate to — nothing relearned from scratch. *(alpha — thresholds still being calibrated)* → [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
-
-</td>
-</tr>
-</table>
+When a pattern keeps recurring and keeps scoring well on every judge, ORC promotes it into a named, reusable behavior that other trees can delegate to — nothing relearned from scratch. *(alpha — thresholds still being calibrated)* → [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
 
 <sub>The animations are illustrative explainers of real ORC mechanisms (the workbench is an analogy); node kinds, event shapes and judge dimensions match the code. Harvest's gate values in the animation predate the current defaults (see the [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)). Full map of the docs: **[docs/README.md](docs/README.md)**.</sub>
 
