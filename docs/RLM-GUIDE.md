@@ -411,6 +411,9 @@ This is a common "apples-to-apples" cost pattern: a high-capability main LM for 
 
 ## Pattern injection via R-Inject (`:auto-classify?`)
 
+<p align="center"><img src="media/ld-compose.gif" alt="R-Inject: a retrieved pattern shaping the researcher's new tree" width="760"></p>
+<p align="center"><sub>R-Inject in action: the classifier retrieves the best-fitting pattern and the researcher composes its tree from it. <i>Real run; domain-child labels arrive with the specialisation work.</i></sub></p>
+
 > **Note:** `:auto-classify?` shapes RLM tree design — it prepends a matched corpus pattern to the researcher's context before it designs a tree. It does NOT modify instruction strings inside static `orc/llm` nodes. For instruction optimization on static LLM nodes, see [GEPA-GUIDE.md](GEPA-GUIDE.md).
 
 `:auto-classify? true` on the `:rlm` config opts the node into automatic classification against the corpus of structural patterns (tree-classes) and behavioral patterns (behavioral subtrees). Before Phase 1 starts:

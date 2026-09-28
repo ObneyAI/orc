@@ -9,9 +9,15 @@
 
 ## What ORC is
 
-ORC is a **behavior-tree execution engine** built on Grain (event sourcing +
-CQRS). You compose nodes into a tree; the engine ticks the tree, every step is
-an event-sourced fact, and the durable record is a read-model you can query.
+ORC is a **laboratory and production line for accountable agentic software**,
+built on Grain (event sourcing + CQRS). You build a workflow, run it, and every
+step becomes an event-sourced fact you can query, judge, and learn from — judges
+score it, GEPA tunes the weak node's instructions, Living Descriptions remember
+what worked, and Harvest promotes proven patterns into reusable behaviors.
+
+Workflows run as **behavior trees**: you compose nodes into a tree; the engine
+ticks the tree, every step is an event-sourced fact, and the durable record is a
+read-model you can query.
 LLMs do the knowledge work *at the nodes*; the tree is the deterministic spine
 that guarantees the steps run and owns the contracts between them. The leverage
 is not "call an LLM" — it is composing the right nodes and sub-behaviors so
@@ -298,6 +304,9 @@ recovers execution; it does not replay the ephemeral live stream. See
 
 ### Seeing the tree
 
+<p align="center"><img src="media/run-knowledge-work.gif" alt="An ORC workflow ticking while its blackboard fills" width="760"></p>
+<p align="center"><sub>A running ORC tree: each node reads and writes typed blackboard keys (the chalkboard); the tree decides what runs next. <i>Illustrative workload, real node kinds.</i></sub></p>
+
 `print-tree` prints the tree structure without running it:
 
 ```clojure
@@ -489,6 +498,9 @@ Execute as before. The judges fire asynchronously after the `survey` node
 completes; the `:execute` return value is unaffected.
 
 ### What lands in the event store
+
+<p align="center"><img src="media/judges.gif" alt="Judges scoring a node's output" width="760"></p>
+<p align="center"><sub>Judges watch a node's executions, write evidence first, then commit to a 1–5 band; results land as <code>:judge/score-emitted</code> events. <i>Illustrative outputs and scores.</i></sub></p>
 
 Each judge emits a `:judge/score-emitted` event per successful invocation.
 These are accumulated in the `:evaluation/judge-scores` read-model keyed by
@@ -898,6 +910,9 @@ no blackboard plumbing, no change to your node's `:reads`. (Putting the instruct
 a blackboard key does **nothing** for GEPA; it optimizes the node's own `:instruction`.)
 
 ### Running `gepa/optimize!`
+
+<p align="center"><img src="media/gepa-loop.gif" alt="GEPA rewriting a node's instruction and keeping a Pareto frontier" width="760"></p>
+<p align="center"><sub>GEPA rewrites one node's instruction from failing examples plus judge feedback; each candidate must pass a quick test before the full evaluation, and a per-example Pareto frontier keeps the specialists. <i>Illustrative texts and scores.</i></sub></p>
 
 Build a small trainset and valset from examples you already have. Each entry is the
 input map for one execution — just the blackboard inputs your tree reads:
@@ -1413,6 +1428,12 @@ other. The corpus prepend improves tree **design**; recursive mode improves tree
 **execution** via iterative refinement.
 
 ### Alpha-state framing
+
+<p align="center"><img src="media/ld-compose.gif" alt="A retrieved description composing a new tree" width="760"></p>
+<p align="center"><sub>Retrieved Living Descriptions initialize and shape a brand-new tree (real run: a marathon training plan). <i>Domain-child labels arrive with the R-Inject specialisation work.</i></sub></p>
+
+<p align="center"><img src="media/harvest.gif" alt="A recurring pattern promoted into a reusable behavior" width="760"></p>
+<p align="center"><sub>Harvest: a recurring, well-scored, coherent pattern becomes a named behavior other workflows delegate to. <i>Alpha; illustrative workbench analogy; real gate defaults.</i></sub></p>
 
 The self-improving loop is **alpha-stage**. The earlier OOD symptom — a
 runtime that minted a task class on not-finding (and rarely did so, ~1 of

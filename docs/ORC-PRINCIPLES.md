@@ -10,8 +10,10 @@
 
 ## What ORC is
 
-ORC (Orchestrator) is a **behavior-tree execution engine** built on the Grain
-event-sourcing framework. You build a workflow by composing nodes into a tree; the
+ORC (Orchestrator) is a **laboratory and production line for accountable agentic
+software**, built on the Grain event-sourcing framework: build a workflow, run it,
+judge every step, and improve it from the evidence. Workflows execute as **behavior
+trees** — you build a workflow by composing nodes into a tree; the
 engine ticks the tree, every step is an event-sourced fact, and the durable record
 of what happened is a projection you can read back. LLMs do the knowledge work *at
 the nodes*; the tree is the deterministic spine that guarantees the steps run and

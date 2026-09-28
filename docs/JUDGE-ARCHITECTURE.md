@@ -10,6 +10,9 @@
 
 ## 1. Why judges matter
 
+<p align="center"><img src="media/judges.gif" alt="A panel of judges writing evidence and raising score cards" width="760"></p>
+<p align="center"><sub>Four default judges — grounding, instruction following, reasoning, completeness — write evidence before choosing a band, then feed the ledger every learning mechanism reads. <i>Illustrative outputs and scores; real dimensions and weights.</i></sub></p>
+
 Judges are the crux of every downstream learning mechanism in ORC. The signal path is:
 
 ```

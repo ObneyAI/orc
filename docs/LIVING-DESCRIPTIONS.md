@@ -15,7 +15,13 @@
 
 ## Part 1 — The 30-second story (for stakeholders)
 
-ORC runs LLM-powered workflows as **behavior trees** — structured plans of LLM calls, code transforms, parallel branches, and so on. When the same workflow runs many times, the **Living Descriptions** system automatically captures what each tree and node is good at, when it tends to fail, and what to prefer or avoid — building up self-knowledge from real execution evidence, not hand-written docs. A human-authored seed corpus starts the system on day one; as workflows run, descriptions evolve: successes gain confidence and failures get actionable, principle-shaped lessons. When a developer builds a new workflow, the system surfaces relevant prior patterns as design inspiration. The result: ORC gets smarter over time without needing developers to babysit it — see [Part 2](#part-2--the-developer-mental-model) for how.
+<p align="center"><img src="media/ld-feedback-to-claims.gif" alt="Judge feedback highlighted and turned into strengths, weaknesses and guards" width="760"></p>
+<p align="center"><sub>Judges' feedback becomes evidence-backed claims — strengths, capabilities, good-when, weaknesses, avoid-when — that describe the node. <i>Judge sentences illustrative; claim texts from a real description.</i></sub></p>
+
+<p align="center"><img src="media/ld-compose.gif" alt="A retrieved description initializing a new tree" width="760"></p>
+<p align="center"><sub>A retrieved description initializes a brand-new tree: its worked pattern lays down the skeleton, then the task adapts and composes it. <i>Real run (marathon training plan); domain-child labels arrive with the R-Inject specialisation work.</i></sub></p>
+
+ORC is a laboratory for building AI workflows: they run as **behavior trees** — structured plans of LLM calls, code transforms, parallel branches, and so on — and every execution is recorded and judged. When the same workflow runs many times, the **Living Descriptions** system automatically captures what each tree and node is good at, when it tends to fail, and what to prefer or avoid — building up self-knowledge from real execution evidence, not hand-written docs. A human-authored seed corpus starts the system on day one; as workflows run, descriptions evolve: successes gain confidence and failures get actionable, principle-shaped lessons. When a developer builds a new workflow, the system surfaces relevant prior patterns as design inspiration. The result: ORC gets smarter over time without needing developers to babysit it — see [Part 2](#part-2--the-developer-mental-model) for how.
 
 ## Part 2 — The developer mental model
 

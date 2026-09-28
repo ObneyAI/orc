@@ -1,8 +1,97 @@
 # ORC
 
-**Orchestrator** — a behavior-tree workflow execution engine built on [Grain](https://github.com/ObneyAI/grain).
+**A laboratory and production line for accountable agentic software** — in Clojure, built on [Grain](https://github.com/ObneyAI/grain).
 
-ORC provides composable primitives for building, executing, optimizing, and evaluating LLM-powered workflows. It's designed as a library that consumers pull in as a git dependency.
+ORC is where you build an AI workflow, run it, see exactly what it did, judge it, and make it better — then ship what works. Every execution becomes durable evidence. Judges score that evidence. The evidence then improves a node's instructions, informs how future workflows are designed, and promotes proven patterns into reusable behaviors — **without retraining a model**.
+
+> Most agent frameworks treat the first working agent as the finish line. In ORC, it's the first experiment.
+
+ORC is a library you pull in as a git dependency. Pick only the layers you need — the engine, judges, optimization, memory, or the whole self-improving lab ([Pick your package](#pick-your-package)).
+
+> **Early-stage software.** ORC is under active development. Expect sharp edges and breaking changes — APIs, event schemas, and conventions may shift between commits. Pin to a specific `:git/sha` and review the diff before updating. Expect incomplete docs, use at your own peril!
+
+## Behavior trees: a proven idea, applied to AI work
+
+Behavior trees have run game characters and robots for decades. A tree ticks top-down; **sequences** run steps in order, **fallbacks** try another path when one fails, **conditions** decide and **actions** do. The tree owns the process — nothing is left to memory. ORC applies the same machine to knowledge work: language models do the thinking *inside* nodes, while the tree decides what runs, in what order, and what happens on failure.
+
+<table>
+<tr>
+<td width="33%" align="center"><img src="docs/media/bt-games.gif" alt="A game guard's behavior tree ticking: patrol, spot, chase, strike" width="100%"><br><b>Games</b> — a guard's tree: patrol, spot, chase, strike</td>
+<td width="33%" align="center"><img src="docs/media/bt-robot-events.gif" alt="A robot arm's behavior tree sorting boxes, with every decision appended to an event store" width="100%"><br><b>Robotics</b> — scan, route, stack; a fallback starts a new pallet</td>
+<td width="33%" align="center"><img src="docs/media/run-knowledge-work.gif" alt="An ORC workflow ticking: the blackboard fills as nodes read and write, while the robot works the invoice" width="100%"><br><b>Knowledge work — ORC</b> — real node kinds, typed blackboard reads/writes</td>
+</tr>
+</table>
+
+Behavior trees are one design decision inside ORC — the one that gives every step an **address**. See [How a run works](#how-a-run-works-behavior-trees) for the node palette and reads/writes contracts.
+
+## The lab loop
+
+<table>
+<tr>
+<td width="46%"><img src="docs/media/run-knowledge-work.gif" alt="An ORC tree running a desk agent: an invoice, then a contract" width="100%"></td>
+<td>
+
+**1 · Build and run**
+
+Workflows are plain Clojure data: a tree of `llm`, `code`, `condition`, `delegate`, `map-each`, `parallel` and more, each declaring what it **reads** and **writes** on a typed blackboard. Nodes that reach the edge of their authority can block and hand off to a human, then resume. → [Getting Started](docs/GETTING-STARTED.md) · [DSL Reference](docs/DSL-REFERENCE.md)
+
+</td>
+</tr>
+<tr>
+<td width="46%"><img src="docs/media/bt-robot-events.gif" alt="Every tick of a tree lands in an event store" width="100%"></td>
+<td>
+
+**2 · Every step is evidence**
+
+ORC runs on Grain's event sourcing. Every tick — the input a node saw, what it decided, each value it wrote — is an immutable event (in-memory, SQLite, or Postgres). Read models organize that history any way you need: semantic search over embeddings (which are themselves events), a concept graph, per-node datasets. → [Architecture](docs/ARCHITECTURE.md) · [Event Store Patterns](docs/EVENT-STORE-PATTERNS.md)
+
+</td>
+</tr>
+<tr>
+<td width="46%"><img src="docs/media/judges.gif" alt="A panel of judges scoring a node's output: evidence first, then a score" width="100%"></td>
+<td>
+
+**3 · Judge**
+
+Turn a human standard into judges that watch the nodes that matter — grounding, instruction following, reasoning, completeness. Judges write evidence before they commit to a score, and run as event processors: the work never waits on them. → [Judge Architecture](docs/JUDGE-ARCHITECTURE.md) · [Evaluation](docs/EVALUATION-COMPONENT.md)
+
+</td>
+</tr>
+<tr>
+<td width="46%"><img src="docs/media/gepa-loop.gif" alt="GEPA: candidate instructions redlined, quick-tested, and kept on a Pareto frontier" width="100%"></td>
+<td>
+
+**4 · Improve one node's instructions (GEPA)**
+
+Pull a weak node's own history out of the event log, then let GEPA — reflective prompt optimization, in Clojure — rewrite just that node's instruction. Candidates must pass a quick test before a full evaluation, and a Pareto frontier keeps those that are best at *something*. → [GEPA Guide](docs/GEPA-GUIDE.md)
+
+</td>
+</tr>
+<tr>
+<td width="46%"><img src="docs/media/ld-compose.gif" alt="A retrieved living description initializes and composes a new behavior tree" width="100%"></td>
+<td>
+
+**5 · Remember what works (Living Descriptions)**
+
+Judges' feedback is distilled into evidence-backed claims — strengths, weaknesses, when to use a pattern, when to avoid it. Those descriptions live in a graph of behaviors and are retrieved when the model designs a new tree. *(alpha)* → [Living Descriptions](docs/LIVING-DESCRIPTIONS.md) · [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
+
+</td>
+</tr>
+<tr>
+<td width="46%"><img src="docs/media/harvest.gif" alt="Recurring successful shape promoted into a reusable behavior used by other workflows" width="100%"></td>
+<td>
+
+**6 · Harvest proven behaviors**
+
+When a pattern keeps recurring, keeps scoring well, and keeps the same shape, ORC promotes it into a named, reusable behavior that other trees can delegate to — nothing relearned from scratch. *(alpha — thresholds still being calibrated)* → [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
+
+</td>
+</tr>
+</table>
+
+<sub>The animations are illustrative explainers of real ORC mechanisms (the workbench is an analogy); node kinds, event shapes and judge dimensions match the code. Harvest's gate values in the animation predate the current defaults (see the [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)). Full map of the docs: **[docs/README.md](docs/README.md)**.</sub>
+
+## How a run works: behavior trees
 
 Behavior trees have run game NPCs and robots for decades. The tree ticks **top-down, root first**; every leaf **reads** the blackboard (sensor / world state) and **writes** an action or command — and whole behaviors *stack* as reusable subbehaviors (here a **Swing-Sword** tree nests inside **Combat**, which sits under the **brain**):
 
@@ -73,11 +162,9 @@ flowchart TB
 
 *Game `condition` → ORC `llm-condition`; game `ACTION` → an `llm`/`code` leaf; game sensors/commands → blackboard keys you **read** and **write**; a stacked game subbehavior → a `:delegate`. If you can read the game tree, you can read the ORC one. That's the entire mental model — see the [full contract-analysis walkthrough](docs/GETTING-STARTED.md).*
 
-> **Early-stage software.** ORC is under active development. Expect sharp edges and breaking changes — APIs, event schemas, and conventions may shift between commits. Pin to a specific `:git/sha` and review the diff before updating. Expect incomplete docs, use at your own peril!
-
 ## New here?
 
-Start with **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — a progressive contract-analysis walkthrough from bare behavior tree through judges, GEPA, ontology, and self-improvement.
+Start with **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — a progressive contract-analysis walkthrough from a bare workflow through judges, GEPA, ontology, and self-improvement. **[docs/README.md](docs/README.md)** maps every guide onto the lab loop.
 
 For production persistence and diagnostics, see **[Value Storage](docs/VALUE-STORAGE.md)**
 and **[Tracing and Correlation](docs/ORC-SERVICE-GUIDE.md#tracing-correlation-and-exact-node-io)**.
@@ -216,6 +303,8 @@ IDs and timestamps when an append commits.
 ```
 
 ### Optimization Loop (GEPA)
+
+See [the lab loop](#the-lab-loop) for the animated version and [docs/GEPA-GUIDE.md](docs/GEPA-GUIDE.md) for the full guide.
 
 ```
 1. Define metric functions (exact-match, contains, judge-based)
@@ -384,6 +473,7 @@ ORC is a library — consumers provide:
 
 | Guide | Description |
 |-------|-------------|
+| [**Docs index**](docs/README.md) | Every guide, organized by the lab loop: build → run → evidence → judge → improve → harvest → operate |
 | [**Getting Started**](docs/GETTING-STARTED.md) | Progressive onboarding: core → judges → GEPA → ontology → self-improvement |
 | [**Packages**](docs/PACKAGES.md) | Standalone packages — pull in only the layer you need |
 | [**Component Map**](docs/COMPONENT-MAP.md) | Opt-in layer table, full dependency graph, known issues |

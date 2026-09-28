@@ -45,6 +45,9 @@ So the only requirement to make a node optimizable is that it has a stable `:nam
 
 ### Step 2 — build a trainset and valset from examples you already have
 
+<p align="center"><img src="media/gepa-dataset.gif" alt="A node's past executions pulled from the event store into practice and exam sets" width="760"></p>
+<p align="center"><sub>The event store already holds each node's real inputs, outputs and judge scores, keyed by node — the raw material for a trainset (failures to learn from) and a valset (the exam). <i>Illustrative.</i></sub></p>
+
 GEPA needs example inputs to run your tree against. An example is a flat map whose keys match your node's `:reads` (string keys). You almost certainly already have a handful of representative inputs — past tickets, sample questions, fixtures from a test.
 
 - **`:trainset`** — examples GEPA samples *failures* from, to show the proposer LLM what is going wrong.
@@ -274,6 +277,9 @@ The shipped implementation is **native Clojure**. All algorithm logic (Pareto se
 ---
 
 ## How judge feedback drives mutation
+
+<p align="center"><img src="media/gepa-loop.gif" alt="GEPA candidate rewrite, quick test, full evaluation and Pareto frontier" width="760"></p>
+<p align="center"><sub>Failing examples + the judges' weakest-first feedback → a rewritten instruction → a 3-example quick test → full evaluation → a per-example Pareto frontier. <i>Illustrative texts and scores.</i></sub></p>
 
 The core GEPA claim is that mutation quality improves when the proposer sees *why* a candidate scored low — not just the number. This is the chain, verified from source:
 
