@@ -158,6 +158,34 @@
         (is (= (:tenant-id ctx) (:ctx-tenant (ex-data e))))))))
 
 ;; =============================================================================
+;; traffic-corpus-gen: output shapes and the bracket repair (orchestrator inspection)
+;; =============================================================================
+
+(deftest output-text-accepts-every-provider-shape
+  (is (= "Plan my week." (tcg/output-text "[\"Plan my week.\"]")))
+  (is (= "Plan my week." (tcg/output-text ["Plan my week."])))
+  (is (= "Plan my week." (tcg/output-text {:variants ["Plan my week."]})))
+  (is (= "Plan my week." (tcg/output-text "  Plan my week. ")))
+  (testing "no text anywhere is nil, never an empty draft"
+    (is (nil? (tcg/output-text nil)))
+    (is (nil? (tcg/output-text [])))
+    (is (nil? (tcg/output-text "  ")))
+    (is (nil? (tcg/output-text {:variants nil})))))
+
+(deftest unwrap-bracketed-bodies-is-lossless
+  (let [corpus-dir (temp-dir! "rs7-unwrap")
+        header "; brief-id: b-1\n; group: g\n; variant: 1"]
+    (write-task! corpus-dir "001-g-v01" (str header "\n\n[\"Line one with a \\\"quote\\\".\\nLine two.\"]"))
+    (write-task! corpus-dir "002-g-v02" (str header "\n\nAlready plain text."))
+    (is (= {:unwrapped 1 :kept 1} (tcg/unwrap-bracketed-bodies! (str corpus-dir))))
+    (is (= (str header "\n\nLine one with a \"quote\".\nLine two.")
+           (slurp (io/file corpus-dir "tasks" "001-g-v01.txt"))))
+    (is (= (str header "\n\nAlready plain text.")
+           (slurp (io/file corpus-dir "tasks" "002-g-v02.txt"))))
+    (testing "idempotent: a second pass unwraps nothing"
+      (is (= {:unwrapped 0 :kept 2} (tcg/unwrap-bracketed-bodies! (str corpus-dir)))))))
+
+;; =============================================================================
 ;; rs7-traffic-sweep: resume decision
 ;; =============================================================================
 
@@ -248,9 +276,13 @@
         {:slug "004-legal-issue-detection-v01" :group "legal-issue-detection" :variant 1
          :in-domain? true :expected-output-kind "a bulleted risk summary" :review-status :accepted}]})
     (let [manifest (edn/read-string (slurp (io/file corpus-dir "manifest.edn")))
-          fake-neighbour-fn (fn [text others]
-                              (when (seq others)
-                                {:from-other-group? (= text marathon-v2)}))
+          seen (atom {})
+          fake-neighbour-fn (fn [text own-group candidates]
+                              (swap! seen assoc text {:own own-group :groups (set (map :group candidates))
+                                                      :n (count candidates)})
+                              (when (seq candidates)
+                                {:from-other-group? (= text marathon-v2)
+                                 :neighbour-group (when (= text marathon-v2) "recipe-scaling")}))
           flagged (tcg/flag-near-dups! corpus-dir manifest {:neighbour-fn fake-neighbour-fn})
           by-slug (into {} (map (juxt :slug identity)) (:entries flagged))]
       (testing "within-group near-repeat (Jaccard > 0.6) flags the LATER variant :repeat"
@@ -260,7 +292,13 @@
         (is (contains? (set (get-in by-slug ["003-recipe-scaling-v01" :flags])) :ambiguous-truth)))
       (testing "the injected colbert-neighbour capability drives :neighbour-other-group"
         (is (contains? (set (get-in by-slug ["002-marathon-training-v02" :flags])) :neighbour-other-group))
-        (is (not (contains? (set (get-in by-slug ["001-marathon-training-v01" :flags])) :neighbour-other-group))))
+        (is (not (contains? (set (get-in by-slug ["001-marathon-training-v01" :flags])) :neighbour-other-group)))
+        (is (= "recipe-scaling" (get-in by-slug ["002-marathon-training-v02" :neighbour-group]))))
+      (testing "the neighbour search ranks against EVERY other task, own group included, never itself"
+        (is (= {:own "marathon-training"
+                :groups #{"marathon-training" "recipe-scaling" "legal-issue-detection"}
+                :n 3}
+               (get @seen marathon-v1))))
       (testing "an in-domain entry missing the brief's own output-kind tokens is flagged"
         (is (contains? (set (get-in by-slug ["004-legal-issue-detection-v01" :flags])) :output-kind-missing))))
     (io/file corpus-dir)))

@@ -198,22 +198,44 @@
           (do (Thread/sleep (long (nth delays-ms (dec n) (last delays-ms))))
               (recur (inc n))))))))
 
+(defn output-text
+  "The instruction text from one structured output, whatever shape the
+   provider returned it in. Under function calling the provider may return
+   the one-string answer as a string holding a JSON array, as an actual
+   list, or inside a map; the first corpus run accepted only the string
+   shape, so a list fell through to its printed form (every task body
+   wrapped in brackets) and a lost draft reached the polish call empty (the
+   polish then echoed its own instruction). Returns nil when no non-blank
+   string can be found — the caller treats that as a failed call."
+  [v]
+  (let [t (cond
+            (string? v) (or (extract-json-array-string v) (str/trim v))
+            (sequential? v) (some output-text v)
+            (map? v) (some output-text (vals v))
+            :else nil)]
+    (when (and (string? t) (not (str/blank? t))) t)))
+
 (defn- predict-one-string!
   [ctx prompt model]
-  (let [provider (:llm-provider ctx :openrouter)
-        result (with-bounded-retries predict-attempts [5000 15000]
-                 #(llm/predict provider one-string-json-module {:prompt prompt}
-                    {:model model
-                     :use-function-calling? true
-                     :validate? false
-                     :with-metadata? true
-                     :timeout-ms predict-timeout-ms}))
-        text (or (extract-json-array-string (get-in result [:outputs :variants]))
-                 (str/trim (str (get-in result [:outputs :variants]))))]
-    {:text text
-     :usage (:usage result)
-     :model (or (:model result) model)
-     :prompt-sha256 (sha256 prompt)}))
+  (let [provider (:llm-provider ctx :openrouter)]
+    (with-bounded-retries predict-attempts [5000 15000]
+      (fn []
+        (let [result (llm/predict provider one-string-json-module {:prompt prompt}
+                       {:model model
+                        :use-function-calling? true
+                        :validate? false
+                        :with-metadata? true
+                        :timeout-ms predict-timeout-ms})
+              text (or (output-text (get-in result [:outputs :variants]))
+                       (output-text (:outputs result)))]
+          ;; An empty text is a failed call, never a draft: retried, then thrown.
+          (when-not text
+            (throw (ex-info "Generator call returned no instruction text"
+                            {:output-keys (keys (:outputs result))})))
+          {:text text
+           :usage (:usage result)
+           :model (or (:model result) model)
+           :prompt-sha256 (sha256 prompt)})))))
 
 (defn generate-variant!
   "Two llm/predict calls (draft, then polish) for ONE (brief, style-card,
@@ -302,14 +324,37 @@
       manifest)))
 
 ;; =============================================================================
-;; Review flags — HITL aids only, NEVER a metric, NEVER ground truth
+;; unwrap-bracketed-bodies! — one-time repair of the first corpus run
 ;; =============================================================================
 
-(def near-dup-neighbour-threshold
-  "Normalized (0-1) ColBERT-rerank score above which another group's variant
-   is flagged as a suspiciously close neighbour. A review-aid constant, not a
-   production threshold — see the ns docstring."
-  0.75)
+(defn unwrap-bracketed-bodies!
+  "Rewrite every task file whose body (after the `;` header) parses as a JSON
+   array of one string, keeping the header and replacing the body with that
+   string. Deterministic and lossless: no model-written text changes, only
+   the list wrapper the old extractor left around it. Files that are not a
+   one-string JSON array are left untouched. Returns `{:unwrapped n :kept m}`."
+  [corpus-dir]
+  (let [files (->> (.listFiles (io/file corpus-dir "tasks"))
+                   (filter #(str/ends-with? (.getName ^java.io.File %) ".txt"))
+                   (sort-by #(.getName ^java.io.File %)))
+        results
+        (doall
+         (for [^java.io.File f files
+               :let [lines (str/split-lines (slurp f))
+                     header (take-while #(str/starts-with? % ";") lines)
+                     body (str/trim (str/join "\n" (drop (count header) lines)))
+                     parsed (try (json/read-str body) (catch Throwable _ nil))
+                     inner (when (and (sequential? parsed) (= 1 (count parsed)) (string? (first parsed)))
+                             (str/trim (first parsed)))]]
+           (if (and inner (not (str/blank? inner)))
+             (do (spit f (str (str/join "\n" header) "\n\n" inner)) :unwrapped)
+             :kept)))]
+    {:unwrapped (count (filter #{:unwrapped} results))
+     :kept (count (filter #{:kept} results))}))
+
+;; =============================================================================
+;; Review flags — HITL aids only, NEVER a metric, NEVER ground truth
+;; =============================================================================
 
 (defn- tokens
   [s]
@@ -323,18 +368,23 @@
       (double (/ (count (set/intersection ta tb)) (count (set/union ta tb)))))))
 
 (defn- default-neighbour-fn
-  "The REAL capability: ColBERT `rerank` over the candidate's text against
-   every other group's texts, NO INDEX required (see colbert.interface/rerank
-   docstring). Faked in tests — see the injected-capability seam pattern."
+  "The REAL capability: ColBERT `rerank` of the task's text against EVERY other
+   task in the corpus (its own group's included), NO INDEX required. The flag
+   is RANK-based: the task's single nearest neighbour belongs to another group.
+   No score threshold — the first version compared a ceiling-normalized score
+   with 0.75, and every related pair of prose tasks cleared it (240 of 240
+   flagged, no information). Faked in tests (injected-capability seam).
+   Returns `{:from-other-group? :neighbour-group}`."
   [ctx]
-  (fn [text other-texts]
-    (when (seq other-texts)
-      (let [results (colbert/rerank ctx {:query text :documents other-texts :k 1})]
-        (when (seq results)
-          (let [top (first (colbert/normalize-results-to-ceiling results))]
-            {:from-other-group? (> (:score top) near-dup-neighbour-threshold)
-             :score (:score top)
-             :neighbour-text (:content top)}))))))
+  (fn [text own-group candidates]
+    (when (seq candidates)
+      (let [results (colbert/rerank ctx {:query text :documents (mapv :text candidates) :k 1})
+            top (first results)
+            group-of (into {} (map (juxt :text :group)) candidates)
+            neighbour-group (get group-of (:content top))]
+        (when top
+          {:from-other-group? (and (some? neighbour-group) (not= own-group neighbour-group))
+           :neighbour-group neighbour-group})))))
 
 ;; NOTE: ood/load-corpus reads a whole directory; re-reading the whole tasks
 ;; dir once and indexing by slug is far cheaper than one dir-scan per entry.
@@ -367,8 +417,11 @@
                     repeat? (boolean (some #(> (jaccard text (text-of %)) 0.6) same-group-earlier))
                     other-group-entries (mapcat val (dissoc by-group (:group e)))
                     ambiguous? (boolean (some #(> (jaccard text (text-of %)) 0.35) other-group-entries))
+                    candidates (->> accepted
+                                    (remove #(= (:slug %) (:slug e)))
+                                    (keep (fn [o] (when-let [t (text-of o)] {:text t :group (:group o)}))))
                     neighbour (when (and neighbour-fn text)
-                                (neighbour-fn text (keep text-of other-group-entries)))
+                                (neighbour-fn text (:group e) candidates))
                     neighbour-flag? (boolean (:from-other-group? neighbour))
                     kind-tokens (tokens (:expected-output-kind e))
                     output-kind-missing? (boolean (and (:in-domain? e)
@@ -378,7 +431,8 @@
                 (cond-> (assoc e :flags [])
                   repeat? (flag :repeat)
                   ambiguous? (flag :ambiguous-truth)
-                  neighbour-flag? (flag :neighbour-other-group)
+                  neighbour-flag? (-> (flag :neighbour-other-group)
+                                      (assoc :neighbour-group (:neighbour-group neighbour)))
                   output-kind-missing? (flag :output-kind-missing)))
               e))
           es)))))
@@ -388,6 +442,16 @@
    capability bound to `ctx`."
   [ctx corpus-dir manifest]
   (flag-near-dups! corpus-dir manifest {:neighbour-fn (default-neighbour-fn ctx)}))
+
+(defn write-flags!
+  "Flag the corpus with the live neighbour capability and WRITE the flagged
+   manifest back to `corpus-dir/manifest.edn` (the first run only returned it,
+   so the flags never reached the file). Returns the flagged manifest."
+  [ctx corpus-dir]
+  (let [path (io/file corpus-dir "manifest.edn")
+        flagged (flag-near-dups-live! ctx corpus-dir (edn/read-string (slurp path)))]
+    (spit path (with-out-str (pp/pprint flagged)))
+    flagged))
 
 ;; =============================================================================
 ;; freeze! — corpus-sha256 over the sorted accepted (slug, instruction-sha256)
