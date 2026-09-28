@@ -93,6 +93,50 @@
       (is (= (count pairs) (count (distinct pairs)))))))
 
 ;; =============================================================================
+;; traffic-corpus-gen: generate! resumes from disk (FAKE generate-fn seam)
+;; =============================================================================
+
+(deftest generate-resumes-from-disk-test
+  (let [corpus-dir (temp-dir! "rs7-genresume")
+        briefs-path (io/file corpus-dir "briefs.edn")
+        _ (spit briefs-path (pr-str fixture-briefs))
+        calls (atom [])
+        fake-gen (fn [_ctx brief _card prior-texts _model]
+                   (swap! calls conj {:brief-id (:brief-id brief) :prior-texts (vec prior-texts)})
+                   (let [t (str "generated for " (:brief-id brief) " #" (count @calls))]
+                     {:text t
+                      :draft {:usage {:total-tokens 1} :prompt-sha256 "d"}
+                      :polish {:usage {:total-tokens 1} :prompt-sha256 "p" :model "fake"}}))
+        order (tcg/interleave-order fixture-briefs 2 42)
+        first-slot (first order)
+        first-slug (tcg/slug (:index first-slot) (:group first-slot) (:variant first-slot))]
+    ;; Simulate a crashed earlier run: the FIRST slot's task file exists (no sidecar).
+    (write-task! corpus-dir first-slug (str "; brief-id: " (:brief-id first-slot) "\n; group: x\n; variant: 1\n\nfrom disk text"))
+    (let [manifest (tcg/generate! (str briefs-path) (str corpus-dir)
+                                  {:ctx {:fake true} :n-variants 2 :generate-fn fake-gen})
+          entries (:entries manifest)
+          by-slug (into {} (map (juxt :slug identity)) entries)]
+      (testing "the existing slot is NOT regenerated; the other five are"
+        (is (= 5 (count @calls)))
+        (is (= 6 (count entries)))
+        (is (= {:provenance :resumed-from-disk} (:generator (get by-slug first-slug)))))
+      (testing "the on-disk text feeds the later variant's do-not-reuse context"
+        (let [later (first (filter #(and (= (:brief-id first-slot) (:brief-id %))) @calls))]
+          (is (= ["from disk text"] (:prior-texts later)))))
+      (testing "every generated slot has a task file and a provenance sidecar"
+        (doseq [e entries :when (not= (:slug e) first-slug)]
+          (is (.exists (io/file corpus-dir "tasks" (str (:slug e) ".txt"))))
+          (is (.exists (io/file corpus-dir "entries" (str (:slug e) ".edn"))))
+          (is (= "fake" (get-in e [:generator :model])))))
+      (testing "a second run regenerates nothing and reads the sidecars"
+        (reset! calls [])
+        (let [m2 (tcg/generate! (str briefs-path) (str corpus-dir)
+                                {:ctx {:fake true} :n-variants 2 :generate-fn fake-gen})]
+          (is (= 0 (count @calls)))
+          (is (= (mapv #(dissoc % :generator) entries) (mapv #(dissoc % :generator) (:entries m2))))
+          (is (= 5 (count (filter #(= "fake" (get-in % [:generator :model])) (:entries m2))))))))))
+
+;; =============================================================================
 ;; rs7-traffic-sweep: resume decision
 ;; =============================================================================
 

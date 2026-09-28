@@ -173,14 +173,41 @@
           (when (and (sequential? parsed) (string? (first parsed)))
             (first parsed)))))))
 
+(def predict-timeout-ms
+  "Per-call provider timeout. The router's default (30 s) is too short for a
+   600-word polish; a timeout is an exception the CALLER owns (llm/predict
+   propagates it), so `predict-one-string!` retries it below."
+  120000)
+
+(def predict-attempts
+  "Bounded attempts per call (first try + retries). Exhaustion rethrows the
+   last exception — the run then stops loudly and `generate!` resumes from
+   disk on the next launch."
+  3)
+
+(defn- with-bounded-retries
+  "Call `f` up to `attempts` times, sleeping `delays-ms` between failures;
+   rethrows the last Throwable. Pure control flow — no provider knowledge."
+  [attempts delays-ms f]
+  (loop [n 1]
+    (let [r (try {:ok (f)} (catch Throwable t {:error t}))]
+      (if (contains? r :ok)
+        (:ok r)
+        (if (>= n attempts)
+          (throw (:error r))
+          (do (Thread/sleep (long (nth delays-ms (dec n) (last delays-ms))))
+              (recur (inc n))))))))
+
 (defn- predict-one-string!
   [ctx prompt model]
   (let [provider (:llm-provider ctx :openrouter)
-        result (llm/predict provider one-string-json-module {:prompt prompt}
-                 {:model model
-                  :use-function-calling? true
-                  :validate? false
-                  :with-metadata? true})
+        result (with-bounded-retries predict-attempts [5000 15000]
+                 #(llm/predict provider one-string-json-module {:prompt prompt}
+                    {:model model
+                     :use-function-calling? true
+                     :validate? false
+                     :with-metadata? true
+                     :timeout-ms predict-timeout-ms}))
         text (or (extract-json-array-string (get-in result [:outputs :variants]))
                  (str/trim (str (get-in result [:outputs :variants]))))]
     {:text text
@@ -212,13 +239,28 @@
    `manifest.edn` (entries WITHOUT the generated text — `freeze!` and
    `flag-near-dups!` re-read the `.txt` files by slug, exactly as
    `ood/load-corpus` would, so the manifest is never a second source of
-   truth for the instruction body)."
-  [briefs-path out-dir {:keys [ctx model n-variants seed]
-                         :or {n-variants (count style-cards) seed 42}}]
+   truth for the instruction body).
+
+   Resumable: a slot whose `tasks/<slug>.txt` already exists is NOT
+   regenerated — its text is re-read from disk (header stripped, as
+   `ood/load-corpus` does) and still feeds later variants' do-not-reuse
+   context; its provenance comes from `entries/<slug>.edn` when that sidecar
+   exists, else `{:provenance :resumed-from-disk}`. Each generated slot writes
+   its sidecar immediately, so a crash mid-run loses at most one slot's
+   provenance. `:generate-fn` (default `generate-variant!`) is the seam tests
+   fake."
+  [briefs-path out-dir {:keys [ctx model n-variants seed generate-fn]
+                         :or {n-variants (count style-cards) seed 42
+                              generate-fn generate-variant!}}]
   (when-not ctx (throw (ex-info "generate! requires :ctx (a started runner context)" {})))
   (let [briefs (edn/read-string (slurp briefs-path))
         tasks-dir (io/file out-dir "tasks")
+        entries-dir (io/file out-dir "entries")
         _ (.mkdirs tasks-dir)
+        _ (.mkdirs entries-dir)
+        ;; trimmed: generated text is trimmed before it is written, and the loader
+        ;; keeps the blank line after the header, so parity for prior-texts
+        on-disk (into {} (map (juxt :slug (comp str/trim :instruction))) (ood/load-corpus (str tasks-dir)))
         order (interleave-order briefs n-variants seed)
         entries (atom [])]
     (doseq [{:keys [index group brief-id variant]} order
@@ -227,22 +269,31 @@
                   prior-texts (->> @entries
                                    (filter #(= brief-id (:brief-id %)))
                                    (map :text))
-                  {:keys [text draft polish]} (generate-variant! ctx brief style-card prior-texts model)
-                  slug' (slug index group variant)]]
-      (spit (io/file tasks-dir (str slug' ".txt"))
-            (str "; brief-id: " brief-id "\n; group: " group "\n; variant: " variant "\n\n" text))
-      (swap! entries conj
-             {:slug slug' :brief-id brief-id :group group :variant variant
-              :in-domain? (:in-domain? brief) :confounder-of (:confounder-of brief)
-              :expected-seed-id (:expected-seed-id brief)
-              :expected-output-kind (:output-kind brief)
-              :fixture? (boolean (:fixture? brief))
-              :text text ;; kept transiently for interleave/prior-text bookkeeping ONLY
-              :generator {:draft-usage (:usage draft) :draft-prompt-sha256 (:prompt-sha256 draft)
-                          :polish-usage (:usage polish) :polish-prompt-sha256 (:prompt-sha256 polish)
-                          :model (:model polish)}
-              :review-status :pending
-              :flags []}))
+                  slug' (slug index group variant)
+                  sidecar (io/file entries-dir (str slug' ".edn"))
+                  ground {:slug slug' :brief-id brief-id :group group :variant variant
+                          :in-domain? (:in-domain? brief) :confounder-of (:confounder-of brief)
+                          :expected-seed-id (:expected-seed-id brief)
+                          :expected-output-kind (:output-kind brief)
+                          :fixture? (boolean (:fixture? brief))
+                          :review-status :pending
+                          :flags []}
+                  entry (if-let [existing (get on-disk slug')]
+                          (assoc (if (.exists sidecar)
+                                   (edn/read-string (slurp sidecar))
+                                   (assoc ground :generator {:provenance :resumed-from-disk}))
+                                 :text existing)
+                          (let [{:keys [text draft polish]} (generate-fn ctx brief style-card prior-texts model)
+                                e (assoc ground
+                                         :generator {:draft-usage (:usage draft) :draft-prompt-sha256 (:prompt-sha256 draft)
+                                                     :polish-usage (:usage polish) :polish-prompt-sha256 (:prompt-sha256 polish)
+                                                     :model (:model polish)})]
+                            (spit (io/file tasks-dir (str slug' ".txt"))
+                                  (str "; brief-id: " brief-id "\n; group: " group "\n; variant: " variant "\n\n" text))
+                            (spit sidecar (with-out-str (pp/pprint e)))
+                            (assoc e :text text)))]]
+      ;; :text is kept transiently for prior-text bookkeeping ONLY
+      (swap! entries conj entry))
     (let [manifest {:entries (mapv #(dissoc % :text) @entries)
                      :seed seed
                      :n-variants n-variants
