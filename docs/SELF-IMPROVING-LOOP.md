@@ -492,7 +492,7 @@ You can read the current body at any time:
 
 ### 2. How novelty is handled — detect-and-defer + the emergence loop
 
-<p align="center"><img src="media/harvest.gif" alt="A recurring pattern promoted into a reusable behavior" width="760"></p>
+<p align="center"><img src="media/harvest.gif" alt="Benches cross a conveyor, each run lands in the event store, the recurring evidence is gathered and gated, and pilot-then-drive is promoted into a reusable behavior" width="760"></p>
 <p align="center"><sub>Harvest promotes a recurring, well-scored pattern into a named behavior other workflows can delegate to. <i>Illustrative animation (workbench analogy); harvest's current gates: ≥10 verdict occurrences, the last 5 each ≥0.75, and every judge dimension's trailing mean ≥0.75 — shape coherence is measured and reported, not yet gating.</i></sub></p>
 
 When a task doesn't fit any existing pattern, the runtime does **not**

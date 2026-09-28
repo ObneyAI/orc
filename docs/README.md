@@ -72,7 +72,7 @@ GEPA tunes one node's instruction against that node's own judged history. Living
 
 ## 6 · Harvest: proven patterns become reusable behaviors
 
-<img src="media/harvest.gif" alt="A recurring pattern promoted into a reusable behavior" width="360" align="right">
+<img src="media/harvest.gif" alt="Benches cross a conveyor, each run lands in the event store, the recurring evidence is gathered and gated, and pilot-then-drive is promoted into a reusable behavior" width="360" align="right">
 
 When a pattern keeps recurring and keeps scoring well, ORC promotes it into a named behavior that other workflows can delegate to. No model is retrained. *(Alpha: the thresholds are still being calibrated.)*
 

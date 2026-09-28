@@ -1430,8 +1430,8 @@ other. The corpus prepend improves tree **design**; recursive mode improves tree
 <p align="center"><img src="media/ld-compose.gif" alt="A catering brief, the descriptions retrieved for it, and the tree the model composes from them" width="760"></p>
 <p align="center"><sub>Retrieved Living Descriptions shape a brand-new tree: a 6-plate recipe scaled for 60 becomes a scale → parallel (logistics, economics) → assemble tree. <i>Real run; see the <a href="LIVING-DESCRIPTIONS.md#watch-it-work-two-trees-nobody-had-built-before">worked examples</a>.</i></sub></p>
 
-<p align="center"><img src="media/harvest.gif" alt="A recurring pattern promoted into a reusable behavior" width="760"></p>
-<p align="center"><sub>Harvest: a recurring, well-scored, coherent pattern becomes a named behavior other workflows delegate to. <i>Alpha; illustrative workbench analogy; real gate defaults.</i></sub></p>
+<p align="center"><img src="media/harvest.gif" alt="Benches cross a conveyor, each run lands in the event store, the recurring evidence is gathered and gated, and pilot-then-drive is promoted into a reusable behavior" width="760"></p>
+<p align="center"><sub>Harvest: a pattern that keeps recurring and keeps scoring well becomes a named behavior other workflows delegate to. <i>Alpha; illustrative workbench analogy. The gauges show older gate values; the current defaults are in <a href="SELF-IMPROVING-LOOP.md">Self-Improving Loop</a>.</i></sub></p>
 
 The self-improving loop is **alpha-stage**. The earlier OOD symptom — a
 runtime that minted a task class on not-finding (and rarely did so, ~1 of

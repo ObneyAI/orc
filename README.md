@@ -58,7 +58,7 @@ Judges' feedback is distilled into evidence-backed claims — strengths, weaknes
 
 ### 6 · Harvest proven behaviors
 
-<img src="docs/media/harvest.gif" alt="Recurring successful shape promoted into a reusable behavior used by other workflows" width="100%">
+<img src="docs/media/harvest.gif" alt="Benches cross a conveyor, each run lands in the event store, the recurring evidence is gathered and gated, and pilot-then-drive is promoted into a reusable behavior" width="100%">
 
 When a pattern keeps recurring and keeps scoring well on every judge, ORC promotes it into a named, reusable behavior that other trees can delegate to — nothing relearned from scratch. *(alpha — thresholds still being calibrated)* → [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
 
