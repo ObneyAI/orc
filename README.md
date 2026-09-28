@@ -10,6 +10,13 @@ ORC is a library you pull in as a git dependency. Pick only the layers you need 
 
 > **Early-stage software.** ORC is under active development. Expect sharp edges and breaking changes — APIs, event schemas, and conventions may shift between commits. Pin to a specific `:git/sha` and review the diff before updating. Expect incomplete docs, use at your own peril!
 
+## New here?
+
+Start with **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — a progressive contract-analysis walkthrough from a bare workflow through judges, GEPA, ontology, and self-improvement. **[docs/README.md](docs/README.md)** maps every guide onto the lab loop.
+
+For production persistence and diagnostics, see **[Value Storage](docs/VALUE-STORAGE.md)**
+and **[Tracing and Correlation](docs/ORC-SERVICE-GUIDE.md#tracing-correlation-and-exact-node-io)**.
+
 ## Behavior trees: a proven idea, applied to AI work
 
 Behavior trees have run game characters and robots for decades. A tree ticks top-down; **sequences** run steps in order, **fallbacks** try another path when one fails, **conditions** decide and **actions** do. The tree owns the process — nothing is left to memory. ORC applies the same machine to knowledge work: language models do the thinking *inside* nodes, while the tree decides what runs, in what order, and what happens on failure.
@@ -63,13 +70,6 @@ Judges' feedback is distilled into evidence-backed claims — strengths, weaknes
 When a pattern keeps recurring and keeps scoring well on every judge, ORC promotes it into a named, reusable behavior that other trees can delegate to — nothing relearned from scratch. *(alpha — thresholds still being calibrated)* → [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
 
 <sub>The animations are illustrative explainers of real ORC mechanisms (the workbench is an analogy); node kinds, event shapes and judge dimensions match the code. Harvest's gate values in the animation predate the current defaults (see the [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)). Full map of the docs: **[docs/README.md](docs/README.md)**.</sub>
-
-## New here?
-
-Start with **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — a progressive contract-analysis walkthrough from a bare workflow through judges, GEPA, ontology, and self-improvement. **[docs/README.md](docs/README.md)** maps every guide onto the lab loop.
-
-For production persistence and diagnostics, see **[Value Storage](docs/VALUE-STORAGE.md)**
-and **[Tracing and Correlation](docs/ORC-SERVICE-GUIDE.md#tracing-correlation-and-exact-node-io)**.
 
 ## How a run works: behavior trees
 
