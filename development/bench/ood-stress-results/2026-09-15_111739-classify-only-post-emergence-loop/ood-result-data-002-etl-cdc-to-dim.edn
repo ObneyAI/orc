@@ -1,0 +1,337 @@
+{:slug "data-002-etl-cdc-to-dim",
+ :envelope
+ {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :parent-tree-id nil,
+  :rerank-fallback? false,
+  :reasoning
+  "This candidate perfectly matches the task's structural requirement for a multi-stage ETL pipeline. The intent involves sequential processing (ingestion -> transform -> load), distinct data shapes (5 sources), and the need for a final 'emit-format' stage (dashboard star schema). The strength of using :code for deterministic formatting/aggregation at the tail is a precise fit for building a star schema from enriched data, and the recommendation to use :output-schemas on intermediates addresses the complexity of reconciling IDs across Salesforce, ERP, and Postgres.",
+  :outcome :matched,
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.185415-05:00"},
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :rank 1,
+    :reasoning
+    "This candidate perfectly matches the task's structural requirement for a multi-stage ETL pipeline. The intent involves sequential processing (ingestion -> transform -> load), distinct data shapes (5 sources), and the need for a final 'emit-format' stage (dashboard star schema). The strength of using :code for deterministic formatting/aggregation at the tail is a precise fit for building a star schema from enriched data, and the recommendation to use :output-schemas on intermediates addresses the complexity of reconciling IDs across Salesforce, ERP, and Postgres.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :cos-good 0.999927860421086,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9827050712193311,
+    :score 431.9957640135071,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.95,
+    :document-id
+    ":tree-class:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.999927860421086,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.174795-05:00"},
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :rank 2,
+    :reasoning
+    "This is a fingerprint of the same ETL pipeline class. It shares the same strengths regarding sequential transformation stages and the use of :code for the final schema assembly. It is highly fit for the dimensional modeling task which requires multiple named intermediates (normalized, enriched, formatted) to handle the different source update frequencies and ID reconciliation logic.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :cos-good 0.999927860421086,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9827050712193311,
+    :score 431.9957640135071,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.92,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.999927860421086,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "separating per-chunk research from cross-chunk synthesis lets each :llm focus on a narrower job",
+      :good-when
+      "the input is a large document AND the answer requires reasoning across the whole document AND the final answer is a narrative/recommendation (not a flat extraction)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Extract anything relevant to the research question in this chunk.\"}]] [:aggregate {:from :per-chunk-notes :writes [:all-notes]}] [:llm {:reads [:all-notes] :writes [:synthesis] :instruction \"Integrate the per-chunk notes into a cohesive answer to the research question.\"}] [:final {:keys [:synthesis]}]]"}
+     {:trait
+      "the synthesis :llm sees the aggregated notes rather than the raw document — fits long documents into a single final context",
+      :good-when
+      "the raw document would exceed the synthesis :llm's context window AND the aggregated per-chunk notes are concise enough to fit",
+      :recommended-pattern
+      "[:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Summarize this chunk in <300 tokens, retaining only material relevant to the research question.\"}]]"}],
+    :avoid-when
+    ["the cross-chunk combine is mechanical — use MapReduce (:code reducer) instead"
+     "the :aggregate alone is the answer (flat extraction across chunks) — use ChunkedExtraction instead"
+     "the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win"
+     "the answer must be strictly traceable to source material AND no grounding judge follows — synthesis :llm can hallucinate at the integration step"
+     "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks"
+     "the answer must be strictly traceable to source material AND no grounding judge / citation step follows"
+     "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.184982-05:00"},
+    :content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :rank 10,
+    :reasoning
+    "While this pattern handles complex multi-source inputs, it is designed for narrative synthesis from large documents rather than structured data engineering. The intent's goal of building a star schema for dashboards is a 'mechanical combine' (aggregation, joining, schema mapping), which the candidate's 'avoid-when' specifically flags as a poor fit ('the cross-chunk combine is mechanical... synthesis :llm is overkill').",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "if per-chunk extraction is too aggressive, the aggregated material can itself exceed the synthesis :llm's context window",
+      :avoid-when
+      "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks",
+      :recommended-alternative
+      "constrain the per-chunk :llm via :output-schemas + a token-budget instruction ('summarize in <300 tokens'); OR add an intermediate :map-each [:llm] compression pass before final synthesis; OR split the synthesis into a 2-stage reduce-tree"}
+     {:trait
+      "the synthesis :llm can introduce claims not grounded in any per-chunk note — hallucination risk at the integration step",
+      :avoid-when
+      "the answer must be strictly traceable to source material AND no grounding judge / citation step follows",
+      :recommended-alternative
+      "add :output-schemas requiring per-claim citations on the synthesis :llm; OR add a downstream grounding judge that scores synthesis claims against the aggregated notes; OR ask the synthesis :llm to quote source notes verbatim for each claim"}
+     {:trait
+      "two :llm passes per chunk's worth of work (per-chunk extract + final synthesize) costs more than a single :llm or a :code reducer",
+      :avoid-when
+      "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill",
+      :recommended-alternative
+      "use MapReduce instead (:code reducer for mechanical aggregation); OR use ChunkedExtraction if the :aggregate merge alone is enough"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9849444074150404,
+    :score 430.5416592514152,
+    :cos-avoid-sans-content 0.9988300754085248,
+    :fitness-score 0.3,
+    :document-id ":tree-class:\"seed:tree:ResearchThenSynthesize\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9988300754085248}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the cheap path handles the common case at fractional cost — typical economics are 10-20x cheaper per call than always-expensive",
+      :good-when
+      "the work has a long-tail difficulty distribution AND the expensive model is materially more capable on hard cases",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:model :gemini-flash :max-retries 1}}] [:llm {:reads [:input] :writes [:result] :options {:model :claude-opus :max-retries 2}}]]"}
+     {:trait
+      "wire a confidence-check (validator) between the two LLM tiers to escalate on LOW confidence, not just on outright failure — the cheap model's confident-but-wrong answers are the main risk",
+      :good-when
+      "the cheap model has a measurable tendency to be confidently wrong on hard cases",
+      :recommended-pattern
+      "[:sequence [:llm {:options {:model :gemini-flash} :writes [:result :confidence]}] [:fallback [:condition {:predicate (fn [{:keys [confidence]}] (>= confidence 0.8))}] [:llm {:options {:model :claude-opus} :writes [:result]}]]]"}],
+    :avoid-when
+    ["the backup path is deterministic (regex, template, cache) — use primary-backup instead"
+     "the cheap model is roughly capable of the full distribution — single cheap model with :max-retries is simpler"
+     "you can't measure confidence on cheap-model output — escalation won't fire correctly"
+     "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence"
+     "both tiers use the same upstream provider AND availability is a concern"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.187463-05:00"},
+    :content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :rank 9,
+    :reasoning
+    "This pattern focuses on cost-optimization and error recovery between LLM tiers. The caller's intent is a data engineering and pipeline architecture problem involving CDC, Kafka, and star schemas. The 'avoid-when' for deterministic paths fires here because the reconciliation and schema loading logic is fundamentally deterministic and architectural, not an LLM-to-LLM escalation problem.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "without a confidence-check between tiers, the cheap model's confident-but-wrong outputs ship without ever escalating — :fallback only catches outright failure (:status :failure), not bad answers",
+      :avoid-when
+      "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence",
+      :recommended-alternative
+      "always require a :confidence field on the cheap model's output schema AND escalate to expensive model on confidence < threshold (e.g., 0.7)"}
+     {:trait
+      "cascade with both tiers using the SAME provider correlates failures — when the provider has an outage, both tiers fail together",
+      :avoid-when
+      "both tiers use the same upstream provider AND availability is a concern",
+      :recommended-alternative
+      "use different providers for the two tiers (e.g., gemini for cheap, claude for expensive) so a provider outage degrades one tier but not both"}],
+    :cos-good 0.9885508109212644,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9855957748127123,
+    :score 430.62008538350716,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.1,
+    :document-id
+    ":tree-class:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9885508109212644,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the cheap path handles the common case at fractional cost — typical economics are 10-20x cheaper per call than always-expensive",
+      :good-when
+      "the work has a long-tail difficulty distribution AND the expensive model is materially more capable on hard cases",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:model :gemini-flash :max-retries 1}}] [:llm {:reads [:input] :writes [:result] :options {:model :claude-opus :max-retries 2}}]]"}
+     {:trait
+      "wire a confidence-check (validator) between the two LLM tiers to escalate on LOW confidence, not just on outright failure — the cheap model's confident-but-wrong answers are the main risk",
+      :good-when
+      "the cheap model has a measurable tendency to be confidently wrong on hard cases",
+      :recommended-pattern
+      "[:sequence [:llm {:options {:model :gemini-flash} :writes [:result :confidence]}] [:fallback [:condition {:predicate (fn [{:keys [confidence]}] (>= confidence 0.8))}] [:llm {:options {:model :claude-opus} :writes [:result]}]]]"}],
+    :avoid-when
+    ["the backup path is deterministic (regex, template, cache) — use primary-backup instead"
+     "the cheap model is roughly capable of the full distribution — single cheap model with :max-retries is simpler"
+     "you can't measure confidence on cheap-model output — escalation won't fire correctly"
+     "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence"
+     "both tiers use the same upstream provider AND availability is a concern"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.177442-05:00"},
+    :content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :rank 8,
+    :reasoning
+    "Like its parent class, this fingerprint is irrelevant to the structural shape of a multi-source ETL pipeline. It addresses model cascades for cost/reliability, which does not advance the intent of designing a dimensional model or handling late-arriving facts in a data warehouse context.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "without a confidence-check between tiers, the cheap model's confident-but-wrong outputs ship without ever escalating — :fallback only catches outright failure (:status :failure), not bad answers",
+      :avoid-when
+      "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence",
+      :recommended-alternative
+      "always require a :confidence field on the cheap model's output schema AND escalate to expensive model on confidence < threshold (e.g., 0.7)"}
+     {:trait
+      "cascade with both tiers using the SAME provider correlates failures — when the provider has an outage, both tiers fail together",
+      :avoid-when
+      "both tiers use the same upstream provider AND availability is a concern",
+      :recommended-alternative
+      "use different providers for the two tiers (e.g., gemini for cheap, claude for expensive) so a provider outage degrades one tier but not both"}],
+    :cos-good 0.9885508109212644,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9855957748127123,
+    :score 430.62008538350716,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.05,
+    :document-id
+    ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9885508109212644,
+    :cos-avoid 1.0}],
+  :confidence 0.95,
+  :ranked-candidates
+  [{:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.95,
+    :score 431.9957640135071}
+   {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.92,
+    :score 431.9957640135071}
+   {:target-id "seed:tree:ResearchThenSynthesize",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 430.5416592514152}
+   {:target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.1,
+    :score 430.62008538350716}
+   {:target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.05,
+    :score 430.62008538350716}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6569,
+ :parent-chain []}

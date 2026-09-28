@@ -665,25 +665,52 @@
        first
        :recommended-pattern))
 
+(defn- domain-label-for
+  "RS-5 (gap B): the domain label lives on the class's tree-class CONCEPT —
+   RS-3's `mint-domain-child` stamps the judged domain label directly onto
+   the child's concept at birth (RS-P2: the command path, never a
+   description body write — CC-6) — never in the assembled description
+   `harvest-body` transplants. Returns nil (no ctx/class-id, no concept, a
+   blank label, or the generic placeholder `ensure-tree-class-concept!`
+   lazy-creates for an ordinary non-domain tree-class, whose :label equals
+   its own id) so an ordinary tree-class's harvest stays byte-shaped."
+  [ctx class-id]
+  (when (and ctx class-id)
+    (let [concept (rm/get-concept-by-uri ctx (str "tree-class:" class-id))
+          label (:label concept)]
+      (when (and (string? label)
+                 (not (str/blank? label))
+                 (not= label (str class-id)))
+        label))))
+
 (defn harvest-body
   "Assemble the harvested behavior's body by REUSING the consolidator's
    already-synthesized tree-class description (no second synthesis LLM):
    transplant :capabilities/:strengths/:weaknesses/:representative-uses/
    :avoid-when/:summary, add the worked DSL as :recommended-pattern, and
    stamp :version + :consolidated-from-event-count so anti-recency engages.
-   Returns nil when the class has no consolidated description yet."
-  [desc occurrences]
-  (when desc
-    (cond-> {:capabilities         (vec (:capabilities desc))
-             :strengths            (vec (:strengths desc))
-             :weaknesses           (vec (:weaknesses desc))
-             :representative-uses  (vec (:representative-uses desc))
-             :avoid-when           (vec (:avoid-when desc))
-             :summary              (or (:summary desc) "")
-             :version              1
-             :consolidated-from-event-count occurrences}
-      (best-recommended-pattern desc)
-      (assoc :recommended-pattern (best-recommended-pattern desc)))))
+   Returns nil when the class has no consolidated description yet.
+
+   RS-5 (gap B): the 4-arg arity additionally stamps :domain-label when the
+   class is a domain child (`domain-label-for`) — the label lives on the
+   CONCEPT, so the description alone can't carry it forward. The 2-arg
+   arity (desc + occurrences, the propagated RR-20 contract) is UNCHANGED —
+   every existing caller's body stays byte-identical."
+  ([desc occurrences] (harvest-body nil desc occurrences nil))
+  ([ctx desc occurrences class-id]
+   (when desc
+     (cond-> {:capabilities         (vec (:capabilities desc))
+              :strengths            (vec (:strengths desc))
+              :weaknesses           (vec (:weaknesses desc))
+              :representative-uses  (vec (:representative-uses desc))
+              :avoid-when           (vec (:avoid-when desc))
+              :summary              (or (:summary desc) "")
+              :version              1
+              :consolidated-from-event-count occurrences}
+       (best-recommended-pattern desc)
+       (assoc :recommended-pattern (best-recommended-pattern desc))
+       (domain-label-for ctx class-id)
+       (assoc :domain-label (domain-label-for ctx class-id))))))
 
 (defn- harvest-name [class-id] (str "harvested-tree-class-" class-id))
 
@@ -752,7 +779,7 @@
          (when (:candidate? report)
            (let [desc (rm/get-description ctx :tree-class class-id)
                  parent (nearest-abstract-behavior ctx class-id)
-                 body (harvest-body desc occurrences)]
+                 body (harvest-body ctx desc occurrences class-id)]
              (cond
                (nil? body)
                (u/log ::harvest-skipped-no-description :class-id class-id)

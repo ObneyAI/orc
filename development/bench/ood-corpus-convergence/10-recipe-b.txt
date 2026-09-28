@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: recipe (off-domain); variant b of 3 — the same domain re-asked with a different concrete instance.
+A home baker's sourdough recipe makes two 900 g loaves. Scale it for a farmers' market to 24 loaves baked in a single day in a domestic oven that fits two loaves at a time: scaled flour, water, starter and salt with hydration kept at 78%, a bulk-fermentation and shaping timeline that staggers batches, equipment limits, and the ingredient cost per loaf. Output: {:scaled-ingredients ... :timeline ... :equipment ... :cost-per-loaf ...}

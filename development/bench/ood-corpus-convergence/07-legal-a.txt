@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: legal (in-domain sanity); variant a of 3 — the same domain re-asked with a different concrete instance.
+Review the following non-compete clause from a software engineer's employment agreement and identify all legal concerns. Each finding must include a concise statement, severity (high/medium/low) with justification, area of law, a direct citation of the clause text, and a suggested revision. Clause: 'Employee shall not, for 24 months after termination for any reason, engage in any business anywhere in the world that competes with the Company or any affiliate, nor solicit any person who was a customer or employee at any time during Employee's tenure.'

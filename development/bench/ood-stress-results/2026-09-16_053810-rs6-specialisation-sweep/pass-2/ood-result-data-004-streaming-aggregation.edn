@@ -1,0 +1,452 @@
+{:assigned-tree-id #uuid "b62a26ab-49c4-3913-8155-a76b70272862",
+ :tick-id #uuid "f7a95d39-307c-4e05-a51b-e108cd53c463",
+ :slug "data-004-streaming-aggregation",
+ :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+ :domain-label "streaming-etl-design",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "streaming-etl-design",
+  :domain-reasoning
+  "The candidate explicitly lists 'streaming-etl-design' as an existing domain child, and the task is to design a streaming aggregation pipeline for SKU sales data."},
+ :node-id #uuid "052dc8bd-1ce9-4b47-aa46-998cee320710",
+ :top-1
+ {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :fitness-score 1.0,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "streaming-etl-design"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "b62a26ab-49c4-3913-8155-a76b70272862",
+  :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :domain-label "streaming-etl-design",
+  :classified-at "2026-09-16T05:49:18.173130-05:00",
+  :reasoning
+  "The task requires designing a multi-stage data processing pipeline (watermarking, windowing, two-stream output, reconciliation) which maps perfectly to the ETL pipeline shape. The recommended pattern using [:sequence ...] with distinct stages for transformation and deterministic formatting/aggregation matches the user's need to define a pipeline with specific functional blocks (Watermark -> Window -> Dual Output). The existing-domain-child 'streaming-etl-design' confirms a direct subject matter fit.",
+  :outcome :matched,
+  :source-node-id #uuid "052dc8bd-1ce9-4b47-aa46-998cee320710",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "bf47c816-2833-320e-9fbd-6ae109275ab0",
+    :confidence 0.9,
+    :was-fresh-mint? false,
+    :reasoning
+    "This task is a 'design' task requiring the production of a structured specification (design doc) for a complex technical system. The code-building candidate's recommended-pattern of 'design → code → validate' and its emphasis on a 'design stage' as a prerequisite for implementation perfectly matches the caller's need to generate a design doc covering specific architectural components (watermarks, windowing, reconciliation).",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.85,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task requires integrating multiple constraints (latency, freshness, late-data, UI reconciliation) into a single cohesive artifact (a design doc). This matches the synthesis behavior of 'integrating multiple structured inputs into a single cohesive artifact'. The recommended-pattern of scaffolding an outline (sections for watermarks, windows, etc.) via code then filling them via synthesis is a strong fit for a multi-section technical document.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "f7a95d39-307c-4e05-a51b-e108cd53c463",
+  :event/tags
+  #{[:description-target #uuid "b62a26ab-49c4-3913-8155-a76b70272862"]
+    [:tick #uuid "f7a95d39-307c-4e05-a51b-e108cd53c463"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:49:18.173362Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "streaming-etl-design",
+   :domain-reasoning
+   "The candidate explicitly lists 'streaming-etl-design' as an existing domain child, and the task is to design a streaming aggregation pipeline for SKU sales data."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :existing-domain-children
+    ["backend-middleware-refactoring"
+     "data-warehouse-etl-design"
+     "database-migration-runbook"
+     "jvm-service-diagnosis"
+     "recipe-scaling-and-logistics"
+     "security-audit-haikus"
+     "sql-query-optimization"
+     "streaming-etl-design"],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.988167-05:00"},
+    :domain-label "streaming-etl-design",
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :domain-coverage :covered,
+    :rank 1,
+    :reasoning
+    "The task requires designing a multi-stage data processing pipeline (watermarking, windowing, two-stream output, reconciliation) which maps perfectly to the ETL pipeline shape. The recommended pattern using [:sequence ...] with distinct stages for transformation and deterministic formatting/aggregation matches the user's need to define a pipeline with specific functional blocks (Watermark -> Window -> Dual Output). The existing-domain-child 'streaming-etl-design' confirms a direct subject matter fit.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :domain-reasoning
+    "The candidate explicitly lists 'streaming-etl-design' as an existing domain child, and the task is to design a streaming aggregation pipeline for SKU sales data.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9859619091867614,
+    :score 434.70568654907726,
+    :cos-avoid-sans-content 0.9996703559163517,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-class:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9996703559163517}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.973273-05:00"},
+    :domain-label "streaming-etl-design",
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :domain-coverage :partial,
+    :rank 2,
+    :reasoning
+    "Matches the ETL pipeline structural shape exactly as the tree-class above, providing the same recommended patterns for sequential stages and deterministic aggregation.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :domain-reasoning
+    "The content describes ETL pipelines for transformations and aggregation, matching the streaming aggregation task.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9859619091867614,
+    :score 434.70568654907726,
+    :cos-avoid-sans-content 0.9996703559163517,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9996703559163517}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "separating per-chunk research from cross-chunk synthesis lets each :llm focus on a narrower job",
+      :good-when
+      "the input is a large document AND the answer requires reasoning across the whole document AND the final answer is a narrative/recommendation (not a flat extraction)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Extract anything relevant to the research question in this chunk.\"}]] [:aggregate {:from :per-chunk-notes :writes [:all-notes]}] [:llm {:reads [:all-notes] :writes [:synthesis] :instruction \"Integrate the per-chunk notes into a cohesive answer to the research question.\"}] [:final {:keys [:synthesis]}]]"}
+     {:trait
+      "the synthesis :llm sees the aggregated notes rather than the raw document — fits long documents into a single final context",
+      :good-when
+      "the raw document would exceed the synthesis :llm's context window AND the aggregated per-chunk notes are concise enough to fit",
+      :recommended-pattern
+      "[:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Summarize this chunk in <300 tokens, retaining only material relevant to the research question.\"}]]"}],
+    :avoid-when
+    ["the cross-chunk combine is mechanical — use MapReduce (:code reducer) instead"
+     "the :aggregate alone is the answer (flat extraction across chunks) — use ChunkedExtraction instead"
+     "the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win"
+     "the answer must be strictly traceable to source material AND no grounding judge follows — synthesis :llm can hallucinate at the integration step"
+     "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks"
+     "the answer must be strictly traceable to source material AND no grounding judge / citation step follows"
+     "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.987739-05:00"},
+    :domain-label "streaming-etl-design",
+    :content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :domain-coverage :uncovered,
+    :rank 9,
+    :reasoning
+    "While this candidate involves aggregation, it is specifically designed for LLM-based synthesis of large documents. The avoid-when guard 'the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill' fires directly because the user task is a mechanical aggregation (items sold per SKU per window).",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "if per-chunk extraction is too aggressive, the aggregated material can itself exceed the synthesis :llm's context window",
+      :avoid-when
+      "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks",
+      :recommended-alternative
+      "constrain the per-chunk :llm via :output-schemas + a token-budget instruction ('summarize in <300 tokens'); OR add an intermediate :map-each [:llm] compression pass before final synthesis; OR split the synthesis into a 2-stage reduce-tree"}
+     {:trait
+      "the synthesis :llm can introduce claims not grounded in any per-chunk note — hallucination risk at the integration step",
+      :avoid-when
+      "the answer must be strictly traceable to source material AND no grounding judge / citation step follows",
+      :recommended-alternative
+      "add :output-schemas requiring per-claim citations on the synthesis :llm; OR add a downstream grounding judge that scores synthesis claims against the aggregated notes; OR ask the synthesis :llm to quote source notes verbatim for each claim"}
+     {:trait
+      "two :llm passes per chunk's worth of work (per-chunk extract + final synthesize) costs more than a single :llm or a :code reducer",
+      :avoid-when
+      "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill",
+      :recommended-alternative
+      "use MapReduce instead (:code reducer for mechanical aggregation); OR use ChunkedExtraction if the :aggregate merge alone is enough"}],
+    :domain-reasoning
+    "The task involves mechanical counting/summing (items sold per SKU), which is explicitly warned against in the avoid-when guard for this LLM-synthesis-heavy class.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9872332072640626,
+    :score 433.88149120355416,
+    :cos-avoid-sans-content 0.9969576968642735,
+    :fitness-score 0.3,
+    :document-id ":tree-class:\"seed:tree:ResearchThenSynthesize\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9969576968642735}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "separating per-chunk research from cross-chunk synthesis lets each :llm focus on a narrower job",
+      :good-when
+      "the input is a large document AND the answer requires reasoning across the whole document AND the final answer is a narrative/recommendation (not a flat extraction)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Extract anything relevant to the research question in this chunk.\"}]] [:aggregate {:from :per-chunk-notes :writes [:all-notes]}] [:llm {:reads [:all-notes] :writes [:synthesis] :instruction \"Integrate the per-chunk notes into a cohesive answer to the research question.\"}] [:final {:keys [:synthesis]}]]"}
+     {:trait
+      "the synthesis :llm sees the aggregated notes rather than the raw document — fits long documents into a single final context",
+      :good-when
+      "the raw document would exceed the synthesis :llm's context window AND the aggregated per-chunk notes are concise enough to fit",
+      :recommended-pattern
+      "[:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Summarize this chunk in <300 tokens, retaining only material relevant to the research question.\"}]]"}],
+    :avoid-when
+    ["the cross-chunk combine is mechanical — use MapReduce (:code reducer) instead"
+     "the :aggregate alone is the answer (flat extraction across chunks) — use ChunkedExtraction instead"
+     "the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win"
+     "the answer must be strictly traceable to source material AND no grounding judge follows — synthesis :llm can hallucinate at the integration step"
+     "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks"
+     "the answer must be strictly traceable to source material AND no grounding judge / citation step follows"
+     "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.972948-05:00"},
+    :domain-label "streaming-etl-design",
+    :content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :domain-coverage :uncovered,
+    :rank 10,
+    :reasoning
+    "Same structural mismatch as the tree-class; the task's mechanical aggregation nature triggers the 'avoid-when' for synthesis-heavy patterns.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "if per-chunk extraction is too aggressive, the aggregated material can itself exceed the synthesis :llm's context window",
+      :avoid-when
+      "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks",
+      :recommended-alternative
+      "constrain the per-chunk :llm via :output-schemas + a token-budget instruction ('summarize in <300 tokens'); OR add an intermediate :map-each [:llm] compression pass before final synthesis; OR split the synthesis into a 2-stage reduce-tree"}
+     {:trait
+      "the synthesis :llm can introduce claims not grounded in any per-chunk note — hallucination risk at the integration step",
+      :avoid-when
+      "the answer must be strictly traceable to source material AND no grounding judge / citation step follows",
+      :recommended-alternative
+      "add :output-schemas requiring per-claim citations on the synthesis :llm; OR add a downstream grounding judge that scores synthesis claims against the aggregated notes; OR ask the synthesis :llm to quote source notes verbatim for each claim"}
+     {:trait
+      "two :llm passes per chunk's worth of work (per-chunk extract + final synthesize) costs more than a single :llm or a :code reducer",
+      :avoid-when
+      "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill",
+      :recommended-alternative
+      "use MapReduce instead (:code reducer for mechanical aggregation); OR use ChunkedExtraction if the :aggregate merge alone is enough"}],
+    :domain-reasoning
+    "The task is a mechanical data aggregation, not a narrative synthesis of document chunks.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9872332072640626,
+    :score 433.88149120355416,
+    :cos-avoid-sans-content 0.9969576968642735,
+    :fitness-score 0.3,
+    :document-id
+    ":tree-fingerprint:\"seed:tree:ResearchThenSynthesize\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9969576968642735}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the cheap path handles the common case at fractional cost — typical economics are 10-20x cheaper per call than always-expensive",
+      :good-when
+      "the work has a long-tail difficulty distribution AND the expensive model is materially more capable on hard cases",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:model :gemini-flash :max-retries 1}}] [:llm {:reads [:input] :writes [:result] :options {:model :claude-opus :max-retries 2}}]]"}
+     {:trait
+      "wire a confidence-check (validator) between the two LLM tiers to escalate on LOW confidence, not just on outright failure — the cheap model's confident-but-wrong answers are the main risk",
+      :good-when
+      "the cheap model has a measurable tendency to be confidently wrong on hard cases",
+      :recommended-pattern
+      "[:sequence [:llm {:options {:model :gemini-flash} :writes [:result :confidence]}] [:fallback [:condition {:predicate (fn [{:keys [confidence]}] (>= confidence 0.8))}] [:llm {:options {:model :claude-opus} :writes [:result]}]]]"}],
+    :avoid-when
+    ["the backup path is deterministic (regex, template, cache) — use primary-backup instead"
+     "the cheap model is roughly capable of the full distribution — single cheap model with :max-retries is simpler"
+     "you can't measure confidence on cheap-model output — escalation won't fire correctly"
+     "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence"
+     "both tiers use the same upstream provider AND availability is a concern"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.975401-05:00"},
+    :domain-label "streaming-etl-design",
+    :content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :domain-coverage :uncovered,
+    :rank 5,
+    :reasoning
+    "This candidate describes a model cascade for cost-optimization and reliability between LLM tiers. It does not fit the structural shape of a streaming data pipeline or the functional requirements of windowing and watermarking.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "without a confidence-check between tiers, the cheap model's confident-but-wrong outputs ship without ever escalating — :fallback only catches outright failure (:status :failure), not bad answers",
+      :avoid-when
+      "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence",
+      :recommended-alternative
+      "always require a :confidence field on the cheap model's output schema AND escalate to expensive model on confidence < threshold (e.g., 0.7)"}
+     {:trait
+      "cascade with both tiers using the SAME provider correlates failures — when the provider has an outage, both tiers fail together",
+      :avoid-when
+      "both tiers use the same upstream provider AND availability is a concern",
+      :recommended-alternative
+      "use different providers for the two tiers (e.g., gemini for cheap, claude for expensive) so a provider outage degrades one tier but not both"}],
+    :domain-reasoning
+    "The domain of LLM cost-tiering and fallback recovery shares no subject matter or material with POS streaming aggregation.",
+    :cos-good 0.9908710934889974,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9878798341594236,
+    :score 434.32103724486393,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.1,
+    :document-id
+    ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9908710934889974,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered
+  ["data-warehouse-etl-design"
+   "backend-middleware-refactoring"
+   "jvm-service-diagnosis"
+   "sql-query-optimization"
+   "database-migration-runbook"
+   "security-audit-haikus"
+   "recipe-scaling-and-logistics"
+   "streaming-etl-design"],
+  :event/id #uuid "01a0a9d5-d45d-7056-bec7-bdfcd6032151",
+  :confidence 1.0,
+  :source-sheet-id #uuid "0e1a23ab-9db5-4e85-ad38-d4fe9972daed",
+  :ranked-candidates
+  [{:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 434.70568654907726}
+   {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 434.70568654907726}
+   {:target-id "seed:tree:ResearchThenSynthesize",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 433.88149120355416}
+   {:target-id "seed:tree:ResearchThenSynthesize",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 433.88149120355416}
+   {:target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.1,
+    :score 434.32103724486393}],
+  :was-fresh-mint? false,
+  :assigned-via :land-on-domain-child},
+ :deferred-events [],
+ :domain-children-considered
+ ["data-warehouse-etl-design"
+  "backend-middleware-refactoring"
+  "jvm-service-diagnosis"
+  "sql-query-optimization"
+  "database-migration-runbook"
+  "security-audit-haikus"
+  "recipe-scaling-and-logistics"
+  "streaming-etl-design"],
+ :sheet-id #uuid "0e1a23ab-9db5-4e85-ad38-d4fe9972daed",
+ :payload-domain
+ {:assigned-via :land-on-domain-child,
+  :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :child-tree-id #uuid "b62a26ab-49c4-3913-8155-a76b70272862",
+  :domain-label "streaming-etl-design"},
+ :pass 2,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: streaming-etl-design); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 2 from corpus retrieval)\n#### Top match (confidence: 1.00)\nWhy this fits: The task requires designing a multi-stage data processing pipeline (watermarking, windowing, two-stream output, reconciliation) which maps perfectly to the ETL pipeline shape. The recommended pattern using [:sequence ...] with distinct stages for transformation and deterministic formatting/aggregation matches the user's need to define a pipeline with specific functional blocks (Watermark -> Window -> Dual Output). The existing-domain-child 'streaming-etl-design' confirms a direct subject matter fit.\n\nPattern guidance (seed `:summary`):\nETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).\n\nCapabilities:\n  - ordered chain of typically 2-4 stages where each stage transforms the previous stage's output into a richer form\n  - natural fit for raw-input → normalized → enriched → emit-ready flows\n  - each stage's :reads consume the previous stage's :writes — explicit data dependency tracking\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate (confidence 1.00, evidence-count 1)\n    - Good when: input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]\n      ```\n\n  - **Trait:** use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names (confidence 1.00, evidence-count 1)\n    - Good when: the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage (confidence 1.00, evidence-count 1)\n    - Avoid when: intermediate stages don't declare :output-schemas and downstream stages assume specific keys\n    - Recommended fix: always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer\n\n  - **Failure mode:** 5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short (confidence 1.00, evidence-count 1)\n    - Avoid when: individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates\n    - Recommended fix: collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - customer record normalization: parse → dedupe-fields → enrich-from-CRM → emit-warehouse-row\n  - log line parsing: tokenize → classify-event-type → annotate-with-context → emit-structured-event\n  - translation pipeline: clean-input → translate → polish-style → emit-final-text\n\n#### Alternative #1 (confidence: 1.00)\nWhy this fits: Matches the ETL pipeline structural shape exactly as the tree-class above, providing the same recommended patterns for sequential stages and deterministic aggregation.\n\nPattern guidance (seed `:summary`):\nETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).\n\nCapabilities:\n  - ordered chain of typically 2-4 stages where each stage transforms the previous stage's output into a richer form\n  - natural fit for raw-input → normalized → enriched → emit-ready flows\n  - each stage's :reads consume the previous stage's :writes — explicit data dependency tracking\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate (confidence 1.00, evidence-count 1)\n    - Good when: input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]\n      ```\n\n  - **Trait:** use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names (confidence 1.00, evidence-count 1)\n    - Good when: the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage (confidence 1.00, evidence-count 1)\n    - Avoid when: intermediate stages don't declare :output-schemas and downstream stages assume specific keys\n    - Recommended fix: always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer\n\n  - **Failure mode:** 5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short (confidence 1.00, evidence-count 1)\n    - Avoid when: individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates\n    - Recommended fix: collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - customer record normalization: parse → dedupe-fields → enrich-from-CRM → emit-warehouse-row\n  - log line parsing: tokenize → classify-event-type → annotate-with-context → emit-structured-event\n  - translation pipeline: clean-input → translate → polish-style → emit-final-text\n\nAssigned to domain child b62a26ab-49c4-3913-8155-a76b70272862 (label: streaming-etl-design) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 2 from corpus retrieval)\n1. Behavioral: Code-building (confidence: 0.90)\n   Why this fits: This task is a 'design' task requiring the production of a structured specification (design doc) for a complex technical system. The code-building candidate's recommended-pattern of 'design → code → validate' and its emphasis on a 'design stage' as a prerequisite for implementation perfectly matches the caller's need to generate a design doc covering specific architectural components (watermarks, windowing, reconciliation).\n\n   Guidance (seed `:summary`):\n   Code-building produces executable code / scripts / config from a spec. Always structure output as :map with :file-path / :language / :imports / :code — downstream automated stages bind on these. For non-trivial code, iterate via draft → critique → refined-code; single-pass produces higher defect rates. NEVER feed code-building a raw goal — always pipe through a design stage first so the input is a spec, not an open-ended ask. For long files (>200 lines), scaffold then :map-each per-section to preserve cross-section consistency. Composes into iterative-refinement (draft → critique → finalize) and sequential-pipeline (design → code → validate) shells. Avoid for mechanical transformation (use transformation) or code review (use critique).\n\nCapabilities:\n  - given a spec + constraints + (optionally) examples, produce executable code / scripts / config as the artifact\n  - natural fit at the tail of a tree after design has produced the spec, before validation gates the result\n  - outputs are typically code strings with :file-path / :language / :imports / :tests so downstream stages can persist or execute\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** structure the code output as :map with :file-path / :language / :imports / :code so downstream stages (validation / persistence / execution) can bind on specific fields rather than re-parse a code blob (confidence 1.00, evidence-count 1)\n    - Good when: the code feeds automated downstream stages (linting, test runs, file writes)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:spec] :writes [:artifact] :output-schemas {:artifact [:map [:file-path :string] [:language :string] [:imports [:vector :string]] [:code :string]]}}]\n      ```\n\n  - **Trait:** iterate code via draft → critique → refined-code when the code is non-trivial — single-pass code has higher defect rates than draft-critique-refine for the same prompt (confidence 1.00, evidence-count 1)\n    - Good when: the code involves multiple interacting decisions (error handling / edge cases / type contracts)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:spec] :writes [:draft-code]}] [:llm {:reads [:draft-code :spec] :writes [:critique]}] [:llm {:reads [:draft-code :critique] :writes [:refined-code]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** code-building without an explicit :spec input (just a goal string) produces code that maps to the model's first guess at what the goal meant — divergence from intent surfaces only at test time (confidence 1.00, evidence-count 1)\n    - Avoid when: the goal is ambiguous OR the consequences of wrong-interpretation are expensive\n    - Recommended fix: always pipe code-building's :reads through a design stage first; the design's :spec field is the input to code-building, not the raw goal\n\n  - **Failure mode:** single-shot generation of a long file (>200 lines) produces code with internal inconsistencies — function signatures mismatch their callers, imports declared but unused (confidence 1.00, evidence-count 1)\n    - Avoid when: the artifact is a long file with multiple cohesive sections\n    - Recommended fix: scaffold via :code-built outline (top-of-file imports / function-declarations / glue), then :map-each per-section generation, then :code-stitched final — preserves consistency across sections\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - function implementation from a typed spec + examples\n  - config file generation from a deployment plan\n  - test case generation from a behavior specification\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent bf47c816-2833-320e-9fbd-6ae109275ab0)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Synthesis (confidence: 0.85)\n   Why this fits: The task requires integrating multiple constraints (latency, freshness, late-data, UI reconciliation) into a single cohesive artifact (a design doc). This matches the synthesis behavior of 'integrating multiple structured inputs into a single cohesive artifact'. The recommended-pattern of scaffolding an outline (sections for watermarks, windows, etc.) via code then filling them via synthesis is a strong fit for a multi-section technical document.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nYou need to design a streaming aggregation that computes \"items sold per\nSKU per 5-minute window\" with the following properties:\n\n- Event source: 50K events/second from POS terminals across 800 stores\n- Each event is `{:store-id :sku :quantity :sold-at :received-at}` —\n  `:received-at` may be MINUTES later than `:sold-at` for offline-mode\n  terminals that batch-upload when reconnected\n- Some events arrive up to 6 hours late (worst case)\n- Downstream consumers (executive dashboard) need <2-min freshness for\n  CURRENT windows\n- A separate consumer (inventory forecasting) needs ACCURATE final\n  counts even if it costs 6+ hours\n- Compute infrastructure: Kafka + Flink (the team has 2 engineers\n  comfortable with both)\n\nDesign the aggregation pipeline with:\n- The choice of WATERMARK strategy and what it costs\n- The choice of WINDOW type (tumbling, sliding, session) and why\n- The TWO output streams (one for the fast-freshness dashboard, one for\n  the accurate-final-count forecaster) and how they share computation\n- Late-data policy: what gets dropped vs upserted into the late-arrival\n  output stream\n- The reconciliation strategy for cases where the dashboard had stale\n  data that's now corrected (UI considerations matter here, not just\n  data-plane considerations)\n\nOutput a design doc with sections covering each of the above.",
+ :june-flags
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 17825,
+ :confidence 1.0,
+ :was-fresh-mint? false,
+ :assigned-via :land-on-domain-child}

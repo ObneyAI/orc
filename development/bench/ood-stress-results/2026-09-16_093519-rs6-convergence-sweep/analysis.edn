@@ -1,0 +1,123 @@
+{:groups
+ {"contractcompare"
+  {:plain-matches 3,
+   :labels [nil nil nil],
+   :mints 0,
+   :converged? true,
+   :coverage [:covered :covered :covered],
+   :vias [:match :match :match],
+   :parents [],
+   :landings 0,
+   :members
+   ["08-contractcompare-a"
+    "16-contractcompare-b"
+    "24-contractcompare-c"],
+   :distinct-assigned-ids 1},
+  "gamebalance"
+  {:plain-matches 0,
+   :labels ["game-balance-simulation" nil "game-economy-tuning"],
+   :mints 2,
+   :converged? false,
+   :coverage [:uncovered nil :partial],
+   :vias [:mint-domain-child :mint :mint-sibling-domain-child],
+   :parents
+   [#uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c"
+    #uuid "aef71f08-76bf-373c-862a-1250ef23f450"],
+   :landings 0,
+   :members ["03-gamebalance-a" "11-gamebalance-b" "19-gamebalance-c"],
+   :distinct-assigned-ids 3},
+  "haikusecurity"
+  {:plain-matches 0,
+   :labels
+   ["security-vulnerability-haikus" "security-finding-haikus" nil],
+   :mints 2,
+   :converged? false,
+   :coverage [:partial :uncovered nil],
+   :vias [:mint-sibling-domain-child :mint-sibling-domain-child :mint],
+   :parents
+   [#uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c"
+    #uuid "0f80961b-9318-329c-91c3-8f77cda96c43"],
+   :landings 0,
+   :members
+   ["05-haikusecurity-a" "13-haikusecurity-b" "21-haikusecurity-c"],
+   :distinct-assigned-ids 3},
+  "legal"
+  {:plain-matches 2,
+   :labels [nil nil "legal-clause-review"],
+   :mints 1,
+   :converged? false,
+   :coverage [:covered :covered :partial],
+   :vias [:match :match :mint-domain-child],
+   :parents [#uuid "153f1c69-e1d8-3592-8e62-391a7fab2dac"],
+   :landings 0,
+   :members ["07-legal-a" "15-legal-b" "23-legal-c"],
+   :distinct-assigned-ids 2},
+  "marathon"
+  {:plain-matches 0,
+   :labels
+   [nil "half-marathon-training-plan" "marathon-training-plan"],
+   :mints 2,
+   :converged? false,
+   :coverage [nil :uncovered :uncovered],
+   :vias [nil :mint-domain-child :mint-sibling-domain-child],
+   :parents
+   [#uuid "2ead65e6-6373-38de-81c4-ef7bf067afc9"
+    #uuid "aef71f08-76bf-373c-862a-1250ef23f450"],
+   :landings 0,
+   :members ["01-marathon-a" "09-marathon-b" "17-marathon-c"],
+   :distinct-assigned-ids 2},
+  "queryopt"
+  {:plain-matches 0,
+   :labels
+   ["postgresql-query-optimization" nil "sql-query-optimization"],
+   :mints 2,
+   :converged? false,
+   :coverage [:partial nil :covered],
+   :vias [:mint-sibling-domain-child nil :mint-sibling-domain-child],
+   :parents [#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"],
+   :landings 0,
+   :members ["06-queryopt-a" "14-queryopt-b" "22-queryopt-c"],
+   :distinct-assigned-ids 2},
+  "recipe"
+  {:plain-matches 0,
+   :labels
+   ["recipe-scaling-and-catering-prep"
+    "bakery-production-scaling"
+    "commercial-recipe-scaling"],
+   :mints 3,
+   :converged? false,
+   :coverage [:uncovered :uncovered :uncovered],
+   :vias
+   [:mint-domain-child
+    :mint-sibling-domain-child
+    :mint-sibling-domain-child],
+   :parents [#uuid "0f80961b-9318-329c-91c3-8f77cda96c43"],
+   :landings 0,
+   :members ["02-recipe-a" "10-recipe-b" "18-recipe-c"],
+   :distinct-assigned-ids 3},
+  "schemamigration"
+  {:plain-matches 0,
+   :labels
+   ["postgresql-schema-migration"
+    "database-migration-planning"
+    "dynamodb-schema-migration"],
+   :mints 3,
+   :converged? false,
+   :coverage [:uncovered :partial :covered],
+   :vias
+   [:mint-domain-child :mint-domain-child :mint-sibling-domain-child],
+   :parents
+   [#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"
+    #uuid "aef71f08-76bf-373c-862a-1250ef23f450"],
+   :landings 0,
+   :members
+   ["04-schemamigration-a"
+    "12-schemamigration-b"
+    "20-schemamigration-c"],
+   :distinct-assigned-ids 3}},
+ :behavioral
+ {:entries 56,
+  :fresh-mint-markers 0,
+  :matched 56,
+  :distinct-behaviors 14,
+  :tasks-with-no-behavior 2}}

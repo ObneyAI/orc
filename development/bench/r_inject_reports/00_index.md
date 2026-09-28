@@ -92,3 +92,14 @@ The reports are written to be read linearly through the suite OR jumped-to by ta
 - All `:usage` numbers in this report's headline table are the executor's per-tick aggregation (Phase 1 + Phase 2 sub-LLM calls). The classifier reranker calls (~15-20K tokens) appear in `:node-trace-usage-total` but not `:usage`. When `:node-trace` is present on the saved EDN, the per-task reports use it for the headline number; when only `:usage` is present, the report cites that and notes the gap.
 
 - Outputs were spot-checked against source documents; no hallucinations were surfaced in any of the spot-checks. This is a coarse quality signal, not an evaluation. A judge-based evaluation (cross-comparing R-Inject outputs against baseline outputs on the same documents) is the natural next step.
+
+## 06 — Domain specialisation (added with the R-Inject specialisation arc)
+
+[`06_domain-specialisation.md`](06_domain-specialisation.md) re-asks the question for tasks OFF the corpus's domain
+but ON its shape: three off-domain tasks and the legal control, each run as baseline, first occurrence (the runtime
+mints a domain child under the matched shape and renders the parent's entry plus the child line) and second
+occurrence on the same store. The model names the injected shape as the reason for its design on domains the corpus
+never covered and reads the child line on the second occurrence; the child's own accrued evidence is not yet shown
+before consolidation, and a child that surfaces on its own inside the recurrence band loses its child line — two
+render follow-ups. One pre-existing failure mode (an unquoted `:code` closure rejected on every iteration) dominated
+the run's cost.

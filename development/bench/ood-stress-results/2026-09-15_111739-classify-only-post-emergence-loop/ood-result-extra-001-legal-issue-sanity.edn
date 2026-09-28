@@ -1,0 +1,302 @@
+{:slug "extra-001-legal-issue-sanity",
+ :envelope
+ {:assigned-tree-id #uuid "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+  :parent-tree-id nil,
+  :rerank-fallback? false,
+  :reasoning
+  "This candidate perfectly matches the task's requirement for legal issue detection, specifically calling for per-issue severity, area-of-law, source citation, and recommendations. The recommended pattern includes a structured :output-schemas that aligns with all five specific fields requested in the query (concern, severity, area-of-law, citation, and revision/recommendation).",
+  :outcome :matched,
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured :output-schemas reliably surfaces issues with consistent severity + citation shape",
+      :good-when
+      "document has natural sections (paragraphs, clauses) AND each section can be independently scanned for issues",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:section-issues] :output-schemas {:section-issues [:vector [:map [:concern :string] [:severity [:enum :high :medium :low]] [:area-of-law :string] [:citation :string] [:recommendation :string]]]}}]] [:aggregate {:from :results :writes [:issues]}] [:code {:reads [:issues] :writes [:severity-summary] :fn (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))})}] [:final {:keys [:issues :severity-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section structure — chunk-by-size + tolerate boundary-straddling issues"
+     "the task is general risk identification (no legal-specific requirements like citations) — use risk-analysis instead"
+     "the per-section :llm's :output-schemas does NOT include a :citation field"
+     "the severity-summary step is a separate :llm call instead of a :code transform"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.182109-05:00"},
+    :content
+    "Legal-issue-detection trees flag legal concerns in a document with per-issue severity, area-of-law, source citation, and recommendation. The proven shape mirrors risk-analysis but with citation as a first-class output: per-section :map-each with :output-schemas requiring :citation field, then :code (NOT :llm) for the severity-summary rollup. Always require citation in the schema so users can verify the model's flags against the source.",
+    :rank 1,
+    :reasoning
+    "This candidate perfectly matches the task's requirement for legal issue detection, specifically calling for per-issue severity, area-of-law, source citation, and recommendations. The recommended pattern includes a structured :output-schemas that aligns with all five specific fields requested in the query (concern, severity, area-of-law, citation, and revision/recommendation).",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "issues without citation fields become 'recommendations the user can't verify' — model needs to be explicitly required to cite",
+      :avoid-when
+      "the per-section :llm's :output-schemas does NOT include a :citation field",
+      :recommended-alternative
+      "always include :citation in the :output-schemas + word the instruction to require quoting the source phrase that triggered the issue"}
+     {:trait
+      "severity-summary computed via :llm wastes tokens — it's pure :code work (frequencies over a vector)",
+      :avoid-when
+      "the severity-summary step is a separate :llm call instead of a :code transform",
+      :recommended-alternative
+      "use a :code node with (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))}) — deterministic, fast, zero tokens"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9919147758642601,
+    :score 440.3305314403449,
+    :cos-avoid-sans-content 0.9974066435350872,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-class:#uuid \"00000000-c1c1-4001-b004-d0c0a0a0a0a4\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9974066435350872}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured :output-schemas reliably surfaces issues with consistent severity + citation shape",
+      :good-when
+      "document has natural sections (paragraphs, clauses) AND each section can be independently scanned for issues",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:section-issues] :output-schemas {:section-issues [:vector [:map [:concern :string] [:severity [:enum :high :medium :low]] [:area-of-law :string] [:citation :string] [:recommendation :string]]]}}]] [:aggregate {:from :results :writes [:issues]}] [:code {:reads [:issues] :writes [:severity-summary] :fn (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))})}] [:final {:keys [:issues :severity-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section structure — chunk-by-size + tolerate boundary-straddling issues"
+     "the task is general risk identification (no legal-specific requirements like citations) — use risk-analysis instead"
+     "the per-section :llm's :output-schemas does NOT include a :citation field"
+     "the severity-summary step is a separate :llm call instead of a :code transform"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.171355-05:00"},
+    :content
+    "Legal-issue-detection trees flag legal concerns in a document with per-issue severity, area-of-law, source citation, and recommendation. The proven shape mirrors risk-analysis but with citation as a first-class output: per-section :map-each with :output-schemas requiring :citation field, then :code (NOT :llm) for the severity-summary rollup. Always require citation in the schema so users can verify the model's flags against the source.",
+    :rank 2,
+    :reasoning
+    "This is the fingerprint version of the ideal tree-class. It describes the exact same structural fit, including the crucial :citation field requirement which is a core part of the caller's request for 'Direct citation of the offending clause text'.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "issues without citation fields become 'recommendations the user can't verify' — model needs to be explicitly required to cite",
+      :avoid-when
+      "the per-section :llm's :output-schemas does NOT include a :citation field",
+      :recommended-alternative
+      "always include :citation in the :output-schemas + word the instruction to require quoting the source phrase that triggered the issue"}
+     {:trait
+      "severity-summary computed via :llm wastes tokens — it's pure :code work (frequencies over a vector)",
+      :avoid-when
+      "the severity-summary step is a separate :llm call instead of a :code transform",
+      :recommended-alternative
+      "use a :code node with (fn [{:keys [issues]}] {:severity-summary (frequencies (map :severity issues))}) — deterministic, fast, zero tokens"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9919147758642601,
+    :score 440.3305314403449,
+    :cos-avoid-sans-content 0.9974066435350872,
+    :fitness-score 0.98,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b004-d0c0a0a0a0a4\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9974066435350872}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured output schema reliably classifies risks across long documents",
+      :good-when
+      "document has natural sections (clauses, paragraphs) AND each section can be independently classified",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:risks] :output-schemas {:risks [:vector [:map [:obligation :string] [:severity [:enum :high :medium :low]] [:justification :string]]]}}]] [:aggregate {:from :results :writes [:risk-matrix]}] [:llm {:reads [:document :risk-matrix] :writes [:executive-summary]}] [:final {:keys [:risk-matrix :executive-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section boundaries — chunk-by-size and tolerate that some obligations straddle boundaries"
+     "output doesn't need per-item categorization — use simpler entity-extraction patterns instead"
+     "document is >5KB AND tree is a single :llm without per-section chunking"
+     "the per-section :llm writes severity as a free-form string"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.181465-05:00"},
+    :content
+    "Risk-analysis trees identify and categorize risks/obligations from a document into a per-item :risk-matrix (HIGH/MEDIUM/LOW + justification) plus an :executive-summary. The proven shape is per-section :map-each with structured :output-schemas: split by section delimiter, classify each section under bounded concurrency, aggregate the matrix, then synthesize the executive summary. Always use :output-schemas to constrain severity to an enum — free-form strings drift across iterations and break aggregation.",
+    :rank 5,
+    :reasoning
+    "This candidate provides the correct general shape for risk analysis and severity categorization (high/medium/low). However, it is slightly less fit than the legal-specific trees because it lacks the 'citation' requirement as a first-class output, which the legal-issue-detection tree explicitly adds.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "single :llm classification on a long document misses many obligations because of attention-budget exhaustion",
+      :avoid-when
+      "document is >5KB AND tree is a single :llm without per-section chunking",
+      :recommended-alternative
+      "split into sections (use :chunk-document with :delimiter) and run per-section :map-each :llm with bounded concurrency"}
+     {:trait
+      "without :output-schemas, severity classifications drift to inconsistent strings ('high', 'HIGH', 'High', 'critical') across iterations — downstream aggregation breaks",
+      :avoid-when
+      "the per-section :llm writes severity as a free-form string",
+      :recommended-alternative
+      "always declare :output-schemas with severity as [:enum :high :medium :low] so the model is constrained to consistent values"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9932128654775731,
+    :score 439.97497387876564,
+    :cos-avoid-sans-content 0.9983727654405908,
+    :fitness-score 0.75,
+    :document-id
+    ":tree-class:#uuid \"00000000-c1c1-4001-b002-d0c0a0a0a0a2\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9983727654405908}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "per-section :map-each with structured output schema reliably classifies risks across long documents",
+      :good-when
+      "document has natural sections (clauses, paragraphs) AND each section can be independently classified",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :delimiter \"\\n\\n\" :into :sections}] [:map-each {:from :sections :as :section :into :results :max-concurrency 3} [:llm {:reads [:section] :writes [:risks] :output-schemas {:risks [:vector [:map [:obligation :string] [:severity [:enum :high :medium :low]] [:justification :string]]]}}]] [:aggregate {:from :results :writes [:risk-matrix]}] [:llm {:reads [:document :risk-matrix] :writes [:executive-summary]}] [:final {:keys [:risk-matrix :executive-summary]}]]"}],
+    :avoid-when
+    ["the document has no natural section boundaries — chunk-by-size and tolerate that some obligations straddle boundaries"
+     "output doesn't need per-item categorization — use simpler entity-extraction patterns instead"
+     "document is >5KB AND tree is a single :llm without per-section chunking"
+     "the per-section :llm writes severity as a free-form string"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.170676-05:00"},
+    :content
+    "Risk-analysis trees identify and categorize risks/obligations from a document into a per-item :risk-matrix (HIGH/MEDIUM/LOW + justification) plus an :executive-summary. The proven shape is per-section :map-each with structured :output-schemas: split by section delimiter, classify each section under bounded concurrency, aggregate the matrix, then synthesize the executive summary. Always use :output-schemas to constrain severity to an enum — free-form strings drift across iterations and break aggregation.",
+    :rank 4,
+    :reasoning
+    "Matches the structural shape of per-section risk classification but lacks the specific legal domain enhancements (like citations) found in the higher-ranked candidates.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "single :llm classification on a long document misses many obligations because of attention-budget exhaustion",
+      :avoid-when
+      "document is >5KB AND tree is a single :llm without per-section chunking",
+      :recommended-alternative
+      "split into sections (use :chunk-document with :delimiter) and run per-section :map-each :llm with bounded concurrency"}
+     {:trait
+      "without :output-schemas, severity classifications drift to inconsistent strings ('high', 'HIGH', 'High', 'critical') across iterations — downstream aggregation breaks",
+      :avoid-when
+      "the per-section :llm writes severity as a free-form string",
+      :recommended-alternative
+      "always declare :output-schemas with severity as [:enum :high :medium :low] so the model is constrained to consistent values"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9932128654775731,
+    :score 439.97497387876564,
+    :cos-avoid-sans-content 0.9983727654405908,
+    :fitness-score 0.73,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b002-d0c0a0a0a0a2\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9983727654405908}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.186532-05:00"},
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :rank 7,
+    :reasoning
+    "The producer/validator pattern is designed for formal/syntactic validation. While the legal concerns could be seen as rules, they require 'deep judgment' and 'natural-language judgment' rather than codeable syntactic rules. The avoid-when for this candidate correctly notes it should be avoided when 'validation requires deep judgment', which applies to interpreting non-compete clauses.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9946146434092988,
+    :score 439.8892386690579,
+    :cos-avoid-sans-content 0.9989060745659328,
+    :fitness-score 0.3,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9989060745659328}],
+  :confidence 1.0,
+  :ranked-candidates
+  [{:target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 440.3305314403449}
+   {:target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.98,
+    :score 440.3305314403449}
+   {:target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.75,
+    :score 439.97497387876564}
+   {:target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.73,
+    :score 439.97497387876564}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 439.8892386690579}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6555,
+ :parent-chain []}
