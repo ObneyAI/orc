@@ -56,9 +56,15 @@ You are shown existing-domain-labels: the tenant's own list of family labels
 already in use (bounded, most-recently-minted first) — and a candidate may
 ALSO carry existing-domain-children: labels of domain children already minted
 under that ONE candidate. Both serve ONE purpose — label reuse, never
-coverage. Reuse a listed label VERBATIM as domain_label unless this task's
-subject matter AND its output kind BOTH differ from every listed label's
-family — coin a new label only then. existing-domain-labels and
+coverage. Reuse a listed label VERBATIM as domain_label only when this task
+shares BOTH the subject matter AND the output kind of that label's family. If
+the subject matter differs, or the output kind differs, it is a different
+family: coin a new label, even when the other one matches (a chess study plan
+and a language-course curriculum are both structured plans, but their subject
+matter differs, so they are different families). When you are unsure whether a
+listed label covers this task, coin a new label: a new family can later be
+merged by a judge that reads full descriptions, while a wrong reuse is final.
+existing-domain-labels and
 existing-domain-children MUST NOT influence domain_coverage: coverage is
 judged solely against the candidate's OWN representative uses and content. A
 child (or a tenant label) naming this task's domain does not make a parent

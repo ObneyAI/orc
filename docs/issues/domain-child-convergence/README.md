@@ -265,3 +265,23 @@ unfiltered. Any later edit means one more full run.
   pin ORC `1b6f95cb`, which predates it, and penny-agent creates no repl-researcher nodes.
 - **Left untracked for the user to keep or delete:** `development/src/rs7_postgres_lock_probe.clj` (the refuted
   contention probe) and `development/src/rs7_postgres_repro.clj` (a small checkpointed-campaign repro).
+
+## Post-fix arm, first attempt: the label-reuse rule was inverted (orchestrator)
+
+- **Finding:** pass 1 of the post-fix arm looked converged (0 in-domain mints, 197 landings) but was mostly false
+  merging: 19 families for 36 off-domain groups, 17 of them used by more than one group, 209 tasks in shared
+  families; in-domain legal tasks were captured by a "contract-clause-drafting" family instead of matching their
+  seeds. The "in-domain mint count" metric hid this: those tasks landed, they did not mint.
+- **Cause:** every landing was a label landing (no merge judge involved). CV-A's reranker text said to reuse a listed
+  label "unless this task's subject matter AND its output kind BOTH differ", the inverse of the RS-P3 rule (same
+  family requires both; either difference is a new family). The orchestrator's CV-A inspection did not catch it.
+- **Action:** the arm was stopped after pass 1; its results are kept as `post_fix-run1-inverted-reuse-rule`. The rule
+  now reuses a label only when both match, coins a new label when either differs or when unsure, and a test pins it.
+- **Targeted check on the confusable clusters (14 groups, 42 tasks):** false merges fell from pervasive to 2 families
+  (tax estimates into a small-business-forecast family; query optimisation into a Kubernetes log-triage family). The
+  reranker's reasoning shows the remaining path: the tenant label list and a shape's existing-child labels make label
+  reuse the main merge mechanism, bypassing the merge judge. A second check without the tenant label list is running.
+- **Harness trap recurred:** killing a JVM mid-run left the worktree's ColBERT index artifact unreadable (10 errors
+  until the first rebuild). The arm launcher now clears the index directory before each JVM.
+- **Analysis gap:** the analysis reports in-domain mints but not in-domain captures or families shared across groups.
+  Both are added before the comparison.

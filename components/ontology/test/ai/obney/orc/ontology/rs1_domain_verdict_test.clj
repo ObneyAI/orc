@@ -179,3 +179,12 @@
       (is (m/validate ontology-schemas/reranked-result entry)
           (str "Entry should validate. Explanation: "
                (pr-str (m/explain ontology-schemas/reranked-result entry)))))))
+
+(deftest label-reuse-requires-both-subject-matter-and-output-kind
+  (testing "convergence arc (RS-7 finding): the reuse rule was inverted ('reuse unless
+            BOTH differ') and the post-fix arm merged 17 families across groups.
+            Reuse now requires BOTH to match; either difference coins a new label."
+    (let [text (str @#'ai.obney.orc.ontology.core.reranker/reranker-instruction)]
+      (is (clojure.string/includes? text "only when this task\nshares BOTH the subject matter AND the output kind"))
+      (is (clojure.string/includes? text "If\nthe subject matter differs, or the output kind differs, it is a different\nfamily"))
+      (is (not (clojure.string/includes? text "BOTH differ from every listed label"))))))
