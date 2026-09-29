@@ -500,8 +500,11 @@
                   (fn [inputs]
                     (:outputs (with-bounded-retries predict-attempts [5000 15000]
                                 #(llm/predict (:llm-provider ctx :openrouter) on-brief-module inputs
+                                              ;; :with-metadata? so the answer is under :outputs
+                                              ;; (without it predict returns the outputs map
+                                              ;; itself, and every verdict read as missing)
                                               {:model model :use-function-calling? true :validate? false
-                                               :timeout-ms predict-timeout-ms})))))
+                                               :with-metadata? true :timeout-ms predict-timeout-ms})))))
         judged (update manifest :entries
                  (fn [es]
                    (mapv (fn [e]
