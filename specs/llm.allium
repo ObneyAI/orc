@@ -37,11 +37,14 @@ contract StructuredPrediction {
         -- a present output may contain null.
         -- Optional means the provider may say "no value": every declared optional
         -- output, and every optional entry of a map at any depth (inside nested
-        -- maps, vector items, and union branches), is offered to the provider as
-        -- nullable, so a provider that emits every declared property is never
-        -- forced to invent a value. A null returned for such an optional field is
-        -- absence -- removed before validation, never a present null -- at every
-        -- depth, for blocking and streaming predictions alike. Required outputs and
+        -- maps, the items of vectors, sequences and sets, tuple positions, map
+        -- values, and the branches of a tagged union), is offered to the provider
+        -- as nullable, so a provider that emits every declared property is never
+        -- forced to invent a value. Entries inside an untagged union or an
+        -- intersection are offered exactly as declared. A null returned for such an
+        -- optional field is absence -- removed whether or not the caller asks for
+        -- validation, never a present null -- at every depth, for blocking and
+        -- streaming predictions alike. Required outputs and
         -- required entries are never made nullable; a null or missing value there
         -- still fails. An optional field whose own declared schema already accepts
         -- null keeps a returned null as its value.
