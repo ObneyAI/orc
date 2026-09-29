@@ -160,3 +160,22 @@ rate up, in-domain mints to zero, exact-repeat stability not below run B's 18/21
 without a recorded reason, merge unknowns reported — and a miss is a documented reason in the findings, never a
 failed build (D6, ADR 0029's "never fired vs never will").
 Rejected: metrics with no stated finish line; numeric pass/fail gates over a live model's variance.
+
+## C3' — every landing on an existing family is judged (revises C1's landing and C3's "never on a landing")
+
+Evidence: the RS-7 post-fix arm's pass 1 (238 tasks) placed 209 tasks in 17 families shared across groups; every
+landing was an unjudged label landing. After the reuse rule was corrected, two live checks on 42 confusable tasks still
+put tasks from different groups in one family (2 and 5 shared families), through three unjudged paths: a label a family
+already carries, a family reached by match or walk-down, and a shape's existing child label. The merge judge (RS-P3:
+about 1 false merge in 23) ran only on would-be mints.
+
+Decision (user, 2026-09-29): no task enters an existing family without the merge judge. The family a landing would
+choose is always among the judge's candidates; same lands on the named family, new mints, unknown defers. A family
+reached by match or walk-down is judged as a match on its own parent shape. Covered matches and covered-seed protection
+stay judge-free.
+Rejected: judge only reached families (leaves label reuse, the dominant path, unjudged); keep the design and tune the
+reranker's text (two checks after the rule fix still merged across groups; the proof must not rest on prose).
+Cost: one judge call (about 1.5k tokens) per recurrence, against the about 20k-token rerank each classification makes.
+Spec: `DomainFamilyMergeIsJudged` and `DomainFamilyIsALeafOnTheDomainAxis` revised; `LandOnDomainFamily` and
+`LandOnReachedDomainFamily` replaced by `MergeIntoDomainFamily` (with a proposed family) and
+`JudgeReachedDomainFamily`; `MintDomainFamily` guards an identity that already exists.

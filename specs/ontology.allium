@@ -363,8 +363,13 @@ contract TaskClassification {
         -- asks one discrete question with their full descriptions in view: same
         -- family as one of these (named), a new family, or unknown — reason
         -- before verdict. Same lands on that family, new mints, unknown defers on
-        -- the domain axis (reason merge_unresolved) and mints nothing. The
-        -- question is never asked on a landing or a covered match, and it is
+        -- the domain axis (reason merge_unresolved) and mints nothing. Revised
+        -- C3': the same question is asked before ANY landing on an existing
+        -- family (a label a family already carries, a match or walk-down that
+        -- reaches a family, a shape's existing child label), with the proposed
+        -- family always among the candidates, because the RS-7 post-fix arm
+        -- showed unjudged landings were the dominant false merge. It is never
+        -- asked on a covered match or a covered-seed protection, and it is
         -- never replaced by a threshold over a similarity number (grill C3).
 
     @invariant CoveredSeedProtection
@@ -378,12 +383,14 @@ contract TaskClassification {
 
     @invariant DomainFamilyIsALeafOnTheDomainAxis
         -- A domain family is never a shape class for the domain axis: any match
-        -- or walk-down that resolves to a family is a LANDING on it (its parent
-        -- is its own broader edge, its label its concept label, the verdict not
-        -- consulted), so there are no grandchildren and the classified event
-        -- carries the domain facts however the family was reached. A task that
-        -- reaches a family but is judged a different domain mints under the
-        -- retrieved SHAPE, never under the family (grill C5). Nor is a family a
+        -- or walk-down that resolves to a family is a PROPOSED landing on it (its
+        -- parent is its own broader edge, its label its concept label, the
+        -- coverage verdict not consulted), confirmed by the merge judge
+        -- (DomainFamilyMergeIsJudged, revised C3'), so there are no grandchildren
+        -- and the classified event carries the domain facts however the family
+        -- was reached. A task that reaches a family but is judged a different
+        -- family mints under the family's own parent SHAPE, never under the
+        -- family (grill C5). Nor is a family a
         -- target of the shape-axis bundle: a near-miss is bundled only onto a
         -- shape class, so no task enters a family without a landing or a
         -- judged merge.
@@ -486,9 +493,9 @@ enum ConceptScope {
 -- returns richer maps carrying these outcomes, not bare enum values.
 -- R-Inject specialisation: the domain-child provenances a tree-class match can
 -- widen into. Since ADR 0007 every birth is a judged family birth
--- (MintDomainFamily, domain_child_minted) and every recurrence a landing
--- (LandOnDomainFamily, LandOnReachedDomainFamily, MergeIntoDomainFamily,
--- landed_on_domain_child). sibling_domain_child_minted is produced by no
+-- (MintDomainFamily, domain_child_minted) and every recurrence a judged landing
+-- (MergeIntoDomainFamily, landed_on_domain_child; a reached family is judged
+-- through JudgeReachedDomainFamily). sibling_domain_child_minted is produced by no
 -- rule; it stays only so events recorded before ADR 0007 still read.
 enum ClassificationOutcome {
     matched | bundled | walked_down | minted | uncertain
@@ -985,14 +992,21 @@ rule SeedBaselineDescriptions {
 -- concept graph (agent-authored tree-class concepts), null when none;
 -- covered_leaf_neighbour(ranking) is a candidate judged covered, with no
 -- families of its own, at or above the match threshold, or null;
--- nearest_families(signature, reasoning, ranking) is the hybrid search's ranked
--- neighbourhood bounded by merge_candidate_count; merge_verdict(...) is the
+-- proposed_family(ranking, canonical_label) is the family a landing would
+-- choose without a judge — the family carrying that label, else a family the
+-- ranking's top match reached — or null;
+-- nearest_families(proposed, signature, reasoning, ranking) is the hybrid
+-- search's ranked neighbourhood bounded by merge_candidate_count, with the
+-- proposed family always included when not null; merge_verdict(...) is the
 -- judge's discrete answer over those families' full descriptions (a named
 -- family, new, or unknown); domain_child_identity(shape_class, canonical_label)
 -- is the stable derivation (DomainChildIdentityIsStable); birth_description(...)
 -- is the rich self-description of DomainFamilyDescribesItselfFromBirth.
--- Order (DomainChildrenAreAlwaysConsidered): CoveredSeedWins → LandOnDomainFamily
--- → MergeIntoDomainFamily → MintDomainFamily.
+-- Order (DomainChildrenAreAlwaysConsidered): CoveredSeedWins → the judged
+-- question (MergeIntoDomainFamily or MintDomainFamily). Revised C3': there is no
+-- unjudged landing; a proposed family is one of the judge's candidates, and a
+-- family reached by match or walk-down is judged as a match on its own parent
+-- shape (JudgeReachedDomainFamily).
 rule CoveredSeedWins {
     when: LeafShapeMatched(occurrence, shape_class, ranking, coverage, domain_label)
     let neighbour = covered_leaf_neighbour(ranking)
@@ -1011,44 +1025,23 @@ rule CoveredSeedWins {
     )
 }
 
-rule LandOnDomainFamily {
-    when: LeafShapeMatched(occurrence, shape_class, ranking, coverage, domain_label)
-    let canonical_label = canonical_domain_label(domain_label)
-    requires: canonical_label != null
-    let family = domain_family(canonical_label)
-    requires: family != null
-    requires: covered_leaf_neighbour(ranking) = null or coverage = covered
+rule JudgeReachedDomainFamily {
+    when: DomainFamilyReached(occurrence, family, ranking, coverage, domain_label)
 
-    -- The classified event's assignment IS the landing: the family's identity,
-    -- the landing provenance and the family's label; the family's parent stays
-    -- its birth shape; no concept work, no second occurrence.
-    ensures: TaskAssignedToDomainChild(
-        child: family,
-        provenance: landed_on_domain_child,
-        minted_by: occurrence
-    )
-}
-
-rule LandOnReachedDomainFamily {
-    when: DomainFamilyReached(occurrence, family)
-
-    -- A match or walk-down that resolves to a family is a landing on it, however
-    -- it was reached (DomainFamilyIsALeafOnTheDomainAxis).
-    ensures: TaskAssignedToDomainChild(
-        child: family,
-        provenance: landed_on_domain_child,
-        minted_by: occurrence
-    )
+    -- A match or walk-down that resolves to a family proposes a landing on it
+    -- (DomainFamilyIsALeafOnTheDomainAxis); the proposal is judged like any
+    -- other, as a match on the family's own parent shape.
+    ensures: LeafShapeMatched(occurrence, family_parent(family), ranking, coverage, domain_label)
 }
 
 rule MergeIntoDomainFamily {
     when: LeafShapeMatched(occurrence, shape_class, ranking, coverage, domain_label)
     let canonical_label = canonical_domain_label(domain_label)
     requires: canonical_label != null
-    requires: covered_leaf_neighbour(ranking) = null
-    requires: domain_family(canonical_label) = null
-    requires: coverage in {partial, uncovered}
-    let candidates = nearest_families(occurrence.signature, occurrence.domain_reasoning, ranking)
+    let proposed = proposed_family(ranking, canonical_label)
+    requires: covered_leaf_neighbour(ranking) = null or coverage = covered
+    requires: coverage in {partial, uncovered} or proposed != null
+    let candidates = nearest_families(proposed, occurrence.signature, occurrence.domain_reasoning, ranking)
     let verdict = merge_verdict(occurrence.signature, candidates)
     requires: verdict.kind = same
 
@@ -1064,14 +1057,17 @@ rule MintDomainFamily {
     when: LeafShapeMatched(occurrence, shape_class, ranking, coverage, domain_label)
     let canonical_label = canonical_domain_label(domain_label)
     requires: canonical_label != null
-    requires: covered_leaf_neighbour(ranking) = null
-    requires: domain_family(canonical_label) = null
-    requires: coverage in {partial, uncovered}
-    let candidates = nearest_families(occurrence.signature, occurrence.domain_reasoning, ranking)
+    let proposed = proposed_family(ranking, canonical_label)
+    requires: covered_leaf_neighbour(ranking) = null or coverage = covered
+    requires: coverage in {partial, uncovered} or proposed != null
+    let candidates = nearest_families(proposed, occurrence.signature, occurrence.domain_reasoning, ranking)
     let verdict = merge_verdict(occurrence.signature, candidates)
     requires: verdict.kind = new
     let child_identity = domain_child_identity(shape_class, canonical_label)
     let child_uri = tree_class_uri(child_identity)
+    -- A task judged a new family whose derived identity is an existing family's
+    -- (same shape, same label) cannot be minted; the domain axis defers.
+    requires: domain_family(canonical_label) = null or domain_family(canonical_label).uri != child_uri
 
     -- The family's concept, its parent edge, its rich birth description and its
     -- embedding are born together, before anything references it; minting the
