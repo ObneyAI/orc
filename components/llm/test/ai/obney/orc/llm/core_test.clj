@@ -1,9 +1,12 @@
 (ns ai.obney.orc.llm.core-test
   (:require [clojure.core.async :as async]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [hato.client :as http]
             [litellm.router :as router]
             [litellm.providers.openrouter :as openrouter]
+            [malli.core :as m]
+            [ai.obney.orc.llm.core :as core]
             [ai.obney.orc.llm.interface :as llm]))
 
 (def qa
@@ -468,6 +471,406 @@
 (def ^:private verdict-spec
   {:inputs [{:name :question :spec :string}]
    :outputs [{:name :verdict :spec :string}]})
+
+;; ---------------------------------------------------------------------------
+;; OptionalOutputPresence — optional means the provider may say "no value"
+;;
+;; specs/llm.allium, @invariant OptionalOutputPresence: every declared optional
+;; output, and every optional entry of a map at any depth (nested maps, vector
+;; items, union branches), is offered to the provider as nullable, so a
+;; provider that emits every declared property is never forced to invent a
+;; value. A null returned for such an optional field is absence — removed
+;; before validation, never a present null — at every depth, for blocking and
+;; streaming predictions alike. Required outputs/entries are never made
+;; nullable; a null or missing value there still fails. An optional field
+;; whose own declared schema already accepts null keeps a returned null.
+;; ---------------------------------------------------------------------------
+
+(def ^:private answer+optional-aside
+  {:inputs []
+   :outputs [{:name :answer :spec :string}
+             {:name :aside :spec :string :optional true}]})
+
+(defn- tool-properties [request]
+  (get-in request [:tools 0 :function :parameters :properties]))
+
+(defn- tool-required [request]
+  (set (get-in request [:tools 0 :function :parameters :required])))
+
+(deftest an-optional-top-level-output-is-offered-to-the-provider-as-nullable
+  (let [captured (atom nil)]
+    (with-redefs [router/supports-function-calling? (constantly true)
+                  router/completion (fn [_provider request]
+                                      (reset! captured request)
+                                      {:choices [{:message {:tool-calls
+                                                            [{:function {:name "submit_response"
+                                                                         :arguments "{\"answer\":\"Paris\"}"}}]}}]})]
+      (llm/predict :test answer+optional-aside {} {:validate? false})
+      (let [props (tool-properties @captured)]
+        (is (= {:type "string"} (get props "answer"))
+            "a required field's wire type is unchanged")
+        (is (= {:oneOf [{:type "string"} {:type "null"}]} (get props "aside"))
+            "an optional field's wire type admits null")
+        (is (= #{"answer"} (tool-required @captured))
+            "the required list itself is unchanged")))))
+
+(def ^:private items-with-optional-nested-note
+  {:inputs []
+   :outputs [{:name :items
+              :spec [:vector [:map [:id :string] [:note {:optional true} :string]]]}]})
+
+(deftest an-optional-entry-nested-in-a-vector-item-is-offered-as-nullable
+  (let [captured (atom nil)]
+    (with-redefs [router/supports-function-calling? (constantly true)
+                  router/completion (fn [_provider request]
+                                      (reset! captured request)
+                                      {:choices [{:message {:tool-calls
+                                                            [{:function {:name "submit_response"
+                                                                         :arguments "{\"items\":[]}"}}]}}]})]
+      (llm/predict :test items-with-optional-nested-note {} {:validate? false})
+      (let [item-props (get-in (tool-properties @captured) ["items" :items :properties])]
+        (is (= {:type "string"} (get item-props "id"))
+            "a required nested entry's wire type is unchanged")
+        (is (= {:oneOf [{:type "string"} {:type "null"}]} (get item-props "note"))
+            "an optional nested vector-item entry admits null")))))
+
+(def ^:private decision-with-optional-multi-branch-entry
+  {:inputs []
+   :outputs [{:name :decision
+              :spec [:multi {:dispatch :type}
+                     [:a [:map [:type [:= :a]] [:value {:optional true} :string]]]
+                     [:b [:map [:type [:= :b]] [:count :int]]]]}]})
+
+(deftest an-optional-entry-nested-in-a-multi-branch-is-offered-as-nullable
+  (let [captured (atom nil)]
+    (with-redefs [router/supports-function-calling? (constantly true)
+                  router/completion (fn [_provider request]
+                                      (reset! captured request)
+                                      {:choices [{:message {:tool-calls
+                                                            [{:function {:name "submit_response"
+                                                                         :arguments "{\"decision\":{\"type\":\"a\"}}"}}]}}]})]
+      (llm/predict :test decision-with-optional-multi-branch-entry {} {:validate? false})
+      (let [branches (get-in (tool-properties @captured) ["decision" :oneOf])
+            branch-a (first (filter #(= "a" (get-in % [:properties "type" :const])) branches))
+            branch-b (first (filter #(= "b" (get-in % [:properties "type" :const])) branches))]
+        (is (= {:oneOf [{:type "string"} {:type "null"}]} (get-in branch-a [:properties "value"]))
+            "an optional entry in one :multi branch admits null")
+        (is (= {:type "integer"} (get-in branch-b [:properties "count"]))
+            "a required entry in another :multi branch is unchanged")))))
+
+(deftest the-marker-prompt-also-advertises-nullable-optionals-at-any-depth
+  (let [captured (atom nil)]
+    (with-redefs [router/supports-function-calling? (constantly false)
+                  router/completion (fn [_provider request]
+                                      (reset! captured request)
+                                      {:choices [{:message {:content "[[ ## items ## ]]\n[]"}}]})]
+      (llm/predict :test items-with-optional-nested-note {} {:validate? false})
+      (let [content (get-in @captured [:messages 0 :content])]
+        (is (str/includes? content "note?: str or null")
+            "the rendered marker prompt tells the model the nested optional entry admits null")
+        (is (str/includes? content "id: str")
+            "a required nested entry's rendered type is unchanged")
+        (is (not (str/includes? content "id: str or null")))))))
+
+(deftest a-null-top-level-optional-output-becomes-absent
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion (fn [& _]
+                                    {:choices [{:message {:tool-calls
+                                                          [{:function {:name "submit_response"
+                                                                       :arguments "{\"answer\":\"Paris\",\"aside\":null}"}}]}}]})]
+    (is (= {:answer "Paris"}
+           (llm/predict :test answer+optional-aside {} {:validate? true}))
+        "a null optional field is dropped, not returned as a present null")))
+
+(deftest a-null-top-level-required-output-still-fails-validation
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion (fn [& _]
+                                    {:choices [{:message {:tool-calls
+                                                          [{:function {:name "submit_response"
+                                                                       :arguments "{\"answer\":null}"}}]}}]})]
+    (let [failure (try
+                    (llm/predict :test answer+optional-aside {} {:validate? true})
+                    (catch clojure.lang.ExceptionInfo e e))]
+      (is (instance? clojure.lang.ExceptionInfo failure))
+      (is (= :schema-validation-failed (:failure-kind (ex-data failure)))))))
+
+(deftest a-null-nested-map-entry-becomes-absent
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion
+                (fn [& _]
+                  {:choices
+                   [{:message
+                     {:tool-calls
+                      [{:function
+                        {:name "submit_response"
+                         :arguments
+                         "{\"decision\":{\"action\":\"invoke\",\"request\":{\"action\":\"beliefs\",\"note\":null}}}"}}]}}]})]
+    (is (= {:decision {:action :invoke :request {:action :beliefs}}}
+           (llm/predict :test
+                        {:inputs []
+                         :outputs [{:name :decision
+                                    :spec [:map
+                                           [:action [:enum :invoke]]
+                                           [:request [:map
+                                                      [:action [:= :beliefs]]
+                                                      [:note {:optional true} :string]]]]}]}
+                        {}
+                        {:validate? true})))))
+
+(deftest a-null-required-nested-map-entry-still-fails-validation
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion
+                (fn [& _]
+                  {:choices
+                   [{:message
+                     {:tool-calls
+                      [{:function
+                        {:name "submit_response"
+                         :arguments
+                         "{\"decision\":{\"action\":\"invoke\",\"request\":{\"action\":null,\"note\":\"ok\"}}}"}}]}}]})]
+    (let [failure (try
+                    (llm/predict :test
+                                 {:inputs []
+                                  :outputs [{:name :decision
+                                             :spec [:map
+                                                    [:action [:enum :invoke]]
+                                                    [:request [:map
+                                                               [:action [:= :beliefs]]
+                                                               [:note {:optional true} :string]]]]}]}
+                                 {}
+                                 {:validate? true})
+                    (catch clojure.lang.ExceptionInfo e e))]
+      (is (instance? clojure.lang.ExceptionInfo failure))
+      (is (= :schema-validation-failed (:failure-kind (ex-data failure)))))))
+
+(deftest a-null-vector-item-entry-becomes-absent
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion
+                (fn [& _]
+                  {:choices
+                   [{:message
+                     {:tool-calls
+                      [{:function
+                        {:name "submit_response"
+                         :arguments
+                         "{\"items\":[{\"id\":\"a\",\"note\":null},{\"id\":\"b\",\"note\":\"ok\"}]}"}}]}}]})]
+    (is (= {:items [{:id "a"} {:id "b" :note "ok"}]}
+           (llm/predict :test items-with-optional-nested-note {} {:validate? true})))))
+
+(deftest a-null-multi-branch-entry-becomes-absent
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion
+                (fn [& _]
+                  {:choices
+                   [{:message
+                     {:tool-calls
+                      [{:function
+                        {:name "submit_response"
+                         :arguments "{\"decision\":{\"type\":\"a\",\"value\":null}}"}}]}}]})]
+    (is (= {:decision {:type :a}}
+           (llm/predict :test decision-with-optional-multi-branch-entry {} {:validate? true})))))
+
+(def ^:private answer+maybe-optional-aside
+  {:inputs []
+   :outputs [{:name :answer :spec :string}
+             {:name :aside :spec [:maybe :string] :optional true}]})
+
+(deftest an-optional-field-declared-maybe-keeps-a-returned-null
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion (fn [& _]
+                                    {:choices [{:message {:tool-calls
+                                                          [{:function {:name "submit_response"
+                                                                       :arguments "{\"answer\":\"Paris\",\"aside\":null}"}}]}}]})]
+    (is (= {:answer "Paris" :aside nil}
+           (llm/predict :test answer+maybe-optional-aside {} {:validate? true}))
+        "a field already declared [:maybe ...] keeps its null — it is the author's meaning")))
+
+(deftest a-null-optional-nested-vector-entry-in-marker-mode-becomes-absent
+  (with-redefs [router/supports-function-calling? (constantly false)
+                router/completion (fn [& _]
+                                    {:choices [{:message
+                                                {:content
+                                                 "[[ ## items ## ]]\n[{\"id\":\"a\",\"note\":null}]"}}]})]
+    (is (= {:items [{:id "a"}]}
+           (llm/predict :test items-with-optional-nested-note {} {:validate? true})))))
+
+(deftest streaming-final-result-drops-a-null-optional-nested-entry-at-any-depth
+  (with-redefs [router/completion
+                (fn [& _]
+                  (fake-stream [{:choices [{:delta {:content "[[ ## items ## ]]\n[{\"id\":\"a\",\"note\":null},{\"id\":\"b\",\"note\":\"ok\"}]"}}]}]))]
+    (let [events (drain (llm/predict-stream-v2 :test items-with-optional-nested-note {}
+                                               {:validate? true :debounce-ms 0}))
+          final (last events)]
+      (is (= :final (:orc/event final)))
+      (is (= {:items [{:id "a"} {:id "b" :note "ok"}]} (:outputs final))))))
+
+(deftest streaming-final-result-still-fails-a-null-required-nested-entry
+  (with-redefs [router/completion
+                (fn [& _]
+                  (fake-stream [{:choices [{:delta {:content "[[ ## items ## ]]\n[{\"id\":null}]"}}]}]))]
+    (let [events (drain (llm/predict-stream-v2 :test items-with-optional-nested-note {}
+                                               {:validate? true :debounce-ms 0}))
+          final (last events)]
+      (is (= :error (:orc/event final))
+          "a null in a REQUIRED nested entry still fails validation, even streamed"))))
+
+;; ---------------------------------------------------------------------------
+;; Dropping a null optional is normalization, not validation — weed found
+;; that `drop-null-optional-outputs` ran only inside the `validate? true`
+;; branch of both `predict` and `predict-stream-v2`. Real callers run with
+;; :validate? false (evaluation/core/judges.clj, gepa/core/todo_processors.clj,
+;; mcp-sheet-builder's patterns.clj/intent_analyzer.clj): the wire now offers
+;; every optional field as nullable regardless of :validate?, so those
+;; callers would have started receiving PRESENT nulls they never saw before,
+;; violating "a null for an optional field is absence... never a present
+;; null" for the one flag real callers actually use. :validate? must only
+;; decide whether `validate-outputs` runs — normalization runs either way.
+;; ---------------------------------------------------------------------------
+
+(deftest a-null-top-level-optional-output-becomes-absent-with-validation-off
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion (fn [& _]
+                                    {:choices [{:message {:tool-calls
+                                                          [{:function {:name "submit_response"
+                                                                       :arguments "{\"answer\":\"Paris\",\"aside\":null}"}}]}}]})]
+    (is (= {:answer "Paris"}
+           (llm/predict :test answer+optional-aside {} {:validate? false}))
+        "the null optional is dropped even though :validate? is false")))
+
+(deftest a-null-optional-nested-vector-entry-becomes-absent-with-validation-off
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion
+                (fn [& _]
+                  {:choices
+                   [{:message
+                     {:tool-calls
+                      [{:function
+                        {:name "submit_response"
+                         :arguments
+                         "{\"items\":[{\"id\":\"a\",\"note\":null},{\"id\":\"b\",\"note\":\"ok\"}]}"}}]}}]})]
+    (is (= {:items [{:id "a"} {:id "b" :note "ok"}]}
+           (llm/predict :test items-with-optional-nested-note {} {:validate? false})))))
+
+(deftest a-null-required-output-is-returned-as-is-with-validation-off
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion (fn [& _]
+                                    {:choices [{:message {:tool-calls
+                                                          [{:function {:name "submit_response"
+                                                                       :arguments "{\"answer\":null,\"aside\":null}"}}]}}]})]
+    (is (= {:answer nil}
+           (llm/predict :test answer+optional-aside {} {:validate? false}))
+        "with validation off, a null REQUIRED field is returned exactly as
+         the provider sent it — normalization never invents or removes a
+         required value, it only drops a null OPTIONAL one")))
+
+(deftest a-null-required-nested-entry-is-returned-as-is-with-validation-off
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion
+                (fn [& _]
+                  {:choices
+                   [{:message
+                     {:tool-calls
+                      [{:function
+                        {:name "submit_response"
+                         :arguments "{\"items\":[{\"id\":null,\"note\":null}]}"}}]}}]})]
+    (is (= {:items [{:id nil}]}
+           (llm/predict :test items-with-optional-nested-note {} {:validate? false}))
+        "the required :id stays present with its null; the optional :note is dropped")))
+
+(deftest streaming-final-result-drops-a-null-optional-nested-entry-with-validation-off
+  (with-redefs [router/completion
+                (fn [& _]
+                  (fake-stream [{:choices [{:delta {:content "[[ ## items ## ]]\n[{\"id\":\"a\",\"note\":null},{\"id\":\"b\",\"note\":\"ok\"}]"}}]}]))]
+    (let [events (drain (llm/predict-stream-v2 :test items-with-optional-nested-note {}
+                                               {:validate? false :debounce-ms 0}))
+          final (last events)]
+      (is (= :final (:orc/event final)))
+      (is (= {:items [{:id "a"} {:id "b" :note "ok"}]} (:outputs final))
+          "streamed and unvalidated, the optional null is still absent"))))
+
+(deftest streaming-final-result-returns-a-null-required-entry-as-is-with-validation-off
+  (with-redefs [router/completion
+                (fn [& _]
+                  (fake-stream [{:choices [{:delta {:content "[[ ## items ## ]]\n[{\"id\":null,\"note\":null}]"}}]}]))]
+    (let [events (drain (llm/predict-stream-v2 :test items-with-optional-nested-note {}
+                                               {:validate? false :debounce-ms 0}))
+          final (last events)]
+      (is (= :final (:orc/event final))
+          "nothing is invented or removed for the required field, and there
+           is no validation to fail")
+      (is (= {:items [{:id nil}]} (:outputs final))))))
+
+;; ---------------------------------------------------------------------------
+;; Wire/decode symmetry — `nullable-optionals` (wire) and `drop-null-optionals`
+;; (decode) must walk the SAME schema shapes, or a shape can be told "null is
+;; fine" on the wire while decode has no way to turn that null back into
+;; absence — a real defect found by inspection: `nullable-optionals` used to
+;; fall through to a generic catch-all that recursed into every vector-shaped
+;; form (including :or, :and, :sequential, :set, :tuple, :map-of), while
+;; `drop-null-optionals` only handled :map/:vector/:maybe/:multi explicitly.
+;; That is WORSE than not rewriting the wire at all: the provider is told a
+;; null is acceptable and then validation rejects it anyway.
+;;
+;; This reaches into `ai.obney.orc.llm.core` directly (both functions are
+;; `defn-`) because the property under test is an internal structural
+;; invariant between two private helpers — the shared `descend` table both
+;; now read from — not a behavior naturally expressed once through the
+;; public boundary for every shape without per-shape provider-response
+;; plumbing duplicating what this table already proves once, generically.
+;; ---------------------------------------------------------------------------
+
+(def ^:private nullable-optionals* @#'core/nullable-optionals)
+(def ^:private drop-null-optionals* @#'core/drop-null-optionals)
+
+(def ^:private wire-decode-inner
+  "The exact probe from the reported defect: a required discriminator plus
+   one optional, non-nullable entry."
+  [:map [:kind [:enum :a]] [:note {:optional true} [:string {:min 1}]]])
+
+(def ^:private wire-decode-inner-null-value
+  {:kind :a :note nil})
+
+(def ^:private wire-decode-shapes
+  "One row per Malli composite shape `wire-decode-inner` can sit inside.
+   `:rewritten?` states whether `descend` is expected to walk into that
+   shape (and so make `inner`'s optional :note entry nullable on the wire);
+   `:schema`/`:value` embed `inner` and its null-note value at that position."
+  [{:name "vector item"     :rewritten? true
+    :schema [:vector wire-decode-inner]                  :value [wire-decode-inner-null-value]}
+   {:name "sequential item" :rewritten? true
+    :schema [:sequential wire-decode-inner]               :value [wire-decode-inner-null-value]}
+   {:name "set item"        :rewritten? true
+    :schema [:set wire-decode-inner]                      :value #{wire-decode-inner-null-value}}
+   {:name "tuple position"  :rewritten? true
+    :schema [:tuple wire-decode-inner]                    :value [wire-decode-inner-null-value]}
+   {:name "map-of value"    :rewritten? true
+    :schema [:map-of :keyword wire-decode-inner]          :value {:x wire-decode-inner-null-value}}
+   {:name "or branch"       :rewritten? false
+    :schema [:or wire-decode-inner]                       :value wire-decode-inner-null-value}
+   {:name "and branch"      :rewritten? false
+    :schema [:and wire-decode-inner]                      :value wire-decode-inner-null-value}])
+
+(deftest optional-nullable-wire-and-decode-cannot-diverge-across-schema-shapes
+  (doseq [{:keys [name rewritten? schema value]} wire-decode-shapes]
+    (testing name
+      (let [wire (nullable-optionals* schema)]
+        (if rewritten?
+          (do
+            (is (not= wire schema)
+                "a shape descend walks into must actually be rewritten for an optional entry")
+            (is (m/validate wire value)
+                "a rewritten shape's wire form must admit the probe's null note")
+            (is (m/validate schema (drop-null-optionals* schema value))
+                "wire admitting null obligates decode-then-validate to succeed"))
+          (do
+            (is (= wire schema)
+                "a shape descend does not walk into must reach the provider exactly as declared")
+            (is (not (m/validate schema value))
+                "sanity: the probe's null genuinely violates the ORIGINAL, un-rewritten schema")
+            (is (= value (drop-null-optionals* schema value))
+                "decode must not touch a value under a shape it never walks into")
+            (is (not (m/validate schema (drop-null-optionals* schema value)))
+                "an un-rewritten shape's null must still fail validation, exactly as before this fix")))))))
 
 (deftest a-marker-repeated-after-prose-wins-and-takes-the-answer-with-it
   ;; sio #11 relaxed the marker to be recognised after prose, and the parser
