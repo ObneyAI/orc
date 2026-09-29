@@ -5,6 +5,8 @@
             [hato.client :as http]
             [litellm.router :as router]
             [litellm.providers.openrouter :as openrouter]
+            [malli.core :as m]
+            [ai.obney.orc.llm.core :as core]
             [ai.obney.orc.llm.interface :as llm]))
 
 (def qa
@@ -711,6 +713,78 @@
           final (last events)]
       (is (= :error (:orc/event final))
           "a null in a REQUIRED nested entry still fails validation, even streamed"))))
+
+;; ---------------------------------------------------------------------------
+;; Wire/decode symmetry — `nullable-optionals` (wire) and `drop-null-optionals`
+;; (decode) must walk the SAME schema shapes, or a shape can be told "null is
+;; fine" on the wire while decode has no way to turn that null back into
+;; absence — a real defect found by inspection: `nullable-optionals` used to
+;; fall through to a generic catch-all that recursed into every vector-shaped
+;; form (including :or, :and, :sequential, :set, :tuple, :map-of), while
+;; `drop-null-optionals` only handled :map/:vector/:maybe/:multi explicitly.
+;; That is WORSE than not rewriting the wire at all: the provider is told a
+;; null is acceptable and then validation rejects it anyway.
+;;
+;; This reaches into `ai.obney.orc.llm.core` directly (both functions are
+;; `defn-`) because the property under test is an internal structural
+;; invariant between two private helpers — the shared `descend` table both
+;; now read from — not a behavior naturally expressed once through the
+;; public boundary for every shape without per-shape provider-response
+;; plumbing duplicating what this table already proves once, generically.
+;; ---------------------------------------------------------------------------
+
+(def ^:private nullable-optionals* @#'core/nullable-optionals)
+(def ^:private drop-null-optionals* @#'core/drop-null-optionals)
+
+(def ^:private wire-decode-inner
+  "The exact probe from the reported defect: a required discriminator plus
+   one optional, non-nullable entry."
+  [:map [:kind [:enum :a]] [:note {:optional true} [:string {:min 1}]]])
+
+(def ^:private wire-decode-inner-null-value
+  {:kind :a :note nil})
+
+(def ^:private wire-decode-shapes
+  "One row per Malli composite shape `wire-decode-inner` can sit inside.
+   `:rewritten?` states whether `descend` is expected to walk into that
+   shape (and so make `inner`'s optional :note entry nullable on the wire);
+   `:schema`/`:value` embed `inner` and its null-note value at that position."
+  [{:name "vector item"     :rewritten? true
+    :schema [:vector wire-decode-inner]                  :value [wire-decode-inner-null-value]}
+   {:name "sequential item" :rewritten? true
+    :schema [:sequential wire-decode-inner]               :value [wire-decode-inner-null-value]}
+   {:name "set item"        :rewritten? true
+    :schema [:set wire-decode-inner]                      :value #{wire-decode-inner-null-value}}
+   {:name "tuple position"  :rewritten? true
+    :schema [:tuple wire-decode-inner]                    :value [wire-decode-inner-null-value]}
+   {:name "map-of value"    :rewritten? true
+    :schema [:map-of :keyword wire-decode-inner]          :value {:x wire-decode-inner-null-value}}
+   {:name "or branch"       :rewritten? false
+    :schema [:or wire-decode-inner]                       :value wire-decode-inner-null-value}
+   {:name "and branch"      :rewritten? false
+    :schema [:and wire-decode-inner]                      :value wire-decode-inner-null-value}])
+
+(deftest optional-nullable-wire-and-decode-cannot-diverge-across-schema-shapes
+  (doseq [{:keys [name rewritten? schema value]} wire-decode-shapes]
+    (testing name
+      (let [wire (nullable-optionals* schema)]
+        (if rewritten?
+          (do
+            (is (not= wire schema)
+                "a shape descend walks into must actually be rewritten for an optional entry")
+            (is (m/validate wire value)
+                "a rewritten shape's wire form must admit the probe's null note")
+            (is (m/validate schema (drop-null-optionals* schema value))
+                "wire admitting null obligates decode-then-validate to succeed"))
+          (do
+            (is (= wire schema)
+                "a shape descend does not walk into must reach the provider exactly as declared")
+            (is (not (m/validate schema value))
+                "sanity: the probe's null genuinely violates the ORIGINAL, un-rewritten schema")
+            (is (= value (drop-null-optionals* schema value))
+                "decode must not touch a value under a shape it never walks into")
+            (is (not (m/validate schema (drop-null-optionals* schema value)))
+                "an un-rewritten shape's null must still fail validation, exactly as before this fix")))))))
 
 (deftest a-marker-repeated-after-prose-wins-and-takes-the-answer-with-it
   ;; sio #11 relaxed the marker to be recognised after prose, and the parser
