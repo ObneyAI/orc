@@ -158,6 +158,10 @@
 
 (defonce ^:private system-state (atom nil))
 
+(def bench-cache-map-size
+  "The bench runner's LMDB cache ceiling: 16 GB of address space."
+  (* 16 1024 1024 1024))
+
 (defn create-context
   "PUBLIC (CH-1): the convergence probe already reached in here through
    `requiring-resolve`, and the CH-1 startup-ordering test redefines it.
@@ -183,7 +187,12 @@
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
         event-store (es/start {:conn event-store-conn :event-pubsub ps :logger nil})
         cache-dir (or cache-dir (str "development/bench/.runner-cache/" (random-uuid)))
-        cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "bench"}))
+        ;; LMDB's default map size is 10 MB, and a long sweep's projections outgrow
+        ;; it: the RS-7 baseline arm failed every task past ~220 with
+        ;; MapFullException. The map size only reserves address space, so a large
+        ;; ceiling costs nothing until used.
+        cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "bench"
+                                               :map-size bench-cache-map-size}))
         tenant-id (or tenant-id (random-uuid))
         base-ctx {:event-store event-store
                   :cache cache

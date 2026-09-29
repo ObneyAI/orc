@@ -223,6 +223,15 @@
                                       {:judge-fn (fn [_] {:reasoning "ok" :verdict "on-brief"})})]
           (is (every? #(= [] (:flags %)) (:entries m2))))))))
 
+;; The baseline arm ran two rejected tasks: the loader must skip them.
+(deftest load-traffic-corpus-skips-rejected-entries
+  (let [d (temp-dir! "rs7-rejected")]
+    (write-task! d "001-a-v01" "; h\n\nTask one.")
+    (write-task! d "002-a-v02" "; h\n\nTask two.")
+    (is (= ["001-a-v01"]
+           (mapv :slug (rs7/load-traffic-corpus (str d) {:entries [{:slug "001-a-v01" :review-status :accepted}
+                                                                   {:slug "002-a-v02" :review-status :rejected}]}))))))
+
 ;; =============================================================================
 ;; rs7-traffic-sweep: resume decision
 ;; =============================================================================

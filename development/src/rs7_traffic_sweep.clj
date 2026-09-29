@@ -109,7 +109,11 @@
         tasks (ood/load-corpus (str corpus-path "/tasks"))]
     (vec (for [t tasks
                :let [entry (get entries-by-slug (:slug t))]
-               :when (and entry (or (nil? corpus-filter) (corpus-filter entry)))]
+               ;; a rejected entry is never run: the frozen corpus sha covers
+               ;; accepted entries only (the baseline arm ran two rejected tasks)
+               :when (and entry
+                          (not= :rejected (:review-status entry))
+                          (or (nil? corpus-filter) (corpus-filter entry)))]
            (assoc t :ground-truth entry)))))
 
 ;; =============================================================================
