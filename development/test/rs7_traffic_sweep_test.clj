@@ -217,7 +217,11 @@
       (is (= [:off-brief] (get-in by ["002-recipe-scaling-v01" :flags])))
       (is (= :unjudged (get-in by ["003-legal-issue-detection-v01" :on-brief])) "an out-of-set verdict is never coerced")
       (is (every? #(clojure.string/includes? % "Output kind:") @seen) "the judge sees the brief, not the group name")
-      (is (not-any? #(clojure.string/includes? % "marathon-training") @seen)))))
+      (is (not-any? #(clojure.string/includes? % "marathon-training") @seen))
+      (testing "a re-run replaces the judge's own flags instead of piling them up"
+        (let [m2 (tcg/judge-on-brief! {} (str corpus-dir) (str briefs-path)
+                                      {:judge-fn (fn [_] {:reasoning "ok" :verdict "on-brief"})})]
+          (is (every? #(= [] (:flags %)) (:entries m2))))))))
 
 ;; =============================================================================
 ;; rs7-traffic-sweep: resume decision

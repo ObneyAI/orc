@@ -230,8 +230,10 @@
                         :validate? false
                         :with-metadata? true
                         :timeout-ms predict-timeout-ms})
-              text (or (output-text (get-in result [:outputs :variants]))
-                       (output-text (:outputs result)))]
+              ;; Only the declared output field counts. A fallback over every
+              ;; string in the outputs map picked up echoed input text (the
+              ;; polish instruction itself) when the field was missing.
+              text (output-text (get-in result [:outputs :variants]))]
           ;; An empty text is a failed call, never a draft: retried, then thrown.
           (when-not text
             (throw (ex-info "Generator call returned no instruction text"
@@ -514,10 +516,13 @@
                                                         :task (get by-slug (:slug e))})
                                                 (catch Throwable _ nil))
                                    verdict (or (parse-on-brief outputs) :unjudged)]
-                               (cond-> (assoc e :on-brief verdict
-                                                :on-brief-reasoning (output-text (:reasoning outputs)))
+                               ;; the judge owns :off-brief / :unjudged: a re-run replaces them
+                               (cond-> (-> e
+                                           (assoc :on-brief verdict
+                                                  :on-brief-reasoning (output-text (:reasoning outputs)))
+                                           (update :flags #(vec (remove #{:off-brief :unjudged} %))))
                                  (not= :on-brief verdict)
-                                 (update :flags (fnil conj []) verdict)))))
+                                 (update :flags conj verdict)))))
                          es)))]
     (spit path (with-out-str (pp/pprint judged)))
     judged))
