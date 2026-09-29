@@ -715,6 +715,92 @@
           "a null in a REQUIRED nested entry still fails validation, even streamed"))))
 
 ;; ---------------------------------------------------------------------------
+;; Dropping a null optional is normalization, not validation — weed found
+;; that `drop-null-optional-outputs` ran only inside the `validate? true`
+;; branch of both `predict` and `predict-stream-v2`. Real callers run with
+;; :validate? false (evaluation/core/judges.clj, gepa/core/todo_processors.clj,
+;; mcp-sheet-builder's patterns.clj/intent_analyzer.clj): the wire now offers
+;; every optional field as nullable regardless of :validate?, so those
+;; callers would have started receiving PRESENT nulls they never saw before,
+;; violating "a null for an optional field is absence... never a present
+;; null" for the one flag real callers actually use. :validate? must only
+;; decide whether `validate-outputs` runs — normalization runs either way.
+;; ---------------------------------------------------------------------------
+
+(deftest a-null-top-level-optional-output-becomes-absent-with-validation-off
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion (fn [& _]
+                                    {:choices [{:message {:tool-calls
+                                                          [{:function {:name "submit_response"
+                                                                       :arguments "{\"answer\":\"Paris\",\"aside\":null}"}}]}}]})]
+    (is (= {:answer "Paris"}
+           (llm/predict :test answer+optional-aside {} {:validate? false}))
+        "the null optional is dropped even though :validate? is false")))
+
+(deftest a-null-optional-nested-vector-entry-becomes-absent-with-validation-off
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion
+                (fn [& _]
+                  {:choices
+                   [{:message
+                     {:tool-calls
+                      [{:function
+                        {:name "submit_response"
+                         :arguments
+                         "{\"items\":[{\"id\":\"a\",\"note\":null},{\"id\":\"b\",\"note\":\"ok\"}]}"}}]}}]})]
+    (is (= {:items [{:id "a"} {:id "b" :note "ok"}]}
+           (llm/predict :test items-with-optional-nested-note {} {:validate? false})))))
+
+(deftest a-null-required-output-is-returned-as-is-with-validation-off
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion (fn [& _]
+                                    {:choices [{:message {:tool-calls
+                                                          [{:function {:name "submit_response"
+                                                                       :arguments "{\"answer\":null,\"aside\":null}"}}]}}]})]
+    (is (= {:answer nil}
+           (llm/predict :test answer+optional-aside {} {:validate? false}))
+        "with validation off, a null REQUIRED field is returned exactly as
+         the provider sent it — normalization never invents or removes a
+         required value, it only drops a null OPTIONAL one")))
+
+(deftest a-null-required-nested-entry-is-returned-as-is-with-validation-off
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion
+                (fn [& _]
+                  {:choices
+                   [{:message
+                     {:tool-calls
+                      [{:function
+                        {:name "submit_response"
+                         :arguments "{\"items\":[{\"id\":null,\"note\":null}]}"}}]}}]})]
+    (is (= {:items [{:id nil}]}
+           (llm/predict :test items-with-optional-nested-note {} {:validate? false}))
+        "the required :id stays present with its null; the optional :note is dropped")))
+
+(deftest streaming-final-result-drops-a-null-optional-nested-entry-with-validation-off
+  (with-redefs [router/completion
+                (fn [& _]
+                  (fake-stream [{:choices [{:delta {:content "[[ ## items ## ]]\n[{\"id\":\"a\",\"note\":null},{\"id\":\"b\",\"note\":\"ok\"}]"}}]}]))]
+    (let [events (drain (llm/predict-stream-v2 :test items-with-optional-nested-note {}
+                                               {:validate? false :debounce-ms 0}))
+          final (last events)]
+      (is (= :final (:orc/event final)))
+      (is (= {:items [{:id "a"} {:id "b" :note "ok"}]} (:outputs final))
+          "streamed and unvalidated, the optional null is still absent"))))
+
+(deftest streaming-final-result-returns-a-null-required-entry-as-is-with-validation-off
+  (with-redefs [router/completion
+                (fn [& _]
+                  (fake-stream [{:choices [{:delta {:content "[[ ## items ## ]]\n[{\"id\":null,\"note\":null}]"}}]}]))]
+    (let [events (drain (llm/predict-stream-v2 :test items-with-optional-nested-note {}
+                                               {:validate? false :debounce-ms 0}))
+          final (last events)]
+      (is (= :final (:orc/event final))
+          "nothing is invented or removed for the required field, and there
+           is no validation to fail")
+      (is (= {:items [{:id nil}]} (:outputs final))))))
+
+;; ---------------------------------------------------------------------------
 ;; Wire/decode symmetry — `nullable-optionals` (wire) and `drop-null-optionals`
 ;; (decode) must walk the SAME schema shapes, or a shape can be told "null is
 ;; fine" on the wire while decode has no way to turn that null back into

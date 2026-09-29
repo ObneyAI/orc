@@ -562,14 +562,20 @@
                  (throw (structured-failure "Tool call arguments could not be decoded"
                                             :tool-call-parsing-failed evidence))
                  parsed-result)
+        ;; A null for an optional field is absence, never a present null —
+        ;; that is normalization of what the provider returned, not
+        ;; validation of it. It runs whether or not :validate? does, so a
+        ;; caller who has never opted into validation is not suddenly handed
+        ;; nulls it never saw before merely because the wire now offers
+        ;; optional fields as nullable.
+        normalized (drop-null-optional-outputs (:outputs spec) parsed)
         outputs (if validate?
                   (try
-                    (validate-outputs (:outputs spec)
-                                       (drop-null-optional-outputs (:outputs spec) parsed))
+                    (validate-outputs (:outputs spec) normalized)
                     (catch Exception e
                       (throw (structured-failure (.getMessage e)
                                                  :schema-validation-failed evidence e))))
-                  parsed)]
+                  normalized)]
     (if (:with-metadata? options)
       (cond-> {:outputs outputs
                :usage (:usage response)
@@ -640,10 +646,12 @@
                 (recur)))
             (try
               (let [parsed (sio/parse-streaming-output @accumulated spec)
+                    ;; See the matching comment in `predict`: dropping a null
+                    ;; optional is normalization, independent of :validate?.
+                    normalized (drop-null-optional-outputs (:outputs spec) parsed)
                     outputs (if validate?
-                              (validate-outputs (:outputs spec)
-                                                 (drop-null-optional-outputs (:outputs spec) parsed))
-                              parsed)]
+                              (validate-outputs (:outputs spec) normalized)
+                              normalized)]
                 (>! output-ch {:orc/event :final
                                :outputs outputs
                                :usage (some-> @usage finalize-stream-usage)
