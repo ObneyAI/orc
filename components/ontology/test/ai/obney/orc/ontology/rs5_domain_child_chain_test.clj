@@ -335,11 +335,22 @@
   (testing "pick-best-child's synthetic candidate for a domain child
             described under :tree-class scope carries :document-metadata
             :granularity :tree-class in the rerank! call it makes, not the
-            hardcoded :tree-fingerprint"
+            hardcoded :tree-fingerprint.
+
+            CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): every
+            child `mint-domain-child` creates IS a domain family by
+            construction (agent-authored provenance, a judged label) —
+            walk-down now excludes exactly this shape of child by default.
+            This test's own concern is the :tree-class-scope preference (RS-5
+            gap A), not family exclusion, so it declares that seam
+            explicitly; family exclusion on this same real mint is proven in
+            `walk-down-excludes-a-real-minted-domain-family-not-a-landing`
+            below."
     (with-test-ctx [ctx]
       (let [parent-id (random-uuid)
             child-id (random-uuid)
-            captured (atom nil)]
+            captured (atom nil)
+            ctx (assoc ctx :domain-family-parent-fn (fn [_ _] nil))]
         (dispatch! ctx (mint-command parent-id child-id "marathon-training-plan"))
         (dispatch! ctx (claim-command ctx child-id "marathon training plan: 16-week schedule"))
         (with-redefs [reranker/rerank!
@@ -460,28 +471,33 @@
                 "the processor-driven mint also carries the domain label")))))))
 
 ;; =============================================================================
-;; CV-A Slice 1 flip (was RS-7 Slice 0 characterisation) — walk-down FROM
-;; the parent INTO a REAL minted domain family lands on it
-;; (DomainFamilyIsALeafOnTheDomainAxis): the family-is-leaf check
-;; (`:domain-family-parent-fn`, defaulting to a real read of the walked-into
-;; class's own concept — agent-authored provenance, its own label, its own
-;; skos:broader parent) widens the walk-down result into a landing BEFORE
-;; the rest of the domain axis ever runs.
+;; CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5') — walk-down FROM
+;; the parent into a REAL minted domain family is EXCLUDED, never a landing.
+;;
+;; Before this bundle (CV-A Slice 1 / CV-D), walk-down descended into the
+;; family and a family-is-leaf check widened the result into a PROPOSED
+;; landing, judged (JudgeReachedDomainFamily). Decision C5' removed that
+;; reach route entirely: `get-tree-class-children` now excludes a domain
+;; family from the children walk-down ever considers
+;; (`non-family-child?`, the REAL `:domain-family-parent-fn` default — a
+;; real store read, not stubbed), so walk-down never descends into it and
+;; `maybe-assign-domain-child` never sees it as the assigned class. The
+;; family is still reachable, but only as a PROPOSAL to the merge judge —
+;; by its label or a shape's existing child label (`assign-domain-child`,
+;; the unchanged legacy per-parent mechanism CV-D already covers) — never by
+;; being walked into directly.
 ;; =============================================================================
 
-(deftest walk-down-into-a-family-lands-on-it-no-walk-down-provenance
+(deftest walk-down-excludes-a-real-minted-domain-family-not-a-landing
   (testing "the PARENT is top-1 at fitness 0.8 (below specificity-threshold
-            0.9, above the match threshold 0.7) -> walk-down descends into
-            its REAL minted domain family (get-tree-class-children reads the
-            real graph edge RS-3's mint-domain-child created) -> the
-            family-is-leaf check widens this into a PROPOSED landing (CV-D,
-            JudgeReachedDomainFamily: judged as a match on the family's own
-            parent shape, never an unjudged direct land). A :same verdict
-            naming the family -> :assigned-via :land-on-domain-child,
-            assigned id = the family, :parent-tree-id = the family's OWN
-            birth shape, :domain-label = the family's own concept label —
-            every assertion below is unchanged from before this bundle
-            except declaring the judge's verdict explicitly"
+            0.9, above the match threshold 0.7); its ONLY child is a REAL
+            minted domain family -> get-tree-class-children excludes it via
+            the REAL :domain-family-parent-fn default -> walk-down finds no
+            children to consider and returns the parent unchanged, a plain
+            :match. The top-1 candidate here carries no domain verdict of
+            its own, so the domain axis proposes nothing and defers
+            (:unknown-coverage) rather than landing on anything — the merge
+            judge is never called."
     (with-test-ctx [ctx]
       (let [parent-id (random-uuid)
             child-id (random-uuid)]
@@ -492,18 +508,21 @@
                       reranker/rerank!
                       (fn [_ opts]
                         (mapv (fn [c] {:document-id (:document-id c)
-                                       :reasoning "walks down into the minted family"
+                                       :reasoning "would have walked into the family"
                                        :fitness-score 0.95})
                               (:candidates opts)))
                       tc/get-consolidation-total* (fn [_ _ _] 0)]
           (let [r (ontology/classify-task
-                   (assoc ctx :domain-merge-fn (fn [_ _] {:kind :same :family child-id}))
+                   (assoc ctx :domain-merge-fn
+                          (fn [_ _] (throw (ex-info "merge judge must not be called — nothing was proposed" {}))))
                    {:task-signature "x" :threshold 0.7})]
-            (is (= :land-on-domain-child (:assigned-via r)))
-            (is (= child-id (:assigned-tree-id r)))
-            (is (= parent-id (:parent-tree-id r))
-                "the family's own birth shape — here the same id it walked down from")
-            (is (= "marathon-training-plan" (:domain-label r))
-                "a landing carries the family's own label")
+            (is (= :match (:assigned-via r))
+                "walk-down excluded the family and returned the parent as a plain match")
+            (is (= parent-id (:assigned-tree-id r))
+                "the family is never reached")
+            (is (not= child-id (:assigned-tree-id r)))
+            (is (= {:axis :domain :reason :unknown-coverage} (:domain-deferral r))
+                "no domain label was proposed for the parent itself, so the domain axis defers")
             (is (false? (:was-fresh-mint? r)))
-            (is (= {:kind :same :family child-id} (:merge-verdict r)))))))))
+            (is (not (contains? r :merge-verdict))
+                "the merge judge was never called — nothing was ever proposed to it")))))))

@@ -231,6 +231,24 @@
   ((requiring-resolve 'ai.obney.orc.ontology.interface/get-concept-by-uri)
    ctx uri))
 
+(declare default-domain-family-parent-fn)
+
+(defn- non-family-child?
+  "CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): true when
+   `child-id` is NOT a domain family — walk-down only ever descends into a
+   non-family child; a family is a leaf on the domain axis, never a
+   shape-ranking or walk-down candidate. Same discriminator CV-A's
+   `shape-candidates-only` / classify-task's own `family-candidate?` use,
+   via the `:domain-family-parent-fn` seam (default: the real store read).
+   Fail closed: a failed lookup is NOT knowledge that the child is safe to
+   descend into — it is excluded too, same as a confirmed family."
+  [ctx child-id]
+  (let [family-parent-fn (or (:domain-family-parent-fn ctx) default-domain-family-parent-fn)]
+    (try (nil? (family-parent-fn ctx child-id))
+         (catch Throwable t
+           (u/log ::walk-down-family-lookup-failed :target-id child-id :error (.getMessage t))
+           false))))
+
 (defn- rerank! [ctx opts]
   ((requiring-resolve 'ai.obney.orc.ontology.core.reranker/rerank!)
    ctx opts))
@@ -333,21 +351,28 @@
    description was actually found under (`:tree-class` or
    `:tree-fingerprint`), never hardcoded — so `pick-best-child` can stamp
    the synthetic candidate's `:document-metadata :granularity` with the
-   scope it was read under instead of a hardcoded axis."
+   scope it was read under instead of a hardcoded axis.
+
+   CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): a child that IS
+   a domain family (`non-family-child?`) is dropped BEFORE its description
+   is even read — walk-down never descends into a family, so a shape whose
+   only child is a family returns the shape itself (empty children here is
+   the genuine-leaf case one level up in `walk-down-from`)."
   [ctx parent-target-id]
   (let [parent-uri (str tree-class-uri-prefix parent-target-id)
         child-uris (or (get-narrower-concepts ctx parent-uri) #{})]
     (vec
       (keep (fn [child-uri]
-              (let [child-id (uri->target-id child-uri)
-                    tree-class-desc (get-description ctx :tree-class child-id)
-                    scope (if tree-class-desc :tree-class :tree-fingerprint)
-                    desc (or tree-class-desc
-                             (get-description ctx :tree-fingerprint child-id))]
-                (when desc
-                  {:target-id child-id
-                   :scope scope
-                   :description desc})))
+              (let [child-id (uri->target-id child-uri)]
+                (when (non-family-child? ctx child-id)
+                  (let [tree-class-desc (get-description ctx :tree-class child-id)
+                        scope (if tree-class-desc :tree-class :tree-fingerprint)
+                        desc (or tree-class-desc
+                                 (get-description ctx :tree-fingerprint child-id))]
+                    (when desc
+                      {:target-id child-id
+                       :scope scope
+                       :description desc})))))
             child-uris))))
 
 (defn- pick-best-child
@@ -548,12 +573,14 @@
 (defn- shape-candidates-only
   "The candidates a SHAPE-axis decision (the bundle) may land on: every
    :tree-class candidate that is not a domain family. A family is never a shape
-   class (DomainFamilyIsALeafOnTheDomainAxis); the match and walk-down paths
-   already turn a reached family into a landing, and the bundle must not place
-   a task in a family unjudged (live finding: a marathon task bundled into a
-   recipe-scaling family). A failed lookup drops the candidate too: a bundle
-   never lands on an unverified class. Non-tree-class candidates pass through
-   (bundle-decision ignores them)."
+   class (DomainFamilyIsALeafOnTheDomainAxis) and the bundle must not place a
+   task in one unjudged (live finding: a marathon task bundled into a
+   recipe-scaling family). CV-E: match and walk-down can no longer reach a
+   family at all (search-descriptions excludes them from the ranking, and
+   walk-down excludes them from its children), so this is now belt-and-braces
+   for the bundle's own candidate set specifically. A failed lookup drops the
+   candidate too: a bundle never lands on an unverified class. Non-tree-class
+   candidates pass through (bundle-decision ignores them)."
   [ctx candidates]
   (let [family-parent-fn (or (:domain-family-parent-fn ctx) default-domain-family-parent-fn)]
     (filterv (fn [c]
@@ -565,6 +592,42 @@
                                  (u/log ::bundle-family-lookup-failed :target-id id :error (.getMessage t))
                                  false))))))
              candidates)))
+
+;; =============================================================================
+;; CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5') — a domain family
+;; is never a shape-ranking candidate. The shape ranking (classify-task's own
+;; retrieval, the reranker's candidate set) holds shape classes and curated
+;; seeds only; walk-down (above) never descends into a family; a family is
+;; reached only by being PROPOSED to the merge judge (its label, a shape's
+;; child label, or the judge's own nearest-family neighbourhood) and judged.
+;; =============================================================================
+
+(defn- family-candidate?
+  "The `:exclude?` predicate classify-task hands `search-descriptions`: true
+   when `candidate` is a domain family, so search-descriptions drops it
+   BEFORE the granularity-filtered set is handed to `tree-class-representatives`
+   and the reranker's take — never after, when it would already have crowded
+   out a generic seed (families carry specific birth descriptions and outrank
+   them). Same discriminator as `shape-candidates-only` / `family-concept?` —
+   agent-authored provenance, a label that is not its own bare id — via the
+   `:domain-family-parent-fn` seam (default: the real store read). Only
+   :tree-class candidates are ever families; every other axis passes straight
+   through. Fail closed: a failed lookup (or an id that fails to resolve)
+   EXCLUDES the candidate — never lets an unverified class compete.
+   `search-descriptions` caches this predicate per distinct candidate id, so
+   one classification costs at most one read per distinct candidate, not one
+   per axis row."
+  [ctx candidate]
+  (boolean
+    (and (tree-class-candidate? candidate)
+         (let [id (candidate-class-id candidate)]
+           (or (nil? id)
+               (let [family-parent-fn (or (:domain-family-parent-fn ctx) default-domain-family-parent-fn)]
+                 (try (some? (family-parent-fn ctx id))
+                      (catch Throwable t
+                        (u/log ::classify-family-exclusion-lookup-failed
+                               :target-id id :error (.getMessage t))
+                        true))))))))
 
 (declare default-newborn?-fn)
 
@@ -1185,16 +1248,16 @@
         (assoc base :domain-deferral (domain-deferral))))))
 
 (defn- run-domain-axis-for-match
-  "CV-A/CV-D: the domain axis for a :match already known to be on the
+  "CV-A/CV-D/CV-E: the domain axis for a :match already known to be on the
    :tree-class axis and already known NOT to itself be a domain family
    (`maybe-assign-domain-child` checks that first — DomainFamilyIsALeafOnTheDomainAxis).
 
    Order (grill C3/C4, `DomainChildrenAreAlwaysConsidered`): covered-seed
-   protection → the judged question (a tenant-wide canonical-label match, a
-   match/walk-down that REACHED a family, or a genuine would-be mint — the
-   legacy per-parent mechanism's own child-label proposal included) — CV-D
-   (`DomainFamilyMergeIsJudged`, revised C3'): there is no unjudged
-   landing; a proposed family is always among the judge's candidates.
+   protection → the judged question (a tenant-wide canonical-label match, or
+   a genuine would-be mint — the legacy per-parent mechanism's own
+   child-label proposal included) — CV-D (`DomainFamilyMergeIsJudged`,
+   revised C3'): there is no unjudged landing; a proposed family is always
+   among the judge's candidates.
 
    `families` is fetched ONCE (a failed read defers
    `:families-lookup-failed`, never read as \"no families\") and reused by
@@ -1202,13 +1265,13 @@
    mis-parented family never captures a task a covered seed should have
    kept (`protection-runs-before-family-landing`).
 
-   `reached-family-id` (CV-D) is non-nil ONLY when `maybe-assign-domain-
-   child` rewrote a match/walk-down that REACHED a family into a match on
-   that family's OWN parent shape (`JudgeReachedDomainFamily`) — it is the
-   family a landing would choose via the ranking's own top match, and it
-   is always PROPOSED to the judge exactly like a tenant-wide label match,
-   never landed on directly."
-  [ctx result candidates verdict threshold signature reached-family-id]
+   CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): there is no
+   longer a `reached-family-id` — `search-descriptions` excludes every
+   family from the ranking and walk-down excludes them from its children,
+   so a match can never REACH a family in the first place. A family is
+   proposed to the judge only by its label (the tenant-wide match below) or
+   a shape's own existing child label (`assign-domain-child`)."
+  [ctx result candidates verdict threshold signature]
   (let [parent-id (:assigned-tree-id result)
         canonical-label (canonicalize-domain-label (:domain-label verdict))
         coverage (:domain-coverage verdict)
@@ -1225,10 +1288,10 @@
                         (covered-leaf-neighbour candidates families threshold))
             label-family (when-not (:failed? fetch)
                           (family-by-canonical-label families canonical-label))
-            ;; CV-D: proposed_family(ranking, canonical_label) — the family
-            ;; carrying that label, else a family the ranking's top match
-            ;; reached.
-            proposed-id (or (:target-id label-family) reached-family-id)]
+            ;; CV-D/CV-E: proposed_family(ranking, canonical_label) — the
+            ;; family carrying that label, or nil (a family is never reached
+            ;; by the ranking's own top match any more).
+            proposed-id (:target-id label-family)]
         (cond
           (:failed? fetch)
           (assoc base :domain-deferral (domain-deferral :families-lookup-failed))
@@ -1252,50 +1315,34 @@
   "RS-2 + CV-A entry point: after the existing match/bundle/walk-down/
    deferral logic produces `result`, widen it with the domain-axis outcome.
 
-   :bundle, walk-down's own :mint, :uncertain, and a :tree-fingerprint-axis
-   :match pass through UNTOUCHED. `DomainFamilyIsALeafOnTheDomainAxis`: a
-   :match OR a :walk-down whose ASSIGNED class is itself a domain family is
-   a PROPOSED landing, checked first on both routes — CV-D
-   (`JudgeReachedDomainFamily`, revised C3'): it is rewritten into a match
-   on the family's OWN parent shape and judged like any other proposal
-   (never an unjudged direct land, so there are no grandchildren on any
-   reach route either way). The task's own reranker coverage/label for the
-   family candidate (`top-1`) carry through, falling back to the family's
-   own concept label when the task's own rerank carried none (a walk-down's
-   internal re-rank never asks about domain fit). Only a :match that
-   resolves to an ORDINARY (non-family) shape class runs the rest of the
-   domain axis directly."
+   :bundle, walk-down's own :mint, :walk-down proper, :uncertain, and a
+   :tree-fingerprint-axis :match pass through UNTOUCHED. Only a :match that
+   resolves to a :tree-class candidate runs the domain axis.
+
+   CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): there is no
+   longer a family-reach check here. Before this bundle, a :match or
+   :walk-down could land ON a domain family (search-descriptions' ranking
+   and walk-down's own children both used to include them), so this
+   function first asked whether the assigned class was itself a family and,
+   if so, rewrote the result into a match on the family's OWN parent shape.
+   Now `search-descriptions` excludes every family from the ranking
+   (`family-candidate?`, passed as classify-task's own `:exclude?`) and
+   walk-down excludes them from its children (`get-tree-class-children`'s
+   `non-family-child?`), so neither route can ever hand this function a
+   family as the assigned class — the lookup and rewrite are UNREACHABLE
+   from any live caller (classify-task is the only caller) and have been
+   removed. A family is still reachable, but only as a PROPOSAL to the
+   merge judge: its label (`assign-domain-child` / `run-domain-axis-for-
+   match`'s tenant-wide match) or a shape's own existing child label
+   (`assign-domain-child`)."
   [ctx result top-1 candidates threshold signature]
   (let [via (:assigned-via result)
         tree-class-match? (and (= :match via)
                                (= :tree-class (-> top-1 :document-metadata :granularity)))]
-    (if (or tree-class-match? (= :walk-down via))
-      (let [family-parent-fn (or (:domain-family-parent-fn ctx) default-domain-family-parent-fn)
-            lookup (try {:family (family-parent-fn ctx (:assigned-tree-id result))}
-                       (catch Throwable t
-                         (u/log ::domain-family-parent-lookup-failed :error (.getMessage t))
-                         {:failed? true}))]
-        (cond
-          (:failed? lookup)
-          (assoc result :domain-deferral (domain-deferral :families-lookup-failed))
-
-          (:family lookup)
-          (let [reached-family-id (:assigned-tree-id result)
-                family-parent-id (:parent-id (:family lookup))
-                verdict {:domain-coverage (:domain-coverage top-1)
-                         :domain-label (or (:domain-label top-1) (:domain-label (:family lookup)))
-                         :domain-reasoning (:domain-reasoning top-1)}
-                shape-result (-> result
-                                 (assoc :assigned-tree-id family-parent-id)
-                                 (assoc :assigned-via :match))]
-            (run-domain-axis-for-match ctx shape-result candidates verdict threshold signature reached-family-id))
-
-          tree-class-match?
-          (run-domain-axis-for-match ctx result candidates
-                                     (select-keys top-1 [:domain-coverage :domain-label :domain-reasoning])
-                                     threshold signature nil)
-
-          :else result))
+    (if tree-class-match?
+      (run-domain-axis-for-match ctx result candidates
+                                 (select-keys top-1 [:domain-coverage :domain-label :domain-reasoning])
+                                 threshold signature)
       result)))
 
 (defn classify-task
@@ -1356,12 +1403,16 @@
         ;; matches the recorded class (coerce-to-uuid of the winner's
         ;; target-id already handles either axis; walk-down + thresholds
         ;; unchanged).
+        ;; CV-E (DomainFamilyIsALeafOnTheDomainAxis, revised C5'): :exclude?
+        ;; drops a domain family BEFORE the reranker's candidate set is taken,
+        ;; so the shape ranking holds shape classes and curated seeds only.
         raw-candidates (search-descriptions ctx
                          {:query signature
                           :granularity #{:tree-fingerprint :tree-class}
                           :rerank-with-intent classifier-intent
                           :k classify-retrieval-k
-                          :model model})
+                          :model model
+                          :exclude? family-candidate?})
         ;; CV-1 (ADR 0017) — the retrieval gate governs SURFACING, not accrual.
         ;; EL-1b originally filtered a :tree-class whose consolidation total was
         ;; in (0, gate) OUT OF CANDIDACY. That was the bootstrap DEADLOCK: a

@@ -1165,6 +1165,26 @@
                              :rerank-with-intent is also provided; nil
                              is a no-op (the reranker resolves its own
                              evidence-tested default).
+       :exclude?           - CV-E (`DomainFamilyIsALeafOnTheDomainAxis`,
+                             revised C5'): optional (fn [ctx candidate] ->
+                             truthy) applied WITH the granularity filter —
+                             before `tree-class-representatives` and any
+                             take — so an excluded candidate never reaches
+                             the reranker or a plain take-k result. Absent
+                             (the default for every caller but
+                             `classify-task`) leaves this function's
+                             behaviour byte-identical to before this opt
+                             existed. Invoked at most ONCE per distinct
+                             candidate id (a class's :tree-class and
+                             :tree-fingerprint rows share one answer) —
+                             the caller is free to make it expensive (a
+                             store read) without paying for it twice.
+                             When present, the ColBERT fetch over-fetches
+                             an EXTRA 2x (on top of the existing 3x
+                             granularity-filter over-fetch) so exclusion
+                             still leaves the reranker its usual candidate
+                             count wherever the index holds enough
+                             survivors.
 
    Returns a vector of result maps:
      [{:content \"...\" :score 0.87 :rank 1 :document-id \"...\"
@@ -1179,7 +1199,7 @@
    Rerank-failure semantics: if the LLM call throws or returns nil,
    fall back to the pure-ColBERT top-K + log ::rerank-failed. The
    caller sees no exception."
-  [ctx {:keys [query granularity k rerank-with-intent model]
+  [ctx {:keys [query granularity k rerank-with-intent model exclude?]
         :or {granularity :all k 10}}]
   (if-let [index (latest-ontology-descriptions-index ctx)]
     (let [filtered? (not= granularity :all)
@@ -1187,10 +1207,12 @@
           ;; search over-fetches 3x — on the rerank path as well: without it
           ;; the reranker's set was cut to whatever share of the top 2k happened
           ;; to be allowed (4 of 10 in a live legal task, the legal seed 7th
-          ;; and never shown to the reranker).
+          ;; and never shown to the reranker). CV-E: an :exclude? predicate
+          ;; over-fetches an EXTRA 2x — same rationale, a second filter that
+          ;; can shrink the allowed set further still.
           fetch-k (if rerank-with-intent
-                    (cond-> (rerank-fetch-k k) filtered? (* 3))
-                    (if filtered? (* 3 k) k))
+                    (cond-> (rerank-fetch-k k) filtered? (* 3) exclude? (* 2))
+                    (cond-> k filtered? (* 3) exclude? (* 2)))
           raw-results (mapv normalize-search-result
                             ((colbert-fn 'search) ctx
                               {:query query
@@ -1208,12 +1230,30 @@
                           (= granularity :all) nil ;; nil => no filter
                           (set? granularity)   (into #{} (map granularity-name) granularity)
                           :else                #{(granularity-name granularity)})
-          filtered (if (nil? allowed-names)
-                     raw-results
-                     (filterv #(contains? allowed-names
-                                          (granularity-name
-                                            (-> % :document-metadata :granularity)))
-                              raw-results))]
+          granularity-filtered (if (nil? allowed-names)
+                                  raw-results
+                                  (filterv #(contains? allowed-names
+                                                       (granularity-name
+                                                         (-> % :document-metadata :granularity)))
+                                           raw-results))
+          ;; CV-E: the :exclude? predicate runs HERE — with the granularity
+          ;; filter, before tree-class-representatives dedups by target and
+          ;; before any take — so an excluded candidate can never occupy a
+          ;; reranker slot or a plain-k result. Cached per distinct candidate
+          ;; id within this one call (`classify-task` calls search-descriptions
+          ;; once per classification, so this bounds the predicate to one read
+          ;; per distinct candidate per classification).
+          filtered (if exclude?
+                     (let [seen (atom {})
+                           excluded? (fn [c]
+                                       (let [id (-> c :document-metadata :target-id)]
+                                         (if (contains? @seen id)
+                                           (get @seen id)
+                                           (let [v (boolean (exclude? ctx c))]
+                                             (swap! seen assoc id v)
+                                             v))))]
+                       (filterv (complement excluded?) granularity-filtered))
+                     granularity-filtered)]
       (if rerank-with-intent
         (let [{:keys [representatives siblings]} (tree-class-representatives filtered)
               reranked (apply-rerank ctx (vec (take (rerank-fetch-k k) representatives))

@@ -304,3 +304,19 @@ unfiltered. Any later edit means one more full run.
 - **Process note:** the implementer's attempt to delete two stale directories was refused by the permission system;
   the orchestrator surfaced it and moved them aside instead (`ontology-descriptions.stale-*`,
   `rs7-confusable-check-run1-before-cvd`).
+
+## CV-E verification ledger — families out of the shape ranking (decision C5')
+
+- **Implemented (Sonnet):** classification's retrieval excludes domain families before the reranker's set is taken
+  (an optional exclusion predicate on the description search, read once per candidate, failing closed, with extra
+  over-fetch; every other caller unchanged). Walk-down never descends into a family. The reached-family path is removed:
+  no family can reach it any more. Tests that pinned reaching a family were rewritten or removed, each with a note.
+- **Re-run by the orchestrator:** 19 namespaces, 206 tests, 1,055 assertions, all passing; the ontology spec checks
+  0 errors, 0 analyse findings.
+- **Live, 42 confusable tasks:** 12 of 14 groups on a family of their own; 1 family shared across groups (log triage
+  and one query-optimisation task in "incident-root-cause-analysis"); every legal and contract task on a curated seed.
+- **Live, in-domain groups and neighbours (24 tasks):** 10 of 12 in-domain tasks on their expected seed (2 of 24 in
+  the arm before CV-E); 0 families shared. The two misses: one matched a different curated seed, one deferred on a
+  reranker fallback (EL-3, unrelated to this bundle).
+- **Process note:** the implementer's `git stash` was refused by the permission system; it reverted by editing instead
+  and reported it.

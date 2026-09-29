@@ -160,9 +160,20 @@
 
 (deftest get-tree-class-children-reads-tree-class-scope-description
   (testing "a child described ONLY by a :tree-class claim (CV-1's signature
-            route) IS returned by walk-down's own child lookup"
+            route) IS returned by walk-down's own child lookup, once the
+            child is declared NOT a domain family. CV-E
+            (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): every child
+            `mint-domain-child` creates IS a domain family by construction
+            (agent-authored provenance, a judged label) — walk-down now
+            excludes exactly this shape of child by default
+            (`non-family-child?`, real-store-backed). This test's own
+            concern is the :tree-class-scope preference (RS-5 gap A), not
+            family exclusion, so it declares that seam explicitly; the
+            family-exclusion guarantee itself is proven on this same real
+            mint in rs5_domain_child_chain_test.clj."
     (th/with-test-context [base]
-      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+      (let [ctx (assoc base :command-registry (cp/global-command-registry)
+                       :domain-family-parent-fn (fn [_ _] nil))
             parent-id (random-uuid)
             child-id (random-uuid)]
         (dispatch! ctx (mint-command parent-id child-id "marathon-training-plan"))
@@ -172,6 +183,21 @@
           (is (= child-id (:target-id (first children))))
           (is (some? (:description (first children)))
               "the child's :tree-class-scoped assembled description is returned"))))))
+
+(deftest get-tree-class-children-excludes-a-real-minted-domain-family
+  (testing "CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): with
+            the REAL `:domain-family-parent-fn` default (a real store read,
+            not stubbed), a real minted domain child (family) is excluded —
+            walk-down finds NO children under its parent"
+    (th/with-test-context [base]
+      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+            parent-id (random-uuid)
+            child-id (random-uuid)]
+        (dispatch! ctx (mint-command parent-id child-id "marathon-training-plan"))
+        (dispatch! ctx (claim-command ctx child-id "marathon training plan: 16-week schedule"))
+        (let [children (#'tc/get-tree-class-children ctx parent-id)]
+          (is (empty? children)
+              "the real minted family is excluded — walk-down sees no children"))))))
 
 (deftest get-tree-class-children-still-returns-tree-fingerprint-seeded-child
   (testing "GUARD: a seeded child described ONLY at :tree-fingerprint scope

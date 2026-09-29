@@ -553,67 +553,41 @@
 ;; =============================================================================
 
 ;; =============================================================================
-;; CV-A Slice 1 flip (was RS-7 Slice 0 characterisation) — a domain family
-;; reached AGAIN as top-1 is a LEAF on the domain axis
-;; (DomainFamilyIsALeafOnTheDomainAxis): the match is a LANDING, verdict not
-;; consulted, never a grandchild. `:domain-family-parent-fn` is the seam
-;; that tells the pure classifier the reached id IS a family (its own
-;; parent + its own concept label) — durably proven with a REAL minted
-;; child in rs5's `walk-down-into-a-newborn-lands-on-it` /
-;; rs3_domain_child_durable_test; this file pins the pure-classifier shape.
+;; CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5') — a domain family
+;; can no longer be REACHED as top-1 at all: `search-descriptions` excludes
+;; every family from the ranking before the reranker's candidate set is
+;; taken (`family-candidate?`, classify-task's own `:exclude?`), so this
+;; suite's fixture ("a domain FAMILY reached again as top-1") is an input
+;; shape production can no longer construct. The two tests that pinned
+;; `JudgeReachedDomainFamily` (CV-D's now-removed family-is-leaf widening of
+;; a :match into a landing BEFORE the rest of the domain axis ran) are
+;; replaced below:
+;;   - the removed CV-D reach-and-widen mechanism's intent is now covered by
+;;     the retrieval-exclusion tests themselves
+;;     (family_leaf_on_domain_axis_test.clj, reranker_test.clj's :exclude?
+;;     tests) and by rs5's
+;;     `walk-down-excludes-a-real-minted-domain-family-not-a-landing`
+;;     (real-store proof that walk-down never reaches a real minted family).
+;;   - `covered-top-1-with-a-family-parent-fn-is-a-plain-match-no-merge-call`
+;;     below proves the residual, still-reachable case: IF a family concept's
+;;     id somehow arrived as an ordinary top-1 match (impossible in
+;;     production since C5', but the pure classifier has no way to know a
+;;     candidate id "is" a family except through :domain-family-parent-fn,
+;;     which this test declares), a :covered verdict short-circuits the
+;;     whole domain axis exactly like any other candidate — never asking the
+;;     merge judge (`DomainFamilyMergeIsJudged`: "never asked on a covered
+;;     match").
 ;; =============================================================================
 
-(deftest newborn-as-top-1-match-lands-on-the-family-no-grandchild
-  (testing "a domain FAMILY reached again as top-1 (its OWN id as the
-            candidate target) is now a PROPOSED landing (CV-D,
-            JudgeReachedDomainFamily: a reached family is judged as a match
-            on its own parent shape — never an unjudged direct land). A
-            :same verdict naming that family -> :assigned-via
-            :land-on-domain-child, :parent-tree-id = the family's OWN birth
-            shape, :domain-label = the family's own concept label, no
-            grandchild — declaring the judge's verdict explicitly is the
-            ONLY change from before this bundle; every other assertion here
-            is unchanged"
+(deftest covered-top-1-with-a-family-parent-fn-is-a-plain-match-no-merge-call
+  (testing "a :covered top-1 match never reaches the merge judge, whatever
+            :domain-family-parent-fn would say about its id — coverage
+            :covered short-circuits the domain axis before any family lookup
+            on the ASSIGNED class runs (`DomainChildrenAreAlwaysConsidered`'s
+            covered no-op)"
     (let [family-parent-id (random-uuid)
-          newborn-child-id (random-uuid)
-          candidate (tree-class-candidate newborn-child-id 0.95
-                      :domain-coverage :partial
-                      :domain-label "Ultra Long Run"
-                      :domain-reasoning "A more extreme variant of the newborn's own shape.")
-          merge-calls (atom [])]
-      (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
-                    tc/get-consolidation-total* (fn [_ _ _] 0)]
-        (let [r (ontology/classify-task
-                 {:domain-children-fn (fn [_ _] [])
-                  :domain-families-fn (fn [_] [])
-                  :domain-merge-fn (fn [_ q] (swap! merge-calls conj q)
-                                     {:kind :same :family newborn-child-id})
-                  :domain-family-parent-fn
-                  (fn [_ target-id]
-                    (when (= target-id newborn-child-id)
-                      {:parent-id family-parent-id :domain-label "marathon-training-plan"}))}
-                 {:task-signature "x" :threshold 0.7})]
-          (is (= 1 (count @merge-calls)) "CV-D flip: a reached family is now judged")
-          (is (= newborn-child-id (:proposed (first @merge-calls)))
-              "the reached family rode as the proposed family")
-          (is (= :land-on-domain-child (:assigned-via r)))
-          (is (= newborn-child-id (:assigned-tree-id r)) "the family's own identity, unchanged")
-          (is (= family-parent-id (:parent-tree-id r))
-              "the family's OWN birth shape — never the family itself as a parent")
-          (is (= "marathon-training-plan" (:domain-label r))
-              "the family's own concept label — the :partial verdict above is never consulted")
-          (is (false? (:was-fresh-mint? r)) "a landing, never a mint — no grandchild")
-          (is (= {:kind :same :family newborn-child-id} (:merge-verdict r))))))))
-
-(deftest newborn-as-top-1-match-with-covered-lands-on-the-family
-  (testing "the SAME family reached again as top-1 with a :covered verdict
-            lands identically once the (now mandatory) judge says :same —
-            DomainFamilyIsALeafOnTheDomainAxis holds whatever the coverage
-            verdict says, because the coverage verdict is not consulted at
-            all once the reached class IS the family"
-    (let [family-parent-id (random-uuid)
-          newborn-child-id (random-uuid)
-          candidate (tree-class-candidate newborn-child-id 0.95
+          candidate-id (random-uuid)
+          candidate (tree-class-candidate candidate-id 0.95
                       :domain-coverage :covered
                       :domain-label "Marathon Training Plan"
                       :domain-reasoning "Fully covered by the existing class.")]
@@ -622,17 +596,17 @@
         (let [r (ontology/classify-task
                  {:domain-children-fn (fn [_ _] [])
                   :domain-families-fn (fn [_] [])
-                  :domain-merge-fn (fn [_ _] {:kind :same :family newborn-child-id})
+                  :domain-merge-fn (fn [_ _] (throw (ex-info "merge judge must not be called on a covered match" {})))
                   :domain-family-parent-fn
                   (fn [_ target-id]
-                    (when (= target-id newborn-child-id)
+                    (when (= target-id candidate-id)
                       {:parent-id family-parent-id :domain-label "marathon-training-plan"}))}
                  {:task-signature "x" :threshold 0.7})]
-          (is (= :land-on-domain-child (:assigned-via r)))
-          (is (= newborn-child-id (:assigned-tree-id r)))
-          (is (= family-parent-id (:parent-tree-id r)))
-          (is (= "marathon-training-plan" (:domain-label r))
-              "the family's own label — landing, not a plain match with no label")
+          (is (= :match (:assigned-via r)))
+          (is (= candidate-id (:assigned-tree-id r)))
+          (is (nil? (:parent-tree-id r)))
+          (is (not (contains? r :domain-deferral))
+              "a covered match is neither a landing nor a deferral — plain base")
           (is (false? (:was-fresh-mint? r))))))))
 
 ;; =============================================================================

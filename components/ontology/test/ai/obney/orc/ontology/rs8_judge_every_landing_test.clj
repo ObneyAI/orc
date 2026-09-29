@@ -172,27 +172,41 @@
           (is (= {:kind :new} (:merge-verdict r)) "the raw verdict is still carried for RS-3"))))))
 
 ;; =============================================================================
-;; Reached family, :new verdict — mints under the family's OWN PARENT SHAPE,
-;; never under the family itself (DomainFamilyIsALeafOnTheDomainAxis).
+;; CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5') removed the
+;; reach-and-rewrite mechanism entirely: `search-descriptions` excludes every
+;; family from the ranking before the reranker's candidate set is taken, so a
+;; family's own id can no longer reach top-1 in production at all. The two
+;; tests that pinned `JudgeReachedDomainFamily`'s special casing (mint under
+;; the family's OWN PARENT shape, never under the family itself; an unknown
+;; verdict defers with the pre-existing rewritten-to-parent match standing)
+;; pinned an input production can no longer construct AND a mechanism that no
+;; longer exists — there is no more rewrite. Replaced below with a single
+;; test proving the residual (honest, current) behavior: a stubbed
+;; :domain-family-parent-fn can still make the pure classifier BELIEVE top-1's
+;; id is a family, but the classifier now mints or defers under THAT id
+;; directly, exactly like any other candidate. The :new/:unknown judged-mint
+;; mechanics themselves are already covered by
+;; rs7_domain_family_merge_test.clj's
+;; new-verdict-mints-a-family-and-carries-merge-verdict /
+;; unknown-verdict-defers-and-mints-nothing.
 ;; =============================================================================
 
-(deftest reached-family-new-verdict-mints-under-the-parent-never-under-the-family
-  (testing "top-1 IS an existing family; the judge is asked (JudgeReachedDomainFamily)
-            and says :new -> a DIFFERENT domain child mints under the family's
-            OWN parent shape, never under the family"
+(deftest a-family-labeled-top-1-mints-under-itself-not-a-rewritten-parent
+  (testing "top-1's own id happens to be one :domain-family-parent-fn calls a
+            family (an input production can no longer construct since C5') —
+            a :new verdict mints a child under THAT id directly; there is no
+            more rewrite to any 'family's own parent shape'"
     (let [family-id (random-uuid) family-parent-id (random-uuid)
           candidate (tree-class-candidate family-id 0.95
                       :domain-coverage :partial
                       :domain-label "Ultra Distance Coaching"
                       :domain-reasoning "A distinct domain from the family's own.")
-          expected-id (expected-domain-child-id family-parent-id "ultra-distance-coaching")]
+          expected-id (expected-domain-child-id family-id "ultra-distance-coaching")]
       (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
                     tc/get-consolidation-total* (fn [_ _ _] 0)]
         (let [r (ontology/classify-task
                  {:domain-children-fn (fn [_ _] [])
                   :domain-families-fn (fn [_] [])
-                  ;; only family-id is a family (the reached one) — the
-                  ;; newly-derived identity is not, so no collision
                   :domain-family-parent-fn
                   (fn [_ id] (when (= id family-id)
                               {:parent-id family-parent-id :domain-label "marathon-training-plan"}))
@@ -200,33 +214,9 @@
                  {:task-signature "x" :threshold 0.7})]
           (is (= :mint-domain-child (:assigned-via r)))
           (is (= expected-id (:assigned-tree-id r)))
-          (is (not= family-id (:assigned-tree-id r)) "never minted AS the family")
-          (is (= family-parent-id (:parent-tree-id r)) "minted under the family's OWN parent shape")
-          (is (not= family-id (:parent-tree-id r)) "never PARENTED by the family itself")
+          (is (= family-id (:parent-tree-id r))
+              "minted under top-1's own id directly — no rewrite to any other parent")
           (is (true? (:was-fresh-mint? r))))))))
-
-(deftest reached-family-unknown-verdict-defers-merge-unresolved
-  (testing "top-1 IS an existing family; the judge answers :unknown -> defers
-            merge-unresolved, the pre-existing (rewritten-to-parent) match
-            stands, nothing minted, never a landing on the family"
-    (let [family-id (random-uuid) family-parent-id (random-uuid)
-          candidate (tree-class-candidate family-id 0.95
-                      :domain-coverage :partial
-                      :domain-label "Ultra Distance Coaching"
-                      :domain-reasoning "A distinct domain from the family's own.")]
-      (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])
-                    tc/get-consolidation-total* (fn [_ _ _] 0)]
-        (let [r (ontology/classify-task
-                 {:domain-children-fn (fn [_ _] [])
-                  :domain-families-fn (fn [_] [])
-                  :domain-family-parent-fn
-                  (fn [_ id] (when (= id family-id)
-                              {:parent-id family-parent-id :domain-label "marathon-training-plan"}))
-                  :domain-merge-fn (fn [_ _] {:kind :unknown})}
-                 {:task-signature "x" :threshold 0.7})]
-          (is (= :merge-unresolved (get-in r [:domain-deferral :reason])))
-          (is (not= :land-on-domain-child (:assigned-via r)))
-          (is (not= family-id (:assigned-tree-id r))))))))
 
 ;; =============================================================================
 ;; Store-backed (rs3-durable style, real in-memory store) — an EXACT

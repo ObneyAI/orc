@@ -276,7 +276,12 @@
                     ontology/get-narrower-concepts     fake-narrower
                     ontology/get-description           fake-get-desc
                     reranker/rerank!                   fake-rerank]
-        (let [result (ontology/classify-task {}
+        ;; CV-E: get-tree-class-children now consults :domain-family-parent-fn
+        ;; for every child (default: a real store read, fail-closed on a
+        ;; missing store) — this test's own concern is walk-down's structural
+        ;; descent, not family exclusion, so it declares its world: no
+        ;; families here (nil for every id).
+        (let [result (ontology/classify-task {:domain-family-parent-fn (fn [_ _] nil)}
                        {:task-signature "extract per-section summaries"
                         :threshold 0.7
                         :walk-down? true
@@ -289,6 +294,94 @@
               "Walked to an existing leaf — not a fresh mint")
           (is (= 0.92 (:confidence result))
               ":confidence reflects the leaf's fitness, not the parent's"))))))
+
+;; =============================================================================
+;; CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5') — walk-down never
+;; descends into a domain family. Both tests declare the family seam
+;; (:domain-family-parent-fn) directly, isolating this concern from
+;; get-tree-class-children's :tree-class/:tree-fingerprint scope preference
+;; (covered separately in rs5_domain_child_chain_test.clj).
+;; =============================================================================
+
+(deftest walk-down-with-only-a-family-child-returns-the-shape-itself
+  (testing "top-1 P at fitness 0.85 (below specificity 0.9, above match 0.7);
+            its ONLY child is a domain family -> get-tree-class-children
+            excludes it (non-family-child?), walk-down finds no children to
+            consider, and returns P unchanged (the genuine-leaf case) —
+            never descending into the family"
+    (let [parent-id (random-uuid)
+          family-id  (random-uuid)
+          fake-narrower (fn [_ uri]
+                          (cond
+                            (= uri (str "tree-class:" parent-id)) #{(str "tree-class:" family-id)}
+                            :else #{}))
+          fake-get-desc (fn [_ _ target-id]
+                          (when (= target-id family-id)
+                            {:summary "the family's own pattern"
+                             :version 1 :consolidated-from-event-count 1
+                             :capabilities [] :strengths [] :weaknesses []
+                             :representative-uses [] :avoid-when []}))
+          rerank-called? (atom false)
+          fake-rerank (fn [_ _] (reset! rerank-called? true) [])]
+      (with-redefs [ontology/search-descriptions   (fn [_ _] (fake-top-1 parent-id 0.85))
+                    ontology/get-narrower-concepts fake-narrower
+                    ontology/get-description       fake-get-desc
+                    reranker/rerank!               fake-rerank]
+        (let [result (ontology/classify-task
+                       {:domain-family-parent-fn
+                        (fn [_ id] (when (= id family-id) {:parent-id parent-id :domain-label "some-family"}))}
+                       {:task-signature "x" :threshold 0.7 :walk-down? true :specificity-threshold 0.9})]
+          (is (= parent-id (:assigned-tree-id result))
+              "walk-down returns the shape itself — the family is never descended into")
+          (is (false? (:was-fresh-mint? result)))
+          (is (nil? (:parent-tree-id result))
+              "no walk was committed — children were empty once the family was excluded")
+          (is (false? @rerank-called?)
+              "pick-best-child never even calls the reranker — no children survived the family filter"))))))
+
+(deftest walk-down-never-picks-a-family-child-even-when-it-scores-higher
+  (testing "P has two children: an ordinary shape (fitness 0.6, below the 0.7
+            auto-classify threshold) and a domain family (fitness 0.95, far
+            above it) — the family is excluded from the candidates handed to
+            the reranker, so only the ordinary child is considered, and it
+            does not meet the threshold -> P is returned unchanged, never the
+            family, regardless of the family's higher score"
+    (let [parent-id (random-uuid)
+          shape-child-id (random-uuid)
+          family-id (random-uuid)
+          fake-narrower (fn [_ uri]
+                          (cond
+                            (= uri (str "tree-class:" parent-id))
+                            #{(str "tree-class:" shape-child-id) (str "tree-class:" family-id)}
+                            :else #{}))
+          fake-get-desc (fn [_ _ target-id]
+                          (when (contains? #{shape-child-id family-id} target-id)
+                            {:summary (str "pattern for " target-id)
+                             :version 1 :consolidated-from-event-count 1
+                             :capabilities [] :strengths [] :weaknesses []
+                             :representative-uses [] :avoid-when []}))
+          seen-ids (atom #{})
+          fake-rerank (fn [_ {:keys [candidates]}]
+                        (swap! seen-ids into (map #(-> % :document-metadata :target-id) candidates))
+                        (mapv (fn [c]
+                                (let [tid (-> c :document-metadata :target-id)]
+                                  {:document-id (:document-id c)
+                                   :reasoning "x"
+                                   :fitness-score (if (= tid family-id) 0.95 0.6)}))
+                              candidates))]
+      (with-redefs [ontology/search-descriptions   (fn [_ _] (fake-top-1 parent-id 0.85))
+                    ontology/get-narrower-concepts fake-narrower
+                    ontology/get-description       fake-get-desc
+                    reranker/rerank!               fake-rerank]
+        (let [result (ontology/classify-task
+                       {:domain-family-parent-fn
+                        (fn [_ id] (when (= id family-id) {:parent-id parent-id :domain-label "some-family"}))}
+                       {:task-signature "x" :threshold 0.7 :walk-down? true :specificity-threshold 0.9})]
+          (is (= #{shape-child-id} @seen-ids)
+              "the reranker only ever saw the non-family child — the family never reached it")
+          (is (= parent-id (:assigned-tree-id result))
+              "no child met the threshold (the family's high score never counted); P is returned")
+          (is (false? (:was-fresh-mint? result))))))))
 
 ;; =============================================================================
 ;; RED #4 — Walk considered children but none fit; no fresh-mint at depth 0
@@ -399,7 +492,8 @@
                     ontology/get-narrower-concepts fake-narrower
                     ontology/get-description       fake-get-desc
                     reranker/rerank!               fake-rerank]
-        (let [result (ontology/classify-task {}
+        ;; CV-E: declares no families in this world (see the sibling test above).
+        (let [result (ontology/classify-task {:domain-family-parent-fn (fn [_ _] nil)}
                        {:task-signature "novel-but-related task"
                         :threshold 0.7
                         :walk-down? true
@@ -457,7 +551,8 @@
                     ontology/get-narrower-concepts fake-narrower
                     ontology/get-description       fake-get-desc
                     reranker/rerank!               fake-rerank]
-        (let [result (ontology/classify-task {}
+        ;; CV-E: declares no families in this world (see the sibling test above).
+        (let [result (ontology/classify-task {:domain-family-parent-fn (fn [_ _] nil)}
                        {:task-signature "deep walk"
                         :threshold 0.7
                         :walk-down? true
@@ -528,7 +623,8 @@
                     ontology/get-narrower-concepts fake-narrower
                     ontology/get-description       fake-get-desc
                     reranker/rerank!               fake-rerank]
-        (ontology/classify-task {}
+        ;; CV-E: declares no families in this world (see the sibling test above).
+        (ontology/classify-task {:domain-family-parent-fn (fn [_ _] nil)}
           {:task-signature "extract per-section summaries"
            :threshold 0.7
            :walk-down? true
