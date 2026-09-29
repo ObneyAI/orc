@@ -574,6 +574,28 @@
              :groups (into (sorted-map)
                            (for [[g rs] by-group :when g] [g (per-group-analysis g rs)]))
              :in-domain-mint-count (count in-domain-mints)
+             ;; A mint count alone hid the first post-fix arm's failure: in-domain
+             ;; tasks LANDED on wrong families. In-domain accuracy is judged against
+             ;; the brief's expected seed, and family sharing across groups is the
+             ;; false-merge measure.
+             :in-domain-seed-match-count (count (filter #(and (:corpus-in-domain? %)
+                                                             (:expected-seed-id %)
+                                                             (= (str (:expected-seed-id %)) (str (:assigned-tree-id %))))
+                                                       records))
+             :in-domain-total (count (filter :corpus-in-domain? records))
+             :cross-group-families (let [fam (filter #(contains? #{:mint-domain-child :land-on-domain-child
+                                                                    :mint-sibling-domain-child}
+                                                                  (:assigned-via %))
+                                                     records)
+                                         shared (filter (fn [[_ xs]] (> (count (distinct (map :corpus-group xs))) 1))
+                                                        (group-by :assigned-tree-id fam))]
+                                     {:families (count (distinct (map :assigned-tree-id fam)))
+                                      :shared-families (count shared)
+                                      :tasks-in-shared-families (reduce + (map (comp count val) shared))
+                                      :shared (into (sorted-map)
+                                                    (for [[_ xs] shared]
+                                                      [(or (first (keep :domain-label xs)) "?")
+                                                       (frequencies (map :corpus-group xs))]))})
              :in-domain-mint-slugs (mapv :slug in-domain-mints)
              :confounder-mint-count (count confounder-mints)
              :confounder-mint-slugs (mapv :slug confounder-mints)

@@ -232,6 +232,22 @@
            (mapv :slug (rs7/load-traffic-corpus (str d) {:entries [{:slug "001-a-v01" :review-status :accepted}
                                                                    {:slug "002-a-v02" :review-status :rejected}]}))))))
 
+;; In-domain seed matches and families shared across groups (the false-merge
+;; measure the first post-fix arm needed and did not have).
+(deftest analyse-reports-seed-matches-and-cross-group-families
+  (let [seed (random-uuid) fam (random-uuid) fam2 (random-uuid)
+        recs [{:slug "a" :corpus-group "legal" :corpus-in-domain? true :expected-seed-id seed :assigned-tree-id seed :assigned-via :match}
+              {:slug "b" :corpus-group "legal" :corpus-in-domain? true :expected-seed-id seed :assigned-tree-id fam :assigned-via :land-on-domain-child}
+              {:slug "c" :corpus-group "chess" :assigned-tree-id fam :assigned-via :mint-domain-child :domain-label "plans"}
+              {:slug "d" :corpus-group "lessons" :assigned-tree-id fam :assigned-via :land-on-domain-child}
+              {:slug "e" :corpus-group "recipes" :assigned-tree-id fam2 :assigned-via :mint-domain-child :domain-label "recipes"}]
+        a (rs7/analyse recs {:entries []})]
+    (is (= 1 (:in-domain-seed-match-count a)))
+    (is (= 2 (:in-domain-total a)))
+    (is (= {:families 2 :shared-families 1 :tasks-in-shared-families 3
+            :shared {"plans" {"legal" 1 "chess" 1 "lessons" 1}}}
+           (:cross-group-families a)))))
+
 ;; =============================================================================
 ;; rs7-traffic-sweep: resume decision
 ;; =============================================================================
