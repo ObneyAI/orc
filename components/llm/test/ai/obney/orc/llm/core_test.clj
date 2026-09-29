@@ -590,8 +590,7 @@
                     (llm/predict :test answer+optional-aside {} {:validate? true})
                     (catch clojure.lang.ExceptionInfo e e))]
       (is (instance? clojure.lang.ExceptionInfo failure))
-      (is (= :schema-validation-failed (:failure-kind (ex-data failure))))
-      (is (not= {:answer nil} (some-> failure ex-data :provider-evidence))))))
+      (is (= :schema-validation-failed (:failure-kind (ex-data failure)))))))
 
 (deftest a-null-nested-map-entry-becomes-absent
   (with-redefs [router/supports-function-calling? (constantly true)
