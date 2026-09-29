@@ -33,6 +33,93 @@
                   :timeout-ms)
     (:timeout-ms options) (assoc :timeout (:timeout-ms options))))
 
+;; --------------------------------------------------------------------------- ;;
+;; Optional means nullable
+;; --------------------------------------------------------------------------- ;;
+;; A provider that supports function calling renders every declared tool
+;; property, whether or not the caller marked it :optional — there is no way
+;; to ask a provider to omit a property. Measured against openai/gpt-5.6-luna
+;; via OpenRouter: an optional field typed as a plain, non-nullable JSON type
+;; gets FILLER instead ("N/A", "x", an invented date), because the model must
+;; produce *something* structurally valid and nothing tells it that skipping
+;; the value is allowed. Making every optional field (and every optional map
+;; entry nested inside it, at any depth) admit `null` on the wire gives the
+;; model an honest way to say "no value" — and it takes that option instead
+;; of inventing one.
+;;
+;; `nullable-optionals` performs this rewrite on a Malli schema FORM (a
+;; vector, not a compiled schema), because it must run before `sio` turns the
+;; schema into a JSON Schema or a text description — both are downstream
+;; renderings of the form, not sources of truth for it. It descends into
+;; `:map` entries and `:multi` branches (the two composite shapes ORC's
+;; producers use); every other schema type passes through unchanged.
+;;
+;; `wire-output` applies the same rule to a flattened top-level output field:
+;; an :optional field's own declared spec is wrapped in `:maybe` too, unless
+;; it already accepts nil.
+;;
+;; The mirror image on the decode side lives just below `validate-outputs`.
+
+(defn- accepts-nil?
+  "True when a Malli schema form validates `nil` — either because it already
+   declares nullability (`[:maybe ...]`, `:any`, ...), or because dropping a
+   null value at that position would be a no-op anyway."
+  [form]
+  (try (m/validate form nil) (catch Exception _ false)))
+
+(defn- split-schema-props
+  "Split a `:map`/`:multi` form's tail into its optional Malli properties map
+   (or nil) and its remaining entries/branches."
+  [more]
+  (if (map? (first more)) [(first more) (rest more)] [nil more]))
+
+(defn- nullable-optionals
+  "Rewrite a Malli schema FORM so every OPTIONAL `:map` entry, at any depth —
+   including inside nested maps and `:multi` branches — admits `null`.
+   Required entries are left exactly as declared. Operates on the schema
+   form (a vector), before `sio` renders it as JSON Schema or prompt text."
+  [form]
+  (if-not (vector? form)
+    form
+    (let [[schema-type & more] form]
+      (case schema-type
+        :map
+        (let [[props entries] (split-schema-props more)]
+          (into (if props [:map props] [:map])
+                (for [[entry-key & r] entries]
+                  (let [[entry-props s] (if (map? (first r))
+                                          [(first r) (second r)]
+                                          [nil (first r)])
+                        s' (nullable-optionals s)
+                        s'' (if (and (:optional entry-props) (not (accepts-nil? s')))
+                              [:maybe s']
+                              s')]
+                    (if entry-props [entry-key entry-props s''] [entry-key s''])))))
+
+        :multi
+        (let [[props branches] (split-schema-props more)]
+          (into (if props [:multi props] [:multi])
+                (for [[dispatch-value s] branches]
+                  [dispatch-value (nullable-optionals s)])))
+
+        (into [schema-type] (map nullable-optionals more))))))
+
+(defn- wire-output
+  "A flattened top-level output field, as it will be offered to the
+   provider: an :optional field's own spec admits `null` too (unless it
+   already does), and its nested optional entries follow
+   `nullable-optionals`."
+  [{:keys [spec optional] :as field}]
+  (let [s (nullable-optionals spec)]
+    (assoc field :spec (if (and optional (not (accepts-nil? s))) [:maybe s] s))))
+
+(defn- wire-spec-outputs
+  "The spec offered to the provider: every declared output run through
+   `wire-output`. Inputs are untouched — only outputs carry the presence
+   contract a provider needs to be told about."
+  [spec]
+  (update spec :outputs #(mapv wire-output %)))
+
 (defn- input-section [spec inputs marker?]
   (let [image-names (set (map :name (filter #(= :image (:type %)) (:inputs spec))))]
     (str/join
@@ -44,7 +131,7 @@
             (get inputs name ""))))))
 
 (defn- marker-request [spec inputs options]
-  (let [prompt (str (sio/spec->prompt spec)
+  (let [prompt (str (sio/spec->prompt (wire-spec-outputs spec))
                     "\n\n"
                     (input-section spec inputs true))]
     (merge {:messages [{:role :user
@@ -59,7 +146,7 @@
                     "\n\nCall the submit_response function with your answer.")]
     (merge (cond-> {:messages [{:role :user
                                 :content (sio/build-message-content spec prompt inputs)}]
-                    :tools [(sio/outputs->tool-definition spec)]}
+                    :tools [(sio/outputs->tool-definition (wire-spec-outputs spec))]}
              ;; OPT-IN, default OFF. See below — forcing this is not safe for every
              ;; tool schema, and every workload built on ORC to date has run without it.
              (:force-tool-choice? options)
@@ -194,6 +281,90 @@
             (prepare-multi-dispatches schema value)
             provider-json-transformer))
 
+(defn- drop-null-optionals
+  "The decode mirror of `nullable-optionals`: walk `value` against its
+   ORIGINAL declared schema `form` (never the wire-transformed one — decoding
+   must check what the field actually promises) and remove an OPTIONAL entry
+   whose value came back `null`, at any depth, because that null is the
+   provider's way of saying absent. An entry whose own schema already
+   accepts nil keeps its null — that is the author's declared meaning, not a
+   filler default. Required entries are never touched: a null there is left
+   in place so `validate-outputs` still rejects it."
+  [form value]
+  (cond
+    (nil? value) nil
+    (not (vector? form)) value
+    :else
+    (let [[schema-type & more] form]
+      (case schema-type
+        :map
+        (if-not (map? value)
+          value
+          (let [[_ entries] (split-schema-props more)]
+            (reduce (fn [v [entry-key & r]]
+                      (let [[entry-props s] (if (map? (first r))
+                                              [(first r) (second r)]
+                                              [nil (first r)])]
+                        (cond
+                          (not (contains? v entry-key)) v
+
+                          (and (:optional entry-props)
+                               (nil? (get v entry-key))
+                               (not (accepts-nil? s)))
+                          (dissoc v entry-key)
+
+                          :else
+                          (update v entry-key #(drop-null-optionals s %)))))
+                    value entries)))
+
+        :vector
+        (if (sequential? value)
+          (mapv #(drop-null-optionals (first more) %) value)
+          value)
+
+        :maybe
+        (drop-null-optionals (first more) value)
+
+        :multi
+        (let [[props branches] (split-schema-props more)
+              dispatch-key (:dispatch props)
+              dispatch-value (when (and (keyword? dispatch-key) (map? value))
+                                (get value dispatch-key))
+              ;; The provider's raw JSON dispatch value is a string (there is
+              ;; no JSON keyword), while a branch tag declared in the schema
+              ;; form is typically a keyword — the same string/keyword
+              ;; equivalence `matching-multi-branch` applies once decoding
+              ;; has run. This walk happens BEFORE decoding, so it must
+              ;; tolerate that mismatch itself to find the right branch.
+              branch (some (fn [[branch-value s]]
+                             (when (or (= branch-value dispatch-value)
+                                       (and (keyword? branch-value)
+                                            (string? dispatch-value)
+                                            (= (subs (str branch-value) 1) dispatch-value)))
+                               s))
+                           branches)]
+          (if branch (drop-null-optionals branch value) value))
+
+        value))))
+
+(defn- drop-null-optional-outputs
+  "Top-level mirror of `drop-null-optionals`: a flattened OPTIONAL output
+   field that came back `null` is absent, unless its own declared spec
+   already accepts nil. Runs against the ORIGINAL declared `fields` — never
+   the wire-transformed spec — and always before `validate-outputs`, so a
+   required field's null is untouched and still fails validation."
+  [fields outputs]
+  (reduce (fn [acc {:keys [name spec optional]}]
+            (cond
+              (not (contains? acc name)) acc
+
+              (and optional (nil? (get acc name)) (not (accepts-nil? spec)))
+              (dissoc acc name)
+
+              :else
+              (update acc name #(drop-null-optionals spec %))))
+          outputs fields))
+
 (defn- validate-outputs [fields outputs]
   ;; SIO's public collection validator intentionally validates only values that
   ;; are present. ORC's prediction boundary additionally requires every declared
@@ -319,7 +490,8 @@
                  parsed-result)
         outputs (if validate?
                   (try
-                    (validate-outputs (:outputs spec) parsed)
+                    (validate-outputs (:outputs spec)
+                                       (drop-null-optional-outputs (:outputs spec) parsed))
                     (catch Exception e
                       (throw (structured-failure (.getMessage e)
                                                  :schema-validation-failed evidence e))))
@@ -395,7 +567,8 @@
             (try
               (let [parsed (sio/parse-streaming-output @accumulated spec)
                     outputs (if validate?
-                              (validate-outputs (:outputs spec) parsed)
+                              (validate-outputs (:outputs spec)
+                                                 (drop-null-optional-outputs (:outputs spec) parsed))
                               parsed)]
                 (>! output-ch {:orc/event :final
                                :outputs outputs
