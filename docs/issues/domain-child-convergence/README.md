@@ -237,3 +237,23 @@ unfiltered. Any later edit means one more full run.
 - **Live smoke, all six right:** marathon and recipe each mint one family and the second task lands on it; both
   legal tasks match the legal seed. Pre-fix, the same six produced two deferrals, a mint, a wrong-parent family
   for an in-domain task, and a second in-domain task captured by it.
+
+## Postgres resume stall (found by the RS-7 harness; fixed in orc-service)
+
+- **Symptom:** on Grain's Postgres store every checkpointed campaign stopped after its first quantum and sat until its
+  run timeout, with no error logged. In-memory, campaigns ran normally.
+- **Two hypotheses refuted:** connection-pool exhaustion (a thread dump showed no pool waits), and advisory-lock
+  timeouts under contention (the Postgres server log held one lock timeout in its whole life, from an artificial
+  repro).
+- **Root cause, caught live:** resuming verifies the saved sandbox against a hash whose preimage tagged values by
+  class. The store's serialization changes classes without changing values: a list comes back a vector, an Integer a
+  Long (the researcher's tree counters). The hash mismatch threw before the frontier claim, in a catch branch that
+  emits nothing. Recomputing the hash on the real stored fact reproduced the live expected and actual values.
+- **Fix:** the preimage canonicalizes by value family; facts saved under the old preimage still verify, so in-flight
+  campaigns survive the upgrade. Live validation: both campaigns of a one-group run completed on Postgres with real
+  outcomes and no catch. Tests fail without the fix (11 failures at HEAD) and pass with it; 138 tests across the nine
+  resume-state suites pass.
+- **Open for the user (design, not changed):** a checkpointed worker that fails before its frontier claim emits
+  nothing, and nothing retries it. Today's trigger is fixed; the gap would silence any other failure in that window.
+- **Left untracked for the user to keep or delete:** `development/src/rs7_postgres_lock_probe.clj` (the refuted
+  contention probe) and `development/src/rs7_postgres_repro.clj` (a small checkpointed-campaign repro).
