@@ -1097,6 +1097,48 @@
                          (assoc :fitness-score nil)
                          (assoc :rerank-source source)))))))))
 
+(def ^:private tree-axis-names #{"tree-class" "tree-fingerprint"})
+
+(defn- tree-axis-target [c]
+  (let [g (granularity-name (-> c :document-metadata :granularity))]
+    (when (contains? tree-axis-names g)
+      (str (-> c :document-metadata :target-id)))))
+
+(defn tree-class-representatives
+  "Every tree class is indexed on BOTH tree axes with the same description, so
+   a reranker fed raw rows spends two of its slots on each class and sees half
+   as many classes as its budget allows (a live in-domain task lost its seed
+   this way, ColBERT's near-flat scores deciding which five classes made it).
+   Returns `{:representatives :siblings}`: one row per tree class, in ColBERT
+   order, preferring the instruction-aware :tree-class row; every other row
+   passes through unchanged. `:siblings` maps a class's target id to its other
+   axis rows, for `restore-axis-siblings`."
+  [rows]
+  (let [by-target (group-by tree-axis-target (filter tree-axis-target rows))
+        pick (fn [t] (let [rs (get by-target t)]
+                       (or (some #(when (= "tree-class" (granularity-name (-> % :document-metadata :granularity))) %) rs)
+                           (first rs))))
+        reps (loop [[r & more] rows seen #{} out []]
+               (if-not r
+                 out
+                 (if-let [t (tree-axis-target r)]
+                   (if (seen t) (recur more seen out) (recur more (conj seen t) (conj out (pick t))))
+                   (recur more seen (conj out r)))))
+        rep-ids (set (map :document-id reps))]
+    {:representatives reps
+     :siblings (into {} (map (fn [[t rs]] [t (vec (remove #(rep-ids (:document-id %)) rs))])) by-target)}))
+
+(defn restore-axis-siblings
+  "After the rerank, give each tree class's other axis row the SAME judgement
+   as its representative (fitness, reasoning, domain verdict, enrichment) with
+   its own identity fields, placed right after it. Downstream sees both axis
+   rows exactly as before, now judged once."
+  [reranked siblings]
+  (vec (mapcat (fn [r]
+                 (cons r (for [sib (get siblings (tree-axis-target r))]
+                           (merge r (select-keys sib [:document-id :document-metadata :score :rank :content])))))
+               reranked)))
+
 (defn search-descriptions
   "C-2b-1+C-2b-2: parameterized retrieval over the ColBERT-indexed
    Living Description corpus. Returns top-K results, optionally
@@ -1173,7 +1215,10 @@
                                             (-> % :document-metadata :granularity)))
                               raw-results))]
       (if rerank-with-intent
-        (apply-rerank ctx (vec (take (rerank-fetch-k k) filtered)) rerank-with-intent query k model)
+        (let [{:keys [representatives siblings]} (tree-class-representatives filtered)
+              reranked (apply-rerank ctx (vec (take (rerank-fetch-k k) representatives))
+                                     rerank-with-intent query k model)]
+          (vec (take k (restore-axis-siblings reranked siblings))))
         (vec (take k filtered))))
     (do
       (u/log ::search-cold-no-index

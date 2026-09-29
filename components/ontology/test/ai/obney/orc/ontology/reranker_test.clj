@@ -367,6 +367,45 @@
         (is (= ["t0" "t1" "t2" "t3" "t4" "t5" "t6" "t7" "t8" "t9"] @seen)
             "the reranker sees its full set of ten ALLOWED candidates, in ColBERT order")))))
 
+;; Orchestrator inspection (convergence arc): every tree class is indexed on both
+;; tree axes, so the reranker's ten rows held five distinct classes, and ColBERT's
+;; near-flat scores decided which five. A live in-domain task lost its seed that way.
+;; The reranker now sees one row per class (ten classes) and its judgement is
+;; applied to both axis rows of each class it returns.
+(deftest search-with-rerank-shows-the-reranker-distinct-tree-classes
+  (with-test-ctx [ctx]
+    (inject-index-created! ctx)
+    (Thread/sleep 100)
+    (let [seen (atom nil)
+          row (fn [i gran] {:content (str "class " i) :score (- 1.0 (* 0.01 i)) :rank (inc i)
+                            :document-id (str gran ":" i)
+                            :document_metadata {:granularity gran :target-id (str "c" i)
+                                                :confidence 0.5 :last-update "2026"}})
+          ;; ColBERT order: each class on both axes, fingerprint row first for even classes
+          docs (vec (mapcat (fn [i] (if (even? i)
+                                      [(row i "tree-fingerprint") (row i "tree-class")]
+                                      [(row i "tree-class") (row i "tree-fingerprint")]))
+                            (range 12)))]
+      (with-redefs [colbert/search (fn [_ctx opts] (vec (take (:k opts) docs)))
+                    reranker/rerank! (fn [_ctx opts]
+                                       (reset! seen (:candidates opts))
+                                       ;; the reranker prefers class 9 over everything
+                                       (->> (:candidates opts)
+                                            (mapv (fn [c] {:document-id (:document-id c) :reasoning "ok"
+                                                           :fitness-score (if (= "c9" (get-in c [:document-metadata :target-id])) 0.95 0.4)}))
+                                            (sort-by :fitness-score >) vec))]
+        (let [out (ontology/search-descriptions ctx {:query "q" :rerank-with-intent "i" :k 5
+                                                     :granularity #{:tree-class :tree-fingerprint}})]
+          (is (= (mapv #(str "c" %) (range 10)) (mapv #(get-in % [:document-metadata :target-id]) @seen))
+              "ten DISTINCT classes reach the reranker, in ColBERT order")
+          (is (every? #(= :tree-class (get-in % [:document-metadata :granularity])) @seen)
+              "the representative row is the instruction-aware tree-class row")
+          (is (= [["c9" :tree-class 0.95] ["c9" :tree-fingerprint 0.95]]
+                 (mapv (juxt #(get-in % [:document-metadata :target-id]) #(keyword (name (get-in % [:document-metadata :granularity]))) :fitness-score)
+                       (take 2 out)))
+              "the winner's judgement is applied to both of its axis rows")
+          (is (= 5 (count out)) "the caller's k still bounds the output"))))))
+
 ;; =============================================================================
 ;; RED #7 — hard-cap at 50 candidates regardless of caller's :k
 ;; =============================================================================

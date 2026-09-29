@@ -220,3 +220,20 @@ unfiltered. Any later edit means one more full run.
   the real index; it had relied on the stub returning more candidates than a real search hands the reranker.
 - **GREEN:** 47 namespaces, 426 tests, with the 14 failures traced to those three setups; the two affected suites
   re-run green (18 tests, 97 assertions) after the corrections.
+
+## One row per tree class for the reranker (orchestrator)
+
+- **Symptom:** after the filter fix, a third smoke run still minted a family for the second in-domain legal task.
+  ColBERT ranked the legal seed 9th and 10th on the tree axes, and new families in the index pushed it past the
+  reranker's ten rows.
+- **Root cause:** every tree class is indexed on both tree axes with the same description, so the reranker's ten rows
+  held five classes, and ColBERT's raw scores for these shapes differ by less than one point in about 447. Which
+  five classes the reranker saw was close to noise, and growing traffic adds families that compete for the five.
+- **Fix:** the rerank path gives the reranker one row per tree class (the tree-class row preferred), ten classes in
+  the same prompt size, and applies each returned judgement to both axis rows of that class. The output is still
+  bounded by the caller's `k`, so the classifier's input shape is unchanged. Test
+  `search-with-rerank-shows-the-reranker-distinct-tree-classes` failed first (five classes, each twice).
+- **GREEN:** 47 namespaces, 427 tests, 2,447 assertions, all passing.
+- **Live smoke, all six right:** marathon and recipe each mint one family and the second task lands on it; both
+  legal tasks match the legal seed. Pre-fix, the same six produced two deferrals, a mint, a wrong-parent family
+  for an in-domain task, and a second in-domain task captured by it.
