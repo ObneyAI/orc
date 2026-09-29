@@ -210,7 +210,11 @@
   [v]
   (let [t (cond
             (string? v) (or (extract-json-array-string v) (str/trim v))
-            (sequential? v) (some output-text v)
+            ;; A task split across several strings keeps ALL of them (joined),
+            ;; never just the first line (live: a release-notes task came back
+            ;; as its first line only).
+            (sequential? v) (let [parts (keep output-text v)]
+                              (when (seq parts) (str/join "\n" parts)))
             (map? v) (some output-text (vals v))
             :else nil)]
     (when (and (string? t) (not (str/blank? t))) t)))

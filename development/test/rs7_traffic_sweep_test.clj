@@ -166,6 +166,8 @@
   (is (= "Plan my week." (tcg/output-text ["Plan my week."])))
   (is (= "Plan my week." (tcg/output-text {:variants ["Plan my week."]})))
   (is (= "Plan my week." (tcg/output-text "  Plan my week. ")))
+  (is (= "Line one.\nLine two." (tcg/output-text ["Line one." "Line two."]))
+      "a task split across strings keeps every part")
   (testing "no text anywhere is nil, never an empty draft"
     (is (nil? (tcg/output-text nil)))
     (is (nil? (tcg/output-text [])))
