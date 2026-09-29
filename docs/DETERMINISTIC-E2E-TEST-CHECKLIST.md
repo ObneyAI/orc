@@ -141,6 +141,25 @@ that verifies the stated observable results.
   noncanonical spellings fail with the original provider value in trace detail,
   marker and function-calling transports agree, and projected blackboard values
   contain canonical nested keywords.
+- [ ] **DET-E2E-296 — Optional-means-nullable holds at every depth through the
+  workflow boundary.** Execute provider-backed leaves (blocking and streaming)
+  whose structured outputs declare optional entries nested inside a map, a
+  vector item, and a `:multi` branch, alongside required siblings at the same
+  depths. Verify the provider-facing tool schema and marker prompt offer every
+  optional field/entry — at any depth — as nullable while required
+  fields/entries are unchanged; a null the provider returns for an optional
+  field/entry at any depth normalizes to absence before validation for both
+  transports; a null for a required output or required nested entry still
+  fails; and a field already declared `[:maybe ...]` keeps its returned null;
+  through the public workflow boundary, durable node trace, and projection
+  read-back. Supersedes DET-E2E-149's top-level-only, post-validation
+  normalization with the `@invariant OptionalOutputPresence` rule
+  (specs/llm.allium). Component-boundary coverage for the same rule (stubbed
+  provider, no workflow) landed in
+  `components/llm/test/ai/obney/orc/llm/core_test.clj`
+  (`ai.obney.orc.llm.core-test`, the `OptionalOutputPresence` test group); this
+  item is open because narrower component coverage does not establish the
+  end-to-end workflow-level contract this checklist requires.
 
 ## P1 — Observability and streaming
 
