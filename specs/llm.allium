@@ -35,6 +35,16 @@ contract StructuredPrediction {
         -- it is not converted into a present null value. Required outputs must
         -- remain present, while nullable schemas independently govern whether
         -- a present output may contain null.
+        -- Optional means the provider may say "no value": every declared optional
+        -- output, and every optional entry of a map at any depth (inside nested
+        -- maps, vector items, and union branches), is offered to the provider as
+        -- nullable, so a provider that emits every declared property is never
+        -- forced to invent a value. A null returned for such an optional field is
+        -- absence -- removed before validation, never a present null -- at every
+        -- depth, for blocking and streaming predictions alike. Required outputs and
+        -- required entries are never made nullable; a null or missing value there
+        -- still fails. An optional field whose own declared schema already accepts
+        -- null keeps a returned null as its value.
 
     @invariant PredictionMetadata
         -- A metadata-bearing blocking result preserves parsed outputs, token
