@@ -454,6 +454,68 @@
     flagged))
 
 ;; =============================================================================
+;; judge-on-brief! — is each task faithful to its brief? (a judged review flag)
+;; =============================================================================
+
+(def ^:private on-brief-module
+  {:inputs [{:name :brief :spec :string :description "what the task must be: subject matter, material, output kind, and what it must not be"}
+            {:name :task :spec :string :description "the generated task text"}]
+   :outputs [{:name :reasoning :spec :string :description "compare the task with the brief first: subject matter, material, output kind, and the must-not-be line"}
+             {:name :verdict :spec :string :description "exactly one of: on-brief, off-brief"}]
+   :instructions (str "Decide whether the task text is a genuine request of the kind the brief describes. It is "
+                      "on-brief when its subject matter, the material it works on and the output it asks for all "
+                      "match the brief, whatever its style, length or concrete details. It is off-brief when it asks "
+                      "for something else, drifts into the brief's must-not-be, or is not a task request at all "
+                      "(for example, instructions about rewriting some other text). Write the reasoning first, then "
+                      "the verdict.")})
+
+(defn- brief-text [brief]
+  (str "Subject matter: " (:subject-matter brief) "\nMaterial: " (:material brief)
+       "\nOutput kind: " (:output-kind brief) "\nMust not be: " (:must-not-be brief)))
+
+(defn parse-on-brief
+  "The judge's verdict as :on-brief / :off-brief, or nil when the answer is
+   missing or outside that set (reported as :unjudged, never coerced)."
+  [outputs]
+  (let [v (some-> (output-text (:verdict outputs)) str/lower-case str/trim)]
+    ({"on-brief" :on-brief "off-brief" :off-brief} v)))
+
+(defn judge-on-brief!
+  "Ask one judge call per accepted task whether it is faithful to its brief, and
+   WRITE the result into manifest.edn: `:on-brief` (:on-brief / :off-brief /
+   :unjudged) and `:on-brief-reasoning` on each entry, plus an :off-brief or
+   :unjudged flag. A review aid like the other flags: ground truth stays the
+   brief's group, and a human decides what to reject. `:judge-fn` is the seam
+   tests fake; it takes `{:brief :task}` and returns the outputs map."
+  [ctx corpus-dir briefs-path & [{:keys [model judge-fn]}]]
+  (let [briefs (into {} (map (juxt :brief-id identity)) (edn/read-string (slurp briefs-path)))
+        path (io/file corpus-dir "manifest.edn")
+        manifest (edn/read-string (slurp path))
+        by-slug (texts-by-slug corpus-dir)
+        judge (or judge-fn
+                  (fn [inputs]
+                    (:outputs (with-bounded-retries predict-attempts [5000 15000]
+                                #(llm/predict (:llm-provider ctx :openrouter) on-brief-module inputs
+                                              {:model model :use-function-calling? true :validate? false
+                                               :timeout-ms predict-timeout-ms})))))
+        judged (update manifest :entries
+                 (fn [es]
+                   (mapv (fn [e]
+                           (if (= :rejected (:review-status e))
+                             e
+                             (let [outputs (try (judge {:brief (brief-text (get briefs (:brief-id e)))
+                                                        :task (get by-slug (:slug e))})
+                                                (catch Throwable _ nil))
+                                   verdict (or (parse-on-brief outputs) :unjudged)]
+                               (cond-> (assoc e :on-brief verdict
+                                                :on-brief-reasoning (output-text (:reasoning outputs)))
+                                 (not= :on-brief verdict)
+                                 (update :flags (fnil conj []) verdict)))))
+                         es)))]
+    (spit path (with-out-str (pp/pprint judged)))
+    judged))
+
+;; =============================================================================
 ;; freeze! — corpus-sha256 over the sorted accepted (slug, instruction-sha256)
 ;; pairs
 ;; =============================================================================

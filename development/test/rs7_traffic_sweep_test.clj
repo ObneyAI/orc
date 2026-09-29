@@ -186,6 +186,38 @@
       (is (= {:unwrapped 0 :kept 2} (tcg/unwrap-bracketed-bodies! (str corpus-dir)))))))
 
 ;; =============================================================================
+;; traffic-corpus-gen: judge-on-brief! (FAKE judge seam)
+;; =============================================================================
+
+(deftest judge-on-brief-writes-verdicts-and-flags
+  (let [corpus-dir (temp-dir! "rs7-onbrief")
+        briefs-path (io/file corpus-dir "briefs.edn")
+        seen (atom [])]
+    (spit briefs-path (pr-str fixture-briefs))
+    (write-task! corpus-dir "001-marathon-training-v01" "Build me a 16-week marathon plan.")
+    (write-task! corpus-dir "002-recipe-scaling-v01" "Please rewrite the instruction below in a casual tone.")
+    (write-task! corpus-dir "003-legal-issue-detection-v01" "Review this NDA clause.")
+    (write-manifest! corpus-dir
+      {:entries [{:slug "001-marathon-training-v01" :brief-id "fx-marathon" :group "marathon-training" :flags []}
+                 {:slug "002-recipe-scaling-v01" :brief-id "fx-recipe" :group "recipe-scaling" :flags []}
+                 {:slug "003-legal-issue-detection-v01" :brief-id "fx-legal" :group "legal-issue-detection" :flags []}]})
+    (let [answers {"Build me a 16-week marathon plan." {:reasoning "matches" :verdict "on-brief"}
+                   "Please rewrite the instruction below in a casual tone." {:reasoning ["not a task"] :verdict ["off-brief"]}
+                   "Review this NDA clause." {:reasoning "?" :verdict "maybe"}}
+          fake (fn [{:keys [brief task]}] (swap! seen conj brief) (get answers task))
+          m (tcg/judge-on-brief! {} (str corpus-dir) (str briefs-path) {:judge-fn fake})
+          on-disk (edn/read-string (slurp (io/file corpus-dir "manifest.edn")))
+          by (into {} (map (juxt :slug identity)) (:entries on-disk))]
+      (is (= m on-disk) "the judged manifest is what is written")
+      (is (= :on-brief (get-in by ["001-marathon-training-v01" :on-brief])))
+      (is (= [] (get-in by ["001-marathon-training-v01" :flags])))
+      (is (= :off-brief (get-in by ["002-recipe-scaling-v01" :on-brief])) "a list-shaped answer is read")
+      (is (= [:off-brief] (get-in by ["002-recipe-scaling-v01" :flags])))
+      (is (= :unjudged (get-in by ["003-legal-issue-detection-v01" :on-brief])) "an out-of-set verdict is never coerced")
+      (is (every? #(clojure.string/includes? % "Output kind:") @seen) "the judge sees the brief, not the group name")
+      (is (not-any? #(clojure.string/includes? % "marathon-training") @seen)))))
+
+;; =============================================================================
 ;; rs7-traffic-sweep: resume decision
 ;; =============================================================================
 
