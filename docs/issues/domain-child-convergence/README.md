@@ -240,7 +240,7 @@ unfiltered. Any later edit means one more full run.
 
 ## Postgres resume stall (found by the RS-7 harness; fixed in orc-service)
 
-- **Symptom:** on Grain's Postgres store every checkpointed campaign stopped after its first quantum and sat until its
+- **Symptom:** on Grain's Postgres store (and, by the same mechanism, SQLite) every checkpointed campaign stopped after its first quantum and sat until its
   run timeout, with no error logged. In-memory, campaigns ran normally.
 - **Two hypotheses refuted:** connection-pool exhaustion (a thread dump showed no pool waits), and advisory-lock
   timeouts under contention (the Postgres server log held one lock timeout in its whole life, from an artificial
@@ -253,7 +253,15 @@ unfiltered. Any later edit means one more full run.
   campaigns survive the upgrade. Live validation: both campaigns of a one-group run completed on Postgres with real
   outcomes and no catch. Tests fail without the fix (11 failures at HEAD) and pass with it; 138 tests across the nine
   resume-state suites pass.
-- **Open for the user (design, not changed):** a checkpointed worker that fails before its frontier claim emits
-  nothing, and nothing retries it. Today's trigger is fixed; the gap would silence any other failure in that window.
+- **Correction (orchestrator, after research):** the silent catch branch is deliberate, and recovery exists. The
+  `recover-active-executions` periodic task (every 30 s) re-dispatches every node start with no completion, and the
+  catch leaves the start open for exactly that. The bench runner never starts periodic triggers (only the orc-dev
+  base does), so no recovery ran in any harness test. With recovery running, this defect would still not heal: every
+  re-dispatched resume reloads the same stored snapshot and fails the same hash check. Not verified: how often recovery
+  re-dispatches the same abandoned start, and whether anything ends such a campaign.
+- **Scope:** both Grain durable stores (Postgres v3 and SQLite v3) decode through fressian-util, so the class change
+  and the stall apply to both; ORC's SQLite resume tests pass because their sandboxes hold no lists or Integers.
+  Introduced by `ecd6c2eb` (the RR-durable arc); on `main` since `d1f9ae76`. agent-console's penny-agent and test-lab
+  pin ORC `1b6f95cb`, which predates it, and penny-agent creates no repl-researcher nodes.
 - **Left untracked for the user to keep or delete:** `development/src/rs7_postgres_lock_probe.clj` (the refuted
   contention probe) and `development/src/rs7_postgres_repro.clj` (a small checkpointed-campaign repro).
