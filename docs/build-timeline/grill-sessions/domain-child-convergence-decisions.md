@@ -179,3 +179,19 @@ Cost: one judge call (about 1.5k tokens) per recurrence, against the about 20k-t
 Spec: `DomainFamilyMergeIsJudged` and `DomainFamilyIsALeafOnTheDomainAxis` revised; `LandOnDomainFamily` and
 `LandOnReachedDomainFamily` replaced by `MergeIntoDomainFamily` (with a proposed family) and
 `JudgeReachedDomainFamily`; `MintDomainFamily` guards an identity that already exists.
+
+## C5' — a domain family is never a shape-ranking candidate (revises C5's reach routes)
+
+Evidence: pass 1 of the post-fix arm with C3' in place (238 tasks): only 2 of 24 in-domain tasks reached their
+seed, and 4 in-domain tasks minted families (for example "rfp-risk-assessment"), which later in-domain tasks then
+correctly joined. The risk-analysis task's five ranked candidates were all other groups' families; the risk-analysis
+seed was not in the ranking. Families carry specific birth descriptions and outrank generic seeds, and every new family
+adds to the crowding, so covered-seed protection (C4) had nothing to protect.
+
+Decision (user, 2026-09-29): the shape ranking retrieves shape classes and curated seeds only; walk-down never descends
+into a family; a family is reached only by being proposed to the merge judge (its label, a shape's child label, or the
+judge's own nearest-family search) and judged (C3').
+Rejected: reserve seed slots in the ranking (families still compete for the top match; a slot rule is a tuning knob);
+leave it and report (in-domain accuracy stays near zero).
+Spec: `DomainFamilyIsALeafOnTheDomainAxis` revised; `JudgeReachedDomainFamily` removed (no family is reached by
+retrieval); `proposed_family` reads the label and a shape's child label only.

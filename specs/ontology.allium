@@ -382,18 +382,16 @@ contract TaskClassification {
         -- evidence (the D7b finding) and never protects (grill C4).
 
     @invariant DomainFamilyIsALeafOnTheDomainAxis
-        -- A domain family is never a shape class for the domain axis: any match
-        -- or walk-down that resolves to a family is a PROPOSED landing on it (its
-        -- parent is its own broader edge, its label its concept label, the
-        -- coverage verdict not consulted), confirmed by the merge judge
-        -- (DomainFamilyMergeIsJudged, revised C3'), so there are no grandchildren
-        -- and the classified event carries the domain facts however the family
-        -- was reached. A task that reaches a family but is judged a different
-        -- family mints under the family's own parent SHAPE, never under the
-        -- family (grill C5). Nor is a family a
-        -- target of the shape-axis bundle: a near-miss is bundled only onto a
-        -- shape class, so no task enters a family without a landing or a
-        -- judged merge.
+        -- A domain family is never a shape class. It is not a candidate of the
+        -- shape ranking (retrieval for a task's shape reads shape classes and
+        -- curated seeds only), walk-down never descends into it, and the
+        -- shape-axis bundle never lands on it; so there are no grandchildren, and
+        -- a family's specific description never crowds a curated seed out of the
+        -- ranking. A family is reached only by being proposed to the merge judge
+        -- (its label, a shape's child label, or the judge's own nearest-family
+        -- neighbourhood) and judged (DomainFamilyMergeIsJudged). Grill C5,
+        -- revised C5': in the RS-7 post-fix arm families filled whole rankings
+        -- and in-domain tasks never saw their seeds.
 
     @invariant DomainChildrenAreAlwaysConsidered
         -- A matched shape class is never treated as a leaf on the domain axis
@@ -494,8 +492,7 @@ enum ConceptScope {
 -- R-Inject specialisation: the domain-child provenances a tree-class match can
 -- widen into. Since ADR 0007 every birth is a judged family birth
 -- (MintDomainFamily, domain_child_minted) and every recurrence a judged landing
--- (MergeIntoDomainFamily, landed_on_domain_child; a reached family is judged
--- through JudgeReachedDomainFamily). sibling_domain_child_minted is produced by no
+-- (MergeIntoDomainFamily, landed_on_domain_child). sibling_domain_child_minted is produced by no
 -- rule; it stays only so events recorded before ADR 0007 still read.
 enum ClassificationOutcome {
     matched | bundled | walked_down | minted | uncertain
@@ -993,8 +990,8 @@ rule SeedBaselineDescriptions {
 -- covered_leaf_neighbour(ranking) is a candidate judged covered, with no
 -- families of its own, at or above the match threshold, or null;
 -- proposed_family(ranking, canonical_label) is the family a landing would
--- choose without a judge — the family carrying that label, else a family the
--- ranking's top match reached — or null;
+-- choose without a judge — the family carrying that label, else a shape's child
+-- carrying it — or null (the ranking never holds a family: C5');
 -- nearest_families(proposed, signature, reasoning, ranking) is the hybrid
 -- search's ranked neighbourhood bounded by merge_candidate_count, with the
 -- proposed family always included when not null; merge_verdict(...) is the
@@ -1004,9 +1001,9 @@ rule SeedBaselineDescriptions {
 -- is the rich self-description of DomainFamilyDescribesItselfFromBirth.
 -- Order (DomainChildrenAreAlwaysConsidered): CoveredSeedWins → the judged
 -- question (MergeIntoDomainFamily or MintDomainFamily). Revised C3': there is no
--- unjudged landing; a proposed family is one of the judge's candidates, and a
--- family reached by match or walk-down is judged as a match on its own parent
--- shape (JudgeReachedDomainFamily).
+-- unjudged landing; a proposed family is one of the judge's candidates. Revised
+-- C5': the shape ranking holds no family, so no family is reached by match or
+-- walk-down.
 rule CoveredSeedWins {
     when: LeafShapeMatched(occurrence, shape_class, ranking, coverage, domain_label)
     let neighbour = covered_leaf_neighbour(ranking)
@@ -1023,15 +1020,6 @@ rule CoveredSeedWins {
         passed_over: shape_class,
         minted_by: occurrence
     )
-}
-
-rule JudgeReachedDomainFamily {
-    when: DomainFamilyReached(occurrence, family, ranking, coverage, domain_label)
-
-    -- A match or walk-down that resolves to a family proposes a landing on it
-    -- (DomainFamilyIsALeafOnTheDomainAxis); the proposal is judged like any
-    -- other, as a match on the family's own parent shape.
-    ensures: LeafShapeMatched(occurrence, family_parent(family), ranking, coverage, domain_label)
 }
 
 rule MergeIntoDomainFamily {
