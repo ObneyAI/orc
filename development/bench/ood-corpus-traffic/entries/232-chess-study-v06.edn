@@ -1,0 +1,22 @@
+{:slug "232-chess-study-v06",
+ :group "chess-study",
+ :in-domain? false,
+ :variant 6,
+ :expected-output-kind
+ "a structured study plan with key lines, model games to review, drills and a weekly schedule",
+ :brief-id "b-022",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1702, :completion-tokens 386, :total-tokens 2088},
+  :draft-prompt-sha256
+  "c2d74e355681bb7739da44bc96f2d25b58aad51e928fee46288b6b8f101e3977",
+  :polish-usage
+  {:prompt-tokens 569, :completion-tokens 439, :total-tokens 1008},
+  :polish-prompt-sha256
+  "bb962ddd46d85a9deef9fd093d16b8cdb02ea6557f271b1fe1635a86ad3ec295",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

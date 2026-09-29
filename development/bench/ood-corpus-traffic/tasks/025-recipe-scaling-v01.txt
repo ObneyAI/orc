@@ -1,0 +1,5 @@
+; brief-id: b-008
+; group: recipe-scaling
+; variant: 1
+
+Scale the attached sourdough focaccia recipe from 2 half-sheets to 12 full-sized commercial sheet pans for Friday's catering event. Adjust yeast and hydration percentages for the bulk fermentation increase; don't just multiply the base numbers. Provide specific mixing times for the 60-quart Hobart and revise the proofing schedule to fit our standard double-rack oven capacity. Include a step-by-step prep timeline starting from the levain build on Wednesday morning. Calculate per-portion food cost based on the current flour price of $28.50 per 50lb bag and olive oil at $42 per gallon. Ensure the crumb remains open despite the mass increase. Need this by EOD.

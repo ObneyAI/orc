@@ -1,0 +1,14 @@
+; brief-id: b-010
+; group: schema-migration
+; variant: 5
+
+Please draft a comprehensive technical migration plan for transitioning our 'ProductCatalog' MySQL table from its current monolithic form to a new normalized schema. The primary goal is to extract the 'Specifications' JSON column into a dedicated 'ProductAttributes' table to improve our filtering capabilities. We are dealing with approximately 80 million rows and must maintain zero downtime despite a heavy, constant read/write load.
+
+Your response should be structured as follows:
+
+1. Detail the precise sequence for DDL execution and application layer deployments to ensure the transition is transparent to users.
+2. Outline a robust dual-write and backfill strategy. This needs to handle incoming real-time updates while processing historical data in batches tuned to prevent replication lag or long-running table locks.
+3. Provide a clear cut-over strategy and a corresponding rollback plan. Define the specific failure thresholds or triggers that would require us to abort and revert to the legacy schema.
+4. Include data integrity verification queries to confirm that every row and JSON attribute has been mapped accurately to the new relational structure.
+
+I have provided the current DDL, the proposed target schema, and recent traffic logs for context. Please focus strictly on the structural transition and data consistency; do not spend time on general query optimization or indexing beyond what is necessary for the migration itself.

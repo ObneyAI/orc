@@ -1,0 +1,5 @@
+; brief-id: b-024
+; group: translation-glossary
+; variant: 1
+
+Build technical glossary from attached FR-Series_EN.pdf and FR-Series_DE.pdf. Extract specific medical terms and mechanical components used across both manuals. Each entry needs the approved German translation, a technical definition, and maintenance-specific usage notes. Must include a column for forbidden variants and outdated synonyms to maintain regulatory compliance. Do not translate the full text; glossary entries only. Deliver final data in a tab-delimited file. Ensure all forbidden terminology is clearly flagged to prevent use in future documentation.

@@ -1,0 +1,12 @@
+; brief-id: b-030
+; group: meeting-actions
+; variant: 3
+
+Please process the attached 45-minute transcript from our 'Project Titan' sprint standup into a structured technical summary. The transcript contains significant crosstalk, so your output must ignore the chronological flow and extract specific data points according to the following schema:
+
+- **Absentee Briefing**: Provide a high-level, four-sentence summary regarding current sprint velocity and major blockers specifically for the developers currently on PTO.
+- **Ratified Technical Decisions**: A precise bulleted list containing only the architectural or logic choices that reached a final consensus during the meeting.
+- **Task Matrix**: A list formatted exactly as [Action Item] | [Assigned Lead] | [Hard Deadline], populating these fields only with verbal commitments explicitly made by team members.
+- **Unresolved Technical Debt/Open Questions**: A list of all bugs, edge cases, or architectural concerns that were identified but officially tabled for a future deep-dive session.
+
+The goal is to provide actionable data for the EOD Jira update. Avoid generic summaries or play-by-play descriptions. Maintain a professional, technical tone throughout.

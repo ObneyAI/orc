@@ -1,0 +1,22 @@
+{:slug "137-api-migration-guide-v04",
+ :group "api-migration-guide",
+ :in-domain? false,
+ :variant 4,
+ :expected-output-kind
+ "a step-by-step migration guide with before/after code samples, a compatibility table and a checklist",
+ :brief-id "b-017",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1098, :completion-tokens 248, :total-tokens 1346},
+  :draft-prompt-sha256
+  "d12c402b84f97f0a19200bd05b9e78d3a4f9873524913a72191e189c6a49adf5",
+  :polish-usage
+  {:prompt-tokens 417, :completion-tokens 247, :total-tokens 664},
+  :polish-prompt-sha256
+  "5e0ca1d65cb2224ac6ec6069334007ac0bbe74f463b8deb363e1eccb883a3bdb",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

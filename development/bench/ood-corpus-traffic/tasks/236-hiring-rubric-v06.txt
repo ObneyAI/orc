@@ -1,0 +1,16 @@
+; brief-id: b-019
+; group: hiring-rubric
+; variant: 6
+
+I’m finally back from the site visit and just realized that we’re kicking off the panel interviews for the Junior Site Reliability Engineer role this coming Monday. The team is still operating with a totally disorganized feedback process, and we need to formalize this immediately to ensure we are actually measuring technical aptitude rather than just rewarding whoever is best at trivia. I’ve pasted the core requirements and the current stack context below so we’re all on the same page:
+
+[Role: Junior SRE (L1) | Must-Haves: Linux CLI proficiency, Basic Python/Go, Understanding of SLIs/SLOs | Nice-to-Haves: Prometheus/Grafana, Public Cloud exposure | Context: Heavy on-call rotation; requires "low-ego" collaboration/no 3 AM "cowboy-coding"]
+
+Please build a structured interview rubric based on these specifics. I want you to focus specifically on three core competencies: Systematic Troubleshooting, Scripting Automation, and Collaborative Post-Mortem Participation. 
+
+For each of these three areas, I need:
+1. Specific behavioral indicators (what does "good" or "promising" look like for a junior candidate?).
+2. A 1-5 scoring scale with clear, descriptive anchors. For example, 1 might represent "Requires constant supervision," while 5 represents "Autonomous and follows best practices."
+3. Three situational interview questions per competency that force them to walk through a past failure or a specific technical hurdle.
+
+Lastly, please define a "Decision Rule" for the hiring committee. We need a clear threshold for moving forward—for instance, maybe a candidate shouldn't pass if they score below a 3 in Troubleshooting, regardless of how strong their coding skills are. Just to be clear, I am only asking for this evaluation framework; please do not attempt to screen any of the applicants currently in the pipeline or edit the JD itself. I just need this rubric ready for our internal sync tomorrow morning. Thanks!

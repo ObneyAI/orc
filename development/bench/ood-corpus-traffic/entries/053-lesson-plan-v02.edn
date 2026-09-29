@@ -1,0 +1,22 @@
+{:slug "053-lesson-plan-v02",
+ :group "lesson-plan",
+ :in-domain? false,
+ :variant 2,
+ :expected-output-kind
+ "a lesson-by-lesson plan with objectives, activities, timings, materials and assessment",
+ :brief-id "b-015",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 504, :completion-tokens 435, :total-tokens 939},
+  :draft-prompt-sha256
+  "7924a393b98dd7b8c76f82e6e24e6821c3814e780df8d3f84ff939bbb2c65cb2",
+  :polish-usage
+  {:prompt-tokens 617, :completion-tokens 435, :total-tokens 1052},
+  :polish-prompt-sha256
+  "7c572e3d1fd4c9ece3a8697ac561fce1b909a0ec2b80b3f9568d6422ac3ac511",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

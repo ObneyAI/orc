@@ -1,0 +1,17 @@
+; brief-id: b-019
+; group: hiring-rubric
+; variant: 3
+
+I have a panel for a mid-level Account Executive (Mid-Market Sales) this coming Tuesday and need a formal interview rubric developed immediately. Our current sales pod is high-energy but lacks discipline, specifically regarding deal slippage, so this hire needs to be highly methodical. Please base the rubric on the attached JD and my notes, focusing strictly on three competencies: Discovery & Qualification, Objection Handling, and Pipeline Management. 'Must-haves' include a proven track record of $50k+ ACV and multi-stakeholder navigation, while 'nice-to-haves' include Salesforce Power User status and FinTech experience.
+
+Please format the output according to this explicit schema:
+* Competency Name: [Define the specific skill]
+* Behavioral Indicators: [Provide 3-4 specific observable actions for the interviewer to look for]
+* Scoring Anchors (1-4 scale):
+  - 1: Significant Gap (e.g., passive listener, misses red flags)
+  - 2: Development Needed
+  - 3: Proficient
+  - 4: Expert (e.g., proactive discovery, creates urgency)
+* Interview Questions: [3 open-ended, situational questions per competency]
+
+Additionally, include a 'Decision Rule' section for the hiring committee that establishes a clear threshold for a 'Proceed to Offer' recommendation versus a 'Reject' (e.g., minimum required scores in Discovery). This request is strictly for the interview framework to ensure team objectivity; do not screen applicants or rewrite the job post.

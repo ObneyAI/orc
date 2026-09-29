@@ -1,0 +1,22 @@
+{:slug "022-query-optimisation-v01",
+ :group "query-optimisation",
+ :in-domain? false,
+ :variant 1,
+ :expected-output-kind
+ "a diagnosis, proposed indexes and rewrites, an estimated improvement and the final query with its expected plan",
+ :brief-id "b-012",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 333, :completion-tokens 114, :total-tokens 447},
+  :draft-prompt-sha256
+  "494c9b21040ef4272ce3ebc911cb7d709f44393fec19dc6fdef57c089a10995b",
+  :polish-usage
+  {:prompt-tokens 289, :completion-tokens 95, :total-tokens 384},
+  :polish-prompt-sha256
+  "aedfb1f06cb1fab26f3fc6c485bb76e3ceb52fedfa11d23057c64cb1a9720f98",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

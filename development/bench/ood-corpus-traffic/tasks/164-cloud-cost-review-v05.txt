@@ -1,0 +1,13 @@
+; brief-id: b-027
+; group: cloud-cost-review
+; variant: 5
+
+I've just finished reviewing the latest Azure usage report for our enterprise cluster, and the inter-region data transfer costs are frankly astronomical. We are clearly over-provisioned on the networking side, and I need a concrete plan to rein this in before the quarterly review hits. Please analyze the attached service breakdown and traffic metrics according to these specific requirements:
+
+1. Identify and rank the top five immediate savings opportunities, focusing specifically on data egress inefficiencies, ExpressRoute over-provisioning, and any idle Application Gateway instances.
+2. For each identified opportunity, provide a realistic estimate of potential monthly USD savings based on the documented usage spikes.
+3. Assign a "Reliability Impact" score to every recommendation, detailing whether the proposed change could negatively affect our cross-region failover capabilities or end-user latency.
+4. Draft a clear, three-step implementation guide for every item that a junior administrator could easily execute via the Azure Portal or PowerShell.
+5. Limit your scope strictly to technical configuration changes and resource lifecycle management.
+
+Do not suggest migrating to a different cloud provider or include long-term financial modeling. I only want the immediate, actionable steps to optimize our current footprint while maintaining our 99.99% uptime SLA.

@@ -1,0 +1,5 @@
+; brief-id: b-030
+; group: meeting-actions
+; variant: 1
+
+Extract core results from the attached 90-minute board meeting transcript. List every formal decision approved by the directors. Provide a separate action item list identifying the owner and deadline for each task. Flag all open questions unresolved by the end of the call. Conclude with a three-sentence summary specifically for the two absent members. Do not include general thematic summaries or chronological date lists; focus entirely on outcomes and accountabilities. Output must be in a clean, bulleted format for immediate internal distribution.

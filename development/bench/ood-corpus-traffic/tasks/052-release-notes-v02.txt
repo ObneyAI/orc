@@ -1,0 +1,22 @@
+; brief-id: b-025
+; group: release-notes
+; variant: 2
+
+Hi there, hope you're having a decent Tuesday. I’m currently staring at a mountain of laundry and trying to coordinate school pickup, so I really don't have the brainpower left to synthesize our latest release data for the customer-facing side of things. 
+
+We just wrapped up a huge sprint for the CloudControl SaaS Dashboard (version 4.12), and it’s a bit of a mess in the repo. I’ve dumped the last 65 commit messages, PR descriptions, and the Jira ticket titles below. Honestly, some of the devs were a bit lazy with their descriptions—looking at you, Kevin—so you’ll need to translate the technical babble into something our actual users will understand. They don't care about 'refactoring the state management for the sidebar component,' they just want to know the 'navigation menu is snappier now.'
+
+Could you take all this and turn it into a clean, grouped set of release notes? I need four specific sections: 'New Features,' 'Improvements,' 'Fixed,' and 'Breaking Changes.' Please make sure the 'Breaking Changes' are very clear because we changed how the API keys are displayed in the settings panel and I don't want support getting flooded with tickets about it. Also, please add a specific 'Upgrade Notes' section at the end. Since we moved the dashboard's analytics engine, people need to know they might see a slight delay in data population for the first hour after they log in.
+
+Keep it professional but accessible—customer-facing language only, please! No internal ticket numbers or weird branch names. I’m going to go try and find where my kid hid his shoes now. Thanks a million for taking this off my plate.
+
+Best,
+Sarah
+
+[DATA DUMP BELOW]
+- PR #802: Fix(ui): resolve z-index collision on modal overlays in dark mode
+- Commit 99ab2: feat: implement OAuth2 provider selection in workspace settings
+- Ticket CC-992: Title: 'Redesign of the Billing History Export to CSV' (PR #805)
+- Commit 44f12: chore: migration of legacy d3 charts to the new highcharts implementation
+- PR #810: breaking: Change API Key visibility toggle logic to require re-auth
+- Commit 22c11: fix: intermittent 404 on user profile avatar upload... [59 more items...]

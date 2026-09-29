@@ -1,0 +1,5 @@
+; brief-id: b-033
+; group: nutrition-labels
+; variant: 1
+
+Calculate per-serving nutritional data for the three seasonal menu items using the attached ingredient list and USDA reference sheet. Required metrics for each: total calories, protein, carbs, and fats. Must identify all major allergens per standard guidelines. Adjust for specific serving sizes: grain bowl is one container, side salad is 150g, and protein snack pack is two units per serving. Generate formatted nutrition labels for each suitable for packaging sleeves. Do not scale bulk prep quantities; final output must reflect per-serving consumer metrics only.

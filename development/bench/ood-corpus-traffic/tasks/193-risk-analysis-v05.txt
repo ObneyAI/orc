@@ -1,0 +1,13 @@
+; brief-id: b-003
+; group: risk-analysis
+; variant: 5
+
+Please provide a detailed compliance and risk analysis of the attached 160-page Master Data Security and Privacy Policy from the Global Banking Consortium ahead of our upcoming CISO meeting. Follow these specific steps to structure your response:
+
+1. Conduct a granular, section-by-section extraction of every mandatory technical and operational obligation we are required to implement. For each obligation, you must explicitly link it to the corresponding financial indemnity or service credit penalty triggered by a data breach or uptime failure.
+
+2. Develop a comprehensive Risk Matrix that categorizes every identified obligation as HIGH, MEDIUM, or LOW risk. Each rating needs to be supported by a specific clause citation and a brief technical justification explaining the potential impact on our existing infrastructure.
+
+3. Draft an Executive Exposure Summary highlighting the top three critical vulnerabilities where the contractually mandated liability caps exceed our current cyber insurance limits.
+
+Ensure the final report is strictly focused on binding obligations and financial liabilities. Do not include any filler content regarding the consortium’s history, the list of participating member banks, or the general implementation timeline. The format should be clean, professional, and ready for immediate executive review.

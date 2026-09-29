@@ -1,0 +1,22 @@
+{:slug "035-log-triage-v01",
+ :group "log-triage",
+ :in-domain? false,
+ :variant 1,
+ :expected-output-kind
+ "ranked hypotheses with the evidence lines for each, the recommended next check for each, and the most likely cause",
+ :brief-id "b-026",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 334, :completion-tokens 117, :total-tokens 451},
+  :draft-prompt-sha256
+  "ce04e9caa61b69f068998cbc00fc4f23c8e3b342e87c99bd4708cd28d109b489",
+  :polish-usage
+  {:prompt-tokens 292, :completion-tokens 120, :total-tokens 412},
+  :polish-prompt-sha256
+  "52af3e08bf666aedaa667c972218587832117de10ca2d4b0fdcecd78eeced5a6",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

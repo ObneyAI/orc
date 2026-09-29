@@ -1,0 +1,18 @@
+; brief-id: b-038
+; group: property-comps
+; variant: 3
+
+Please provide a formal desktop valuation for the residential development plot located on the Cotswold fringe, as per the attached site specifics. The site currently holds full planning permission for one five-bedroom detached dwelling, though the valuation must account for the significant topographical challenges and drainage requirements noted in the site survey. You are required to analyze the three recent comparable land sales detailed in the internal memo and present your findings using the following schema:
+
+* ADJUSTMENT LOG: For each of the three comparables, provide a granular percentage adjustment (+/-) addressing:
+    - Planning Status: Difference between outline and full permissions.
+    - Utilities: Availability of on-site connections versus those terminated at the boundary.
+    - Topography: Cost-impact analysis of the slope and drainage complexity.
+* VALUATION SUMMARY:
+    - Calculate the Weighted Price per Acre based on adjusted comparables.
+    - Provide the final Estimated Total Market Value.
+* RISK ASSESSMENT:
+    - Confidence Score: A rating from 1 to 10 reflecting the low transaction volume in this specific village.
+    - Caveats: Detailed commentary on Section 106 obligations and current localized build cost inflation.
+
+The output must include the specific logic behind every adjustment to ensure the valuation is defensible to the partners. Please account for the current volatility in the self-build market driven by shifting interest rates.

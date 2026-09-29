@@ -1,0 +1,15 @@
+; brief-id: b-012
+; group: query-optimisation
+; variant: 5
+
+Please take a look at the performance issues we're having with the 'User Engagement' dashboard in BigQuery. The stored procedure responsible for session-level aggregates is consistently hitting our slot limits and dragging on for over two minutes, which is stalling the entire refresh. I've uploaded the SQL script, the JSON execution profile, and the schema metadata for the 'events' and 'user_profiles' tables. I’m buried in the product launch today, but I need this fixed before the executive review at 4 PM.
+
+Follow these steps to resolve the lag:
+
+1. Analyze the execution profile to identify the specific bottleneck, paying close attention to potential broadcast join issues or data shuffle hotspots.
+2. Recommend specific search optimizations or adjustments to clustering and partitioning within the existing query logic.
+3. Provide a full rewrite of the stored procedure designed to minimize slot millisecond consumption and overall runtime.
+4. Calculate an estimated performance delta, showing how much we can expect to save in terms of processing cost and duration.
+5. Deliver the final optimized query code alongside a brief breakdown of the projected execution plan tree.
+
+Stick strictly to query-level tuning for this request. We aren't in a position to do schema migrations or data-quality audits right now; I just need the dashboard to be responsive for the meeting.

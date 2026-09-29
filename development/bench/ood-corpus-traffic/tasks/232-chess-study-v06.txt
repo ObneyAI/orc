@@ -1,0 +1,16 @@
+; brief-id: b-022
+; group: chess-study
+; variant: 6
+
+I’ve been stuck hovering around the 1350 mark in my local club’s OTB league lately, and it has become painfully clear that my biggest liability is my performance with the Black side of the Sicilian. While I’m naturally a tactical, counter-attacking player, I constantly find myself cramped and drifting once we transition into the middlegame. To fix this, I’ve decided to fully commit to the Sicilian Taimanov. It seems to offer exactly the kind of flexibility and complexity I enjoy, but I’m struggling to organize my study time effectively. Between my 9-to-5 and family commitments, my schedule is pretty tight, so I need a plan that maximizes the few hours I actually have. 
+
+Could you put together a comprehensive 4-week "Taimanov Mastery" roadmap for me? I’m looking for a strategic syllabus that moves beyond rote memorization of move orders and actually teaches me the "soul" of the opening—specifically the "why" behind the pawn structures. Here are the specifics for the plan:
+
+```
+Current Level: 1350 OTB / 1600 Lichess
+Playing Style: Aggressive; prefers piece activity over material
+Study Capacity: 4 hours/week (30m sessions on weekdays, 1.5h on Sundays)
+Core Focus: Sicilian Taimanov (emphasizing 5...a6 and 6...qc7 setups)
+```
+
+Please structure this as a weekly schedule. I’d like each week to include a section on key theoretical lines—particularly how to handle the English Attack and the 7. Qf3 systems. I also need a curated list of model games by experts like Loek van Wely or Peter Svidler to review, along with specific tactical drills focused on the thematic ...d5 break and the ...Rxc3 exchange sacrifice. I want to walk into my next tournament feeling confident in my transitions, rather than just relying on raw engine analysis or the breakdown of a single game. Thanks!

@@ -1,0 +1,17 @@
+; brief-id: b-002
+; group: contract-comparison
+; variant: 3
+
+Please provide a comprehensive legal and commercial reconciliation between the original 'Supplier_Terms_v1_Final' and the 'Supplier_Terms_v2_Redlined' recently returned by the vendor. This analysis is critical for our procurement deadline this Thursday; please ensure your response follows this exact schema:
+
+* **Executive Summary**: A concise narrative explaining the overall shift in the commercial relationship and risk profile between the two versions.
+* **Granular Clause Comparison**: For every modification, deletion, or addition, provide the following fields:
+    - **Reference**: Clause number and title.
+    - **v1 Baseline**: The original text from the final version.
+    - **v2 Revision**: The specific redlined language proposed by the vendor.
+* **Risk/Cost Impact Analysis**: A targeted assessment of the 'Service Level Credits,' 'Force Majeure,' and 'Intellectual Property Rights' sections, quantifying the impact on operational risk and bottom-line costs.
+* **Negotiation Strategy**: A categorized list containing:
+    - **Must-Fix**: Three deal-breaking items that must be reverted or amended.
+    - **Acceptable Risks**: Three areas where we can concede to expedite the onboarding process.
+
+Pay close attention to potential gutting of uptime guarantees and increases to price-adjustment notice periods; these must be flagged as high-priority risks in your diff.

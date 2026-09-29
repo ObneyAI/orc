@@ -1,0 +1,5 @@
+; brief-id: b-025
+; group: release-notes
+; variant: 4
+
+Hey, I’m totally underwater with the v5.2 launch of the PetConnect mobile app and I still haven't touched the public release notes. Can you help me out? I’ve pasted about 50 items below—it’s a chaotic mix of PR descriptions, commit messages, and some Jira titles. Most of this is deep-in-the-weeds technical stuff, so please translate it into friendly, customer-facing language. Instead of mentioning "refactoring the React Native image cache," just say "photos now load instantly when scrolling your pet's gallery." I need these grouped into New, Improved, Fixed, and Breaking sections. We did a major overhaul of the notification settings which might be a bit jarring for long-time users, so please list that under Breaking Changes. Also, could you add an "Upgrade Notes" bit at the end? Users need to know they’ll have to re-enable their location permissions to use the new 'Lost Pet' map feature. Keep it warm and accessible for pet owners—no dev jargon, PR numbers, or commit hashes! Thanks, you're a lifesaver.

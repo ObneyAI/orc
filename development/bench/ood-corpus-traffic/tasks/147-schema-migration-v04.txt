@@ -1,0 +1,5 @@
+; brief-id: b-010
+; group: schema-migration
+; variant: 4
+
+Hey, can you help me map out the move for our MongoDB 'Inventory' collection? We're changing the shard key and moving from a single huge document to a bucketed approach to handle the new time-series access patterns we're seeing. I've uploaded the current schema and the new proposed structure, along with our peak traffic stats. We literally cannot afford any downtime since the warehouse scanners run 24/7. I need a clear set of migration steps, specifically how we should handle the dual-writes in the app layer and a backfill strategy that won't kill our IOPS. Make sure you include a solid cut-over plan and what we do to roll back if the new indexes lag. Also, throw in some aggregation queries I can run to verify the data moved over correctly and matches the old docs. Focus just on the migration flow and data integrity, don't worry about general query tuning right now. Thanks!

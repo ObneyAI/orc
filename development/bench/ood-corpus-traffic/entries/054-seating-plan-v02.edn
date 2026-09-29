@@ -1,0 +1,22 @@
+{:slug "054-seating-plan-v02",
+ :group "seating-plan",
+ :in-domain? false,
+ :variant 2,
+ :expected-output-kind
+ "a table-by-table assignment, the constraints satisfied and violated, and alternatives for the hard cases",
+ :brief-id "b-020",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 518, :completion-tokens 475, :total-tokens 993},
+  :draft-prompt-sha256
+  "f91796b1dd70ad07260f07a44cbd13e9df324367601733373c9caf518caeedcc",
+  :polish-usage
+  {:prompt-tokens 657, :completion-tokens 475, :total-tokens 1132},
+  :polish-prompt-sha256
+  "f78e7705235f2cc6478de7dd0f03d60e72679b7b5c07c29fc2b6f61bcc921f12",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

@@ -1,0 +1,23 @@
+; brief-id: b-006
+; group: compliance-checklist
+; variant: 2
+
+Subject: HIPAA compliance help for our new contract - urgent!
+
+Hi there, 
+
+Hope you’re having a decent week so far and staying sane. I am currently absolutely buried in paperwork and, honestly, I just realized my kid’s big soccer tournament is this weekend, so I’m frantically trying to clear my plate before I have to head out on Friday afternoon. It’s one of those weeks where everything seems to hit the fan at once, you know?
+
+Anyway, the big news here is that we just landed a pretty significant contract with a major healthcare provider over in the States. It’s obviously a huge win for the company, but it means we finally have to get our act together regarding HIPAA. Up until now, we’ve just been this small, five-person remote team doing niche data analytics, so we never really had to worry about the formal compliance side of things. We just did our work and stayed under the radar. But our new client is being very strict—they need us to prove we are fully compliant before they’ll even give us access to their live databases, which makes sense, but it's a lot of work for us to spin up from scratch.
+
+I’ve attached the full text of the HIPAA Security Rule and the Privacy Rule here. I tried reading through them myself, but frankly, it’s a total slog and my eyes started glazing over by page ten. What I really need is for you to take that dense regulation text and turn it into something we can actually use to track our progress. Could you build me a comprehensive compliance checklist? I need it broken down by the specific sections or articles of the regulation so we don't miss any of the administrative, physical, or technical safeguards. It needs to be granular.
+
+For every control you list, I need three specific columns so we can stay organized. First, an 'Owner'—you can just assign these to either 'Sarah' for anything policy or legal related, or 'Mike' for anything technical or infrastructure related. Second, 'Evidence Required'—so, what specific document, log, or screenshot do we actually need to produce to prove we're doing the thing? And third, a 'Due Date'—let’s aim for everything to be wrapped up by the end of Q3 so we can get started with the client.
+
+Please make sure this is just a straightforward implementation checklist for our internal controls. I’m not looking for a complex risk matrix or a deep analysis of our client contract right now—I just need to know exactly what we have to do and what we have to document to be HIPAA compliant as a small organization. I really need to get this over to Mike and Sarah ASAP so they can stop guessing what their tasks are and we can get moving.
+
+Thanks a million for your help with this!
+
+Best,
+
+David

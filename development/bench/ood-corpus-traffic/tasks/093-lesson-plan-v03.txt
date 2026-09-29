@@ -1,0 +1,15 @@
+; brief-id: b-015
+; group: lesson-plan
+; variant: 3
+
+I’m teaching a 5-session "Intro to Python" workshop at the local library starting this Saturday and need a rigorous curriculum plan. The audience consists of absolute beginners (retirees and career-switchers), so the pacing must be accessible and hands-on. Each session is exactly 2 hours long in a Windows lab with VS Code pre-installed. Given that the library’s internet is unreliable, the plan must focus on offline-compatible workflows. Please provide a detailed unit plan covering: 1. Setup & Variables, 2. Control Flow, 3. Lists & Loops, 4. Functions, and 5. A Final Calculator Project. 
+
+For each of the five sessions, you must follow this exact schema:
+
+* SESSION TITLE & CORE OBJECTIVE: A one-sentence summary of what the students will achieve.
+* TIMED BREAKDOWN: A minute-by-minute schedule (e.g., 0-15m, 15-45m) accounting for the full 120 minutes.
+* GUIDED PRACTICE: A specific, step-by-step coding exercise to be completed during the lab portion.
+* RESOURCE LIST: Specific offline assets, documentation, or local files required for the Windows/VS Code environment.
+* KNOWLEDGE CHECK: A concluding 5-minute activity to verify logic comprehension before the session ends.
+
+Do not generate the actual handouts or source code files; provide only the structured instructional plan to guide my lecture and lab facilitation.

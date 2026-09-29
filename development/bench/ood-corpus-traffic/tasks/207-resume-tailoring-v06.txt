@@ -1,0 +1,9 @@
+; brief-id: b-039
+; group: resume-tailoring
+; variant: 6
+
+I’ve just finished my degree at the University of São Paulo and I’m setting my sights on a Junior Data Analyst role in London. Being from Brazil, I’m a bit out of my depth regarding how the UK job market operates, and I’m terrified my current resume will just get tossed by an ATS or look unprofessional to a British recruiter. I'm targeting a specific vacancy with the following profile: {Job_Ref: "FIN-LDN-092", Location: "London (Remote/Hybrid)", Key_Tech: "SQL, Tableau, Python, UK Open Banking APIs", Visa_Status: "Requires Sponsorship"}. 
+
+Could you please completely overhaul my CV into a standard UK 'Chronological' format? I need you to translate my academic achievements into professional competencies—specifically, please adapt my Brazilian grading scales and internship titles so they make sense to a UK hiring manager. Along with the revised CV, I need a summary of the structural changes you made.
+
+I also need a tailored cover letter that emphasizes my Python proficiency and my final year thesis on predictive modeling. Finally, I’d like a detailed gap analysis based on the job requirements I provided. I suspect I’m lacking in specific SQL certifications and I definitely don't have much background in UK financial regulations or Open Banking APIs. Please provide a concrete plan on how I can address these missing pieces over the next few months. I don't need any interview tips or generic hiring rubrics; I just want the polished application documents and the gap assessment. Thanks so much for the help!

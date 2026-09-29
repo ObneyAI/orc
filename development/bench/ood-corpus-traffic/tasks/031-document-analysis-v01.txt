@@ -1,0 +1,5 @@
+; brief-id: b-004
+; group: document-analysis
+; variant: 1
+
+Summarize attached 50-page RFP for municipal transit expansion. Provide high-level scope overview and chronological list of all critical deadlines (pre-bid meeting, Q&A cutoff, final submission date). Extract all named entities including participating government agencies, required sub-consultants, specific project locations, and total budget allocations. Do not include risk assessments or issue tracking. Focus output on summary, dates, and entity list only. Concise format required for immediate review.

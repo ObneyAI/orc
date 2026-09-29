@@ -1,0 +1,22 @@
+{:slug "020-translation-glossary-v01",
+ :group "translation-glossary",
+ :in-domain? false,
+ :variant 1,
+ :expected-output-kind
+ "a glossary of terms with approved translations, definitions, usage notes and forbidden variants",
+ :brief-id "b-024",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 323, :completion-tokens 133, :total-tokens 456},
+  :draft-prompt-sha256
+  "15c476350b0dda4247a4da1f696fe027a6e32032f123eee739ece962b72ba10e",
+  :polish-usage
+  {:prompt-tokens 308, :completion-tokens 118, :total-tokens 426},
+  :polish-prompt-sha256
+  "580f10b1238675490f71549ac693750d2c9c1a44034728e6b220768fc900c3d0",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

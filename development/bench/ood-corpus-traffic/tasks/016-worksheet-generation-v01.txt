@@ -1,0 +1,5 @@
+; brief-id: b-032
+; group: worksheet-generation
+; variant: 1
+
+Create a 25-item AP Chemistry practice worksheet focused on stoichiometry. Must include limiting reagents, theoretical yield, and gas stoichiometry at STP. Format everything as multiple-choice questions with four distinct options per item. Directly below the worksheet, attach a separate answer key featuring full step-by-step solutions for every problem, specifically detailing all molar conversions and balanced equations. Tag each individual question as 'Basic', 'Intermediate', or 'Advanced' based on calculation complexity and step count. Omit all lesson objectives, introductory text, and grading rubrics. Deliver only the tagged questions and the corresponding worked-out solutions.

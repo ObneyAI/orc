@@ -1,0 +1,7 @@
+; brief-id: b-033
+; group: nutrition-labels
+; variant: 4
+
+Hey, I’m finally sitting down to deal with the new summer menu for the bistro and I’m already feeling behind. I’ve attached the ingredient list and the nutrient reference guide our supplier sent over. Could you help me knock out the per-serving nutrition info for the new items? I need to get the calories and the big three macros—carbs, fat, and protein—calculated so we can get them on the digital menus. Also, super important: please flag any allergens like gluten, eggs, or shellfish so we don’t have any mishaps with the regulars. 
+
+Here’s the catch on the portions: for the Grilled Mahi Tacos, one serving is two tacos; for the Summer Gazpacho, it’s an 8oz bowl; and for the Mediterranean Flatbread, it’s half a board. Could you format everything into those clean-looking nutrition labels? I’m just looking for the data for a single customer plate, not the big batches the kitchen preps. I’m hoping to get this to the printer by tomorrow morning so I can finally have a night off! Thanks a million.

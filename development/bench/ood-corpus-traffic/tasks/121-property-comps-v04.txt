@@ -1,0 +1,5 @@
+; brief-id: b-038
+; group: property-comps
+; variant: 4
+
+Hey, could you help me make sense of these three flats that just sold in my building? I’m looking at listing mine—it’s the two-bed on the fourth floor with the balcony—and I’ve attached the specs plus the details for the three units that moved last month. Can you run a comparison and show me how you’d adjust their prices for things like the floor height, the fact that one didn’t have a balcony, and the one that had the brand-new kitchen? I really need to see the logic for each adjustment so I can explain it to my partner. Give me a realistic value range for what we should ask, and let me know how confident you are in that number given that the market here is cooling a bit. Also, please flag any caveats, like how that upcoming construction across the street might mess with the view. Thanks!

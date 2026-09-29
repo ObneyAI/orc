@@ -1,0 +1,13 @@
+; brief-id: b-009
+; group: game-balance
+; variant: 2
+
+Hey, hope you’re having a good week. I’m currently stuck at my kid’s soccer practice—it is absolutely pouring and I’m trying to type this on my phone while sitting in the car, so sorry if there are typos. Honestly, I don't know why they don't cancel these when the field is basically a swamp, but here we are. Anyway, I’ve been staring at the balance sheet for the new "Galactic Frontier" city-builder expansion all afternoon and the resource economy is just totally broken right now. It’s been keeping me up, to be honest. The playtest data we got back this morning shows that the Hydro-Farm tier 2 buildings are essentially a mandatory pick, with an 88% adoption rate by cycle 20, which is totally suffocating the alternative Solar-Desalination builds and making the mid-game feel really one-note.
+
+I’ve attached the raw CSV with the current building costs, maintenance ticks, and the production yields for the Titanium, Water, and Energy loops. Could you run a series of simulations—maybe a few thousand playthroughs—focusing specifically on the mid-game transition between cycles 15 and 40? I need the simulation to prioritize a diverse build path where no single resource generator has a pick rate higher than 40%. It’s crucial we get some variety back into the meta.
+
+Please propose specific numeric adjustments to the Titanium maintenance costs for the Hydro-Farms and maybe look at buffing the Energy output on the Solar-Desalination units to compensate. I need you to iterate through the sims until the projected win/stability rate for the "Arid Wasteland" map is roughly equal across all three primary tech paths. Don't add any new buildings or change the tech tree layout, just crunch the numbers we have. I need the final adjusted stat table and a breakdown of why these specific shifts keep the late-game Oxygen crisis from triggering too early. My battery is at 4% so I'm going to stop here, but let me know what the sims look like before I head into the design meeting tomorrow morning.
+
+Cheers,
+
+Mark

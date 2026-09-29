@@ -1,0 +1,9 @@
+; brief-id: b-018
+; group: content-calendar
+; variant: 4
+
+Hey! I’m finally getting a second to breathe. Between the board meetings and the new site launch, my brain is basically mush. I need a massive favor—can you help me map out the next month of newsletters for 'Green Canopy'? We’re a small nonprofit, so our donors really value that personal, 'boots on the ground' feel. I’ve uploaded our current donor personas, our Q4 fundraising goals, and a report showing which stories got the most opens last year. 
+
+We need to send one deep-dive newsletter every Tuesday and a short 'Friday Impact' update each week. The goal this month is recurring donations, but we have zero budget for professional photography right now, so we have to rely on my grainy iPhone shots from the field. 
+
+Can you build a dated calendar for next month? For each one, I need the topic, the format (long-form vs. news-bullet), a hook that won’t get lost in a crowded inbox, a CTA for our donation portal, and the metric to watch (like open rate or conversion). Just the strategy—don't actually write the emails or do any SEO stuff! Thanks a million.

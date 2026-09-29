@@ -1,0 +1,14 @@
+; brief-id: b-026
+; group: log-triage
+; variant: 3
+
+I'm currently stuck in architecture reviews while the 'omega-microservice' Jenkins pipeline is failing on every PR merge, effectively blocking our sprint release. I have attached 800 lines of console output from the failing build agent plus the JSON resource utilization metrics for that node. Please investigate why builds are timing out during the integration test phase, specifically checking if the CPU spikes correlate with 'SIGTERM' signals. I need to determine if we are facing ephemeral disk exhaustion, Docker-in-Docker registry throttling, or a deadlock in the recent database migration script.
+
+Please provide your analysis strictly according to this schema:
+
+*   HYPOTHESIS: [Detailed description of a potential technical root cause]
+*   EVIDENCE: [Specific verbatim log snippets or data points from the utilization metrics]
+*   NEXT_STEP: [The exact CLI command or configuration file to inspect to validate the theory]
+*   RANK: [A probability score from 1 to 5, where 5 is the most certain]
+
+After listing the potential theories, include a concluding section labeled MOST_LIKELY_CAUSE that summarizes the primary culprit behind the pipeline failure. I will be reviewing this on mobile between meetings, so please ensure the formatting is clean and the evidence is concise.

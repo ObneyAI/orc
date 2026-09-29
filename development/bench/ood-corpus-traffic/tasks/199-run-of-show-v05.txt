@@ -1,0 +1,13 @@
+; brief-id: b-034
+; group: run-of-show
+; variant: 5
+
+Please put together a comprehensive technical run-of-show for this Thursday’s 'AI Ethics Symposium' based on the bios, tech rider, and draft agenda I’ve uploaded. The most critical constraint is the venue’s 6:00 PM union labor cut-off; we cannot afford a single minute of overtime, so the schedule needs to be airtight. Please format the response as follows:
+
+1. Build a minute-by-minute schedule starting at 10:00 AM sharp and ending by 6:00 PM, incorporating 5-minute buffers for all audience transitions.
+2. For each segment, include columns for the 'Cue' (e.g., house light levels), the 'Owner' responsible for the action, and specific 'AV Needs' like HDMI switching.
+3. Track our hardware: we only have three lapel mics and two handhelds. I need a dedicated column showing the physical location of each mic and scheduled battery swaps between our 12 speakers.
+4. Include a 'Triage' column for every block. If we fall behind, specify exactly which 3-minute video intro or Q&A segment should be cut to regain time.
+5. Account for the 30-second warm-up delay whenever the projector switches between VGA and Digital inputs.
+
+Ignore seating assignments and social media tasks; I only need the technical execution flow.

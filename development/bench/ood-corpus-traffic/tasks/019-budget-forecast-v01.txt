@@ -1,0 +1,5 @@
+; brief-id: b-014
+; group: budget-forecast
+; variant: 1
+
+Generate 12-month cash-flow forecast for nonprofit starting Jan. Use attached CSVs for historical income/expense data. Include £5,000 monthly overhead and £50,000 grant expected in March. Apply 20% reduction to private donations for summer months. Output must be a table in GBP. Must include sensitivity analysis for 10% utility cost increase and 15% fundraising shortfall. Explicitly list all assumptions and identify top three operational risks to liquid reserves. Exclude tax filings and long-term investment strategy. Urgent.

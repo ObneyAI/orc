@@ -1,0 +1,5 @@
+; brief-id: b-006
+; group: compliance-checklist
+; variant: 1
+
+Draft compliance checklist from ISO 27001:2022 for 50-employee dental clinic. Transitioning off manual spreadsheets to structured framework. Break down by Annex A sections. Each control must include columns for Owner (Clinic Manager or IT Lead), Evidence Required (log files, signed policies), and Due Date for audit readiness. Ensure language is actionable for non-technical staff. Omit risk assessment matrix and contract analysis; focus strictly on implementation controls and documentation requirements.

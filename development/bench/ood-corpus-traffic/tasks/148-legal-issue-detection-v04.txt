@@ -1,0 +1,15 @@
+; brief-id: b-001
+; group: legal-issue-detection
+; variant: 4
+
+Hey, I’m in the middle of onboarding a new lead developer from London and they just sent back a heavily marked-up version of our standard UK Employment Agreement. They're pushing back hard on the "Post-Termination Obligations" and the "Intellectual Property" sections, and I honestly don't have the bandwidth to figure out if their edits are standard for the UK or if they're trying to walk away with our source code. 
+
+Can you go through the two specific clauses I’ve pasted below? I need a clear list of the issues they've introduced. For every point, please include the severity of the risk, the relevant area of employment law, the specific text that's bothering you, and a suggested revision that keeps our IP safe while still being fair enough that they'll actually sign. I need to make sure we aren't accidentally giving them rights to everything they build just because they're working remotely.
+
+Text to review:
+
+14.1. Moral Rights. The Employee hereby irrevocably waives all moral rights under the Copyright, Designs and Patents Act 1988 arising in connection with their authorship of any and all Works in the course of employment. (The developer has crossed this out and written "Employee retains all authorship credit").
+
+16.3. Non-Solicitation. The Employee shall not, for a period of 12 months following the Termination Date, solicit or entice away any person who is a senior employee of the Company. (The developer has changed "12 months" to "1 month" and added "only if the Employee directly managed them").
+
+Thanks, really appreciate the quick look!

@@ -1,0 +1,5 @@
+; brief-id: b-019
+; group: hiring-rubric
+; variant: 1
+
+Draft structured interview rubric for Senior Product Designer. Base criteria on attached JD and team notes. Rubric must cover four competencies: Systems Thinking, Prototyping Fidelity, Cross-functional Collaboration, and User Advocacy. Each needs behavioral indicators and 1-5 scoring anchors (1=incapable, 5=visionary). Include three targeted interview questions per competency. Requirements: experience with complex SaaS workflows and mentoring juniors. Note motion design and SQL as nice-to-haves. Include decision rule for 'Strong Hire' vs 'Leaning No' based on total scores. This is framework only; do not evaluate current candidates.

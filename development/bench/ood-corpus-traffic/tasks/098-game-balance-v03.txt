@@ -1,0 +1,12 @@
+; brief-id: b-009
+; group: game-balance
+; variant: 3
+
+Please perform a re-balancing simulation for the 'Urban Warfare' MOBA map based on the attached weapon stat sheet and the high-elo dataset (50,000 matches). The primary objective is to resolve TTK imbalances, specifically targeting the 'Viper Sniper' (74% pick/58% win) and the 'Sentinel LMG' (sub-15% pick due to poor reload-to-DPS ratios). Run 5,000 team-fight simulations to identify the necessary adjustments to bring all four primary weapon classes within a 15-30% pick rate and a 50% (+/- 2%) win rate. Provide your findings according to the following schema:
+
+- **Weapon Adjustments**: A granular list of float and integer value changes for each affected weapon (e.g., Damage: 45 -> 42; FireRate: 0.8s -> 0.95s).
+- **Simulated Outcomes**: A detailed summary of the projected win and pick rate shifts for each weapon class following the implementation of your changes.
+- **Iteration Log**: A brief tally of the internal simulation cycles required to reach the specified variance targets.
+- **Tuning Rationale**: A technical breakdown of how these specific nerfs and buffs stabilize mid-lane skirmishes without reducing the average total match duration.
+
+Constraint: Focus exclusively on mathematical tuning. Do not propose new mechanics or ability reworks. This data is required for the 9 AM balancing sync.

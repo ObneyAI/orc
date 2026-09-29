@@ -1,0 +1,5 @@
+; brief-id: b-010
+; group: schema-migration
+; variant: 1
+
+Split 'users' table into 'user_profiles' and 'user_auth' on production PostgreSQL. High write volume requires zero downtime. Review attached schema and target DDLs. Provide a step-by-step migration sequence: implement dual-writes at the application layer, then run a background data backfill without locking tables. Include specific cut-over procedures and a rollback plan addressing potential foreign key violations. Provide SQL verification queries to confirm data parity post-split. Focus strictly on schema migration steps; skip query tuning. Ensure the backfill strategy accounts for the high transaction rate to avoid performance degradation.

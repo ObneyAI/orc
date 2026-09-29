@@ -1,0 +1,14 @@
+; brief-id: b-003
+; group: risk-analysis
+; variant: 3
+
+Review the attached 95-page Medical Provider Service Agreement and Professional Liability Policy regarding our tri-state expansion project. We need a granular risk breakdown for the board before the partner call. Please provide a response following this specific schema:
+
+* **Section-by-Section Obligations**: Itemize every mandatory performance obligation identified in the contract alongside the specific liquidated damages or premium surcharges triggered by non-compliance.
+* **Risk Assessment Matrix**: For each identified risk, provide:
+    - **Risk ID**: A concise descriptor.
+    - **Rating**: A status of HIGH, MEDIUM, or LOW.
+    - **Justification**: An explicit citation of the relevant clause and a brief explanation of the operational impact.
+* **Executive Exposure Summary**: A 250-word synthesis detailing the most dangerous indemnification triggers and existing coverage gaps.
+
+Exclude general project overviews, lists of participating hospitals, and summaries of effective dates. Focus the analysis exclusively on binding commitments and the financial consequences of default or loss. We specifically need to identify where our current malpractice coverage fails to meet the contract’s minimum requirements. This is a high-priority request.

@@ -1,0 +1,5 @@
+; brief-id: b-003
+; group: risk-analysis
+; variant: 1
+
+Analyze attached 85-page municipal RFP regarding city fleet electrification. Extract all vendor obligations and specific financial penalties, categorized by section. Create a formal risk matrix mapping every liability as HIGH, MEDIUM, or LOW with justifications tied to performance requirements and delivery timelines. Finish with a one-page executive summary highlighting critical exposure points. Do not provide general summaries of dates or project entities; I need a targeted assessment of where we are legally and financially exposed under these specific terms. High priority. Report back ASAP.

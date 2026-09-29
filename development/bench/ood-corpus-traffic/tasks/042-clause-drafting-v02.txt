@@ -1,0 +1,9 @@
+; brief-id: b-005
+; group: clause-drafting
+; variant: 2
+
+Hi there, hope your week is going better than mine! I’m currently staring at a pile of boxes because we’re finally moving the home office into the spare bedroom, and I honestly forgot how much junk I’ve managed to collect since 2019. It’s a total mess, and of course, my toddler decided today was the perfect day to start a 'painting project' on the hallway rug. Anyway, I’m trying to squeeze in some work between all the chaos because I really need to get this master services agreement updated for our new vendor in Germany.
+
+I’ve attached the current draft of the agreement and the specific requirements document for the new platform they’re building for us. The main thing that’s missing—and what’s keeping me up—is a proper Data Processing Addendum (DPA) clause. The plain-language requirement is pretty simple: we are the data controller, they are the processor, and they must handle all our European customer data strictly according to GDPR standards. They’ll be managing user emails, purchase history, and some basic demographic info. Since they are based in Berlin, we need this to be rock-solid under German jurisdiction (BDSG), but also clear enough that my team here in the states understands what we’re agreeing to. 
+
+Could you draft a new DPA clause for me to slot into Section 8? I need the actual formal clause text, but also a quick rationale for why you phrased it that way—especially regarding the sub-processor notification period. Also, could you throw in a few negotiation notes? I suspect they’re going to push back on the audit rights or the 48-hour breach notification window I’m envisioning, so I need to know how to defend those points when we get on the call next Tuesday. Just the text, the reasoning, and those notes would be a lifesaver. Thanks so much! Best, Sarah.

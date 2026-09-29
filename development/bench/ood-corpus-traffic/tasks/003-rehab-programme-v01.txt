@@ -1,0 +1,5 @@
+; brief-id: b-037
+; group: rehab-programme
+; variant: 1
+
+Build a 6-week progressive rehab schedule for a grade 2 lateral ankle sprain. Patient is a desk worker, 10 days post-injury, cleared for partial weight-bearing. Reference attached clinician notes; prioritize ROM and neuromuscular control. Equipment: resistance bands, balance pad, adjustable step. Need a phased exercise table with exact sets/reps, plus clear progression criteria and specific pain 'stop signs.' Include a weekly calendar layout integrated with a standard 9-5 work schedule. Do not provide a generic fitness plan or diagnosis. Strictly follow the recovery stages in the clinician guidance. Fix the timeline to ensure it reflects current 10-day status.

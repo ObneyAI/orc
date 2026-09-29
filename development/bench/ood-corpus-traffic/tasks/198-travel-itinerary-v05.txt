@@ -1,0 +1,15 @@
+; brief-id: b-013
+; group: travel-itinerary
+; variant: 5
+
+Please draft a comprehensive 4-day "work-cation" itinerary for my solo trip to Seoul, spanning March 14th through March 17th. I will be based in Myeongdong and have a strict $1,200 budget for the duration, excluding my flights and hotel. Because I have a minor hip injury, the plan must prioritize accessibility; avoid steep hills and ensure every subway station mentioned includes specific exit numbers equipped with elevators.
+
+Please format the response using the following requirements:
+
+1. Daily Morning Sightseeing (08:00–12:00): Focus on a mix of traditional markets and modern art galleries. Provide a low-impact walking route for each day that minimizes stairs.
+2. Afternoon Co-working (13:00–17:00): Identify one high-end "book cafe" or quiet workspace near that morning’s location. These spots must be verified for strong Wi-Fi and accessible power outlets.
+3. Evening Dining (18:00–21:00): Recommend one standout dinner per night. Within my $500 total food allowance, I specifically want to include a high-quality K-BBQ dinner and a visit to a traditional tea house.
+4. Logistics and Costs: Include an itemized list of all estimated expenses and note any specific tickets that require advance booking, such as N Seoul Tower or palace tours.
+5. Air Quality Backup: For every outdoor morning activity, provide a specific indoor alternative (like a museum or mall) to account for potential high pollution or rain.
+
+I'm incredibly busy with work right now, so please just provide the final schedule and the cost breakdown.

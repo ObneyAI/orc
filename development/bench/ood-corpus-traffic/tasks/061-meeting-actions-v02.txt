@@ -1,0 +1,15 @@
+; brief-id: b-030
+; group: meeting-actions
+; variant: 2
+
+Hey there, sorry to drop this on you so late in the day. I just hopped off that two-hour marathon client call with the folks from Juniper-Sterling—you know, the ones who are always changing their minds about the UI color palette? Anyway, my brain is absolute mush. I tried taking notes but I think I ended up just typing 'budget' over and over again at one point because I was so hungry. I'm actually headed out to my kid's soccer tournament in ten minutes and I still haven't packed the orange slices, so I really need you to bail me out here. 
+
+I’ve attached the raw transcript from the Zoom recording. It’s a mess because the auto-captioning kept thinking 'backend' was 'bacon,' which, honestly, same. Could you go through this and pull out a clear list of the actual decisions we reached? We went in circles for a while, but I think we finally nailed down the hosting provider and the launch phase timeline. 
+
+I also need a super clear list of action items. Please make sure you tag who is responsible for what and what the deadline is—Sarah was being a bit vague about her deliverables, but I think she committed to the wireframes by next Friday. If there’s anything we left hanging or just plain forgot to answer, put those under 'Open Questions' so I don't look like a fool in the follow-up email.
+
+Oh, and Mark and Elena couldn't make it because of the flu going around the office (stay safe, it’s a nasty one!), so please write a short, punchy summary at the top just for them so they aren't totally lost when they log back in on Monday. Just the facts, no fluff or filler.
+
+Thanks a ton! You’re a lifesaver. Talk soon,
+
+Jim

@@ -1,0 +1,16 @@
+; brief-id: b-014
+; group: budget-forecast
+; variant: 6
+
+Hi, I'm the treasurer for the 'Green Roots' community garden collective, and we’re trying to figure out if we actually have the liquid capital to pull off the new irrigation system and solar array installation over the next twelve months. It’s always a bit of a juggle because our income is so heavily tied to the seasons here in Melbourne. I've pulled together our core figures from the last two years to give you a head start on the modeling:
+
+Income/Expense Averages (AUD):
+- Spring/Summer Membership Dues: $4,200/mo
+- Autumn/Winter Membership Dues: $1,100/mo
+- Monthly Water & Council Rates: $650
+- Monthly Maintenance/Seed Stock: $300
+- Annual Spring Fair (October): $8,500 net profit
+
+I need you to build a 12-month cash-flow forecast starting this July. Could you lay this out in a month-by-month table? Keep in mind that we’ve already voted for a 10% increase in membership fees to kick in starting January. On the plus side, we have a confirmed government sustainability grant of $12,000 hitting the account in September, but the big hurdle is the $15,000 committed spend for the solar installation in November.
+
+I also need a sensitivity analysis included at the bottom. Specifically, what happens to our end-of-year position if the Spring Fair profit drops by 40% due to a rainy weekend, or if the irrigation component costs jump by 15% due to these ongoing import issues? Please provide a clear list of the assumptions you’ve used and a breakdown of the primary risks to our cash reserves. I’m particularly worried about bottoming out in August before that grant arrives. Just to clarify, this is for our internal board planning and budget strategy, not for our formal tax lodgement or for re-calculating the membership structure itself. Thanks for the help!

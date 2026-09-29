@@ -1,0 +1,5 @@
+; brief-id: b-031
+; group: rpg-encounter
+; variant: 1
+
+Design combat encounter for level 6 party (Paladin, Rogue, 2 Wizards) in flooded underground archive. Objective: retrieve ritual scroll before chamber collapse. Provide setup, 4x CR 3 water-themed creature stat blocks, and specific terrain hazards for rising water levels. Detail enemy tactics exploiting the environment. Include rationale for Medium difficulty rating and provide scaling adjustments for Hard difficulty if party takes long rest prior to entry. Focus exclusively on this single room encounter. No full dungeon details required.

@@ -1,0 +1,12 @@
+; brief-id: b-014
+; group: budget-forecast
+; variant: 5
+
+Please build a 12-month cash-flow forecast for my SaaS startup to help determine if we have the runway to hire a DevOps engineer in Q3. I’ve provided our Stripe exports, AWS billing history from the last two years, and current churn metrics for context. Please structure the project as follows:
+
+1. Build a monthly forecast table starting next month that tracks MRR, expansion revenue, AWS/server costs, payroll, and marketing spend in JPY.
+2. Explicitly document all modeling assumptions, specifically a 4% month-on-month growth target and a one-time $1,500,000 JPY equipment expenditure planned for October.
+3. Perform a sensitivity analysis to stress-test our runway. I need to see how our cash position shifts if churn spikes from our current 3% to 7%, or if our customer acquisition cost (CAC) rises by 25% due to ad platform volatility.
+4. Provide a summary of the top four risks to our liquidity, focusing on currency fluctuations (JPY vs. USD for cloud services) and cloud scalability costs.
+
+This is strictly for internal seed bridge planning; you do not need to address tax compliance or adjust our existing per-seat pricing tiers.

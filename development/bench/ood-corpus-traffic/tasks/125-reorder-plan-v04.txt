@@ -1,0 +1,7 @@
+; brief-id: b-035
+; group: reorder-plan
+; variant: 4
+
+Hey, I'm currently buried in roasting logs and really need a hand with the green bean and packaging inventory before things get out of control. We’ve got about 65 SKUs now—everything from the single-origin microlots to the generic compostable bags and filters. I’ve uploaded the spreadsheets with our sales history from the POS, the current lead times (which are getting longer for the Ethiopian beans), our latest warehouse count, and the tiered pricing from our importers.
+
+Can you crunch these numbers and let me know exactly when we hit the reorder points and how much we should grab for each item? I need to stay lean to keep our storage space open, but I can't afford a stockout on the house blend. Please give me a clear list of the quantities per SKU and a weekly purchase schedule for the next six weeks. Also, I need to know the total cash we’re going to have tied up in these orders so I can manage the cafe's cash flow. Just the buy list and the cash totals, please—I’m not looking for a full budget forecast or anything to show the suppliers yet. Thanks!

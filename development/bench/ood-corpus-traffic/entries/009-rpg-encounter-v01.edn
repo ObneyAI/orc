@@ -1,0 +1,22 @@
+{:slug "009-rpg-encounter-v01",
+ :group "rpg-encounter",
+ :in-domain? false,
+ :variant 1,
+ :expected-output-kind
+ "the encounter setup, enemies with stats, terrain and tactics, difficulty rationale and scaling options",
+ :brief-id "b-031",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 344, :completion-tokens 139, :total-tokens 483},
+  :draft-prompt-sha256
+  "3664dc11cc8f4ac92533fc2b4f80d7bc8b6d736617cf15dce9c8212b26fa26e9",
+  :polish-usage
+  {:prompt-tokens 314, :completion-tokens 115, :total-tokens 429},
+  :polish-prompt-sha256
+  "5c5f5885ca2fcbc466197b47fde090d89b4be837090f3b47d1f45ca66c063c5c",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

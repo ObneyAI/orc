@@ -1,0 +1,20 @@
+; brief-id: b-007
+; group: marathon-training
+; variant: 6
+
+Subject: Training Plan Request - Boulder Backroads 50k (Sub-5:00 attempt)
+
+Hi! I’m finally pulling the trigger on the Boulder Backroads 50k in September. I’ve been running consistently, but to hit my goal of a sub-5:00 finish, I know I need a much more sophisticated approach than my usual "just go out and run" method. 
+
+The catch is that I just moved to Leadville, so I’m dealing with a massive jump in elevation (10,152 ft). My lungs are feeling it, and my pace is nowhere near my sea-level PRs. I need you to build a 16-week plan that adjusts for this altitude. Here is my current profile for your calculations:
+
+* Age: 34 / Weight: 165 lbs
+* Recent Sea-Level Marathon PR: 3:18:45
+* Current Weekly Base: 35 miles
+* Known Issues: History of IT band syndrome (left hip) when vertical gain increases too fast.
+
+I need a week-by-week schedule that includes specific paces for tempo runs and long efforts, but please express them as "Adjusted for Altitude" ranges. I need two days of heavy strength work weekly—specifically focusing on glute medius activation and downhill eccentric loading to save my knees. Please build in a 25% volume cutback every four weeks to let my hip settle, and a full three-week taper to ensure I’m not heavy-legged on race day.
+
+Since I travel to Chicago for work every third week, those specific weeks need to be 100% treadmill-compatible for the mid-week runs. Also, can you include a specific "Warning Signs" section? I need to know how to tell the difference between typical "thin air" fatigue and actual overtraining or a returning ITB flare-up. 
+
+I’ve got my hydration and shoes dialed, so just focus on the mileage, paces, and strength programming. Thanks!

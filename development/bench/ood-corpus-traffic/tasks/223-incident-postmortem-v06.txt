@@ -1,0 +1,12 @@
+; brief-id: b-016
+; group: incident-postmortem
+; variant: 6
+
+I’m back-to-back with the executive team all afternoon, so I really need you to take a first pass at the blameless postmortem for yesterday’s global cache poisoning incident. It was a mess, and I want to make sure the retro tomorrow is productive and not a blame-game. I’ve uploaded the Varnish logs, the #ops-emergency chat export, and the Datadog dashboard snapshots showing the spike in 502s, but I need you to reconcile the specific sequence of events.
+
+To get you started, here is the snippet from the initial triage notes I jotted down during the fire:
+`Incident_Start: 09:12 UTC; Trigger: Config_Push_v2.4.1; Affected_Region: Global; Service_Degradation: 100% Cache Misses / Backend Overload; Mitigation: Cache Flush & Config Rollback`
+
+Please draft the report with a detailed timeline starting from that first 09:12 alert through to the final TTL stabilization at 11:45. I need a deep dive into the root cause—specifically how the regex in the new VCL caused the headers to be overwritten—and contributing factors like the lack of a staging environment for edge-rule testing. Make sure to quantify the impact: we had roughly 1.2 million requests hitting the origin servers directly, causing the API latency to skyrocket to 8 seconds. 
+
+Also, emphasize what went well—our custom circuit breaker prevented the DB from actually crashing under the load. For action items, please list "Implement VCL linter in CI" (High priority, assigned to @Edge-Platform) and "Expand Canary testing to Edge nodes" (Medium priority, assigned to @SRE-Team). This is for the internal engineering review, not a status page update, so keep it technical and focused on the system failure. Thanks!

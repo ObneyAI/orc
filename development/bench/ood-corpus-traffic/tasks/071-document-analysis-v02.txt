@@ -1,0 +1,19 @@
+; brief-id: b-004
+; group: document-analysis
+; variant: 2
+
+Subject: Help with this massive grant document!
+
+Hi there, hope you're having a decent week so far. Mine has been absolute chaos. Between the kids both catching that stomach bug that's going around and my car being in the shop since Tuesday, I feel like I'm drowning in work I should have finished days ago. I'm currently sitting in a waiting room with terrible coffee trying to catch up on emails before my next appointment, and I just realized I haven't even cracked open this new federal grant call that my director sent over this morning.
+
+It’s for the "Regional Sustainable Agriculture and Water Conservation Initiative," and it’s honestly a beast—something like 80 pages of dense bureaucratic jargon. I tried reading the introduction while eating a sandwich, but I just couldn't focus with everything else going on. I really need to get a handle on whether this is even worth our team pursuing before our strategy meeting tomorrow morning, but there's no way I can read the whole thing by then.
+
+Could you please go through the attached PDF and pull out a solid summary of what they are actually looking for? I don't need a risk matrix or an analysis of why we might fail—just a straightforward summary of the project goals. Also, I desperately need a list of all the key dates mentioned in there, especially the letter of intent deadline, the formal Q&A window, and the final submission cutoff, along with a note on what happens on each of those dates so I don't miss anything. 
+
+Lastly, could you extract all the named entities? I need to know the specific government departments involved, any specific towns or watersheds they’ve earmarked for the pilot, the names of the program officers if they are listed, and the exact funding amounts or award ceilings they’re talking about. It would save my life to have this in a clean list format. 
+
+Thanks a million for helping me out with this. I’m going to try to close my eyes for five minutes before they call my name. Talk soon!
+
+Best,
+
+Sarah

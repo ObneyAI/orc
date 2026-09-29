@@ -1,0 +1,22 @@
+{:slug "008-contract-comparison-v01",
+ :group "contract-comparison",
+ :in-domain? true,
+ :variant 1,
+ :expected-output-kind
+ "an executive summary, a section-by-section diff quoting both texts, an impact analysis and a recommendation",
+ :brief-id "b-002",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id #uuid "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+ :generator
+ {:draft-usage
+  {:prompt-tokens 340, :completion-tokens 128, :total-tokens 468},
+  :draft-prompt-sha256
+  "09ced241bb69dc04108bc37caac417412c529eeb91374f064af552e19f32483b",
+  :polish-usage
+  {:prompt-tokens 303, :completion-tokens 106, :total-tokens 409},
+  :polish-prompt-sha256
+  "e6936c128a70fe4c9271972462a0093d1579f1a84f6bf0eb9a2b239e9fdc2791",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

@@ -1,0 +1,19 @@
+; brief-id: b-036
+; group: poetry-meter
+; variant: 3
+
+Please perform a technical structural analysis on the five attached texts (Spenserian sonnet, free verse excerpt, translated ghazal, folk ballad, and pop lyrics). Your response must adhere strictly to the following schema for each individual entry:
+
+*   **Line-by-Line Scansion:** A visual representation of the meter for every line using standard symbols for stressed and unstressed syllables.
+*   **Structural Profile:** The specific poetic form classification and the literal rhyme scheme (e.g., ABAB CDCD).
+*   **Technical Anomalies:** A bulleted list of any deviations from the established form, specifically noting feminine endings, trochaic substitutions, or imperfect/eye rhymes.
+*   **Interpretive Synthesis:** A 3-4 sentence paragraph explaining how these rhythmic shifts or technical deviations reinforce the poem’s thematic tension or emotional resonance.
+
+I am particularly interested in identifying exactly where the rhythm breaks or shifts, especially in the Ghalib translation where the 'radif' may feel forced. Do not generate new creative content; I only require the technical breakdown for use in my comparative literature workbook. 
+
+[TEXTS ATTACHED]
+1. Spenser: "One day I wrote her name upon the strand"
+2. Eliot: "The Waste Land" (Opening)
+3. Ghalib: "Ghazal" (Translation)
+4. Traditional: "Lord Randall"
+5. Chapman: "Fast Car" (Lyrics)

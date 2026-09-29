@@ -1,0 +1,14 @@
+; brief-id: b-017
+; group: api-migration-guide
+; variant: 6
+
+Look, I’m absolutely drowning in emails right now and I’ve got to get this developer documentation off my desk before the long weekend kicks in. We are officially pushing the migration from our legacy Python and Rust SDKs over to the new v3.0 architecture, and I need a professional, formal migration guide ready to distribute to the internal teams by Monday. I’ve already attached the full v2.4 and v3.0 API references along with that messy bulleted list of breaking changes I got from the dev lead.
+
+To give you a head start on the technical mapping, here is the specific resource bridge data that needs to be the centerpiece of the guide:
+
+{ "mappings": [
+  {"legacy_rest_route": "GET /v2/inventory", "new_graphql_node": "inventoryItems(filter: {})", "status": "DEPRECATED"},
+  {"legacy_rest_route": "POST /v2/orders/create", "new_graphql_node": "mutation { createOrder(...) }", "status": "REPLACED"}
+]}
+
+I need you to transform this raw info into a comprehensive, step-by-step transition manual. Start with a clear walkthrough on refactoring the core connection logic. Crucially, I need side-by-side code blocks demonstrating a standard data fetch in both Python and Rust for the old and new versions so the devs can see the syntax shift. Please build out a full compatibility table based on the snippet above and the attachments, then add a dedicated section explaining the security shift in our webhook payloads—specifically moving away from those old base64 strings to the new HMAC-signed JSON format. Wrap the whole thing up with a 5-point checklist for the team to use during their staging environment tests. This needs to be a practical, "how-to" style document that illustrates the actual logic changes, not just a dry list of version updates. Thanks a ton.

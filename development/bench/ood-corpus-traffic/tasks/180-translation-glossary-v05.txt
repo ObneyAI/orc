@@ -1,0 +1,13 @@
+; brief-id: b-024
+; group: translation-glossary
+; variant: 5
+
+Please handle the terminology alignment for the 'Aurora-7 Launch' landing pages and their Simplified Chinese counterparts by creating a formal bilingual glossary based on the following requirements:
+
+1. Extract all primary product features and marketing taglines from the English source files, pairing them with the exact Chinese translations currently implemented in the localized site versions.
+2. Draft a concise technical definition for every entry to ensure our regional teams fully grasp the specifications of the 'Quantum Core' hardware.
+3. Add specific usage notes regarding brand tone for each term; clearly distinguish between vocabulary reserved for 'B2C/Consumer' marketing and terms designated for the 'Enterprise' portal.
+4. Document a list of 'Forbidden Variants' for every term. We must strictly prohibit any informal industry slang used by competitors, as well as all legacy terminology carried over from the 'Project Nebula' development phase.
+5. Focus exclusively on building this structured reference for the QA team; do not perform any new translation work on the pending document set.
+
+Ensure all definitions are high-level and align with our updated internal brand guidelines. Thank you!

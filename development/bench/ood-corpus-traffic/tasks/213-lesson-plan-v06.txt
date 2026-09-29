@@ -1,0 +1,19 @@
+; brief-id: b-015
+; group: lesson-plan
+; variant: 6
+
+Hi, I’ve just been blindsided by the fact that my Lead Dev is out on emergency leave, and I’ve been tapped to run the "React Fundamentals" module for our new internal coding bootcamp. I’m currently juggling three sprint reviews, so I have zero time to map this out from scratch. We’re working with junior developers who already know JavaScript well but haven't touched React yet. 
+
+I need a cohesive 4-session unit plan for next week. We have a dedicated lab space with pre-configured MacBooks, and we’re using the following tech stack: 
+`{Framework: React 18, StateManagement: Hooks/useState/useEffect, Data: Local JSON Mock, Styling: Tailwind CSS}`
+
+Can you draft the full sequence for these 4 sessions? Each session is a 3-hour intensive block. I need a clear lesson-by-lesson breakdown that includes:
+- The core objective for the day.
+- A timed schedule (e.g., 0-30m lecture, 30-120m pair programming, etc.) totaling 180 minutes.
+- A specific hands-on activity where they build a piece of a small "Task Tracker" app.
+- A list of the specific documentation or starter repos I need to have ready.
+- A "demo-or-die" assessment where they show a specific functioning feature at the end of the block.
+
+I don't need the actual boilerplate code or the final project rubric—just the detailed instructional roadmap so I can walk into the lab and start the first lecture without looking like I'm winging it. 
+
+Thanks a million, I really appreciate you taking this off my plate!

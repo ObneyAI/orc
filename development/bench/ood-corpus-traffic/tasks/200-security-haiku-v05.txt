@@ -1,0 +1,21 @@
+; brief-id: b-011
+; group: security-haiku
+; variant: 5
+
+I’m currently drowning in back-to-back sprint planning sessions while trying to wrap up the security audit for our new IoT platform and cloud-based fleet management system. My brain is fried, and I need to translate these technical findings into something more digestible for the internal newsletter without scaring the dev team with dense security jargon.
+
+Please convert the seven findings listed below into haikus by following these requirements:
+
+1. Draft exactly one poem for each finding, strictly adhering to the 5-7-5 syllable structure.
+2. Focus the content entirely on the technical mechanism or the specific flaw described.
+3. Avoid all formal vulnerability names, acronyms, or classifications (e.g., do not use terms like "IDOR," "XSS," "CSRF," or "Insecure Direct Object Reference").
+4. Provide only the poems in the final output; do not include remediation advice, severity rankings, or any introductory text.
+
+Findings to process:
+- The IoT gateway accepts firmware updates without verifying a cryptographic signature.
+- The cloud console web portal includes a hidden field that, if modified, grants a standard user administrative privileges.
+- The supply-chain build script pulls dependencies via unencrypted HTTP instead of HTTPS.
+- The database connection uses a hardcoded password that is identical across every deployed sensor unit.
+- The mobile app stores the user’s master session token in the device's global system logs.
+- The cloud storage bucket allows any authenticated user from any organization to delete files.
+- The web application allows a script to execute in a user's session via a crafted link in a phishing email.

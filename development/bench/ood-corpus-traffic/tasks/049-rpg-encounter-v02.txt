@@ -1,0 +1,14 @@
+; brief-id: b-031
+; group: rpg-encounter
+; variant: 2
+
+Hey there! Hope you're having a better morning than I am—I just spent forty minutes trying to find my car keys only to realize they were in the ignition the whole time. My brain is absolutely fried from this week’s project deadlines, and I still haven't finished prepping for tonight’s D&D session. The group is coming over at 7:00, and I’m scrambling to put together a meaningful social encounter for them that doesn't just devolve into "roll for persuasion."
+
+We’re playing 5e, and the party is level 4: a Life Domain Cleric, a Totem Warrior Barbarian, and a College of Eloquence Bard. They’ve finally reached the Ivory Spire to petition the High Arcanist for access to the forbidden library. The story goal here is for them to convince the Arcanist that their need is dire enough to bypass the usual century-long waiting list, but the Arcanist is notoriously bureaucratic and cynical.
+
+Could you draft a detailed social encounter for this? I need the setup for the audience chamber, some quick stats or personality traits for the Arcanist and maybe two specialized guards, and specific social tactics the NPCs will use to deflect the party's arguments. Also, throw in some terrain details—maybe magical features in the room that react to the party’s emotions or spells. Please include a rationale for why this is a "Hard" social challenge and give me a few ideas on how to scale it down to "Medium" if the Bard starts rolling natural 20s right out of the gate. Just focus on this one meeting, please—I already have the rest of the city mapped out.
+
+Thanks a ton for the help, I’d be totally lost without it!
+
+Best,
+Marcus

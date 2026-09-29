@@ -1,0 +1,5 @@
+; brief-id: b-007
+; group: marathon-training
+; variant: 1
+
+Create an 18-week marathon training plan targeting a sub-3:00 finish based on the attached biometric and performance data. Plan must account for work travel Tuesday through Friday; these sessions need to be treadmill-compatible. Requirements: weekly mileage progressions, specific pace targets for intervals and long runs, and two mandatory strength sessions per week. Implement a 3-week taper and scheduled cutback weeks every fourth week to prevent Achilles flare-ups. Include specific heart rate zone adjustments for the two-week altitude block in Denver. Must list clear physiological warning signs for overtraining and injury recurrence. Exclude meal planning and race-day logistics. Urgent.

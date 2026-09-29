@@ -1,0 +1,5 @@
+; brief-id: b-027
+; group: cloud-cost-review
+; variant: 1
+
+Review AWS billing data and CloudWatch logs for the data platform. Monthly spend is hitting $45k and needs to be lowered immediately. Provide a prioritized list of specific savings opportunities focusing on EC2/Fargate compute and cross-region egress. For every recommendation, include the projected monthly dollar savings, a risk level regarding potential downtime or latency, and the exact CLI/Console commands for implementation. Limit scope to rightsizing existing instances, cleaning up idle resources, and switching to Spot or RI where safe. Do not include long-term architectural migrations or budget forecasting. We need actionable technical steps to cut costs now.
