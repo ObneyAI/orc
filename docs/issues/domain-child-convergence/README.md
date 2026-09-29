@@ -186,3 +186,20 @@ unfiltered. Any later edit means one more full run.
 - **GREEN, re-run by the orchestrator:** 47 namespaces, 424 tests, 2,423 assertions, with the one durable test
   failing on the stale judge assumption; that test was corrected and its suite re-run green (9 tests, 99
   assertions).
+
+## Retrieval fix found by the post-fix live smoke (orchestrator)
+
+- **Symptom:** in a six-task live smoke of the post-fix tree, the first legal-issue task (in-domain) still minted a
+  family under briefing generation. The second legal task then landed on that family, so convergence worked,
+  on the wrong parent. The pre-fix smoke and the pre-fix convergence sweep showed the same in-domain miss.
+- **Root cause, measured live:** the classifier's description search, with a rerank, fetched ColBERT's top 10 over
+  the whole index and only then filtered to the two tree axes. Behavior descriptions held most of the ten slots, so
+  4 entries (2 shapes) reached the reranker. The legal seed was 7th and never shown to it. The no-rerank path already
+  over-fetched 3x for a filter; the rerank path did not.
+- **Fix:** a filtered rerank over-fetches 3x and hands the reranker its usual count of allowed candidates. The
+  unfiltered path is unchanged. Test `search-with-rerank-and-a-filter-gives-the-reranker-a-full-allowed-set` failed
+  first with exactly the live symptom (4 candidates) and passes after the fix, with the reranker suites green (28 tests).
+- **Live re-check:** the reranker now receives 10 tree candidates including the legal seed. It rates the seed 0.95
+  `covered` and ranks it first; briefing generation drops to 0.70.
+- **Effect on the comparison:** the pre-fix baseline arm runs without this fix, so the before-and-after includes it.
+  The findings will attribute in-domain changes to this fix, not to the convergence decisions.

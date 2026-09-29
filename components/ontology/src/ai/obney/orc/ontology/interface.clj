@@ -1140,9 +1140,15 @@
   [ctx {:keys [query granularity k rerank-with-intent model]
         :or {granularity :all k 10}}]
   (if-let [index (latest-ontology-descriptions-index ctx)]
-    (let [fetch-k (if rerank-with-intent
-                    (rerank-fetch-k k)
-                    (if (= granularity :all) k (* 3 k)))
+    (let [filtered? (not= granularity :all)
+          ;; A granularity filter is applied AFTER the fetch, so a filtered
+          ;; search over-fetches 3x — on the rerank path as well: without it
+          ;; the reranker's set was cut to whatever share of the top 2k happened
+          ;; to be allowed (4 of 10 in a live legal task, the legal seed 7th
+          ;; and never shown to the reranker).
+          fetch-k (if rerank-with-intent
+                    (cond-> (rerank-fetch-k k) filtered? (* 3))
+                    (if filtered? (* 3 k) k))
           raw-results (mapv normalize-search-result
                             ((colbert-fn 'search) ctx
                               {:query query
@@ -1167,7 +1173,7 @@
                                             (-> % :document-metadata :granularity)))
                               raw-results))]
       (if rerank-with-intent
-        (apply-rerank ctx filtered rerank-with-intent query k model)
+        (apply-rerank ctx (vec (take (rerank-fetch-k k) filtered)) rerank-with-intent query k model)
         (vec (take k filtered))))
     (do
       (u/log ::search-cold-no-index

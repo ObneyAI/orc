@@ -331,6 +331,43 @@
               "ColBERT was asked for 20 (2x over-fetch) when :k 10 with rerank"))))))
 
 ;; =============================================================================
+;; Orchestrator inspection (convergence arc) — a granularity filter must not
+;; starve the reranker. Live finding: for a legal task the classifier's
+;; ColBERT top-10 over the WHOLE index held behavior descriptions in most
+;; slots; after filtering to the two tree axes only 4 entries (2 shapes)
+;; reached the reranker and the legal seed, 7th, was never shown to it.
+;; =============================================================================
+
+(deftest search-with-rerank-and-a-filter-gives-the-reranker-a-full-allowed-set
+  (with-test-ctx [ctx]
+    (inject-index-created! ctx)
+    (Thread/sleep 100)
+    (let [seen (atom nil)
+          asked-k (atom nil)
+          ;; the index's order: 6 behavior descriptions, then 14 tree entries
+          docs (vec (concat
+                     (for [i (range 6)]
+                       {:content (str "behavior " i) :score (- 1.0 (* 0.01 i)) :rank (inc i)
+                        :document-id (str "b" i)
+                        :document_metadata {:granularity "behavioral-subtree" :target-id (str "b" i)
+                                            :confidence 0.5 :last-update "2026"}})
+                     (for [i (range 14)]
+                       {:content (str "tree " i) :score (- 0.9 (* 0.01 i)) :rank (+ 7 i)
+                        :document-id (str "t" i)
+                        :document_metadata {:granularity (if (even? i) "tree-class" "tree-fingerprint")
+                                            :target-id (str "t" i) :confidence 0.5 :last-update "2026"}})))]
+      (with-redefs [colbert/search (fn [_ctx opts] (reset! asked-k (:k opts)) (vec (take (:k opts) docs)))
+                    reranker/rerank! (fn [_ctx opts]
+                                       (reset! seen (mapv :document-id (:candidates opts)))
+                                       (mapv (fn [c] {:document-id (:document-id c) :reasoning "ok" :fitness-score 0.5})
+                                             (:candidates opts)))]
+        (ontology/search-descriptions ctx {:query "q" :rerank-with-intent "i" :k 5
+                                           :granularity #{:tree-class :tree-fingerprint}})
+        (is (= 30 @asked-k) "a filtered rerank over-fetches 3x the reranker's set, like the unfiltered-path policy")
+        (is (= ["t0" "t1" "t2" "t3" "t4" "t5" "t6" "t7" "t8" "t9"] @seen)
+            "the reranker sees its full set of ten ALLOWED candidates, in ColBERT order")))))
+
+;; =============================================================================
 ;; RED #7 — hard-cap at 50 candidates regardless of caller's :k
 ;; =============================================================================
 
