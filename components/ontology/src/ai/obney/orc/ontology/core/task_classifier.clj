@@ -543,6 +543,29 @@
                (< fit threshold))
       top-id)))
 
+(declare default-domain-family-parent-fn)
+
+(defn- shape-candidates-only
+  "The candidates a SHAPE-axis decision (the bundle) may land on: every
+   :tree-class candidate that is not a domain family. A family is never a shape
+   class (DomainFamilyIsALeafOnTheDomainAxis); the match and walk-down paths
+   already turn a reached family into a landing, and the bundle must not place
+   a task in a family unjudged (live finding: a marathon task bundled into a
+   recipe-scaling family). A failed lookup drops the candidate too: a bundle
+   never lands on an unverified class. Non-tree-class candidates pass through
+   (bundle-decision ignores them)."
+  [ctx candidates]
+  (let [family-parent-fn (or (:domain-family-parent-fn ctx) default-domain-family-parent-fn)]
+    (filterv (fn [c]
+               (or (not (tree-class-candidate? c))
+                   (let [id (candidate-class-id c)]
+                     (and id
+                          (try (nil? (family-parent-fn ctx id))
+                               (catch Throwable t
+                                 (u/log ::bundle-family-lookup-failed :target-id id :error (.getMessage t))
+                                 false))))))
+             candidates)))
+
 (declare default-newborn?-fn)
 
 (defn- gate-candidates
@@ -1344,7 +1367,7 @@
       ;; genuinely-new specialization still gets its own provisional class and
       ;; distinct tasks are NOT over-merged.
       (not matched?)
-      (if-let [bundle-id (bundle-decision candidates bundle-threshold threshold)]
+      (if-let [bundle-id (bundle-decision (shape-candidates-only ctx candidates) bundle-threshold threshold)]
         {:assigned-tree-id bundle-id
          :confidence       top-score
          :top-candidates   (vec surfaced-candidates)

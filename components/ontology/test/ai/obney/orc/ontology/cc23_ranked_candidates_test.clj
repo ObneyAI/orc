@@ -183,7 +183,7 @@
           candidates [(tree-class-candidate class-id 0.65 0.8)]]
       (with-redefs [ontology/search-descriptions (fn [_ _] candidates)
                     tc/get-consolidation-total* (fn [_ _ _] 0)]
-        (let [result (ontology/classify-task {} {:task-signature "x" :threshold 0.7})]
+        (let [result (ontology/classify-task {:domain-family-parent-fn (fn [_ _] nil)} {:task-signature "x" :threshold 0.7})]
           (is (= :bundle (:assigned-via result)) "the bundle branch reports :bundle")
           (is (= class-id (:assigned-tree-id result)) "sanity: bundled onto the existing class")
           (is (false? (:was-fresh-mint? result)))

@@ -27,11 +27,19 @@
      is still kept out of the surfaced references (its noise-suppression role);
      it flips to surfaced once its total crosses the gate. A curated seed
      (total 0) and :tree-fingerprint candidates are never gated."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.core.task-classifier :as tc]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]))
+
+;; Pure suite, no store: declare that no candidate here is a domain family
+;; unless a test passes its own :domain-family-parent-fn on ctx.
+(use-fixtures :each
+  (fn [t]
+    (with-redefs [tc/default-domain-family-parent-fn (fn [_ctx _id] nil)
+                  tc/default-domain-families-fn (fn [_ctx] [])]
+      (t))))
 
 ;; =============================================================================
 ;; Candidate fixtures — shaped exactly as search-descriptions returns them
@@ -283,3 +291,38 @@
           (is (nil? (:assigned-tree-id r)) "DEFEAT CONDITION: uncertainty creates/bundles NOTHING")
           (is (not (true? (:bundled? r))))
           (is (not (true? (:was-fresh-mint? r)))))))))
+
+
+;; =============================================================================
+;; Convergence arc (orchestrator inspection): a domain family is never a shape,
+;; so the shape-axis bundle never lands on one. Live finding: a marathon task
+;; bundled into a recipe-scaling family the reranker scored in the bundle band
+;; for "adjusting quantities across a distribution".
+;; =============================================================================
+
+(deftest bundle-never-lands-on-a-domain-family
+  (let [family (random-uuid) shape (random-uuid) family-parent (random-uuid)
+        parent-fn (fn [_ id] (when (= id family) {:parent-id family-parent :domain-label "recipe-scaling"}))]
+    (testing "the only in-band candidate is a family -> no bundle, a fresh mint"
+      (with-redefs [ontology/search-descriptions (fn [_ _] [(tree-class-candidate family 0.65 12.0)])
+                    tc/get-consolidation-total* all-above-gate]
+        (let [r (ontology/classify-task {:domain-family-parent-fn parent-fn}
+                                        {:task-signature "x" :threshold 0.7 :bundle-threshold 0.6 :walk-down? false})]
+          (is (not= family (:assigned-tree-id r)))
+          (is (not (true? (:bundled? r))))
+          (is (= :mint (:assigned-via r))))))
+    (testing "a family and a shape both in band -> the bundle goes to the shape"
+      (with-redefs [ontology/search-descriptions (fn [_ _] [(tree-class-candidate family 0.68 14.0)
+                                                            (tree-class-candidate shape 0.62 11.0)])
+                    tc/get-consolidation-total* all-above-gate]
+        (let [r (ontology/classify-task {:domain-family-parent-fn parent-fn}
+                                        {:task-signature "x" :threshold 0.7 :bundle-threshold 0.6 :walk-down? false})]
+          (is (= shape (:assigned-tree-id r)))
+          (is (true? (:bundled? r))))))
+    (testing "a failed family lookup never bundles onto the unverified class"
+      (with-redefs [ontology/search-descriptions (fn [_ _] [(tree-class-candidate shape 0.65 12.0)])
+                    tc/get-consolidation-total* all-above-gate]
+        (let [r (ontology/classify-task {:domain-family-parent-fn (fn [_ _] (throw (ex-info "store down" {})))}
+                                        {:task-signature "x" :threshold 0.7 :bundle-threshold 0.6 :walk-down? false})]
+          (is (not= shape (:assigned-tree-id r)))
+          (is (not (true? (:bundled? r)))))))))

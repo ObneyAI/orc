@@ -203,3 +203,20 @@ unfiltered. Any later edit means one more full run.
   `covered` and ranks it first; briefing generation drops to 0.70.
 - **Effect on the comparison:** the pre-fix baseline arm runs without this fix, so the before-and-after includes it.
   The findings will attribute in-domain changes to this fix, not to the convergence decisions.
+
+## Bundle fix found by the second post-fix live smoke (orchestrator)
+
+- **Symptom:** with the retrieval fix in, the six-task smoke matched both legal tasks to the legal seed, minted a
+  recipe family and landed the second recipe task on it. But the second marathon task was bundled into the recipe
+  family: the reranker scored that family in the bundle band for "adjusting quantities across a distribution".
+- **Root cause:** the shape-axis bundle considered every tree-class candidate, families included. Decision C5 made a
+  reached family a landing on the match and walk-down paths; the bundle path was missed.
+- **Fix:** the bundle considers shape classes only. A candidate the family-parent lookup identifies as a family is
+  dropped, and so is one whose lookup fails, so a bundle never lands on an unverified class. Spec tended:
+  `DomainFamilyIsALeafOnTheDomainAxis` now names the bundle. Check: 0 errors, 0 analyse findings.
+- **Tests:** `bundle-never-lands-on-a-domain-family` (family only: mint; family and shape: bundle onto the shape;
+  failed lookup: no bundle) failed on all three before the fix. Pure suites declare their world explicitly
+  (el1b fixture, the cc23 bundle test). The rr3 richness test's ColBERT stub now honours the requested count, like
+  the real index; it had relied on the stub returning more candidates than a real search hands the reranker.
+- **GREEN:** 47 namespaces, 426 tests, with the 14 failures traced to those three setups; the two affected suites
+  re-run green (18 tests, 97 assertions) after the corrections.

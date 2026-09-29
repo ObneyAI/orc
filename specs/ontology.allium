@@ -383,7 +383,10 @@ contract TaskClassification {
         -- consulted), so there are no grandchildren and the classified event
         -- carries the domain facts however the family was reached. A task that
         -- reaches a family but is judged a different domain mints under the
-        -- retrieved SHAPE, never under the family (grill C5).
+        -- retrieved SHAPE, never under the family (grill C5). Nor is a family a
+        -- target of the shape-axis bundle: a near-miss is bundled only onto a
+        -- shape class, so no task enters a family without a landing or a
+        -- judged merge.
 
     @invariant DomainChildrenAreAlwaysConsidered
         -- A matched shape class is never treated as a leaf on the domain axis
