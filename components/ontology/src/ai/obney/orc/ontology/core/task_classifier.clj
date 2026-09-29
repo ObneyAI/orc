@@ -149,6 +149,16 @@
 ;; STILL accrue (the counter keeps ticking) — the gate only governs
 ;; candidacy, never accrual.
 (def ^:private default-retrieval-gate 3)
+
+;; default-merge-candidate-count: CV-C / `specs/ontology.allium`'s
+;; `merge_candidate_count: Integer = 5` — the bound on how many nearest
+;; existing families `nearest-families` shows the merge judge. A RANK bound
+;; only (grill C3: "no similarity cutoff") — overridable via
+;; `:merge-candidate-count` on ctx, same override-seam shape as
+;; `resolve-timeout-ms`/`resolve-model` give the reranker's other policy
+;; knobs.
+(def ^:private default-merge-candidate-count 5)
+
 (def ^:private max-walk-depth
   "Hard depth cap on walk-down recursion (R-C2d-2 mitigation). At
    this depth we stop walking even if more children would fit and log
@@ -228,6 +238,14 @@
 (defn- existing-domain-families* [ctx]
   ((requiring-resolve 'ai.obney.orc.ontology.interface/existing-domain-families)
    ctx))
+
+(defn- hybrid-search* [ctx opts]
+  ((requiring-resolve 'ai.obney.orc.ontology.interface/hybrid-search)
+   ctx opts))
+
+(defn- merge-family!* [ctx opts]
+  ((requiring-resolve 'ai.obney.orc.ontology.core.reranker/merge-family!)
+   ctx opts))
 
 ;; =============================================================================
 ;; Rerank-fallback detection (R01 + RR-1)
@@ -812,14 +830,104 @@
          (= :agent-authored (:kind (:provenance concept))))))
     (catch Throwable _ false)))
 
+(defn- family-concept?
+  "Same discriminator `default-domain-family-parent-fn` / `existing-domain-
+   families` use: agent-authored provenance, a non-blank :label that is not
+   the concept's own bare id (the generic placeholder an ordinary,
+   non-domain tree-class concept carries as its label)."
+  [concept bare-id]
+  (and concept
+       (= :agent-authored (:kind (:provenance concept)))
+       (string? (:label concept))
+       (not (clojure.string/blank? (:label concept)))
+       (not= (:label concept) (str bare-id))))
+
+(defn nearest-families
+  "CV-C item 3 (`DomainFamilyMergeIsJudged`) — the nearest EXISTING domain
+   families BY RANK for a would-be mint's merge judge: `ontology/hybrid-
+   search` (graph + embedding, rank-fused) over the tree-class ontology,
+   query text = signature + reasoning, seeded by the RANKING's own
+   :tree-class candidate URIs, filtered to agent-authored family concepts
+   (an ordinary shape class anywhere in the neighbourhood is dropped —
+   never shown to the judge), bounded to merge-candidate-count. Rank order
+   PRESERVED; no score is ever read for a decision (grill C3) — and
+   `:min-similarity` is pinned to 0.0 so hybrid-search's own similarity
+   floor can never silently act as the cutoff the spec forbids ('no
+   similarity cutoff').
+
+   `:label`/`:description` are re-read from the LIVE event-sourced concept
+   (`get-concept-by-uri`), never taken from hybrid-search's own enrichment:
+   `fuse-and-enrich` resolves :label/:description from the STATIC seed
+   ontology only (`static-ontology/get-concept-by-uri`), which never
+   contains a runtime-minted :tree-class family — trusting it would show
+   the judge every family with a BLANK body (found by reading the
+   retrieval code, not assumed; root-caused rather than routed around).
+
+   Returns [{:id :label :description} ...]. Fail closed: any exception
+   here PROPAGATES — the caller (`default-domain-merge-fn`, by way of
+   `mint-domain-family-via-merge`'s try/catch) reads it as :unknown, never
+   as \"no families\"."
+  [ctx {:keys [signature reasoning ranking]}]
+  (let [merge-candidate-count (or (:merge-candidate-count ctx) default-merge-candidate-count)
+        seed-uris (into []
+                        (comp (filter tree-class-candidate?)
+                              (keep candidate-class-id)
+                              (map #(str tree-class-uri-prefix %))
+                              (distinct))
+                        ranking)
+        query-text (clojure.string/trim (str (or signature "") " " (or reasoning "")))
+        {:keys [results]} (hybrid-search* ctx {:seed-uris seed-uris
+                                               :query-text query-text
+                                               :scope :tree-class
+                                               :min-similarity 0.0
+                                               :limit (* 4 merge-candidate-count)})]
+    (into []
+          (comp (keep (fn [{:keys [uri]}]
+                        (let [id (uri->target-id uri)
+                              concept (get-concept-by-uri ctx uri)]
+                          (when (family-concept? concept id)
+                            {:id id
+                             :label (:label concept)
+                             :description (:description concept)}))))
+                (take merge-candidate-count))
+          results)))
+
 (defn default-domain-merge-fn
-  "CV-A item 7 (`DomainFamilyMergeIsJudged`) — the seam's SHIPPED default:
-   a would-be mint is always judged `:new` until CV-C's merge judge
-   replaces this fn on ctx. Keeps today's mint behaviour byte-identical
-   for this bundle; CV-C threads a real judged verdict through the SAME
-   call site."
-  [_ctx _query]
-  {:kind :new})
+  "CV-C (`DomainFamilyMergeIsJudged`) — the seam's real default: retrieves
+   `nearest-families` and, when the neighbourhood is non-empty, asks ONE
+   discrete question (`reranker/merge-family!`) with their full
+   descriptions in view. An EMPTY neighbourhood is `:new` WITHOUT a call
+   (grill C3 — nothing to compare against yet). `:same` naming a family
+   NOT among the candidates actually shown to the judge is read as
+   `:unknown` (a hallucinated / out-of-context id never lands); the
+   returned `:family` is always OUR OWN copy of the shown candidate's id,
+   never the judge's echoed string, so a JSON round-trip can never change
+   its type/identity. An out-of-set or malformed verdict kind is
+   `:unknown`, never coerced.
+
+   `query` carries `:ranking` (`mint-domain-family-via-merge`'s `candidates`
+   — the pre-gate retrieval ranking) alongside `:signature`/`:reasoning`;
+   a caller-supplied `:domain-merge-fn` stub that ignores extra keys is
+   unaffected (existing CV-A tests stub this seam with a 2-arg `[ctx
+   query]` fn exactly as before)."
+  [ctx {:keys [signature reasoning ranking]}]
+  (let [candidates (nearest-families ctx {:signature signature
+                                          :reasoning reasoning
+                                          :ranking ranking})]
+    (if (empty? candidates)
+      {:kind :new}
+      (let [{judge-kind :kind judge-family :family judge-reasoning :reasoning}
+            (merge-family!* ctx {:signature signature
+                                 :reasoning reasoning
+                                 :candidates candidates})
+            shown (some #(when (= (str (:id %)) (str judge-family)) %) candidates)
+            kind (cond
+                   (not (contains? #{:same :new :unknown} judge-kind)) :unknown
+                   (and (= judge-kind :same) (not shown)) :unknown
+                   :else judge-kind)]
+        (cond-> {:kind kind}
+          (and (= kind :same) shown) (assoc :family (:id shown))
+          judge-reasoning (assoc :reasoning judge-reasoning))))))
 
 (defn- family-by-canonical-label
   "The tenant-wide family, if any, whose OWN label canonicalises to
@@ -857,19 +965,25 @@
         candidates))
 
 (defn- mint-domain-family-via-merge
-  "CV-A item 7 (`DomainFamilyMergeIsJudged`) — the ONE call site where a
-   would-be FIRST mint under a shape (no legacy per-parent children, no
-   tenant-wide family for the label) is judged: `:kind :new` mints (this
-   bundle's shipped default, ALWAYS, until CV-C replaces the seam) with the
+  "CV-A item 7 / CV-C (`DomainFamilyMergeIsJudged`) — the ONE call site
+   where a would-be FIRST mint under a shape (no legacy per-parent
+   children, no tenant-wide family for the label) is judged via the
+   `:domain-merge-fn` seam (CV-C's `default-domain-merge-fn` real
+   implementation, or a caller-supplied stub): `:kind :new` mints, with the
    raw verdict carried on `:merge-verdict` so the wedge knows this is a
    genuine family birth (item 5's rich description + embedding); `:kind
-   :same` lands on the named family instead (CV-C); anything else —
-   including a seam failure — defers `:merge-unresolved`, mints nothing."
-  [ctx base parent-id canonical-label verdict signature]
+   :same` lands on the named family instead; anything else — including a
+   seam failure — defers `:merge-unresolved`, mints nothing."
+  [ctx base parent-id canonical-label verdict signature ranking]
   (let [merge-fn (or (:domain-merge-fn ctx) default-domain-merge-fn)
         query {:signature signature
                :reasoning (:domain-reasoning verdict)
-               :label canonical-label}
+               :label canonical-label
+               ;; CV-C item 3: the pre-gate retrieval ranking, so the real
+               ;; default can derive `nearest-families`' seed-uris. Extra
+               ;; key — a caller-supplied 2-arg stub `(fn [ctx query] ...)`
+               ;; ignores it exactly as every existing CV-A test does.
+               :ranking ranking}
         verdict* (try (or (merge-fn ctx query) {:kind :unknown})
                       (catch Throwable t
                         (u/log ::domain-merge-failed :error (.getMessage t))
@@ -923,7 +1037,7 @@
    Every branch carries :domain-verdict (the RAW verdict, unnormalised) and
    :domain-children-considered (the RAW labels the seam returned) so RS-3
    can record them."
-  [ctx result parent-id verdict signature]
+  [ctx result parent-id verdict signature ranking]
   (let [children-fn (or (:domain-children-fn ctx) default-domain-children-fn)
         children (try (or (children-fn ctx parent-id) [])
                       (catch Throwable t
@@ -968,7 +1082,7 @@
           ;; ADR 0007 / MintDomainFamily: every family birth is judged and
           ;; born described and embedded, including a second family under a
           ;; shape that already has one. There is no unjudged sibling mint.
-          (mint-domain-family-via-merge ctx base parent-id canonical-label verdict signature)))
+          (mint-domain-family-via-merge ctx base parent-id canonical-label verdict signature ranking)))
 
       :else
       (case coverage
@@ -977,7 +1091,7 @@
         (:partial :uncovered)
         (if-not canonical-label
           (assoc base :domain-deferral (domain-deferral))
-          (mint-domain-family-via-merge ctx base parent-id canonical-label verdict signature))
+          (mint-domain-family-via-merge ctx base parent-id canonical-label verdict signature ranking))
 
         (assoc base :domain-deferral (domain-deferral))))))
 
@@ -1002,7 +1116,7 @@
         would-mint? (and canonical-label (contains? #{:partial :uncovered} coverage))
         base (assoc result :domain-verdict verdict)]
     (if-not canonical-label
-      (assign-domain-child ctx base parent-id verdict signature)
+      (assign-domain-child ctx base parent-id verdict signature candidates)
       (let [families-fn (or (:domain-families-fn ctx) default-domain-families-fn)
             fetch (try {:families (or (families-fn ctx) [])}
                        (catch Throwable t
@@ -1035,7 +1149,7 @@
               (assoc :was-fresh-mint? false))
 
           :else
-          (assign-domain-child ctx base parent-id verdict signature))))))
+          (assign-domain-child ctx base parent-id verdict signature candidates))))))
 
 (defn- maybe-assign-domain-child
   "RS-2 + CV-A entry point: after the existing match/bundle/walk-down/

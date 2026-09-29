@@ -535,3 +535,174 @@ per input candidate."))
                    timed-out-result)
       :success (parse-reranked-json result)
       nil)))
+
+;; =============================================================================
+;; CV-C — the domain-family merge judge (`specs/ontology.allium`'s
+;; `DomainFamilyMergeIsJudged`)
+;;
+;; A SECOND, separate single-:llm-node workflow — mirrors `reranker-workflow`/
+;; `rerank!`'s shape exactly (own blackboard, own byte-pinned instruction, own
+;; function-calling node) rather than overloading the ranking workflow, so the
+;; merge question's own prompt/output-contract can evolve independently of
+;; the ranking prompt's.
+;; =============================================================================
+
+(def ^:private family-schema
+  "One candidate family shown to the merge judge — CV-C item 3's
+   `nearest-families` retrieval, JOINED back here into the blackboard
+   input. `:id` a STRING (JSON round-trip — `default-domain-merge-fn`
+   re-derives the typed id from its OWN candidate list by string
+   comparison, never trusts the judge's echoed id verbatim)."
+  [:map
+   [:id :string]
+   [:label {:optional true} [:maybe :string]]
+   [:description :string]])
+
+(def ^:private family-merge-instruction
+  "RS-P3's verdict (`development/bench/ood-stress-results/rs-p3-family-merge-probe/FINDINGS.md`):
+   both arms converged 8/8 corpus groups; the ONE cross-group false merge
+   (recipe scaling merged into a marathon-plan family) happened because the
+   instruction stated 'same family = shared subject matter AND output kind'
+   but never stated the CONVERSE — the judge treated a shared output kind
+   alone as sufficient. This instruction states both converses explicitly
+   (verdict's fix #1); covered-seed protection running BEFORE this judge
+   (verdict's fix #2) is CV-A's existing ordering, unchanged here."
+  (str "You decide whether a NEW task belongs to an EXISTING domain family or starts a new one.\n\n"
+       "A domain family is the set of tasks that share BOTH its SUBJECT MATTER (what the task is "
+       "about) AND its OUTPUT KIND (what kind of thing the task produces) — e.g. every request to "
+       "scale a tested recipe to a different batch size is ONE family whatever the dish, venue or "
+       "equipment; a request to compute nutrition labels is a DIFFERENT family even though it also "
+       "involves recipes. The CONCRETE INSTANCE (the dish, the database engine, the runner's age) "
+       "never makes a new family.\n\n"
+       "BOTH axes must match for \"same\": a DIFFERENT subject matter is a NEW family even when the "
+       "output kind matches (a marathon-training plan and a recipe-scaling plan share the output "
+       "kind \"a structured, multi-component plan derived from specific input parameters\" but "
+       "differ in subject matter — DIFFERENT families); a DIFFERENT output kind is a NEW family "
+       "even when the subject matter matches (recipe scaling and nutrition-label computation share "
+       "the subject matter \"recipes\" but differ in output kind — DIFFERENT families).\n\n"
+       "INPUTS DESCRIBED\n"
+       "- task        — the new task's instruction text\n"
+       "- reasoning   — the reranker's domain reasoning for the new task (why the matched shape "
+       "does not cover this task's domain)\n"
+       "- candidates  — a JSON array of the NEAREST EXISTING domain families, each with id, label "
+       "and description (its purpose, the shape it was born under, and the signature that minted "
+       "it)\n\n"
+       "Write merge_reasoning FIRST, before choosing the verdict: name the candidate you compared "
+       "against and say explicitly what is SHARED and what DIFFERS on BOTH axes (subject matter and "
+       "output kind). Then give the verdict:\n"
+       "  same    — with the family id, when exactly one candidate is the SAME family (both axes "
+       "match)\n"
+       "  new     — when no candidate is the same family (at least one axis differs from every "
+       "candidate)\n"
+       "  unknown — when you cannot tell from what is shown\n\n"
+       "Respond with a JSON object with EXACTLY these three keys:\n"
+       "  {\"merge_reasoning\": \"<name the candidate compared; state what is shared and what "
+       "differs in subject matter and output kind>\",\n"
+       "   \"verdict\": \"same\"|\"new\"|\"unknown\",\n"
+       "   \"family\": \"<the compared candidate's id when verdict is same, otherwise null>\"}\n"
+       "No surrounding prose, no code fences."))
+
+(defn- domain-family-merge-workflow-name
+  "Same deterministic-sheet-identity reasoning as `reranker-workflow-name`:
+   keep the DEFAULT model's identity pinned to a stable name; a
+   caller-supplied override gets its own distinct sheet identity."
+  [model]
+  (if (= model default-model)
+    "ontology-domain-family-merge"
+    (str "ontology-domain-family-merge--" model)))
+
+(defn domain-family-merge-workflow
+  "CV-C item 1: the merge judge's single-:llm-node ORC workflow. Pure data
+   (no I/O), mirroring `reranker-workflow`'s shape.
+
+   Inputs (blackboard): :task, :reasoning, :candidates
+   Output (one :writes slot): :merge-json — a JSON string (function-calling
+     may hand back a MAP directly; `parse-merge-answer` accepts both — see
+     its docstring for the RS-P3 run-1 parser defect this guards)."
+  [model]
+  (orc/workflow (domain-family-merge-workflow-name model)
+    (orc/blackboard
+      {:task       :string
+       :reasoning  :string
+       :candidates [:vector family-schema]
+       :merge-json :string})
+
+    (orc/llm "merge"
+      :model model
+      :instruction family-merge-instruction
+      :reads [:task :reasoning :candidates]
+      :writes [:merge-json]
+      :options {:max-retries 3
+                :retry-delay-ms [500 1500 3000]
+                :use-function-calling? true})))
+
+(defn- parse-merge-answer
+  "CV-C: the merge workflow's structured answer arrives either as a MAP
+   (function calling — the shipped path) or as a JSON STRING. Accept both:
+   RS-P3 run 1 expected a string only and silently dropped 16 valid map
+   verdicts, every one counted as :unknown
+   (`development/bench/ood-stress-results/rs-p3-family-merge-probe/FINDINGS.md`,
+   'Run 1 (parser defect)'). A malformed/unparseable answer returns nil —
+   the caller reads that as verdict :unknown, never coerced."
+  [raw]
+  (cond
+    (map? raw) (into {} (map (fn [[k v]] [(keyword (name k)) v])) raw)
+    (string? raw)
+    (let [s (.indexOf raw "{") e (.lastIndexOf raw "}")]
+      (when (and (>= s 0) (> e s))
+        (try (json/read-str (subs raw s (inc e)) :key-fn keyword)
+             (catch Throwable _ nil))))
+    :else nil))
+
+(defn merge-family!
+  "CV-C item 2: invoke the domain-family-merge workflow with (signature,
+   reasoning, candidates). Model resolution like `rerank!` (`resolve-model`
+   — per-call opt > per-deployment ctx slot > the ratified default).
+
+   Returns {:kind :same|:new|:unknown :family <id-or-nil> :reasoning
+   <string-or-nil> :usage <map-or-nil>} — :kind is ALWAYS one of the three
+   verdict values (an out-of-set or missing verdict, or a non-:success
+   execution, reads as :unknown, never coerced/guessed).
+
+   Args:
+     ctx   — context with :event-store / :llm-provider
+     opts  — {:signature :reasoning :candidates :model :timeout-ms}
+       :signature   — the new task's signature text
+       :reasoning   — the reranker's domain reasoning for the new task
+       :candidates  — vector of {:id :label :description} (CV-C item 3's
+                      `nearest-families`); :id is coerced to a string for
+                      the workflow's :candidates blackboard input
+       :model       — OPTIONAL model override (RR-2-style; see `resolve-model`)
+       :timeout-ms  — OPTIONAL explicit execution budget (see
+                      `resolve-timeout-ms`; shares the reranker's
+                      `:rerank-timeout-ms` ctx knob and default budget —
+                      this is the same shape of single-:llm-node call)."
+  [ctx {:keys [signature reasoning candidates model timeout-ms]}]
+  (let [budget-ms (resolve-timeout-ms ctx timeout-ms)
+        resolved-model (resolve-model ctx model)
+        sheet-id (orc/build-workflow! ctx (domain-family-merge-workflow resolved-model))
+        inputs {:task (or signature "")
+                :reasoning (or reasoning "")
+                :candidates (mapv (fn [{:keys [id label description]}]
+                                    {:id (str id)
+                                     :label (or label "")
+                                     :description (or description "")})
+                                  candidates)}
+        result (orc/execute ctx sheet-id inputs :timeout-ms budget-ms)]
+    (if (not= :success (:status result))
+      (do (mu/log ::merge-family-workflow-failed
+                  :status (:status result)
+                  :error (:error result)
+                  :duration-ms (:duration-ms result))
+          {:kind :unknown :family nil :reasoning nil :usage nil})
+      (let [parsed (parse-merge-answer (get-in result [:outputs :merge-json]))
+            verdict-kind (some-> (:verdict parsed) name keyword)
+            kind (if (contains? #{:same :new :unknown} verdict-kind) verdict-kind :unknown)]
+        (when (nil? verdict-kind)
+          (mu/log ::merge-answer-unparseable
+                  :raw-preview (let [raw (get-in result [:outputs :merge-json])]
+                                (cond (string? raw) (subs raw 0 (min 200 (count raw)))
+                                      (some? raw) (pr-str raw)))))
+        (cond-> {:kind kind :family nil :reasoning nil :usage (:usage result)}
+          (:family parsed) (assoc :family (:family parsed))
+          (:merge_reasoning parsed) (assoc :reasoning (:merge_reasoning parsed)))))))

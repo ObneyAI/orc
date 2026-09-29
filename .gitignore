@@ -36,3 +36,4 @@ docs/issues/c2d-followups/
 # RS7-PS: the bench runner's LMDB cache directories (one fresh dir per
 # `runner/create-context` call) — regenerated every run, never committed.
 development/bench/.runner-cache/
+development/bench/.discarded-corpus-run1/

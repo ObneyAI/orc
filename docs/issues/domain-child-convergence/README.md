@@ -142,3 +142,47 @@ unfiltered. Any later edit means one more full run.
   resume it re-runs against its own partial effects. Crashes are rare, and any occurrence shows in the record
   timestamps; the comparison reports it rather than hiding it.
 - **GREEN, re-run by the orchestrator:** 21 tests and 109 assertions across the harness and model-registry suites.
+
+## CV-C verification ledger (orchestrator `/inspect-orc`)
+
+- **Scope:** the judged merge step. A would-be family birth retrieves the nearest existing families by rank, at
+  most five, with no similarity cutoff. One judge call returns same, new or unknown, with the reasoning written
+  first. Same lands on a family that was shown to the judge, new mints, and unknown defers with no mint. An empty
+  neighbourhood mints with no call.
+- **RED:** the implementer could not run the new tests against the old code and substituted a read-only proof
+  that none of the new symbols existed at HEAD. Reported by the implementer; accepted, since those tests cannot
+  compile against HEAD.
+- **Live QA (implementer, verbatim in its report):** three live judge calls answered as expected. A sourdough
+  task was judged the same as the recipe family, a nutrition-label task the same as the nutrition family, and a
+  chess study plan new. The chess reasoning named the shared output kind and still ruled "new" on subject matter,
+  which is the converse the probe findings asked the instruction to state.
+- **Defect found in inspection and fixed: every scoped embedding read returned nothing.** Embedding events carry
+  only UUID tags (`[:concept id]`), but the scoped read selected events by a `[:scope …]` tag and the per-concept
+  read by a `[:uri …]` tag. Measured on a real store before the fix: the unscoped read found 1 of 1 embeddings,
+  the scoped read 0 of 1, and the per-concept lookup failed. The embeddings read model now keeps each event's scope
+  and filters in memory (read model version 2), and the per-concept lookup reads by key. Consequence had it
+  shipped: the neighbourhood would always have been empty, the judge never asked, and every paraphrase a new
+  family. It went unseen because every scoped-search test stubbed the search, and no production caller outside
+  the ontology interface used a scoped read before this arc.
+- **Tests added in inspection:** `nearest-families-finds-real-born-families-by-meaning` (two families born through
+  the real command; both found, the recipe family first for a recipe task, the ordinary shape class excluded;
+  failed before the fix). The durable second-family test now declares the judge's verdict and asserts that the
+  real neighbourhood showed the judge the first family.
+- **Implementer findings carried forward (follow-ups, not blocking):** the hybrid search's graph leg and its
+  label enrichment read only the static seed ontology, so for families only the embedding leg ranks. The
+  neighbourhood re-reads labels and descriptions from the live concept. The durable proof covers `same` but not
+  `unknown` (the pure tests cover `unknown`).
+- **Obligation audit (scoped to this bundle): 7 obligations, 7 covered, 0 uncovered.** MergeIntoDomainFamily
+  success: `same-verdict-lands-on-the-named-family-and-carries-merge-verdict` and the store-backed
+  `merge-landing-records-no-concept-and-carries-the-verdict`. Failure 1, no label:
+  `blank-label-defers-instead-of-minting-no-children`. Failure 2, protection applies:
+  `zero-merge-calls-on-a-covered-seed-protection-outcome`. Failure 3, a family carries the label:
+  `zero-merge-calls-on-a-landing-by-label`. Failure 4, covered: `zero-merge-calls-on-a-covered-match`. Failure 5,
+  verdict not same: `new-verdict-mints-a-family-and-carries-merge-verdict`, `unknown-verdict-defers-and-mints-nothing`.
+  MintDomainFamily failure 5, verdict not new: `unknown-verdict-defers-and-mints-nothing`,
+  `same-verdict-naming-an-unshown-family-defers`.
+- **Allium, scoped:** no spec change in this bundle; the ontology spec's last check stands (0 errors, 0 analyse
+  findings). Weed over the seam: the retrieval scope bug was a code bug with no spec statement; no divergence.
+- **GREEN, re-run by the orchestrator:** 47 namespaces, 424 tests, 2,423 assertions, with the one durable test
+  failing on the stale judge assumption; that test was corrected and its suite re-run green (9 tests, 99
+  assertions).

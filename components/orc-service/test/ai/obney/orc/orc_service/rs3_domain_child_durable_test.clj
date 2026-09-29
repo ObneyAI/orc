@@ -245,14 +245,24 @@
             n2 (assoc (node) :id (random-uuid))]
         (with-domain-candidate first-candidate
           (tp/maybe-auto-classify-and-set-context n1 ctx))
+        ;; The judge itself is a live model call; this test declares its
+        ;; verdict and records what it was shown. The neighbourhood is REAL:
+        ;; the first family, born with its description and embedding, must be
+        ;; among the candidates the judge sees.
+        (let [judge-calls (atom [])]
         (with-domain-candidate second-candidate
-          (tp/maybe-auto-classify-and-set-context n2 (assoc ctx :tick-id (random-uuid))))
+          (with-redefs-fn {(requiring-resolve 'ai.obney.orc.ontology.core.task-classifier/merge-family!*)
+                           (fn [_ q] (swap! judge-calls conj q) {:kind :new :reasoning "different subject matter"})}
+            #(tp/maybe-auto-classify-and-set-context n2 (assoc ctx :tick-id (random-uuid)))))
         (let [classified (events-of ctx :ontology/task-classified)
               minted (events-of ctx :ontology/domain-child-minted)
               first-event (first (filter #(= (:id n1) (:source-node-id %)) classified))
               second-event (first (filter #(= (:id n2) (:source-node-id %)) classified))
               first-child (:assigned-tree-id first-event)
               second-child (:assigned-tree-id second-event)]
+          (is (= 1 (count @judge-calls)) "the judge is asked once for the second family")
+          (is (= [first-child] (mapv :id (:candidates (first @judge-calls))))
+              "the real neighbourhood shows the judge the first family, found by its birth embedding")
           ;; ADR 0007: a second family under a shape is a judged family birth
           (is (= :mint-domain-child (:assigned-via second-event)))
           (is (= :new (get-in second-event [:merge-verdict :kind])))
@@ -275,7 +285,7 @@
           ;; mechanism, no merge judge) -> unchanged, 1 claim.
           (is (= 2 (count (ontology/get-claims ctx :tree-class first-child))))
           (is (= 2 (count (ontology/get-claims ctx :tree-class second-child)))
-              "the second family is born described, like the first"))))))
+              "the second family is born described, like the first")))))))
 
 ;; =============================================================================
 ;; CYCLE 6 — an :unknown verdict yields the structural assignment plus a

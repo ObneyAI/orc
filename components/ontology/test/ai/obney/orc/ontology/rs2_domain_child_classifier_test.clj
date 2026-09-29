@@ -23,10 +23,21 @@
 ;; read the store and fail (deferring) without one, by design. This suite
 ;; declares its world explicitly instead: no tenant-wide families, and no
 ;; candidate is a family, unless a test passes its own seam on ctx.
+;;
+;; CV-C: `default-domain-merge-fn` is now REAL (it calls `nearest-families`,
+;; which reads the store via `ontology/hybrid-search`) rather than the
+;; CV-A-shipped `{:kind :new}` stub these tests were written against. Stub
+;; ONLY `nearest-families` (not `default-domain-merge-fn` itself) so a
+;; would-mint here still exercises the real seam's own empty-neighbourhood
+;; short-circuit ("an empty neighbourhood is new without a call") — exactly
+;; what a fresh, family-less tenant IS — rather than bypassing CV-C's logic
+;; entirely. A test that stubs its OWN `:domain-merge-fn` on ctx is
+;; unaffected (ctx always wins over the default).
 (use-fixtures :each
   (fn [t]
     (with-redefs [tc/default-domain-families-fn (fn [_ctx] [])
-                  tc/default-domain-family-parent-fn (fn [_ctx _target-id] nil)]
+                  tc/default-domain-family-parent-fn (fn [_ctx _target-id] nil)
+                  tc/nearest-families (fn [_ctx _query] [])]
       (t))))
 
 ;; =============================================================================

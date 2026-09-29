@@ -2533,11 +2533,14 @@
 (defmethod concept-embeddings* :ontology/concept-embedded
   [state event]
   ;; v3 event store flattens body fields to top level
-  (let [{:keys [uri concept-id embedding text-embedded field-source model-id embedded-at ontology-id]} event]
+  (let [{:keys [uri concept-id embedding text-embedded field-source model-id embedded-at ontology-id scope]} event]
     (assoc state uri
            {:uri uri
             :concept-id concept-id
             :ontology-id ontology-id
+            ;; Kept so a scoped read can filter in memory: embedding events
+            ;; carry only UUID tags ([:concept id]), never [:scope ...].
+            :scope scope
             :embedding embedding
             :text-embedded text-embedded
             :field-source field-source
@@ -2552,7 +2555,8 @@
   (reduce concept-embeddings* initial-state events))
 
 (defreadmodel :ontology concept-embeddings
-  {:events #{:ontology/concept-embedded}, :version 1}
+  ;; version 2: the state carries :scope (cached version-1 projections lack it)
+  {:events #{:ontology/concept-embedded}, :version 2}
   [state event] (concept-embeddings* state event))
 
 (defmulti tree-profile-embeddings*
@@ -2610,7 +2614,8 @@
 (defn get-concept-embedding
   "Get embedding for a specific concept by URI."
   [ctx uri]
-  (get (rmp/project ctx :ontology/concept-embeddings {:tags #{[:uri uri]}}) uri))
+  ;; No [:uri] tag exists on embedding events (UUID tags only); read by key.
+  (get (rmp/project ctx :ontology/concept-embeddings) uri))
 
 (defn get-all-concept-embeddings
   "Get all concept embeddings, optionally filtered by scope and/or ontology-id.
@@ -2620,9 +2625,11 @@
      :ontology-id - Filter by single ontology-id
      :ontology-ids - Filter by multiple ontology-ids (returns union)"
   [ctx & [{:keys [scope ontology-id ontology-ids]}]]
-  (let [all-embeddings (if scope
-                         (rmp/project ctx :ontology/concept-embeddings {:tags #{[:scope scope]}})
-                         (rmp/project ctx :ontology/concept-embeddings))
+  ;; Scope is filtered in memory. Embedding events are tagged only by concept
+  ;; UUID, so the former tag-filtered projection ({:tags #{[:scope scope]}})
+  ;; matched no event and every scoped embedding search returned nothing.
+  (let [all-embeddings (cond->> (rmp/project ctx :ontology/concept-embeddings)
+                         scope (into {} (filter #(= scope (:scope (val %))))))
         ont-id-set (cond
                      ontology-ids (set ontology-ids)
                      ontology-id #{ontology-id}
