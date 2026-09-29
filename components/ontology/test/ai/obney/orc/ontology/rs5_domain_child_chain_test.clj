@@ -287,7 +287,14 @@
             and surfaced"
     (with-test-ctx [ctx]
       (let [parent-id (random-uuid)
-            child-id (random-uuid)]
+            child-id (random-uuid)
+            ;; CV-D: the domain child IS a real minted family, reached again
+            ;; as its own top-1 — a PROPOSED landing, judged
+            ;; (JudgeReachedDomainFamily). This test's own concern is the
+            ;; retrieval-gate band, not the merge judge, so it declares the
+            ;; judge's :same verdict rather than exercising the real one (a
+            ;; live model call).
+            ctx (assoc ctx :domain-merge-fn (fn [_ _] {:kind :same :family child-id}))]
         (dispatch! ctx (mint-command parent-id child-id "marathon-training-plan"))
         (with-redefs [ontology/search-descriptions
                       (fn [_ _] [(tree-class-candidate child-id 0.95 25.0)])]
@@ -467,10 +474,14 @@
             0.9, above the match threshold 0.7) -> walk-down descends into
             its REAL minted domain family (get-tree-class-children reads the
             real graph edge RS-3's mint-domain-child created) -> the
-            family-is-leaf check widens this into a landing:
-            :assigned-via :land-on-domain-child, assigned id = the family,
-            :parent-tree-id = the family's OWN birth shape, :domain-label =
-            the family's own concept label"
+            family-is-leaf check widens this into a PROPOSED landing (CV-D,
+            JudgeReachedDomainFamily: judged as a match on the family's own
+            parent shape, never an unjudged direct land). A :same verdict
+            naming the family -> :assigned-via :land-on-domain-child,
+            assigned id = the family, :parent-tree-id = the family's OWN
+            birth shape, :domain-label = the family's own concept label —
+            every assertion below is unchanged from before this bundle
+            except declaring the judge's verdict explicitly"
     (with-test-ctx [ctx]
       (let [parent-id (random-uuid)
             child-id (random-uuid)]
@@ -485,11 +496,14 @@
                                        :fitness-score 0.95})
                               (:candidates opts)))
                       tc/get-consolidation-total* (fn [_ _ _] 0)]
-          (let [r (ontology/classify-task ctx {:task-signature "x" :threshold 0.7})]
+          (let [r (ontology/classify-task
+                   (assoc ctx :domain-merge-fn (fn [_ _] {:kind :same :family child-id}))
+                   {:task-signature "x" :threshold 0.7})]
             (is (= :land-on-domain-child (:assigned-via r)))
             (is (= child-id (:assigned-tree-id r)))
             (is (= parent-id (:parent-tree-id r))
                 "the family's own birth shape — here the same id it walked down from")
             (is (= "marathon-training-plan" (:domain-label r))
                 "a landing carries the family's own label")
-            (is (false? (:was-fresh-mint? r)))))))))
+            (is (false? (:was-fresh-mint? r)))
+            (is (= {:kind :same :family child-id} (:merge-verdict r)))))))))

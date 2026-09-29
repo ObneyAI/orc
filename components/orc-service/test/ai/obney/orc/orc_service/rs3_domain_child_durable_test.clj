@@ -182,7 +182,14 @@
 (deftest same-task-again-lands-on-existing-child-no-second-mint
   (testing "recurrence: the same task classified again yields
             :land-on-domain-child with the SAME child identity; no second
-            :domain-child-minted event, no second claim"
+            :domain-child-minted event, no second claim. CV-D: the
+            per-parent existing-child label match is now a PROPOSED landing,
+            judged — a live model call, so this test declares the judge's
+            :same verdict rather than exercising the real one (mirrors the
+            rs3_domain_child_durable_test's own
+            different-label-under-a-parent-with-a-child-mints-a-sibling,
+            which exercises the real judge down to the model boundary for
+            the sibling-mint case)"
     (with-test-ctx [ctx]
       (let [class-id (random-uuid)
             candidate (tree-class-candidate class-id 0.95
@@ -194,11 +201,12 @@
           (tp/maybe-auto-classify-and-set-context n1 ctx))
         (let [first-child-id (:assigned-tree-id (first (events-of ctx :ontology/task-classified)))
               n2 (assoc (node) :id (random-uuid))
-              tick-2-ctx (assoc ctx :tick-id (random-uuid))]
+              tick-2-ctx (assoc ctx :tick-id (random-uuid)
+                                :domain-merge-fn (fn [_ _] {:kind :same :family first-child-id}))]
           ;; A SECOND child under the SAME parent with the SAME judged label —
           ;; once a class has children, the coverage verdict is not consulted
-          ;; (D7b); the judged label decides. Same label -> lands on the
-          ;; existing child.
+          ;; (D7b); the judged label decides. Same label, judge says :same ->
+          ;; lands on the existing child.
           (with-domain-candidate candidate
             (tp/maybe-auto-classify-and-set-context n2 tick-2-ctx))
           (let [classified (events-of ctx :ontology/task-classified)
@@ -556,8 +564,10 @@
 (deftest cross-parent-landing-records-no-concept-and-carries-the-familys-own-parent
   (testing "a family already exists (minted under shape A); a LATER task
             whose top-1 is a DIFFERENT shape B, judged with the SAME
-            canonical label, lands on A's family via the tenant-wide lookup
-            — no :domain-child-minted event, no new concept, and the
+            canonical label, is now a PROPOSED landing on A's family via the
+            tenant-wide lookup (CV-D: judged, not landed directly — a live
+            model call, so this test declares the judge's :same verdict) —
+            no :domain-child-minted event, no new concept, and the
             classified event's :parent-tree-id names A (the family's OWN
             birth parent), never B"
     (with-test-ctx [ctx]
@@ -576,7 +586,9 @@
           (tp/maybe-auto-classify-and-set-context n1 ctx))
         (let [family-id (:assigned-tree-id (first (events-of ctx :ontology/task-classified)))]
           (with-domain-candidate second-candidate
-            (tp/maybe-auto-classify-and-set-context n2 (assoc ctx :tick-id (random-uuid))))
+            (tp/maybe-auto-classify-and-set-context
+             n2 (assoc ctx :tick-id (random-uuid)
+                       :domain-merge-fn (fn [_ _] {:kind :same :family family-id}))))
           (let [classified (events-of ctx :ontology/task-classified)
                 minted (events-of ctx :ontology/domain-child-minted)
                 second-event (first (filter #(= (:id n2) (:source-node-id %)) classified))]

@@ -466,11 +466,17 @@
    family-is-leaf parent lookup threw — never read as \"no families\") and
    `:merge-unresolved` (the merge judge answered `:unknown`, or something
    other than `:same`/`:new` — CV-C's seam; this bundle's default merge-fn
-   never produces it, but the reason must exist for the seam contract)."
+   never produces it, but the reason must exist for the seam contract).
+
+   CV-D adds `:label-taken` (`MintDomainFamily`'s identity-collision guard,
+   decision C3'): the merge judge answered `:new`, but the mint's derived
+   identity — `stable_domain_child_identity` of the shape and the
+   canonical label — is an EXISTING family's identity. Minting again would
+   silently duplicate/overwrite it, so the domain axis defers instead."
   [:map
    [:axis   [:enum :domain]]
    [:reason [:enum :unknown-coverage :children-lookup-failed
-             :families-lookup-failed :merge-unresolved]]])
+             :families-lookup-failed :merge-unresolved :label-taken]]])
 
 ;; =============================================================================
 ;; CV-A — covered-seed protection selection + the merge verdict

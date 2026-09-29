@@ -586,6 +586,12 @@ per input candidate."))
        "differ in subject matter — DIFFERENT families); a DIFFERENT output kind is a NEW family "
        "even when the subject matter matches (recipe scaling and nutrition-label computation share "
        "the subject matter \"recipes\" but differ in output kind — DIFFERENT families).\n\n"
+       "Judge each axis at the level of the candidate family's OWN label and description, never at an "
+       "umbrella category above it. \"Physical activity scheduling\" is an umbrella over marathon "
+       "training and injury rehabilitation, which are DIFFERENT subject matters; \"technical "
+       "troubleshooting\" is an umbrella over log triage and query optimisation, which are DIFFERENT "
+       "subject matters. If you find yourself naming a broader category to make two tasks match, the "
+       "axis does not match.\n\n"
        "INPUTS DESCRIBED\n"
        "- task        — the new task's instruction text\n"
        "- reasoning   — the reranker's domain reasoning for the new task (why the matched shape "
@@ -601,9 +607,11 @@ per input candidate."))
        "  new     — when no candidate is the same family (at least one axis differs from every "
        "candidate)\n"
        "  unknown — when you cannot tell from what is shown\n\n"
-       "Respond with a JSON object with EXACTLY these three keys:\n"
+       "Respond with a JSON object with EXACTLY these five keys:\n"
        "  {\"merge_reasoning\": \"<name the candidate compared; state what is shared and what "
        "differs in subject matter and output kind>\",\n"
+       "   \"subject_matter_same\": \"yes\"|\"no\"  (for the candidate you compared, at its own level),\n"
+       "   \"output_kind_same\": \"yes\"|\"no\"  (for the candidate you compared),\n"
        "   \"verdict\": \"same\"|\"new\"|\"unknown\",\n"
        "   \"family\": \"<the compared candidate's id when verdict is same, otherwise null>\"}\n"
        "No surrounding prose, no code fences."))
@@ -660,6 +668,26 @@ per input candidate."))
              (catch Throwable _ nil))))
     :else nil))
 
+(defn combine-merge-verdict
+  "The judge's verdict, held to its own two axis answers. A \"same\" stands only
+   when the judge ALSO answered yes on both subject matter and output kind; a
+   \"same\" beside a \"no\" on either axis is the judge's own evidence of a
+   different family and becomes :new (live finding: the judge wrote \"the subject
+   matter differs\" and still answered same, by lifting both tasks to an umbrella
+   category). A \"same\" with a missing or malformed axis answer is :unknown. The
+   axis answers are the judge's structured output, not a reading of its prose.
+   :new and :unknown pass through; anything out of set is :unknown."
+  [verdict-kind subject-matter-same output-kind-same]
+  (let [axis (fn [v] ({"yes" :yes "no" :no} (some-> v str clojure.string/trim clojure.string/lower-case)))
+        sm (axis subject-matter-same)
+        ok (axis output-kind-same)]
+    (case verdict-kind
+      :same (cond (and (= :yes sm) (= :yes ok)) :same
+                  (or (= :no sm) (= :no ok)) :new
+                  :else :unknown)
+      :new :new
+      :unknown)))
+
 (defn merge-family!
   "CV-C item 2: invoke the domain-family-merge workflow with (signature,
    reasoning, candidates). Model resolution like `rerank!` (`resolve-model`
@@ -703,7 +731,9 @@ per input candidate."))
           {:kind :unknown :family nil :reasoning nil :usage nil})
       (let [parsed (parse-merge-answer (get-in result [:outputs :merge-json]))
             verdict-kind (some-> (:verdict parsed) name keyword)
-            kind (if (contains? #{:same :new :unknown} verdict-kind) verdict-kind :unknown)]
+            kind (combine-merge-verdict verdict-kind
+                                        (:subject_matter_same parsed)
+                                        (:output_kind_same parsed))]
         (when (nil? verdict-kind)
           (mu/log ::merge-answer-unparseable
                   :raw-preview (let [raw (get-in result [:outputs :merge-json])]

@@ -5,8 +5,20 @@
    families are retrieved by rank and one discrete question decides same
    (named) / new / unknown. Same lands on that family, new mints, unknown
    defers on the domain axis (`:merge-unresolved`) and mints nothing. No
-   call on a landing or a covered match; an empty neighbourhood is 'new'
-   without a call.
+   call on a plain covered match or a covered-seed protection outcome; an
+   empty neighbourhood is 'new' without a call.
+
+   CV-D (decision C3', `docs/build-timeline/handoff-plan/CV-D-judge-every-
+   landing-HANDOFF.md`) revises this file's OWN prior claim that a landing
+   by label is judge-free: `landing-by-label-is-now-judged-and-a-same-
+   verdict-lands-on-it` below replaces the old `zero-merge-calls-on-a-
+   landing-by-label` — the RS-7 post-fix arm found unjudged label-reuse was
+   the DOMINANT false-merge path, so every landing on an existing family
+   (label match, per-parent child match, or a match/walk-down reaching the
+   family itself) is now judged too. See rs8_judge_every_landing_test.clj
+   for the bundle's own new obligations (the proposed-family guarantee on
+   nearest-families, the :label-taken identity-collision guard, and a
+   reached family's :new verdict minting under its parent).
 
    Seam 1 (Cycles 1-7) — `classify-task` with a STUBBED `:domain-merge-fn`
    capturing its calls, mirroring rs2's style: the routing/plumbing is
@@ -152,10 +164,15 @@
           (is (not= :land-on-domain-child (:assigned-via r)))
           (is (not= rogue-id (:assigned-tree-id r))))))))
 
-(deftest zero-merge-calls-on-a-landing-by-label
-  (testing "top-1 would mint, but a tenant-wide family ALREADY carries the
-            judged label's canonical form -> lands by label (C1's
-            judge-free path) -> the merge judge is never asked"
+(deftest landing-by-label-is-now-judged-and-a-same-verdict-lands-on-it
+  (testing "CV-D flip (decision C3', was 'zero-merge-calls-on-a-landing-by-
+            label'): top-1 would mint, and a tenant-wide family ALREADY
+            carries the judged label's canonical form -> that family is now
+            a PROPOSED landing, JUDGED like any other (the RS-7 post-fix arm
+            showed this exact unjudged label-reuse path was the dominant
+            false merge) -> the merge judge IS asked (was 0 calls before
+            this bundle, now 1), and a :same verdict naming that family
+            lands on it exactly as the old unjudged path did"
     (let [class-id (random-uuid) family-id (random-uuid) family-parent (random-uuid)
           candidate (tree-class-candidate class-id 0.95
                       :domain-coverage :partial
@@ -169,10 +186,12 @@
                   :domain-families-fn (fn [_] [{:target-id family-id
                                                 :domain-label "recipe-scaling"
                                                 :parent-id family-parent}])
-                  :domain-family-parent-fn (fn [_ _] nil)
-                  :domain-merge-fn (fn [_ _] (swap! calls inc) {:kind :new})}
+                  :domain-family-parent-fn (fn [_ id] (when (= id family-id)
+                                                        {:parent-id family-parent
+                                                         :domain-label "recipe-scaling"}))
+                  :domain-merge-fn (fn [_ _] (swap! calls inc) {:kind :same :family family-id})}
                  {:task-signature "x" :threshold 0.7})]
-          (is (= 0 @calls) "landing by label never reaches the merge judge")
+          (is (= 1 @calls) "CV-D: landing by label now reaches the merge judge exactly once")
           (is (= :land-on-domain-child (:assigned-via r)))
           (is (= family-id (:assigned-tree-id r))))))))
 
@@ -436,3 +455,24 @@
         (is (= recipe-id (first ids)) "the recipe family ranks first for a recipe-scaling task")
         (is (not (contains? (set ids) shape-id)) "the ordinary shape class is never shown to the judge")
         (is (every? #(seq (:description %)) found) "each family carries its own birth description")))))
+
+;; Convergence arc (live finding after CV-D): the judge wrote "the subject matter
+;; differs" and still answered "same", by lifting both tasks to an umbrella category.
+;; Its verdict is now held to its own two structured axis answers.
+(deftest a-same-verdict-stands-only-on-both-axes
+  (is (= :same (reranker/combine-merge-verdict :same "yes" "yes")))
+  (is (= :new (reranker/combine-merge-verdict :same "no" "yes"))
+      "the live case: same, beside the judge's own 'subject matter differs'")
+  (is (= :new (reranker/combine-merge-verdict :same "yes" "no")))
+  (is (= :new (reranker/combine-merge-verdict :same " YES " "No")) "answers are normalised, not pattern-matched")
+  (is (= :unknown (reranker/combine-merge-verdict :same nil "yes")) "a missing axis answer is not a same")
+  (is (= :unknown (reranker/combine-merge-verdict :same "maybe" "yes")))
+  (is (= :new (reranker/combine-merge-verdict :new "yes" "yes")))
+  (is (= :unknown (reranker/combine-merge-verdict :unknown "yes" "yes")))
+  (is (= :unknown (reranker/combine-merge-verdict nil "yes" "yes"))))
+
+(deftest family-merge-instruction-asks-for-both-axis-answers-at-the-familys-own-level
+  (let [instr (str @#'reranker/family-merge-instruction)]
+    (is (str/includes? instr "\"subject_matter_same\""))
+    (is (str/includes? instr "\"output_kind_same\""))
+    (is (str/includes? instr "never at an umbrella category above it"))))

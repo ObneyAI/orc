@@ -61,8 +61,10 @@
   (testing "graph-landing route: parent top-1 at high confidence (skips
             walk-down), an existing domain child (surfaced only via
             :domain-children-fn, never a search candidate) whose label
-            matches the judged label -> :land-on-domain-child on that
-            child, the child ABSENT from :top-candidates"
+            matches the judged label -> now a PROPOSED landing (CV-D: a
+            per-parent child label match is judged, not landed directly).
+            A :same verdict naming that child -> :land-on-domain-child on
+            that child, the child ABSENT from :top-candidates"
     (let [parent-id (random-uuid)
           child-id (random-uuid)
           candidate (tree-class-candidate parent-id 0.95
@@ -77,7 +79,10 @@
                                           [{:target-id child-id :domain-label "marathon-training-plan"}]))
                   ;; pure test, no store: declare the family seams explicitly
                   :domain-families-fn (fn [_] [])
-                  :domain-family-parent-fn (fn [_ _] nil)}
+                  :domain-merge-fn (fn [_ _] {:kind :same :family child-id})
+                  :domain-family-parent-fn (fn [_ id] (when (= id child-id)
+                                                        {:parent-id parent-id
+                                                         :domain-label "marathon-training-plan"}))}
                  {:task-signature "x" :threshold 0.7})]
           (is (= :land-on-domain-child (:assigned-via r)))
           (is (= child-id (:assigned-tree-id r)))
@@ -127,6 +132,8 @@
                             (:candidates opts)))]
         (let [r (ontology/classify-task
                  {:domain-children-fn (fn [_ _] [])
+                  :domain-families-fn (fn [_] [])
+                  :domain-merge-fn (fn [_ _] {:kind :same :family child-id})
                   :domain-family-parent-fn
                   (fn [_ target-id]
                     (when (= target-id child-id)
@@ -161,6 +168,8 @@
                     tc/get-consolidation-total* (fn [_ _ _] 0)]
         (let [r (ontology/classify-task
                  {:domain-children-fn (fn [_ _] [])
+                  :domain-families-fn (fn [_] [])
+                  :domain-merge-fn (fn [_ _] {:kind :same :family child-id})
                   :domain-family-parent-fn
                   (fn [_ target-id]
                     (when (= target-id child-id)
@@ -185,6 +194,8 @@
                     tc/get-consolidation-total* (fn [_ _ _] 0)]
         (let [r (ontology/classify-task
                  {:domain-children-fn (fn [_ _] [])
+                  :domain-families-fn (fn [_] [])
+                  :domain-merge-fn (fn [_ _] {:kind :same :family child-id})
                   :domain-family-parent-fn
                   (fn [_ target-id]
                     (when (= target-id child-id)

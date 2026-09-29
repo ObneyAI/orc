@@ -285,3 +285,22 @@ unfiltered. Any later edit means one more full run.
   until the first rebuild). The arm launcher now clears the index directory before each JVM.
 - **Analysis gap:** the analysis reports in-domain mints but not in-domain captures or families shared across groups.
   Both are added before the comparison.
+
+## CV-D verification ledger — every landing judged (decision C3')
+
+- **Implemented (Sonnet):** the three unjudged landing paths (a family's label, a shape's child label, a family reached
+  by match or walk-down) now only propose a family; the merge judge decides with the proposed family always among its
+  candidates. A reached family is judged as a match on its own parent shape. A new verdict whose identity already
+  exists defers `:label-taken`. RED 23 failures on the new tests, GREEN reported 163 tests.
+- **Re-run by the orchestrator:** 18 namespaces, 198 tests, all passing.
+- **Live 42-task confusable check:** 10 of 14 groups each on a family of their own; 4 of 6 legal tasks on the legal
+  seeds; still 2 families shared across groups (marathon into a rehab family, log triage into query optimisation) and
+  one in-domain legal mint.
+- **Defect found in inspection and fixed:** in the shared cases the judge's own reasoning said "the subject matter
+  differs" and still answered same, by lifting both tasks to an umbrella category. The judge now also answers
+  `subject_matter_same` and `output_kind_same`, judged at the family's own level, and code keeps "same" only when both
+  are yes (`combine-merge-verdict`; a same beside a no is new, beside a missing answer unknown). Tests pin the
+  combination table and the instruction. 200 tests passing.
+- **Process note:** the implementer's attempt to delete two stale directories was refused by the permission system;
+  the orchestrator surfaced it and moved them aside instead (`ontology-descriptions.stale-*`,
+  `rs7-confusable-check-run1-before-cvd`).
