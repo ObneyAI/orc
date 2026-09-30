@@ -67,8 +67,8 @@ present, while `allium analyse` returns success when those diagnostics produce
 no process findings. Thus “zero errors” above does not mean
 `allium check specs` exits cleanly. Under the current checked-in specifications
 and Allium CLI, both
-`allium check specs` and `allium analyse specs` report 150 structural diagnostics
-across the twelve specifications: 115 informational and 35 warnings. `analyse`
+`allium check specs` and `allium analyse specs` report 151 structural diagnostics
+across the twelve specifications: 115 informational and 36 warnings. `analyse`
 reports zero process findings.
 
 | Diagnostic | Count | Interpretation |
@@ -76,7 +76,7 @@ reports zero process findings.
 | `allium.rule.unreachableTrigger` | 77 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations. The RR-12 map-each recovery, RR-13 blocked-child callback, and RR-14 resume-persistence triggers are such startup/internal callbacks. |
 | `allium.field.unused` | 38 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
 | `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
-| `allium.definition.unused` | 17 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
+| `allium.definition.unused` | 18 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
 
 This is a characterized baseline, not an allowlist for future warnings. Agents
