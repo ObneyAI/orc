@@ -1305,7 +1305,14 @@
                                         :over parent-id
                                         :reason :covered-leaf-neighbour}))
 
-          proposed-id
+          ;; A label proposes a family only when the matched class does NOT cover
+          ;; the task. A covered match keeps its class (DomainFamilyMergeIsJudged:
+          ;; never asked on a covered match); the RS-7 post-fix arm showed a
+          ;; covered curated seed at fitness 1.0 pulled into a look-alike family
+          ;; because the reranker reused that family's label. A covered class
+          ;; that has families of its own is still handled by
+          ;; `assign-domain-child` (D7b: its children's labels decide, judged).
+          (and proposed-id (contains? #{:partial :uncovered} coverage))
           (mint-domain-family-via-merge ctx base parent-id canonical-label verdict signature candidates proposed-id)
 
           :else

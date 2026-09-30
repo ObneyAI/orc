@@ -320,3 +320,18 @@ unfiltered. Any later edit means one more full run.
   reranker fallback (EL-3, unrelated to this bundle).
 - **Process note:** the implementer's `git stash` was refused by the permission system; it reverted by editing instead
   and reported it.
+
+## Post-fix arm 3 (CV-E): a covered seed was pulled into a family by its label (orchestrator's spec error)
+
+- **Arm result (kept as `post_fix3`):** pass 1 had 14 of 24 in-domain tasks on their seed, 22 of 36 off-domain
+  groups on one family, 4 families shared across groups. In pass 2 the in-domain seed matches fell to 4 of 24.
+- **Cause:** in pass 1 one legal task minted "legal-contract-risk-audit". In pass 2 in-domain tasks whose top match
+  was the correct curated seed, at fitness 1.0 and judged covered, were labelled "legal-contract-risk-audit" by the
+  reranker; the label proposed that family, the judge said same, and the tasks left the seed. The orchestrator's C3'
+  spec tend let a proposal trigger the judge on a covered match, contradicting the C3' decision and the
+  `DomainFamilyMergeIsJudged` invariant ("never asked on a covered match").
+- **Fix:** a label proposes a family only when the matched class does not cover the task; a covered childless class
+  (a curated seed) stays a plain match. Spec rules aligned to the invariant (0 errors, 0 analyse findings). Test
+  `a-covered-seed-match-is-never-pulled-into-a-family-by-its-label` fails without the fix (lands on the family after
+  one judge call) and passes with it; 207 tests passing.
+- **Next:** the full post-fix arm reruns (`post_fix4`).

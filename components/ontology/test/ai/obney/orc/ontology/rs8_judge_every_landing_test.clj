@@ -295,3 +295,26 @@
           (is (= baseline (concept-created-count ctx)) "a landing records NO new concept")
           (is (some? classified-ev))
           (is (= {:kind :same :family family-id} (:merge-verdict classified-ev))))))))
+
+;; RS-7 post-fix arm (pass 2): a curated seed matched at fitness 1.0 and judged
+;; covered was pulled into a look-alike family because the reranker reused that
+;; family's label. A covered match keeps its class; the label proposes nothing.
+(deftest a-covered-seed-match-is-never-pulled-into-a-family-by-its-label
+  (let [seed-id (random-uuid) fam-id (random-uuid) fam-parent (random-uuid)
+        calls (atom 0)
+        seed (tree-class-candidate seed-id 1.0
+               :domain-coverage :covered
+               :domain-label "legal-contract-risk-audit"
+               :domain-reasoning "The seed covers this task.")]
+    (with-redefs [ontology/search-descriptions (fn [_ _] [seed])
+                  tc/get-consolidation-total* (fn [_ _ _] 0)]
+      (let [r (ontology/classify-task
+               {:domain-families-fn (fn [_] [{:target-id fam-id :domain-label "legal-contract-risk-audit"
+                                              :parent-id fam-parent}])
+                :domain-children-fn (fn [_ _] [])
+                :domain-family-parent-fn (fn [_ id] (when (= id fam-id) {:parent-id fam-parent :domain-label "legal-contract-risk-audit"}))
+                :domain-merge-fn (fn [_ _] (swap! calls inc) {:kind :same :family fam-id})}
+               {:task-signature "review this NDA for legal issues" :threshold 0.7})]
+        (is (= :match (:assigned-via r)))
+        (is (= seed-id (:assigned-tree-id r)) "the task stays on the curated seed")
+        (is (= 0 @calls) "no judge call on a covered match")))))

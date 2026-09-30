@@ -1027,8 +1027,10 @@ rule MergeIntoDomainFamily {
     let canonical_label = canonical_domain_label(domain_label)
     requires: canonical_label != null
     let proposed = proposed_family(ranking, canonical_label)
-    requires: covered_leaf_neighbour(ranking) = null or coverage = covered
-    requires: coverage in {partial, uncovered} or proposed != null
+    requires: covered_leaf_neighbour(ranking) = null
+    -- A covered match keeps its class; a label never pulls a covered task into
+    -- a family (the RS-7 arm's covered seeds at fitness 1.0 were captured this way).
+    requires: coverage in {partial, uncovered}
     let candidates = nearest_families(proposed, occurrence.signature, occurrence.domain_reasoning, ranking)
     let verdict = merge_verdict(occurrence.signature, candidates)
     requires: verdict.kind = same
@@ -1046,8 +1048,10 @@ rule MintDomainFamily {
     let canonical_label = canonical_domain_label(domain_label)
     requires: canonical_label != null
     let proposed = proposed_family(ranking, canonical_label)
-    requires: covered_leaf_neighbour(ranking) = null or coverage = covered
-    requires: coverage in {partial, uncovered} or proposed != null
+    requires: covered_leaf_neighbour(ranking) = null
+    -- A covered match keeps its class; a label never pulls a covered task into
+    -- a family (the RS-7 arm's covered seeds at fitness 1.0 were captured this way).
+    requires: coverage in {partial, uncovered}
     let candidates = nearest_families(proposed, occurrence.signature, occurrence.domain_reasoning, ranking)
     let verdict = merge_verdict(occurrence.signature, candidates)
     requires: verdict.kind = new
