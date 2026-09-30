@@ -398,10 +398,14 @@ contract TaskClassification {
         -- merely because retrieval was confident: after EVERY tree-class match,
         -- whatever the top match's fitness (the specificity threshold that lets a
         -- confident match skip the walk-down does not skip this), the
-        -- classification runs covered-seed protection, then the tenant-wide
-        -- family lookup by canonical label, then — only when it would mint — the
-        -- merge judge, so a repeat of a domain lands on its family even when the
-        -- coverage verdict does not repeat. The one carve-out is the deferral
+        -- classification runs covered-seed protection, then the merge judge on
+        -- any proposed family (the one carrying the task's label, or the shape's
+        -- own child carrying it) and on any would-be mint (revised C3'), so a
+        -- repeat of a domain lands on its family, judged, even when the coverage
+        -- verdict does not repeat. A covered verdict ends the domain axis only
+        -- for a shape with no families of its own; on a shape that already has
+        -- families "covered" is not evidence (D7b), and its children's labels are
+        -- still judged. The one carve-out is the deferral
         -- above: a blank label, a failed family lookup or an unresolved merge
         -- leaves the task on the shape class with the deferral recorded, rather
         -- than guessing a family.
@@ -992,6 +996,8 @@ rule SeedBaselineDescriptions {
 -- proposed_family(ranking, canonical_label) is the family a landing would
 -- choose without a judge — the family carrying that label, else a shape's child
 -- carrying it — or null (the ranking never holds a family: C5');
+-- shape_has_families(shape_class) is true when the shape already has domain
+-- families of its own (its narrower agent-authored concepts);
 -- nearest_families(proposed, signature, reasoning, ranking) is the hybrid
 -- search's ranked neighbourhood bounded by merge_candidate_count, with the
 -- proposed family always included when not null; merge_verdict(...) is the
@@ -1029,8 +1035,10 @@ rule MergeIntoDomainFamily {
     let proposed = proposed_family(ranking, canonical_label)
     requires: covered_leaf_neighbour(ranking) = null
     -- A covered match keeps its class; a label never pulls a covered task into
-    -- a family (the RS-7 arm's covered seeds at fitness 1.0 were captured this way).
-    requires: coverage in {partial, uncovered}
+    -- a family (the RS-7 arm's covered seeds at fitness 1.0 were captured this
+    -- way). The D7b exception: a shape that already has families of its own is
+    -- not trusted when it says covered, and its children's labels are judged.
+    requires: coverage in {partial, uncovered} or shape_has_families(shape_class)
     let candidates = nearest_families(proposed, occurrence.signature, occurrence.domain_reasoning, ranking)
     let verdict = merge_verdict(occurrence.signature, candidates)
     requires: verdict.kind = same
@@ -1050,8 +1058,10 @@ rule MintDomainFamily {
     let proposed = proposed_family(ranking, canonical_label)
     requires: covered_leaf_neighbour(ranking) = null
     -- A covered match keeps its class; a label never pulls a covered task into
-    -- a family (the RS-7 arm's covered seeds at fitness 1.0 were captured this way).
-    requires: coverage in {partial, uncovered}
+    -- a family (the RS-7 arm's covered seeds at fitness 1.0 were captured this
+    -- way). The D7b exception: a shape that already has families of its own is
+    -- not trusted when it says covered, and its children's labels are judged.
+    requires: coverage in {partial, uncovered} or shape_has_families(shape_class)
     let candidates = nearest_families(proposed, occurrence.signature, occurrence.domain_reasoning, ranking)
     let verdict = merge_verdict(occurrence.signature, candidates)
     requires: verdict.kind = new

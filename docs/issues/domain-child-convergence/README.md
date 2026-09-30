@@ -335,3 +335,18 @@ unfiltered. Any later edit means one more full run.
   `a-covered-seed-match-is-never-pulled-into-a-family-by-its-label` fails without the fix (lands on the family after
   one judge call) and passes with it; 207 tests passing.
 - **Next:** the full post-fix arm reruns (`post_fix4`).
+
+## CV-8 integration (orchestrator)
+
+- **Main merged** (PR #40, llm optional-means-nullable): no conflicts; 310 focused tests passing; the 42-task live
+  check after the merge: 42 of 42 completed, 0 families shared across groups, every legal task on a curated seed.
+- **Allium over every spec:** 0 errors and 0 analyse findings in all 12; 151 diagnostics (115 info, 36 warnings). The
+  ontology spec's warnings are identical to main's; `specs/COVERAGE.md` was one `definition.unused` behind main and is
+  corrected.
+- **Weed (check mode) over the whole ontology spec:** two spec bugs, both resolved in the spec (the code was right):
+  the merge and mint rules now state D7b's exception (a shape that already has families is not trusted when it says
+  covered, so its children's labels are judged), and `DomainChildrenAreAlwaysConsidered` no longer describes the
+  pre-C3' flow. Two intentional gaps, recorded and left: `classify_retrieval_k` and `family_label_list_bound` keep the
+  spec's defaults without an override hook, and the judge's two axis answers are an internal mechanism behind the
+  spec's black-box `merge_verdict`.
+- **ADR 0007** amended with C3' and C5'. **Findings:** `development/bench/ood-stress-results/rs7-traffic/FINDINGS.md`.
