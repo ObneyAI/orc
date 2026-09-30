@@ -2,34 +2,29 @@
 
 **A laboratory and production line for accountable agentic software** — in Clojure, built on [Grain](https://github.com/ObneyAI/grain).
 
-ORC is where you build an AI workflow, run it, see exactly what it did, judge it, and make it better — then ship what works. Every execution becomes durable evidence. Judges score that evidence. The evidence then improves a node's instructions, informs how future workflows are designed, and promotes proven patterns into reusable behaviors — **without retraining a model**.
+ORC records workflow executions so you can inspect results, evaluate individual nodes, and improve their instructions. Evaluation results also inform new workflows and help identify behaviors worth reusing. These improvements don't require model retraining.
 
-> Most agent frameworks treat the first working agent as the finish line. In ORC, it's the first experiment.
+Add ORC as a git dependency. [Choose a package](#pick-your-package) for workflow execution, evaluation, optimization, memory, or the full self-improving loop.
 
-ORC is a library you pull in as a git dependency. Pick only the layers you need — the engine, judges, optimization, memory, or the whole self-improving lab ([Pick your package](#pick-your-package)).
-
-> **Early-stage software.** ORC is under active development. Expect sharp edges and breaking changes — APIs, event schemas, and conventions may shift between commits. Pin to a specific `:git/sha` and review the diff before updating. Expect incomplete docs, use at your own peril!
+> **Early-stage software.** Expect breaking changes.
 
 ## New here?
 
-Start with **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — a progressive contract-analysis walkthrough from a bare workflow through judges, GEPA, ontology, and self-improvement. **[docs/README.md](docs/README.md)** maps every guide onto the lab loop.
+Start with [Getting Started](docs/GETTING-STARTED.md), a contract-analysis walkthrough that adds evaluation, optimization, and memory to a basic workflow. The [documentation index](docs/README.md) lists the available guides.
 
-For production persistence and diagnostics, see **[Value Storage](docs/VALUE-STORAGE.md)**
-and **[Tracing and Correlation](docs/ORC-SERVICE-GUIDE.md#tracing-correlation-and-exact-node-io)**.
+## Behavior trees for AI workflows
 
-## Behavior trees: a proven idea, applied to AI work
-
-Behavior trees have run game characters and robots for decades. A tree ticks top-down; **sequences** run steps in order, **fallbacks** try another path when one fails, **conditions** decide and **actions** do. The tree owns the process — nothing is left to memory. ORC applies the same machine to knowledge work: language models do the thinking *inside* nodes, while the tree decides what runs, in what order, and what happens on failure.
+Behavior trees have been used in games and robotics for decades. A tree ticks top-down: sequences run steps in order, fallbacks try alternatives, and conditions control which actions run. In ORC, nodes call language models or execute code. The tree defines execution order and failure handling.
 
 <table>
 <tr>
 <td width="33%" align="center"><img src="docs/media/bt-games.gif" alt="A game guard's behavior tree ticking: patrol, spot, chase, strike" width="100%"><br><b>Games</b> — a guard's tree: patrol, spot, chase, strike</td>
 <td width="33%" align="center"><img src="docs/media/bt-robot-events.gif" alt="A robot arm's behavior tree sorting boxes, with every decision appended to an event store" width="100%"><br><b>Robotics</b> — scan, route, stack; a fallback starts a new pallet</td>
-<td width="33%" align="center"><img src="docs/media/run-knowledge-work.gif" alt="An ORC workflow ticking: the blackboard fills as nodes read and write, while the robot works the invoice" width="100%"><br><b>Knowledge work — ORC</b> — real node kinds, typed blackboard reads/writes</td>
+<td width="33%" align="center"><img src="docs/media/run-knowledge-work.gif" alt="An ORC workflow ticking: the blackboard fills as nodes read and write, while the robot works the invoice" width="100%"><br><b>Knowledge work — ORC</b> — workflow nodes and typed blackboard reads/writes</td>
 </tr>
 </table>
 
-Behavior trees are one design decision inside ORC — the one that gives every step an **address**. See [How a run works](#how-a-run-works-behavior-trees) for the node palette and reads/writes contracts.
+Individual nodes can be inspected, evaluated, and optimized. See [How a run works](#how-a-run-works-behavior-trees) for an example with node inputs and outputs.
 
 ## The lab loop
 
@@ -37,77 +32,128 @@ Behavior trees are one design decision inside ORC — the one that gives every s
 
 <img src="docs/media/run-knowledge-work.gif" alt="An ORC tree running a desk agent: an invoice, then a contract" width="100%">
 
-Workflows are plain Clojure data: a tree of `llm`, `code`, `condition`, `delegate`, `map-each`, `parallel` and more, each declaring what it **reads** and **writes** on a typed blackboard. Nodes that reach the edge of their authority can block and hand off to a human, then resume. → [Getting Started](docs/GETTING-STARTED.md) · [DSL Reference](docs/DSL-REFERENCE.md)
+The DSL builds workflows as Clojure data: trees of nodes such as `llm`, `code`, `condition`, and `delegate`, without writing events directly. Each node declares what it reads and writes on a typed blackboard. Nodes can pause for human input and resume afterward. → [Getting Started](docs/GETTING-STARTED.md) · [DSL Reference](docs/DSL-REFERENCE.md)
 
-### 2 · Every step is evidence
+### 2 · Record execution
 
 <img src="docs/media/bt-robot-events.gif" alt="Every tick of a tree lands in an event store" width="100%">
 
-ORC runs on Grain's event sourcing. Every tick — the input a node saw, what it decided, each value it wrote — is an immutable event (in-memory, SQLite, or Postgres). Read models organize that history any way you need: semantic search over embeddings (which are themselves events), a concept graph, per-node datasets. → [Architecture](docs/ARCHITECTURE.md) · [Event Store Patterns](docs/EVENT-STORE-PATTERNS.md)
+ORC uses Grain's event sourcing to record workflow execution as immutable events. Read models organize execution history for queries and analysis. → [Architecture](docs/ARCHITECTURE.md) · [Event Store Patterns](docs/EVENT-STORE-PATTERNS.md)
 
 ### 3 · Judge
 
 <img src="docs/media/judges.gif" alt="A panel of judges scoring a node's output: evidence first, then a score" width="100%">
 
-Turn a human standard into judges that watch the nodes that matter — grounding, instruction following, reasoning, completeness. Judges write evidence before they commit to a score, and run as event processors: the work never waits on them. → [Judge Architecture](docs/JUDGE-ARCHITECTURE.md) · [Evaluation](docs/EVALUATION-COMPONENT.md)
+Judges evaluate selected nodes asynchronously against criteria such as grounding, instruction following, reasoning, and completeness. Each evaluation records supporting evidence before assigning a score. → [Judge Architecture](docs/JUDGE-ARCHITECTURE.md) · [Evaluation](docs/EVALUATION-COMPONENT.md)
 
 ### 4 · Improve one node's instructions (GEPA)
 
 <img src="docs/media/gepa-loop.gif" alt="GEPA: candidate instructions redlined, quick-tested, and kept on a Pareto frontier" width="100%">
 
-Pull a weak node's own history out of the event log, then let GEPA — reflective prompt optimization, in Clojure — rewrite just that node's instruction. Candidates must pass a quick test before a full evaluation, and a Pareto frontier keeps those that are best at *something*. → [GEPA Guide](docs/GEPA-GUIDE.md)
+GEPA uses a node's execution history to improve its instructions, retaining candidates on a Pareto frontier so gains on different evaluation criteria are preserved. → [GEPA Guide](docs/GEPA-GUIDE.md)
 
 ### 5 · Remember what works (Living Descriptions)
 
 <img src="docs/media/ld-compose.gif" alt="A catering brief, the descriptions retrieved for it, and the tree the model composes from them" width="100%">
 
-Judges' feedback is distilled into evidence-backed claims — strengths, weaknesses, when to use a pattern, when to avoid it. Those descriptions live in a graph of behaviors and are retrieved when the model designs a new tree. Above, a brief nobody had built for (scale a 6-plate recipe to 60) is composed from two retrieved descriptions: an ETL pipeline and a parallel analysis. *(alpha)* → [Two worked examples](docs/LIVING-DESCRIPTIONS.md#watch-it-work-two-trees-nobody-had-built-before) · [Living Descriptions](docs/LIVING-DESCRIPTIONS.md) · [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
+Judges' feedback becomes descriptions of a behavior's strengths, weaknesses, and suitable uses. The model retrieves these descriptions when designing new workflows. *(alpha)* → [Two worked examples](docs/LIVING-DESCRIPTIONS.md#watch-it-work-two-trees-nobody-had-built-before) · [Living Descriptions](docs/LIVING-DESCRIPTIONS.md) · [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
 
-### 6 · Harvest proven behaviors
+### 6 · Reuse successful behaviors
 
 <img src="docs/media/harvest.gif" alt="Benches cross a conveyor, each run lands in the event store, the recurring evidence is gathered and gated, and pilot-then-drive is promoted into a reusable behavior" width="100%">
 
-When a pattern keeps recurring and keeps scoring well on every judge, ORC promotes it into a named, reusable behavior that other trees can delegate to — nothing relearned from scratch. *(alpha — thresholds still being calibrated)* → [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
+ORC promotes recurring patterns that meet its evaluation thresholds into named behaviors that other trees can delegate to. *(alpha; thresholds are still being calibrated)* → [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
 
-<sub>The animations are illustrative explainers of real ORC mechanisms (the workbench is an analogy); node kinds, event shapes and judge dimensions match the code. Harvest's gate values in the animation predate the current defaults (see the [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)). Full map of the docs: **[docs/README.md](docs/README.md)**.</sub>
+<sub>The animations illustrate ORC mechanisms. The harvest animation uses older threshold values; see [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md) for current defaults.</sub>
+
+> **Self-improving loop is alpha-stage.** The full loop works end-to-end on
+> workflows that align with the shipped seed corpus, but force-fit classifications
+> appear on out-of-distribution tasks. See [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md)
+> for configuration and current limitations.
+
+## Consumer Requirements
+
+### Prerequisites
+
+- **Java 21+** (with module access for LMDB)
+- **Clojure CLI** (`brew install clojure/tools/clojure`)
+
+### Application infrastructure
+
+Applications using ORC provide:
+
+- **Grain infrastructure**: a tenant-scoped event store (in-memory, SQLite, or Postgres) and an LMDB projection cache
+- An **LLM provider**
+- **Optional**: Langfuse client for tracing, MCP servers for tool calling
+
+See [runtime setup](docs/GETTING-STARTED.md#wiring-a-context) for multi-instance deployment requirements.
+
+## Pick your package
+
+Choose a package for the capabilities you need; its dependencies are included.
+
+| I want… | Pull this package | Heavy deps |
+|---|---|:--:|
+| Just run behavior trees (the engine) | `obneyai/orc-service` → `projects/orc-service` | — |
+| …plus LLM-as-judge evaluation | `obneyai/orc-evaluation` → `projects/orc-evaluation` | — |
+| …plus GEPA prompt optimization | `obneyai/orc-gepa` → `projects/orc-gepa` | — |
+| …plus concept graph + DJL embeddings | `obneyai/orc-ontology` → `projects/orc-ontology` | DJL (JVM) |
+| …plus ColBERT retrieval (added to ontology) | also `obneyai/orc-colbert` → `projects/orc-colbert` | DJL (JVM) |
+| …plus MCP-driven tree generation | `obneyai/orc-mcp-sheet-builder` → `projects/orc-mcp-sheet-builder` | — |
+| **Everything** / the full self-improving loop | `obneyai/orc` → `projects/orc` | DJL (JVM) |
+
+Pin to a specific `:git/sha` and review the diff before updating.
+
+```clojure
+;; deps.edn — pick ONE row above; use its lib name + :deps/root
+obneyai/orc-evaluation {:git/url "https://github.com/ObneyAI/orc.git"
+                        :git/sha "..."                    ;; pin to a reviewed commit
+                        :deps/root "projects/orc-evaluation"}
+```
+
+See [Packages](docs/PACKAGES.md) for dependency details.
+
+### ColBERT Setup (Optional)
+
+For ColBERT retrieval, add `orc-colbert` alongside `orc-ontology`. The full
+self-improving loop requires the ColBERT component (pure JVM).
+
+ColBERT downloads its model automatically on first use (~133 MB), then runs offline.
+See [model configuration](docs/COLBERT-INTEGRATION.md#model-resolution-auto-download-cache-override)
+for cache and air-gapped setup.
+
+## Quick Start
+
+With your [chosen package](#pick-your-package) installed, follow the
+[context setup guide](docs/GETTING-STARTED.md#wiring-a-context) to configure `ctx`,
+including the LLM provider selected by `:llm-provider`. Then define and execute a workflow:
+
+```clojure
+(require '[ai.obney.orc.orc-service.interface :as orc])
+
+;; Define a workflow using the DSL
+(def my-workflow
+  (orc/workflow "summarizer"
+    (orc/blackboard
+      {:input   :string
+       :summary :string})
+    (orc/sequence "main"
+      (orc/llm "summarize"
+        :instruction "Summarize the input text in 2 sentences."
+        :reads [:input]
+        :writes [:summary]))))
+
+;; Build it (idempotent — no-op if definition hasn't changed)
+(orc/build-workflow! ctx my-workflow)
+
+;; Execute it
+(orc/execute ctx sheet-id {:input "Long article text..."})
+;; => {:status :success, :outputs {:summary "..."}, :duration-ms 1234}
+```
 
 ## How a run works: behavior trees
 
-Behavior trees have run game NPCs and robots for decades. The tree ticks **top-down, root first**; every leaf **reads** the blackboard (sensor / world state) and **writes** an action or command — and whole behaviors *stack* as reusable subbehaviors (here a **Swing-Sword** tree nests inside **Combat**, which sits under the **brain**):
-
-```mermaid
-flowchart TB
-  brain["<b>NPC brain</b><br/>FALLBACK · highest priority that works"]:::fb
-  brain --> ALERT
-  brain --> COMBAT
-  brain --> patrol["<b>patrol</b><br/>ACTION leaf<br/><i>idle behaviour</i><hr/>▸ reads&nbsp;&nbsp;waypoints<br/>◂ writes&nbsp;&nbsp;move_cmd"]:::act
-  subgraph ALERT["🔍 Alert subbehavior"]
-    direction TB
-    a["<b>investigate</b><br/>SEQUENCE"]:::seq
-    a --> heard(["<b>heard a noise?</b><br/>CONDITION<hr/>▸ reads&nbsp;&nbsp;hearing"]):::cond
-    a --> goto["<b>move to noise</b><br/>ACTION leaf<hr/>▸ reads&nbsp;&nbsp;noise_pos<br/>◂ writes&nbsp;&nbsp;move_cmd"]:::act
-  end
-  subgraph COMBAT["⚔️ Combat subbehavior"]
-    direction TB
-    c["<b>engage</b><br/>SEQUENCE"]:::seq
-    c --> see(["<b>enemy visible?</b><br/>CONDITION<hr/>▸ reads&nbsp;&nbsp;vision"]):::cond
-    c --> pick["<b>choose attack</b><br/>FALLBACK"]:::fb
-    pick --> bow["<b>shoot bow</b><br/>ACTION leaf<hr/>▸ reads&nbsp;&nbsp;ammo, enemy_pos<br/>◂ writes&nbsp;&nbsp;fire_cmd"]:::act
-    pick --> SWORD
-    subgraph SWORD["🗡️ Swing-Sword subbehavior"]
-      direction TB
-      m["<b>melee</b><br/>SEQUENCE"]:::seq
-      m --> near(["<b>in range & stamina?</b><br/>CONDITION<hr/>▸ reads&nbsp;&nbsp;enemy_dist, stamina"]):::cond
-      m --> strike["<b>strike</b><br/>ACTION leaf<hr/>▸ reads&nbsp;&nbsp;enemy_pos<br/>◂ writes&nbsp;&nbsp;attack_cmd"]:::act
-    end
-  end
-  classDef fb fill:#7c2d12,stroke:#fb923c,color:#fff,stroke-width:2px;
-  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
-  classDef cond fill:#713f12,stroke:#facc15,color:#fff;
-  classDef act fill:#0f766e,stroke:#5eead4,color:#fff;
-```
-
-**ORC is the same machine for LLM work** — same composites, same top-down tick, same reads/writes contracts, same subbehavior stacking. The leaves just call an LLM or sandboxed code, the blackboard holds *your* data instead of joint angles, and a stacked subbehavior is a `:delegate`. Here's a real ORC workflow — note `route by type` (a `fallback`, like *choose attack*), the `repl-researcher` leaf, and the **NDA review** subbehavior peeked-inside (the `:delegate` equivalent of *Swing-Sword* nesting under *Combat*):
+This contract-analysis workflow shows the blackboard keys each node reads and writes. NDA review is a separate workflow called through `:delegate`, shown expanded below. The `repl-researcher` node designs and runs its own subtree.
 
 ```mermaid
 flowchart TB
@@ -140,182 +186,7 @@ flowchart TB
   classDef rlm fill:#9d174d,stroke:#f9a8d4,color:#fff,stroke-width:2px;
 ```
 
-*Game `condition` → ORC `llm-condition`; game `ACTION` → an `llm`/`code` leaf; game sensors/commands → blackboard keys you **read** and **write**; a stacked game subbehavior → a `:delegate`. If you can read the game tree, you can read the ORC one. That's the entire mental model — see the [full contract-analysis walkthrough](docs/GETTING-STARTED.md).*
-
-## Pick your package
-
-ORC ships as standalone packages — **you pull in exactly ONE package and it
-bundles every component that capability needs** (transitively). You don't
-assemble components by hand. Find the row that matches what you want, then add
-one dependency: give it the lib name shown and point `:deps/root` at the project.
-
-| I want… | Pull this package | Heavy deps |
-|---|---|:--:|
-| Just run behavior trees (the engine) | `obneyai/orc-service` → `projects/orc-service` | — |
-| …plus LLM-as-judge evaluation | `obneyai/orc-evaluation` → `projects/orc-evaluation` | — |
-| …plus GEPA prompt optimization | `obneyai/orc-gepa` → `projects/orc-gepa` | — |
-| …plus concept graph + DJL embeddings | `obneyai/orc-ontology` → `projects/orc-ontology` | DJL (JVM) |
-| …plus ColBERT retrieval (added to ontology) | also `obneyai/orc-colbert` → `projects/orc-colbert` | DJL (JVM) |
-| …plus MCP-driven tree generation | `obneyai/orc-mcp-sheet-builder` → `projects/orc-mcp-sheet-builder` | — |
-| **Everything** / the full self-improving loop | `obneyai/orc` → `projects/orc` | DJL (JVM) |
-
-```clojure
-;; deps.edn — pick ONE row above; use its lib name + :deps/root
-obneyai/orc-evaluation {:git/url "https://github.com/ObneyAI/orc.git"
-                        :git/sha "..."                    ;; pin to a reviewed commit
-                        :deps/root "projects/orc-evaluation"}
-```
-
-Every non-leaf package bundles the engine (`orc-service`) transitively, so the
-require namespaces are the same whichever you pick. The only time you add a
-*second* package is ColBERT (pull `orc-ontology` **and** `orc-colbert` — distinct
-lib names so the keys don't collide). Full per-package detail and the
-ontology+colbert combination live in **[docs/PACKAGES.md](docs/PACKAGES.md)**; the
-layer → internal-component mapping and dependency graph live in
-**[docs/COMPONENT-MAP.md](docs/COMPONENT-MAP.md)**.
-
-> **Self-improving loop is alpha-stage.** The full loop (`:auto-classify?` +
-> `:recursive?`) works end-to-end on workflows that align with the shipped seed
-> corpus, but force-fit classifications appear on out-of-distribution tasks. It
-> needs the `colbert` component (pure JVM). See [docs/SELF-IMPROVING-LOOP.md](docs/SELF-IMPROVING-LOOP.md)
-> for an honest current-state breakdown.
-
-> **RLM recursive mode is now the default.** `:repl-researcher` nodes default to
-> `{:rlm {:recursive? true}}`; terminal mode (`:rlm true` / `:rlm {:recursive? false}`)
-> is deprecated and will be removed.
-
-## Quick Start
-
-Add the package you picked above to your `deps.edn`. The umbrella (`obneyai/orc`
-→ `projects/orc`) gives you everything to start experimenting; swap it for a
-leaner package (e.g. `obneyai/orc-service`) once you know which layers you need:
-
-```clojure
-obneyai/orc {:git/url "https://github.com/ObneyAI/orc.git"
-             :git/sha "..."
-             :deps/root "projects/orc"}
-```
-
-```clojure
-(require '[ai.obney.orc.orc-service.interface :as orc])
-
-;; Define a workflow using the DSL
-(def my-workflow
-  (orc/workflow "summarizer"
-    (orc/blackboard
-      {:input   :string
-       :summary :string})
-    (orc/sequence "main"
-      (orc/llm "summarize"
-        :instruction "Summarize the input text in 2 sentences."
-        :reads [:input]
-        :writes [:summary]))))
-
-;; Build it (idempotent — no-op if definition hasn't changed)
-(orc/build-workflow! ctx my-workflow)
-
-;; Execute it
-(orc/execute ctx sheet-id {:input "Long article text..."})
-;; => {:status :success, :outputs {:summary "..."}, :duration-ms 1234}
-```
-
-## Components
-
-The full opt-in layer table, dependency graph, and known issues live in **[docs/COMPONENT-MAP.md](docs/COMPONENT-MAP.md)**. For judge architecture, rubric design, and custom judge patterns see **[docs/JUDGE-ARCHITECTURE.md](docs/JUDGE-ARCHITECTURE.md)**.
-
-| Component | Namespace | Purpose |
-|-----------|-----------|---------|
-| **orc-service** | `ai.obney.orc.orc-service` | Core behavior tree execution, DSL, versioning, event sourcing |
-| **gepa** | `ai.obney.orc.gepa` | LLM instruction optimization with Pareto frontier selection |
-| **evaluation** | `ai.obney.orc.evaluation` | LLM-as-judge evaluation (grounding, reasoning, completeness) |
-| **colbert** | `ai.obney.orc.colbert` | Pure-JVM late-interaction retrieval (DJL OnnxRuntime, exact MaxSim) |
-| **ontology** | `ai.obney.orc.ontology` | Event-sourced custom concept graphs, source evolution, embeddings, and pattern discovery |
-| **mcp-sheet-builder** | `ai.obney.orc.mcp-sheet-builder` | Dynamic workflow generation from MCP tool schemas |
-| **langfuse** | `ai.obney.orc.langfuse` | Observability and tracing integration |
-
-## Architecture
-
-ORC is built on the **Grain** event-sourcing framework (CQRS pattern):
-
-```
-Commands -> Events -> Read Models -> Queries
-               |
-               v
-         Todo Processors (side effects)
-               ^
-               |
-       Periodic trigger events
-```
-
-Grain's executable grammar is six macros: `defcommand`, `defquery`,
-`defreadmodel`, `defprocessor`, `defperiodic`, and `defschemas`. ORC uses the v2
-processor stack over the v3 event-store protocol; every event-store operation
-and projection is tenant-scoped. The store, not callers, assigns UUIDv7 event
-IDs and timestamps when an append commits.
-
-- **Sheets** are behavior trees stored as event streams
-- **Nodes** are composable: `sequence`, `fallback`, `parallel`, `map-each`, `llm`, `code`, `condition`, `repl-researcher`
-- **Execution** dispatches through the command processor, runs asynchronously via todo processors, and delivers results through a completion registry
-- **Versioning** supports draft/published modes with stash/restore
-- **The DSL** provides a declarative API for building workflows without touching events directly
-
-### Execution Flow
-
-```
-1. orc/execute dispatches :sheet/tick-tree command
-2. Command creates execution snapshot (isolated blackboard)
-3. Event triggers todo processor (async)
-4. Processor walks the behavior tree:
-   - sequence: run children in order, fail on first failure
-   - fallback: run children in order, succeed on first success
-   - parallel: run children concurrently
-   - llm: call an LLM through ORC's SIO-backed provider boundary
-   - code: evaluate Clojure via SCI
-   - repl-researcher: iterative code generation + MCP tool calling
-5. Result delivered via completion promise
-```
-
-### Optimization Loop (GEPA)
-
-See [the lab loop](#the-lab-loop) for the animated version and [docs/GEPA-GUIDE.md](docs/GEPA-GUIDE.md) for the full guide.
-
-```
-1. Define metric functions (exact-match, contains, judge-based)
-2. Start optimization with training examples
-3. GEPA proposes instruction variants
-4. Evaluates candidates against metrics
-5. Pareto frontier selection (multi-objective)
-6. Repeat until budget exhausted
-```
-
-### Durable operations added in this release
-
-The normal consumer interfaces remain compatible, with additive operational
-controls for long-running and adaptive workloads:
-
-- `orc/resume-in-progress!` reconstructs abandoned leaf frontiers from the
-  durable event stream after processors restart. Completed work keeps its
-  original identity and is not re-enqueued; repeated recovery is idempotent.
-- `gepa/resume!` advances one missing durable optimization transition, while
-  `gepa/apply-winner!` applies a completed winner to an explicitly named source
-  version and publishes a new immutable workflow version.
-- `colbert/activate-index!` switches a stable alias to a fully readable index
-  atomically; `colbert/search-active` resolves and searches one snapshot.
-- `orc/start-telemetry-exporter!` provides bounded, non-blocking export of
-  durable events. Queue overflow, retries, failures, acknowledgements, and
-  drops are visible through `orc/telemetry-exporter-stats`.
-
-Model-backed evaluation, optimization, and ontology artifacts retain resolved
-model and usage provenance. All public ontology reads—including aggregate
-statistics—honor `:tenant-id` from the caller context.
-
-The ontology package also exposes a supported event-sourced custom graph lifecycle:
-`create-ontology!`, `create-concept!`, `update-concept!`, and
-`create-relationship!`, with tenant-scoped lifecycle queries, validated identities and
-edges, replay-safe command-ID retries, and typed concept provenance. Manually created
-graphs can later be grown through `evolutionary/evolve`; deterministic N-Triples RDF is
-supported alongside CSV, JSON, SQL, and text sources. See
-[Ontology Lifecycle](docs/ONTOLOGY.md#ontology-lifecycle).
+See the [full contract-analysis walkthrough](docs/GETTING-STARTED.md) and the [node reference](#node-types).
 
 ## Node Types
 
@@ -325,14 +196,14 @@ supported alongside CSV, JSON, SQL, and text sources. See
 | `orc/fallback` | Composite | Run children in order. Succeeds on first success. |
 | `orc/parallel` | Composite | Run all children concurrently. |
 | `orc/map-each` | Composite | Map a subtree over a collection input. |
-| `orc/llm` | Leaf | Call an LLM with instruction + inputs -> outputs. |
+| `orc/llm` | Leaf | Call an LLM with an instruction and inputs to produce outputs. |
 | `orc/code` | Leaf | Execute Clojure code (SCI sandbox). |
 | `orc/condition` | Leaf | Branch based on code predicate. |
 | `orc/llm-condition` | Leaf | Branch based on LLM yes/no judgment. |
 | `orc/repl-researcher` | Leaf | Iterative: generate code, call MCP tools, refine. |
 | `orc/delegate` | Leaf | Execute another workflow with isolated blackboard. |
 
-These compose into real control flow. A `fallback` that tries a guarded `sequence` first and falls back to a default sibling is classic if/else:
+Combine these nodes to express branching and fallback behavior. Here, a `fallback` tries a guarded `sequence`, then a default action if that sequence fails:
 
 ```mermaid
 flowchart TB
@@ -347,41 +218,84 @@ flowchart TB
   classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
 ```
 
-Swap the code `condition` for an `llm-condition` and the same shape becomes LLM-driven routing:
+Swap the code `condition` for an `llm-condition` and the same shape becomes LLM-driven routing, such as judging whether a request is urgent.
 
-```mermaid
-flowchart TB
-  route["<b>route by urgency</b><br/>FALLBACK"]:::fb
-  route --> s["<b>urgent path</b><br/>SEQUENCE"]:::seq
-  s --> q["<b>is it urgent?</b><br/>LLM-CONDITION · yes/no"]:::llmc
-  s --> esc["<b>escalate</b><br/>LLM · leaf"]:::llm
-  route --> normal["<b>normal handling</b><br/>LLM · leaf"]:::llm
-  classDef fb fill:#7c2d12,stroke:#fb923c,color:#fff,stroke-width:2px;
-  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
-  classDef llmc fill:#5b21b6,stroke:#ddd6fe,color:#fff;
-  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+A `repl-researcher` node can design and execute its own subtrees within a workflow; see the [RLM Guide](docs/RLM-GUIDE.md) for usage and execution modes.
+
+## Architecture
+
+ORC uses Grain for event sourcing and CQRS:
+
+```
+Commands -> Events -> Read Models -> Queries
+               |
+               v
+         Todo Processors (side effects)
+               ^
+               |
+       Periodic trigger events
 ```
 
-And the flagship leaf, `repl-researcher`, is a whole two-phase reasoning loop that drops into a tree like any other node — see the [RLM Guide](docs/RLM-GUIDE.md):
+Commands record durable events; tenant-scoped read models project them into queryable
+state. Event processors execute workflow steps asynchronously. See
+[Architecture](docs/ARCHITECTURE.md) for the implementation details.
 
-```mermaid
-flowchart TB
-  seq["<b>pipeline</b><br/>SEQUENCE"]:::seq
-  seq --> prep["<b>prep input</b><br/>LLM · leaf<br/><i>normalize the request</i>"]:::llm
-  seq --> rlm["<b>investigate</b> &#9662;<br/>REPL-RESEARCHER · leaf<br/><i>two-phase: designs + runs its own subtree</i>"]:::rlm
-  seq --> fin["<b>finalize</b><br/>CODE · leaf<br/><i>assemble the answer</i>"]:::code
-  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
-  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
-  classDef code fill:#0f766e,stroke:#5eead4,color:#fff;
-  classDef rlm fill:#9d174d,stroke:#f9a8d4,color:#fff,stroke-width:2px;
+- **Sheets** are behavior trees stored as event streams
+- **Versioning** supports draft/published modes with stash/restore
+
+### Execution Flow
+
 ```
+1. orc/execute dispatches :sheet/tick-tree command
+2. Command creates execution snapshot (isolated blackboard)
+3. Event triggers todo processor (async)
+4. Processor walks the behavior tree and dispatches nodes to their executors
+5. Result delivered through the completion registry via a completion promise
+```
+
+### Durable operations
+
+ORC supports [restart recovery](docs/ORC-SERVICE-GUIDE.md#restart-recovery),
+[resumable optimization](docs/GEPA-GUIDE.md#resuming-and-publishing-a-winner),
+[atomic retrieval-index switching](docs/COLBERT-INTEGRATION.md#stable-production-alias),
+and [telemetry export](docs/ORC-SERVICE-GUIDE.md#failure-isolated-telemetry-export).
+
+For production persistence and diagnostics, see [Value Storage](docs/VALUE-STORAGE.md)
+and [Tracing and Correlation](docs/ORC-SERVICE-GUIDE.md#tracing-correlation-and-exact-node-io).
+
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Docs index](docs/README.md) | Guides organized by stage of workflow development and operation |
+| [Getting Started](docs/GETTING-STARTED.md) | Build a workflow, then add evaluation, optimization, and memory |
+| [Packages](docs/PACKAGES.md) | Package selection and dependencies |
+| [Component Map](docs/COMPONENT-MAP.md) | Opt-in layer table, full dependency graph, known issues |
+| [Judge Architecture](docs/JUDGE-ARCHITECTURE.md) | Rubric design, judge types, custom judges, scale design, composite scoring |
+| [ORC Principles](docs/ORC-PRINCIPLES.md) | Design principles, node selection, delegation, and event sourcing |
+| [ORC Service Guide](docs/ORC-SERVICE-GUIDE.md) | Core execution engine and DSL reference |
+| [DSL Reference](docs/DSL-REFERENCE.md) | DSL syntax and core concepts |
+| [RLM Guide](docs/RLM-GUIDE.md) | Recursive Language Model usage, execution modes, and tree generation |
+| [Architecture](docs/ARCHITECTURE.md) | System architecture and design decisions |
+| [GEPA Guide](docs/GEPA-GUIDE.md) | Prompt optimization with GEPA |
+| [Evaluation](docs/EVALUATION-COMPONENT.md) | LLM-as-judge evaluation framework |
+| [ColBERT Integration](docs/COLBERT-INTEGRATION.md) | The pure-JVM late-interaction retrieval signal |
+| [Ontology](docs/ONTOLOGY.md) | Custom graphs, source imports, and pattern discovery |
+| [MCP Sheet Builder](docs/MCP-SHEET-BUILDER-GUIDE.md) | Dynamic workflow generation |
+| [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md) | Alpha-stage: auto-classify, pattern evolution, behavior minting |
+| [Event Store Patterns](docs/EVENT-STORE-PATTERNS.md) | Grain event sourcing patterns |
+
+### Benchmarks
+
+| Document | Description |
+|---|---|
+| [Bench README](development/bench/README.md) | How to run the 5-task generalization benchmark suite |
+| [Bench RESULTS](development/bench/RESULTS.md) | Results from five tasks, including generated tree patterns and output checks |
 
 ## Development Setup
 
-### Prerequisites
-
-- **Java 21+** (with module access for LMDB)
-- **Clojure CLI** (`brew install clojure/tools/clojure`)
+See [Contributor Grain Patterns](docs/contributors/CONTRIBUTOR-GRAIN-PATTERNS.md)
+for the framework patterns used in this repository.
 
 ### Getting Started
 
@@ -401,11 +315,9 @@ clj -M:poly test :all-bricks         # all bricks
 clj -M:poly test brick:orc-service   # specific brick
 ```
 
-### ColBERT Setup (Optional)
-
-There is none. The ColBERT signal is pure JVM (see [ADR 0002](docs/adr/0002-pure-jvm-colbert-signal.md)): the `colbert` component runs the `answerai-colbert-small-v1` encoder checkpoint on DJL OnnxRuntime. On first use it downloads the model (~133 MB) into `~/.cache/orc/colbert/` — after that everything is offline. For air-gapped machines, point `-Dcolbert.model.path` at a directory containing the model artifacts.
-
 ### Project Structure
+
+See the [Component Map](docs/COMPONENT-MAP.md) for component responsibilities and dependencies.
 
 ```
 orc/
@@ -415,62 +327,12 @@ orc/
 ├── workspace.edn              # Polylith workspace (top-ns: ai.obney.orc)
 ├── scripts/
 │   └── nrepl.sh               # nREPL launcher (JVM flags for LMDB)
-├── components/
-│   ├── orc-service/           # Core execution engine
-│   ├── gepa/                  # Prompt optimization
-│   ├── evaluation/            # LLM-as-judge
-│   ├── colbert/               # Semantic retrieval
-│   ├── ontology/              # Concept graph
-│   ├── mcp-sheet-builder/     # MCP workflow generation
-│   ├── langfuse/              # Observability
-│   └── grain-test-utils/      # Test infrastructure
-├── projects/
-│   └── orc/                   # Publishable project (git dep target)
+├── components/               # Polylith components (see Component Map)
+├── projects/                 # Standalone package configurations
 ├── development/
 │   └── src/dev.clj            # REPL entry point
 └── docs/                      # Component guides and architecture
 ```
-
-## Consumer Requirements
-
-ORC is a library — consumers provide:
-
-- **Grain infrastructure**: tenant-scoped event store (in-memory, embedded SQLite,
-  or Postgres), LMDB projection cache, and—when deploying multiple
-  instances—the control plane; add the event tailer when shared-store events
-  must reach each node's local live-update pub/sub
-- **LLM provider**: provider configuration selected by `:llm-provider` in context
-- **Optional**: Langfuse client for tracing, MCP servers for tool calling
-
-## Documentation
-
-| Guide | Description |
-|-------|-------------|
-| [**Docs index**](docs/README.md) | Every guide, organized by the lab loop: build → run → evidence → judge → improve → harvest → operate |
-| [**Getting Started**](docs/GETTING-STARTED.md) | Progressive onboarding: core → judges → GEPA → ontology → self-improvement |
-| [**Packages**](docs/PACKAGES.md) | Standalone packages — pull in only the layer you need |
-| [**Component Map**](docs/COMPONENT-MAP.md) | Opt-in layer table, full dependency graph, known issues |
-| [**Judge Architecture**](docs/JUDGE-ARCHITECTURE.md) | Rubric design, judge types, custom judges, scale design, composite scoring |
-| [ORC Principles](docs/ORC-PRINCIPLES.md) | Framework-level principles: node palette, `:delegate` composition, events-first discipline |
-| [ORC Service Guide](docs/ORC-SERVICE-GUIDE.md) | Core execution engine and DSL reference |
-| [DSL Reference](docs/DSL-REFERENCE.md) | Complete DSL reference — Core Concepts section is the newcomer entry point |
-| [**RLM Guide**](docs/RLM-GUIDE.md) | Recursive Language Model — two-phase execution, recursive `emit-tree!`, drill-down primitives, and the Phase 2 tree DSL |
-| [Architecture](docs/ARCHITECTURE.md) | System architecture and design decisions |
-| [GEPA Guide](docs/GEPA-GUIDE.md) | Prompt optimization with GEPA |
-| [Evaluation](docs/EVALUATION-COMPONENT.md) | LLM-as-judge evaluation framework |
-| [ColBERT Integration](docs/COLBERT-INTEGRATION.md) | The pure-JVM late-interaction retrieval signal |
-| [Ontology](docs/ONTOLOGY.md) | Concept graph and pattern discovery |
-| [MCP Sheet Builder](docs/MCP-SHEET-BUILDER-GUIDE.md) | Dynamic workflow generation |
-| [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md) | Alpha-stage: auto-classify, pattern evolution, behavior minting |
-| [Event Store Patterns](docs/EVENT-STORE-PATTERNS.md) | Grain event sourcing patterns |
-| [Contributor Grain Patterns](docs/contributors/CONTRIBUTOR-GRAIN-PATTERNS.md) | Complete pattern reference (contributors) |
-
-### Benchmarks
-
-| Document | Description |
-|---|---|
-| [Bench README](development/bench/README.md) | How to run the 5-task generalization benchmark suite |
-| [Bench RESULTS](development/bench/RESULTS.md) | Headline report — RLM designs 4 distinct tree patterns + 1 "no-tree" decision across structurally different tasks; zero hallucinations across 37+ spot-checks |
 
 ## License
 
