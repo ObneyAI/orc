@@ -1337,6 +1337,15 @@
   (->> (or top-candidates [])
        (filter (fn [c] (>= (double (or (:fitness-score c) 0.0))
                            min-display-confidence)))
+       ;; One entry per class: a tree class is indexed on both tree axes, and the
+       ;; ranking carries both rows with the same judgement. Showing both rendered
+       ;; the same guidance twice (RS-7 e2e: "Top match" and "Alternative #1" were
+       ;; one class). The first row (the higher-ranked) is kept.
+       (reduce (fn [[seen out] c]
+                 (let [k (str (get-in c [:document-metadata :target-id]))]
+                   (if (seen k) [seen out] [(conj seen k) (conj out c)])))
+               [#{} []])
+       second
        (take structural-cap)
        vec))
 

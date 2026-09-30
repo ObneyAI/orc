@@ -730,3 +730,27 @@
                          (#'tp/injected-candidates {} payload))]
           (is (= [{:axis :structural :candidate-id (str child-id) :version 2 :score 0.88}]
                  recorded)))))))
+
+(deftest a-class-on-both-tree-axes-renders-once
+  (testing "RS-7 e2e: the ranking carries a tree class's tree-class and tree-fingerprint rows with
+            the same judgement; the render and the injection record show the class once"
+    (let [shape-id (random-uuid) other-id (random-uuid)
+          row (fn [id gran fit] (assoc-in (mk-structural-candidate id "fits" "Shape summary." fit)
+                                          [:document-metadata :granularity] gran))
+          payload {:structural {:assigned-tree-id shape-id :confidence 0.85 :was-fresh-mint? false
+                                :reasoning "fits"
+                                :top-candidates [(row shape-id :tree-class 0.85) (row shape-id :tree-fingerprint 0.85)
+                                                 (row other-id :tree-class 0.75)]
+                                :rerank-fallback? false}
+                   :behavioral {:behaviors [] :rerank-fallback? false}}
+          bodies {shape-id {:summary "Shape summary." :capabilities [] :strengths [] :weaknesses []
+                            :representative-uses [] :avoid-when [] :version 1 :consolidated-from-event-count 3}
+                  other-id {:summary "Other summary." :capabilities [] :strengths [] :weaknesses []
+                            :representative-uses [] :avoid-when [] :version 1 :consolidated-from-event-count 3}}
+          [instruction recorded]
+          (with-redefs [ontology/get-description (fn [_ _ id] (get bodies id))]
+            [(:instruction (tp/apply-r05-classifier-context (mk-node "Task: x" payload) {}))
+             (#'tp/injected-candidates {} payload)])]
+      (is (str/includes? instruction "top 2 from corpus retrieval"))
+      (is (= [(str shape-id) (str other-id)]
+             (mapv :candidate-id (filter #(= :structural (:axis %)) recorded)))))))
