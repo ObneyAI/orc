@@ -49,3 +49,24 @@ otherwise happen. The three domain rules, the identity and children invariants, 
 the config block change in `specs/ontology.allium`; the glossary gains domain family, merge verdict, covered-seed
 protection and newborn family. The proof is deterministic tests on structured data; the realistic-traffic sweeps
 report metrics against expectations stated beforehand and are never pass/fail gates.
+
+## Amendment — measured on realistic traffic (decisions C3' and C5')
+
+The RS-7 sweep (238 generated tasks, two passes) overturned two parts of this decision.
+
+- **No landing is unjudged (C3').** Landing by an existing family's label, by a shape's child label, or by reaching a
+  family through retrieval were the dominant false merges: the first post-fix run put 209 tasks in 17 families shared
+  across groups. Every landing on an existing family now goes through the merge judge, with the proposed family among
+  its candidates. The judge answers subject matter and output kind separately, at the family's own level, and "same"
+  stands only when both match. A covered match keeps its class and is never judged. The rejected alternative "the
+  merge judge on landings (a call per recurrence)" above is reversed: collisions were not rare.
+- **A family is never a shape-ranking candidate (C5').** Families crowded curated seeds out of the ranking (2 of 24
+  in-domain tasks reached their seed). The shape ranking now holds shape classes and seeds only, walk-down never enters
+  a family, and a family is reached only by being proposed to the judge. "Reaching one by match or walk-down is a
+  landing" above no longer holds.
+
+Consequence: about twice the tokens per classification. On the final run, in-domain tasks on their seed went from
+0 to 17 of 24, families from 87 to 40, and pass-to-pass stability from 62% to 74%, with more tasks in families
+shared across groups (29 in pass 1). The decisions and evidence are in
+`docs/build-timeline/grill-sessions/domain-child-convergence-decisions.md` and
+`development/bench/ood-stress-results/rs7-traffic/FINDINGS.md`.
