@@ -1,0 +1,841 @@
+{:deferrals-by-axis {:structural 6},
+ :in-domain-mint-slugs [],
+ :behavioral-fresh-mint-rate 0.0,
+ :deferral-count 6,
+ :confounder-mint-count 1,
+ :missing-slugs [],
+ :majority-child-landing-rate 0.7436974789915966,
+ :deferrals-by-reason {},
+ :in-domain-seed-match-count 16,
+ :cross-group-families
+ {:families 43,
+  :shared-families 2,
+  :tasks-in-shared-families 9,
+  :shared
+  {"legal-clause-drafting"
+   {"clause-drafting" 6, "legal-issue-detection" 1},
+   "meeting-transcript-extraction"
+   {"meeting-actions" 1, "document-analysis" 1}}},
+ :total 238,
+ :confounder-mint-slugs ["166-compliance-checklist-v05"],
+ :latency
+ {:mean-ms 22061.98319327731, :median-ms 21467, :p95-ms 28638},
+ :in-domain-total 24,
+ :reached-via-frequencies
+ {:graph-land 173, :seed-match 54, :mint 5, :deferred 6},
+ :tokens {:total 6020100, :mean 25294.53781512605},
+ :groups
+ {"api-migration-guide"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "api-migration-guide",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("api-migration-guide"),
+   :parents (#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["017-api-migration-guide-v01"
+    "057-api-migration-guide-v02"
+    "097-api-migration-guide-v03"
+    "137-api-migration-guide-v04"
+    "177-api-migration-guide-v05"
+    "217-api-migration-guide-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "budget-forecast"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "budget-forecast",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("nonprofit-cash-flow-forecast"),
+   :parents (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["019-budget-forecast-v01"
+    "059-budget-forecast-v02"
+    "099-budget-forecast-v03"
+    "139-budget-forecast-v04"
+    "179-budget-forecast-v05"
+    "219-budget-forecast-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "chess-study"
+  {:landing-count 5,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 1,
+   :group "chess-study",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("chess-study-plan"),
+   :parents (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["032-chess-study-v01"
+    "072-chess-study-v02"
+    "112-chess-study-v03"
+    "152-chess-study-v04"
+    "192-chess-study-v05"
+    "232-chess-study-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "clause-drafting"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "clause-drafting",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("legal-clause-drafting"),
+   :parents (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["002-clause-drafting-v01"
+    "042-clause-drafting-v02"
+    "082-clause-drafting-v03"
+    "122-clause-drafting-v04"
+    "162-clause-drafting-v05"
+    "202-clause-drafting-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "cloud-cost-review"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "cloud-cost-review",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("cloud-infrastructure-cost-optimization"),
+   :parents (#uuid "cda1f7c2-978a-37c5-9ddb-3dae4e0c6891"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["004-cloud-cost-review-v01"
+    "044-cloud-cost-review-v02"
+    "084-cloud-cost-review-v03"
+    "124-cloud-cost-review-v04"
+    "164-cloud-cost-review-v05"
+    "204-cloud-cost-review-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "compliance-checklist"
+  {:landing-count 5,
+   :cross-parent-scatter 2,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "compliance-checklist",
+   :child-count 4,
+   :label-variant-count 1,
+   :label-variants ("compliance-implementation-roadmap"),
+   :parents
+   (#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"
+    #uuid "cda1f7c2-978a-37c5-9ddb-3dae4e0c6891"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["006-compliance-checklist-v01"
+    "046-compliance-checklist-v02"
+    "086-compliance-checklist-v03"
+    "126-compliance-checklist-v04"
+    "166-compliance-checklist-v05"
+    "206-compliance-checklist-v06"],
+   :converged-relaxed? false,
+   :mint-count 1},
+  "content-calendar"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "content-calendar",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("social-media-content-calendar"),
+   :parents (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["034-content-calendar-v01"
+    "074-content-calendar-v02"
+    "114-content-calendar-v03"
+    "154-content-calendar-v04"
+    "194-content-calendar-v05"
+    "234-content-calendar-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "contract-comparison"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "contract-comparison",
+   :child-count 3,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["008-contract-comparison-v01"
+    "048-contract-comparison-v02"
+    "088-contract-comparison-v03"
+    "128-contract-comparison-v04"
+    "168-contract-comparison-v05"
+    "208-contract-comparison-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "document-analysis"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "document-analysis",
+   :child-count 3,
+   :label-variant-count 1,
+   :label-variants ("meeting-transcript-extraction"),
+   :parents (#uuid "cda1f7c2-978a-37c5-9ddb-3dae4e0c6891"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["031-document-analysis-v01"
+    "071-document-analysis-v02"
+    "111-document-analysis-v03"
+    "151-document-analysis-v04"
+    "191-document-analysis-v05"
+    "231-document-analysis-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "experiment-plan"
+  {:landing-count 6,
+   :cross-parent-scatter 2,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "experiment-plan",
+   :child-count 3,
+   :label-variant-count 2,
+   :label-variants ("ml-experiment-plan" "experiment-plan-synthesis"),
+   :parents
+   (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"
+    #uuid "cda1f7c2-978a-37c5-9ddb-3dae4e0c6891"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["024-experiment-plan-v01"
+    "064-experiment-plan-v02"
+    "104-experiment-plan-v03"
+    "144-experiment-plan-v04"
+    "184-experiment-plan-v05"
+    "224-experiment-plan-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "game-balance"
+  {:landing-count 5,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 1,
+   :group "game-balance",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("game-balance-simulation"),
+   :parents (#uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["018-game-balance-v01"
+    "058-game-balance-v02"
+    "098-game-balance-v03"
+    "138-game-balance-v04"
+    "178-game-balance-v05"
+    "218-game-balance-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "hiring-rubric"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "hiring-rubric",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("hiring-interview-rubric"),
+   :parents (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["036-hiring-rubric-v01"
+    "076-hiring-rubric-v02"
+    "116-hiring-rubric-v03"
+    "156-hiring-rubric-v04"
+    "196-hiring-rubric-v05"
+    "236-hiring-rubric-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "incident-postmortem"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "incident-postmortem",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("incident-postmortem-synthesis"),
+   :parents (#uuid "cda1f7c2-978a-37c5-9ddb-3dae4e0c6891"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["023-incident-postmortem-v01"
+    "063-incident-postmortem-v02"
+    "103-incident-postmortem-v03"
+    "143-incident-postmortem-v04"
+    "183-incident-postmortem-v05"
+    "223-incident-postmortem-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "legal-issue-detection"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "legal-issue-detection",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("legal-clause-drafting"),
+   :parents (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["028-legal-issue-detection-v01"
+    "068-legal-issue-detection-v02"
+    "108-legal-issue-detection-v03"
+    "148-legal-issue-detection-v04"
+    "188-legal-issue-detection-v05"
+    "228-legal-issue-detection-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "lesson-plan"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "lesson-plan",
+   :child-count 2,
+   :label-variant-count 2,
+   :label-variants
+   ("secondary-biology-lesson-plan" "new-hire-onboarding-plan"),
+   :parents (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["013-lesson-plan-v01"
+    "053-lesson-plan-v02"
+    "093-lesson-plan-v03"
+    "133-lesson-plan-v04"
+    "173-lesson-plan-v05"
+    "213-lesson-plan-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "log-triage"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "log-triage",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("incident-root-cause-analysis"),
+   :parents (#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["035-log-triage-v01"
+    "075-log-triage-v02"
+    "115-log-triage-v03"
+    "155-log-triage-v04"
+    "195-log-triage-v05"
+    "235-log-triage-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "marathon-training"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "marathon-training",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("marathon-training-plan"),
+   :parents (#uuid "5a08300e-10e3-305a-80c1-17eafea15ff7"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["015-marathon-training-v01"
+    "055-marathon-training-v02"
+    "095-marathon-training-v03"
+    "135-marathon-training-v04"
+    "175-marathon-training-v05"
+    "215-marathon-training-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "meeting-actions"
+  {:landing-count 4,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 1,
+   :group "meeting-actions",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("meeting-transcript-extraction"),
+   :parents (#uuid "cda1f7c2-978a-37c5-9ddb-3dae4e0c6891"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["021-meeting-actions-v01"
+    "061-meeting-actions-v02"
+    "101-meeting-actions-v03"
+    "141-meeting-actions-v04"
+    "181-meeting-actions-v05"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "nutrition-labels"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "nutrition-labels",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("commercial-nutrition-scaling"),
+   :parents (#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["030-nutrition-labels-v01"
+    "070-nutrition-labels-v02"
+    "110-nutrition-labels-v03"
+    "150-nutrition-labels-v04"
+    "190-nutrition-labels-v05"
+    "230-nutrition-labels-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "planting-schedule"
+  {:landing-count 5,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "planting-schedule",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("school-garden-schedule"),
+   :parents (#uuid "5a08300e-10e3-305a-80c1-17eafea15ff7"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["026-planting-schedule-v01"
+    "066-planting-schedule-v02"
+    "106-planting-schedule-v03"
+    "146-planting-schedule-v04"
+    "186-planting-schedule-v05"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "poetry-meter"
+  {:landing-count 5,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 1,
+   :group "poetry-meter",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("poetic-scansion-analysis"),
+   :parents (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["010-poetry-meter-v01"
+    "050-poetry-meter-v02"
+    "090-poetry-meter-v03"
+    "130-poetry-meter-v04"
+    "170-poetry-meter-v05"
+    "210-poetry-meter-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "property-comps"
+  {:landing-count 5,
+   :cross-parent-scatter 2,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "property-comps",
+   :child-count 3,
+   :label-variant-count 2,
+   :label-variants
+   ("commercial-real-estate-cma" "residential-property-valuation"),
+   :parents
+   (#uuid "cda1f7c2-978a-37c5-9ddb-3dae4e0c6891"
+    #uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["001-property-comps-v01"
+    "041-property-comps-v02"
+    "081-property-comps-v03"
+    "121-property-comps-v04"
+    "161-property-comps-v05"
+    "201-property-comps-v06"],
+   :converged-relaxed? false,
+   :mint-count 1},
+  "query-optimisation"
+  {:landing-count 5,
+   :cross-parent-scatter 2,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "query-optimisation",
+   :child-count 3,
+   :label-variant-count 1,
+   :label-variants ("database-query-optimization"),
+   :parents
+   (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"
+    #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["022-query-optimisation-v01"
+    "062-query-optimisation-v02"
+    "102-query-optimisation-v03"
+    "142-query-optimisation-v04"
+    "182-query-optimisation-v05"
+    "222-query-optimisation-v06"],
+   :converged-relaxed? false,
+   :mint-count 1},
+  "recipe-scaling"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "recipe-scaling",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("commercial-bakery-scaling"),
+   :parents (#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["025-recipe-scaling-v01"
+    "065-recipe-scaling-v02"
+    "105-recipe-scaling-v03"
+    "145-recipe-scaling-v04"
+    "185-recipe-scaling-v05"
+    "225-recipe-scaling-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "rehab-programme"
+  {:landing-count 5,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 1,
+   :group "rehab-programme",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("physical-rehabilitation-plan"),
+   :parents (#uuid "5a08300e-10e3-305a-80c1-17eafea15ff7"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["003-rehab-programme-v01"
+    "043-rehab-programme-v02"
+    "083-rehab-programme-v03"
+    "123-rehab-programme-v04"
+    "163-rehab-programme-v05"
+    "203-rehab-programme-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "release-notes"
+  {:landing-count 5,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "release-notes",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("api-migration-guide"),
+   :parents (#uuid "cda1f7c2-978a-37c5-9ddb-3dae4e0c6891"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["012-release-notes-v01"
+    "052-release-notes-v02"
+    "092-release-notes-v03"
+    "132-release-notes-v04"
+    "172-release-notes-v05"
+    "212-release-notes-v06"],
+   :converged-relaxed? true,
+   :mint-count 1},
+  "reorder-plan"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "reorder-plan",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("inventory-reorder-planning"),
+   :parents (#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["005-reorder-plan-v01"
+    "045-reorder-plan-v02"
+    "085-reorder-plan-v03"
+    "125-reorder-plan-v04"
+    "165-reorder-plan-v05"
+    "205-reorder-plan-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "research-synthesis"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "research-synthesis",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("product-feedback-synthesis"),
+   :parents (#uuid "cda1f7c2-978a-37c5-9ddb-3dae4e0c6891"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["011-research-synthesis-v01"
+    "051-research-synthesis-v02"
+    "091-research-synthesis-v03"
+    "131-research-synthesis-v04"
+    "171-research-synthesis-v05"
+    "211-research-synthesis-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "resume-tailoring"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "resume-tailoring",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("cv-and-cover-letter-localization"),
+   :parents (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["007-resume-tailoring-v01"
+    "047-resume-tailoring-v02"
+    "087-resume-tailoring-v03"
+    "127-resume-tailoring-v04"
+    "167-resume-tailoring-v05"
+    "207-resume-tailoring-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "risk-analysis"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "risk-analysis",
+   :child-count 1,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["033-risk-analysis-v01"
+    "073-risk-analysis-v02"
+    "113-risk-analysis-v03"
+    "153-risk-analysis-v04"
+    "193-risk-analysis-v05"
+    "233-risk-analysis-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "rpg-encounter"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "rpg-encounter",
+   :child-count 3,
+   :label-variant-count 1,
+   :label-variants ("tabletop-rpg-design"),
+   :parents (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["009-rpg-encounter-v01"
+    "049-rpg-encounter-v02"
+    "089-rpg-encounter-v03"
+    "129-rpg-encounter-v04"
+    "169-rpg-encounter-v05"
+    "209-rpg-encounter-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "run-of-show"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "run-of-show",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("livestream-run-of-show"),
+   :parents (#uuid "5a08300e-10e3-305a-80c1-17eafea15ff7"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["039-run-of-show-v01"
+    "079-run-of-show-v02"
+    "119-run-of-show-v03"
+    "159-run-of-show-v04"
+    "199-run-of-show-v05"
+    "239-run-of-show-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "schema-migration"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "schema-migration",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("database-migration-plan"),
+   :parents (#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["027-schema-migration-v01"
+    "067-schema-migration-v02"
+    "107-schema-migration-v03"
+    "147-schema-migration-v04"
+    "187-schema-migration-v05"
+    "227-schema-migration-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "seating-plan"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "seating-plan",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("wedding-seating-chart"),
+   :parents (#uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["014-seating-plan-v01"
+    "054-seating-plan-v02"
+    "094-seating-plan-v03"
+    "134-seating-plan-v04"
+    "174-seating-plan-v05"
+    "214-seating-plan-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "security-haiku"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "security-haiku",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("security-finding-haikus"),
+   :parents (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["040-security-haiku-v01"
+    "080-security-haiku-v02"
+    "120-security-haiku-v03"
+    "160-security-haiku-v04"
+    "200-security-haiku-v05"
+    "240-security-haiku-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "spreadsheet-debugging"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "spreadsheet-debugging",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("financial-model-audit"),
+   :parents (#uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["037-spreadsheet-debugging-v01"
+    "077-spreadsheet-debugging-v02"
+    "117-spreadsheet-debugging-v03"
+    "157-spreadsheet-debugging-v04"
+    "197-spreadsheet-debugging-v05"
+    "237-spreadsheet-debugging-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "tax-estimate"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "tax-estimate",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("corporate-tax-estimation"),
+   :parents (#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["029-tax-estimate-v01"
+    "069-tax-estimate-v02"
+    "109-tax-estimate-v03"
+    "149-tax-estimate-v04"
+    "189-tax-estimate-v05"
+    "229-tax-estimate-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "translation-glossary"
+  {:landing-count 5,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 1,
+   :group "translation-glossary",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("technical-glossary-extraction"),
+   :parents (#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["020-translation-glossary-v01"
+    "060-translation-glossary-v02"
+    "100-translation-glossary-v03"
+    "140-translation-glossary-v04"
+    "180-translation-glossary-v05"
+    "220-translation-glossary-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "travel-itinerary"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "travel-itinerary",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("family-travel-itinerary"),
+   :parents (#uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["038-travel-itinerary-v01"
+    "078-travel-itinerary-v02"
+    "118-travel-itinerary-v03"
+    "158-travel-itinerary-v04"
+    "198-travel-itinerary-v05"
+    "238-travel-itinerary-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "worksheet-generation"
+  {:landing-count 5,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "worksheet-generation",
+   :child-count 5,
+   :label-variant-count 3,
+   :label-variants
+   ("chemistry-practice-worksheet"
+    "elementary-math-worksheet"
+    "language-practice-worksheet"),
+   :parents (#uuid "aef71f08-76bf-373c-862a-1250ef23f450"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["016-worksheet-generation-v01"
+    "056-worksheet-generation-v02"
+    "096-worksheet-generation-v03"
+    "136-worksheet-generation-v04"
+    "176-worksheet-generation-v05"
+    "216-worksheet-generation-v06"],
+   :converged-relaxed? false,
+   :mint-count 1}},
+ :newborn-in-index-rate 0.02890173410404624,
+ :in-domain-mint-count 0,
+ :identity-stability 0.7436974789915966}
