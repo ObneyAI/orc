@@ -1,0 +1,22 @@
+{:slug "118-travel-itinerary-v03",
+ :group "travel-itinerary",
+ :in-domain? false,
+ :variant 3,
+ :expected-output-kind
+ "a day-by-day itinerary with timings, bookings to make, costs and contingency options",
+ :brief-id "b-013",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 928, :completion-tokens 353, :total-tokens 1281},
+  :draft-prompt-sha256
+  "5cfb49f8046e60a3164456beccaaaed2dc4ef0d1c797750a13a9fc28bed3b73a",
+  :polish-usage
+  {:prompt-tokens 531, :completion-tokens 345, :total-tokens 876},
+  :polish-prompt-sha256
+  "5ac33b6b43ac89b28ef2177ca387244200bf2bf67e4ef01ef7f9db607ff88a60",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

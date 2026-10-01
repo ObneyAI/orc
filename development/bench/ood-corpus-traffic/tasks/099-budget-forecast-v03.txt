@@ -1,0 +1,12 @@
+; brief-id: b-014
+; group: budget-forecast
+; variant: 3
+
+Provide a 12-month cash-flow forecast for my freelance UX design business (USD) to determine if I have enough runway to take off most of December without a January deficit. Using my 18-month historical data and current contract pipeline, generate a report following this schema:
+
+- **12-Month Pro-Forma Table**: A monthly breakdown starting next month featuring columns for time periods and rows for Starting Balance, Inflow (itemized by Contract A, Contract B, and Ad-hoc), Outflow (itemized by Software, Health Insurance, Co-working desk, and Travel), Net Cash Flow, and Ending Balance.
+- **Assumptions Log**: A dedicated section detailing the $2,500 monthly personal draw, a 30% set-aside for estimated taxes, and a projected 15% increase in lead conversion starting in September.
+- **Sensitivity Analysis**: A Q4 comparison showing "Best-Case" vs. "Worst-Case" scenarios, specifically modeling a 20% delay in client payments and the total loss of my largest recurring retainer.
+- **Liquidity Risk Assessment**: A bulleted list identifying the top three threats to solvency, such as equipment failure or project scope creep.
+
+This is for internal planning purposes only; do not include tax reporting or pricing audit components.

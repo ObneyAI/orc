@@ -1,0 +1,28 @@
+; brief-id: b-036
+; group: poetry-meter
+; variant: 6
+
+Hey, hope you're having a good Tuesday. I’ve hit a bit of a wall with the "Metrics of Translation" draft I've been grinding away at for the comparative literature journal. I’m trying to build a case for how different poetic forms maintain—or just completely abandon—their structural integrity when they are moved across languages or adapted into different genres, but I’ve realized my manual scansion is getting a bit sloppy. I’m working with five specific excerpts right now: a Sidney sonnet, a chunk of Whitman’s free verse, a Faiz Ahmed Faiz ghazal (the Agha Shahid Ali translation), some lyrics from a Hozier track, and a Mother Goose rhyme I’m using as a rhythmic control.
+
+I was hoping you could run a technical diagnostic on these for me to save my sanity? I need a precise breakdown for each based on these specific criteria:
+
+| Data Field | Requirement |
+| :--- | :--- |
+| **Scansion** | Full notation of stressed/unstressed beats for every single line provided |
+| **Formal ID** | The specific name of the form and the literal rhyme scheme (e.g., ABAB CDCD) |
+| **Anomalies** | Note every foot substitution, hypermetrical line, or instance of slant rhyme |
+| **Reading** | A short, two-sentence analysis of how these deviations impact the overall mood |
+
+I’m particularly interested in the Faiz ghazal and the Hozier lyrics; I want to see exactly where the rhythm stumbles or breaks to create tension. Please don't add any new creative text or flowery intros—I just need the raw analysis of these specific pieces so I can plug the results directly into my argument.
+
+Here are the segments:
+1. Sidney: "With how sad steps, O Moon, thou climb'st the skies!"
+2. Whitman: "Song of Myself" (Section 1)
+3. Faiz: "Be Near Me" (Trans. Agha Shahid Ali)
+4. Hozier: "Take Me to Church" (Chorus)
+5. Traditional: "Sing a Song of Sixpence"
+
+Let me know if you can get this back to me by this afternoon!
+
+Cheers,
+Elena

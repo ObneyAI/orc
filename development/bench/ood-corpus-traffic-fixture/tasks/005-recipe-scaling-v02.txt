@@ -1,0 +1,5 @@
+; brief-id: fx-recipe
+; group: recipe-scaling
+; variant: 2
+
+My lasagna recipe feeds 8: 1 lb ground sausage, 24 oz marinara, 15 oz ricotta, 12 lasagna noodles, 2 cups mozzarella. I need to feed 30 people at a fundraiser -- scale the ingredients and flag anything that won't scale linearly (like noodle layers or bake time).

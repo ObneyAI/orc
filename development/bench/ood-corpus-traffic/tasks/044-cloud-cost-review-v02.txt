@@ -1,0 +1,14 @@
+; brief-id: b-027
+; group: cloud-cost-review
+; variant: 2
+
+Hi there, hope you're having a decent week. Mine has been a bit of a whirlwind—my kid’s soccer tournament ran late all weekend and now I’m playing catch-up with everything. Anyway, I just got our latest Azure bill and nearly fell out of my chair. Our cloud spend has spiked again, and honestly, the finance team is starting to breathe down my neck about the burn rate. We’re supposed to be in growth mode, but we can't just be throwing money into a black hole.
+
+I’ve attached the full cost breakdown by service along with the last month of usage metrics for our production and staging environments. We’re very storage-heavy right now because of the log retention policies and all those persistent disks we’re running for the data warehouse, and I suspect there’s a lot of waste there. I don't have time to go through every single resource group myself, so I need you to do a deep dive.
+
+Could you look through this and give me a list of ranked savings opportunities? I need to know roughly how much we’d save per month for each item, what the risk is—because we absolutely cannot have the database go down or the front-end start lagging—and then the actual implementation steps to get it done. I'm looking for things like tiered storage shifts, deleting orphaned snapshots, or maybe switching some of the non-critical VMs to reserved instances if it makes sense. 
+
+Please don't give me a whole lecture on re-architecting the system or a five-year budget forecast; I just need to know what we can turn off or downsize by Friday to stop the bleeding. I’ve got a board meeting coming up and I need to show them we’re being responsible with the runway. 
+
+Thanks a ton,
+Marcus

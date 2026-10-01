@@ -1,0 +1,22 @@
+{:slug "170-poetry-meter-v05",
+ :group "poetry-meter",
+ :in-domain? false,
+ :variant 5,
+ :expected-output-kind
+ "a scansion per line, the identified form and rhyme scheme, deviations noted, and a short reading of their effect",
+ :brief-id "b-036",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1750, :completion-tokens 330, :total-tokens 2080},
+  :draft-prompt-sha256
+  "eef03edee9f0c5ae16bf5128ed5008b6010fdb87e5ad4c202293b42c0a803b37",
+  :polish-usage
+  {:prompt-tokens 503, :completion-tokens 274, :total-tokens 777},
+  :polish-prompt-sha256
+  "7b56ee3c6902a2fc0bc24c465ea3657459e2e324f0bcfaef23c0b139e0284498",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

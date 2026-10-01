@@ -586,13 +586,25 @@
   (str "tree-class:" target-id))
 
 (defcommand :ontology mint-domain-child
-  "RS-3: birth a domain child under a tree-class parent through ONE command
-   — the child's tree-class concept (labelled with the judged domain label)
-   and its skos:broader edge to the parent, plus the audit-trail
-   :ontology/domain-child-minted event. Dispatched by the wedge BEFORE the
-   CV-1 signature claim and BEFORE :ontology/assign-task-class, so the
-   concept and edge exist before anything references the child."
-  [{{:keys [parent-tree-id child-tree-id domain-label
+  "RS-3 + CV-A item 5: birth a domain child under a tree-class parent
+   through ONE command — the child's tree-class concept (labelled with the
+   judged domain label) and its skos:broader edge to the parent, plus the
+   audit-trail :ontology/domain-child-minted event. Dispatched by the wedge
+   BEFORE the CV-1 signature claim and BEFORE :ontology/assign-task-class,
+   so the concept and edge exist before anything references the child.
+
+   CV-A: an OPTIONAL `:birth-description` string — sent only for a genuine
+   tenant-wide family birth, never the legacy per-parent sibling mint —
+   becomes the child concept's `:description` (in place of the generic
+   placeholder) AND is embedded synchronously into the SAME event batch as
+   an `:ontology/concept-embedded` event
+   (`DomainFamilyDescribesItselfFromBirth`: \"its concept is embedded at
+   birth\"). Embedding here, rather than as a second dispatched command,
+   is deliberate: a checkpointed campaign prepares every staged effect from
+   ONE pre-commit snapshot, so a separate embed command could never read
+   back a concept THIS SAME commit is creating (empirically confirmed — a
+   staged `:ontology/embed-concept` effect threw \"Concept not found\")."
+  [{{:keys [parent-tree-id child-tree-id domain-label birth-description
             source-sheet-id source-tick-id source-node-id]} :command
     :as ctx}]
   (let [parent-uri (tree-class-uri parent-tree-id)
@@ -601,6 +613,7 @@
         parent-concept (rm/get-concept-by-uri ctx tree-class-ontology-id parent-uri)
         child-concept (rm/get-concept-by-uri ctx tree-class-ontology-id child-uri)
         already-linked? (contains? (:broader child-concept) parent-uri)
+        child-concept-id (random-uuid)
         parent-concept-event
         (when-not parent-concept
           (->event
@@ -616,16 +629,18 @@
                    :indicators []
                    :provenance {:kind :system-static}
                    :created-at now}}))
+        child-is-new? (not child-concept)
         child-concept-event
-        (when-not child-concept
+        (when child-is-new?
           (->event
            {:type :ontology/concept-created
-            :tags #{[:ontology tree-class-ontology-id] [:concept (random-uuid)]}
+            :tags #{[:ontology tree-class-ontology-id] [:concept child-concept-id]}
             :body {:ontology-id tree-class-ontology-id
-                   :concept-id (random-uuid)
+                   :concept-id child-concept-id
                    :uri child-uri
                    :label domain-label
-                   :description (str "Domain child of " parent-tree-id)
+                   :description (or birth-description
+                                    (str "Domain child of " parent-tree-id))
                    :scope :tree-class
                    :broader [parent-uri]
                    :indicators []
@@ -643,6 +658,30 @@
                    :target-uri parent-uri
                    :predicate "skos:broader"
                    :created-at now}}))
+        embed-event
+        (when (and child-is-new? (seq birth-description))
+          (let [embedding-vec (embedding/embed-text birth-description)]
+            ;; embed-text answers nil on failure. A family born without its
+            ;; embedding is invisible to the hybrid search's embedding leg, so
+            ;; the birth fails loudly (as :ontology/embed-concept does) rather
+            ;; than landing an unembedded family with no trace of why.
+            (when-not embedding-vec
+              (throw (ex-info "Failed to generate the domain family's birth embedding"
+                              {:child-tree-id child-tree-id :uri child-uri
+                               :requirement :birth-embedding})))
+            (do
+              (->event
+               {:type :ontology/concept-embedded
+                :tags #{[:concept child-concept-id]}
+                :body {:concept-id child-concept-id
+                       :uri child-uri
+                       :ontology-id tree-class-ontology-id
+                       :scope :tree-class
+                       :text-embedded birth-description
+                       :field-source "birth-description"
+                       :embedding embedding-vec
+                       :model-id embedding/default-model-id
+                       :embedded-at now}}))))
         already-minted? (and (some? child-concept) already-linked?)]
     (if already-minted?
       {:command-result/events []}
@@ -651,6 +690,7 @@
              [parent-concept-event
               child-concept-event
               relationship-event
+              embed-event
               (->event
                {:type :ontology/domain-child-minted
                 :tags #{[:tree-class-child child-tree-id]
@@ -1570,7 +1610,7 @@
             behavioral-subtrees ranked-candidates assigned-via outcome
             researcher-ownership-epoch classification-context
             domain-verdict domain-label domain-children-considered
-            domain-deferral]} :command
+            domain-deferral domain-selection merge-verdict]} :command
     :keys [event-store tenant-id]}]
   (let [existing (es/read event-store
                           {:tenant-id tenant-id
@@ -1626,7 +1666,13 @@
                   (some? domain-children-considered)
                   (assoc :domain-children-considered domain-children-considered)
                   (some? domain-deferral)
-                  (assoc :domain-deferral domain-deferral))})]
+                  (assoc :domain-deferral domain-deferral)
+                  ;; CV-A: covered-seed protection's selection and the merge
+                  ;; judge's raw verdict, both optional (omit-not-nil).
+                  (some? domain-selection)
+                  (assoc :domain-selection domain-selection)
+                  (some? merge-verdict)
+                  (assoc :merge-verdict merge-verdict))})]
        :command-result/cas
        (task-classification-occurrence-cas
         source-sheet-id source-tick-id source-node-id

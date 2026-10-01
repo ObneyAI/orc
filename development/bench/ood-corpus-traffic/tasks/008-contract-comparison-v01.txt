@@ -1,0 +1,5 @@
+; brief-id: b-002
+; group: contract-comparison
+; variant: 1
+
+Compare attached SaaS MSA draft against last month's standard redline. Need executive summary of primary deviations and a section-by-section diff quoting original vs. proposed language for all indemnity, data privacy, and termination clauses. Include impact analysis on current liability exposure if accepted as-is. Address the conflict in the 'Limitation of Liability' cap immediately. Conclude with clear recommendations on non-negotiables vs. concessions to expedite signature. Urgent.

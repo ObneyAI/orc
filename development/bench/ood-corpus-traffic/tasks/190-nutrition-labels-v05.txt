@@ -1,0 +1,12 @@
+; brief-id: b-033
+; group: nutrition-labels
+; variant: 5
+
+Please finalize the nutritional profiles for the three upcoming "Family-Style" meal kits based on the attached chef recipes and warehouse ingredient sheets. We need these to be 100% accurate for our fitness-focused subscribers before the guides go to print.
+
+1. Calculate the per-serving nutritional data specifically for the final cooked plate using these portions: for the Herb-Crusted Pork Tenderloin, one serving is 5oz of meat plus 1/2 cup of sides; for the Vegetarian Buddha Bowl, it is one pre-portioned 400g bowl; and for the Shrimp Scampi Kit, a serving is defined as 2oz of dry pasta plus 6 large shrimp.
+2. For each individual serving, provide a breakdown of the total calories, total fat, net carbs (subtracting fiber), and protein.
+3. Review the ingredient data sheets to conduct a rigorous allergen scan for every kit, specifically flagging any presence of milk, crustacean shellfish, or peanuts.
+4. Generate a professional, print-ready nutrition facts label for each of the three recipes that can be dropped directly onto our 5x7 recipe cards.
+
+Ensure you are calculating based on the final prepared dish rather than just scaling the bulk raw ingredients, as we need precise macros for our marketing materials.

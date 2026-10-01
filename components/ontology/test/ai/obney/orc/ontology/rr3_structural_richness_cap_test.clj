@@ -153,13 +153,19 @@
   (doseq [[tid body] bodies] (record-body! ctx tid body))
   (Thread/sleep 100)
   (let [[capture stub] (captured-rerank)]
+    ;; The stub honours ColBERT's :k like the real index does, and :k 10 lets
+    ;; the reranker's bounded set (2 x k = 20) hold every candidate here. The
+    ;; earlier stub ignored :k, so the reranker saw more candidates than a
+    ;; real :k 6 search ever handed it; search-descriptions now bounds the
+    ;; reranker's set explicitly (a filtered rerank over-fetches, then takes
+    ;; the reranker's usual count of allowed candidates).
     (with-redefs [colbert/list-indexes fake-list-indexes
-                  colbert/search (fn [_ _] candidates)
+                  colbert/search (fn [_ opts] (vec (take (:k opts) candidates)))
                   reranker/rerank! stub]
       (ontology/search-descriptions ctx {:query "refactor the order service"
                                          :granularity :behavioral-subtree
                                          :rerank-with-intent tc/behavioral-classifier-intent
-                                         :k 6})
+                                         :k 10})
       @capture)))
 
 ;; =============================================================================

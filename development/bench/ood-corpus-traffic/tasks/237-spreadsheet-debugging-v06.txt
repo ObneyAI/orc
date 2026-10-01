@@ -1,0 +1,16 @@
+; brief-id: b-040
+; group: spreadsheet-debugging
+; variant: 6
+
+I’m in the middle of a bit of a nightmare with my 'Startup_Equity_Model.' I’ve been constantly switching between an Excel version on my local drive and a Google Sheets version I shared with the founders for their review, but the valuation summary is completely falling apart. Specifically, the 'Fully_Diluted_Cap_Table' tab is inflating the 'Post-Money_Valuation' to an impossible degree, and the 'Option_Pool_Dilution' seems to be ignoring the new Series A inputs entirely. It’s showing these weird $0 values for certain stakeholders even though their share counts are clearly defined in the underlying data.
+
+I’ve pulled a few key pieces from the model for you to look at. Here is the formula logic I’m currently using for the primary valuation lookup: 
+
+`Valuation_Lookup: =INDEX(Financing_Data!$B$5:$Z$5, MATCH(Summary!C4, Financing_Data!$B$2:$Z$2, 0)) * (1 + (Equity_Logic!G12/100))`
+
+And here is a sample of the discrepancies I’m seeing in the summary view:
+- Founder A: Expected: $12,500,000 | Actual: $0.00
+- Investor B: Expected: 15.2% Ownership | Actual: 48.9%
+- Cell H14: Error Code: #VALUE! (appearing in Column H)
+
+Can you figure out where the logic is breaking? I suspect it’s either a mismatched index range in that MATCH function or an issue with how the two platforms handle blank cells differently in the percentage calculations. Please provide the exact causes for the inflated ownership percentages and the zeroed-out valuations. I need the corrected formulas to be strictly cross-platform compatible so I don’t have to keep fixing these manually every time I upload a new version. Finally, please include a 'sanity check' formula—basically a checksum that flags a 'WARNING' text string if the total equity doesn't sum to exactly 100%. Thanks a ton!

@@ -1,0 +1,11 @@
+; brief-id: b-035
+; group: reorder-plan
+; variant: 5
+
+Please review the attached inventory spreadsheets covering our 350 active SKUs, the past six months of Shopify sales logs, and the updated lead time sheet for both our domestic and overseas manufacturers. I have also included the new MOQ requirements and volume discount tiers for our core electronics and packaging supplies. Using this data, please provide the following:
+
+1. Calculate the specific reorder points and precise order quantities for every SKU. The goal is to eliminate stockouts during the next cycle while maintaining a lean warehouse footprint.
+2. Develop a comprehensive 60-day purchasing schedule. This must specify the exact date each PO needs to be issued, factoring in the specific lead times for each individual supplier.
+3. Determine the total cash outlay required for these orders over the 60-day period so I can coordinate our liquidity needs with the finance department.
+
+Focus exclusively on actionable replenishment data. I do not need high-level budget forecasts or supplier negotiation strategies right now. I just need to know exactly what we are buying, when we are buying it, and the total cost.

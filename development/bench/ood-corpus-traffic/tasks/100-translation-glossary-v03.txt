@@ -1,0 +1,13 @@
+; brief-id: b-024
+; group: translation-glossary
+; variant: 3
+
+Please review the attached 'Vanguard vs. Thorne' legal filings (.docx) and the corresponding Spanish translations from the Madrid firm (.pdf) to create a standardized bilingual glossary. We need to eliminate terminology drift between procedural filings, specifically regarding intellectual property clauses and jurisdictional motions. Your output must strictly follow this schema:
+
+*   [Source_Term_EN]: The precise English legal or technical term from the source documents.
+*   [Target_Term_ES]: The strictly approved Spanish equivalent, ensuring compatibility with Iberian Peninsula judicial standards.
+*   [Legal_Definition]: A concise definition reflecting the specific context of the 'Vanguard vs. Thorne' litigation.
+*   [Contextual_Usage_Notes]: Explicit instructions regarding the term's application in civil discovery versus criminal proceedings.
+*   [Forbidden_Variants]: A comma-separated list of prohibited synonyms, specifically excluding Latin American regionalisms or common-law approximations that conflict with the Spanish civil code.
+
+Do not translate the documents in full. The goal is to produce a structured terminology reference that ensures consistency for future filings. Ensure all definitions and usage notes are tailored for a professional legal audience. Do not omit any statutory references found in the source materials.

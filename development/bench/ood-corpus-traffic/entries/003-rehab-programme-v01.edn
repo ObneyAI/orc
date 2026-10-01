@@ -1,0 +1,22 @@
+{:slug "003-rehab-programme-v01",
+ :group "rehab-programme",
+ :in-domain? false,
+ :variant 1,
+ :expected-output-kind
+ "a phased programme with exercises, sets, progression criteria and stop signs, plus a weekly schedule",
+ :brief-id "b-037",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 335, :completion-tokens 149, :total-tokens 484},
+  :draft-prompt-sha256
+  "d17032e62e9e8794ed082422ccdfb2fa6b23c1f82e29524c9c4f36b477c874e8",
+  :polish-usage
+  {:prompt-tokens 324, :completion-tokens 151, :total-tokens 475},
+  :polish-prompt-sha256
+  "87faeeee55d0942931f893e49e9438177b2b2af24ef652dc72d3ef3a1cf0625f",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

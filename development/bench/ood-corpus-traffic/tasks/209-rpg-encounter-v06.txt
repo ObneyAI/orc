@@ -1,0 +1,15 @@
+; brief-id: b-031
+; group: rpg-encounter
+; variant: 6
+
+Hey, I’m in a bit of a bind for my D&D 5e session tonight. The party—a Vengeance Paladin, a Grave Cleric, and a Swashbuckler Rogue, all level 7—has finally reached the 'Shattered Ossuary' in the Shadowfell. Their goal is to prevent a spectral ritual from completing, but I want the environment to be just as dangerous as the ghosts. 
+
+Here is the current state of the room they are entering:
+{
+  "Chamber": "The Echoing Vault",
+  "Light": "Dim/Magical Darkness",
+  "Objective": "Disrupt 3 Soul-Anchors",
+  "Current_HP": "Party is at ~70% after the bridge fight"
+}
+
+Can you design a combat encounter centered on this? I need a setup that describes the chilling, soul-draining atmosphere of the vault. For the enemies, give me stat blocks for one 'Ossuary Warden' and four 'Lingering Shadows' that fit the 5e CR math. I’d love some specific terrain hazards, like 'Soul-Chill Fog' or 'Collapsing Sarcophagi,' and how these affect movement or necrotic damage. Please provide a tactical script for the Warden—how it protects the anchors and uses the shadows to flank. Also, give me the rationale for why this is a 'Hard' encounter for three level 7s, and include some scaling options to bump it to 'Deadly' if they try to short rest in the hallway first. Just focus on this specific vault encounter, please! Thanks!

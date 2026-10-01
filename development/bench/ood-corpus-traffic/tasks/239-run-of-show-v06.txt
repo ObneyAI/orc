@@ -1,0 +1,16 @@
+; brief-id: b-034
+; group: run-of-show
+; variant: 6
+
+I’m frantically trying to pull together the 'Velocity' product launch for our new e-bike line this Friday. We’ve only got the warehouse space from 1 PM to 5 PM, and the livestream goes live at 2 PM sharp. The venue is an old industrial site with limited power, so we have to be extremely careful about not overloading the circuits during the demo phase. 
+
+I’ve attached the script, the hardware list for the bikes, and the AV rider. Here is the high-level flow I'm working from:
+- 13:00-14:00: Load-in & Power check
+- 14:00-14:15: CEO Intro (Live stream start)
+- 14:15-14:45: Features Deep Dive & Stunt Demo
+- 14:45-15:30: Live Q&A and Beta Sign-ups
+- 15:30-17:00: Press hands-on and Strike
+
+Can you turn this into a granular, minute-by-minute run of show? I need a table that includes the timestamp, the specific cue (like 'strobe pulse on reveal'), the owner in charge, and the AV needs. We only have two high-draw circuit breakers for the lights and the charging stations, so I need notes on when to kill the stage spots to safely plug in the bikes for the demo. 
+
+Also, we’re doing this live, and our lead engineer tends to ramble. I need a 'Contingency' column for every single block. If the stunt demo takes too long to reset, tell me exactly which feature videos to skip or which Q&A questions to pull from the queue to ensure we hit that 5 PM hard-out for the crew. Don’t worry about the guest list or the catering menu—just give me the technical flow so the stage manager doesn't have a heart attack.

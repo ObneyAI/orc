@@ -1,0 +1,15 @@
+; brief-id: b-020
+; group: seating-plan
+; variant: 5
+
+I need you to handle the final seating chart for our Annual Healthcare Summit Gala. We have 135 guests confirmed, and the ballroom is set for 15 tables of nine. Please follow these specific steps to ensure the layout works for our networking goals:
+
+1. Generate a complete table-by-table list (Tables 1-15) with nine names assigned to each.
+2. Seat all nine board members from 'Westside Medical Group' together at Table 1.
+3. For Tables 2 through 15, ensure a professional mix of at least two doctors, two nurses, and one administrator per table to spark conversation.
+4. Keep Dr. Helena Rossi and Dr. Marcus Chen separated. They cannot sit at the same table, nor can they be at numerically adjacent tables (for example, if Rossi is at Table 5, Chen cannot be at 4, 5, or 6).
+5. Limit regional concentration by ensuring no more than three people from the same hospital are placed at the same table, excluding the Table 1 board group.
+6. Provide a validation summary confirming all constraints were met or flagging any unavoidable conflicts.
+7. Include two "what-if" scenarios for the 5 waitlisted guests in case we bump table capacity to 10.
+
+Focus strictly on the seating; I don't need info on AV or the menu. I need this by noon for the printers.

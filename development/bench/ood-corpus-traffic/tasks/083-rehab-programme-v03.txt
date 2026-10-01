@@ -1,0 +1,14 @@
+; brief-id: b-037
+; group: rehab-programme
+; variant: 3
+
+Please develop a comprehensive 4-week rehabilitation and strength protocol for a competitive marathoner who is exactly 8 weeks post-op from ACL reconstruction (hamstring graft). The athlete has transitioned to the 'initial loading' phase and has access to kettlebells (up to 24kg), a stationary bike, and a foam roller. The plan must prioritize quad hypertrophy and single-leg stability to address surgical asymmetry while fitting into a 50-hour work week via office-friendly 'micro-sessions.'
+
+Your response must strictly follow this schema:
+* PHASE NAME & OBJECTIVE: Define the current clinical focus (e.g., Neuromuscular Control & Strength).
+* EXERCISE TABLE: Provide a detailed table including specific movements, sets, reps, and tempo (e.g., 3-0-3-0).
+* PROGRESSION GATE: List objective strength or mobility benchmarks (e.g., specific SL squat depth or weight) required to advance.
+* RED FLAGS: Define quantitative pain thresholds (on a 1-10 scale) and specific swelling indicators that mandate an immediate stop.
+* WEEKLY CALENDAR: A 7-day logistical view balancing heavy lifting, mobility, and low-impact cardio sessions.
+
+Ensure the tone is clinical and logistical rather than a generic fitness routine. No medical diagnosis is requested; organize the provided clinician guidance into this specific format.

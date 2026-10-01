@@ -1,0 +1,13 @@
+; brief-id: b-021
+; group: planting-schedule
+; variant: 3
+
+Please develop a comprehensive planting and maintenance roadmap for a 30-foot 'Market Garden' bed located in a cool, wet Zone 6 climate. The schedule must be optimized for a high-efficiency workflow limited to a 4-hour maintenance window on Saturday mornings. The crop list is strictly limited to head lettuce, carrots, kale, and sugar snap peas. Provide a chronological, week-by-week calendar spanning March 1st through October 30th. Each entry must adhere to the following explicit schema:
+
+* WEEK & START DATE: [Calendar week and specific Saturday date]
+* PRIMARY ACTION: [Sowing, Transplanting, Feeding, or Harvesting]
+* SPECIFIC VARIETY: [The specific crop being addressed]
+* SUCCESSION STEP: [Instructions for replacing spent crops or filling gaps to maintain 100% bed utilization; specifically address the transition from sugar snap peas to heat-tolerant lettuce]
+* MAINTENANCE TASK: [Pruning, specific organic nutrient applications, or carrot rotation steps to ensure continuous supply]
+
+Focus exclusively on the temporal schedule. I do not require guidance on bed layout, pest management, or general gardening advice. The output should be a print-ready task calendar that allows for immediate implementation. Ensure the succession logic accounts for the specific maturity rates of the four requested vegetables within a Zone 6 temperature profile.

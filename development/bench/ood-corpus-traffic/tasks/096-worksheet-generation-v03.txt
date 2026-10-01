@@ -1,0 +1,15 @@
+; brief-id: b-032
+; group: worksheet-generation
+; variant: 3
+
+Please generate a 15-item Algebra I practice worksheet focusing exclusively on solving quadratic equations via the quadratic formula. My daughter is struggling with this topic before her test, so I need a set of problems that specifically targets identifying coefficients and handling negative discriminants. Please structure the response according to this exact schema:
+
+* **Practice Problems Section**: 15 distinct equations. The set must scale in difficulty, beginning with basic trinomials in standard form and progressing to complex equations that require algebraic rearrangement (e.g., terms on both sides of the equals sign).
+* **Detailed Answer Key**: A numbered list corresponding to the problems above.
+* **Solution Requirements**: For every item in the key, you must explicitly include:
+    * The identified values for a, b, and c.
+    * The step-by-step discriminant calculation ($b^2 - 4ac$).
+    * The final roots expressed in both simplified radical form and decimal approximation (to two decimal places).
+* **Problem Metadata**: Each question must be tagged as "Introductory" (integer roots), "Standard" (fractional or irrational roots), or "Challenge" (complex roots involving 'i').
+
+Do not include any pedagogical advice, introductory text, or grading rubrics; I only need the raw worksheet and the key for a 2:00 PM review.

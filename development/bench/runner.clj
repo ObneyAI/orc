@@ -28,10 +28,19 @@
             [ai.obney.orc.ontology.core.reranker :as reranker]
             [ai.obney.orc.ontology.core.evidence-guard :as evidence-guard]
             [model-registry :as mr]
-            [ai.obney.orc.colbert.interface]
+            [ai.obney.orc.colbert.interface :as colbert]
             [ai.obney.orc.colbert.interface.schemas]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-v3.interface.schemas]
+            ;; RS7-PS: loading this registers the `:postgres` defmethod on
+            ;; `event-store-v3/start-event-store` (event_store_postgres_v3
+            ;; core.clj's `(defmethod start-event-store :postgres ...)`).
+            ;; Without this require, `{:event-store-conn {:type :postgres
+            ;; ...}}` dispatches to `:default` and throws "Unsupported
+            ;; event store type" even though the dep resolves on the
+            ;; classpath — same pattern as how orc-service's sqlite tests
+            ;; require ai.obney.grain.event-store-sqlite-v3.interface.
+            [ai.obney.grain.event-store-postgres-v3.interface]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.pubsub.interface :as pubsub]
@@ -149,15 +158,42 @@
 
 (defonce ^:private system-state (atom nil))
 
+(def bench-cache-map-size
+  "The bench runner's LMDB cache ceiling: 16 GB of address space."
+  (* 16 1024 1024 1024))
+
 (defn create-context
   "PUBLIC (CH-1): the convergence probe already reached in here through
-   `requiring-resolve`, and the CH-1 startup-ordering test redefines it."
-  []
+   `requiring-resolve`, and the CH-1 startup-ordering test redefines it.
+
+   RS7-PS: accepts an optional options map so a caller can point the harness
+   at a durable store instead of the default in-memory one:
+     :event-store-conn - the `:conn` map passed to `es/start` (default
+                          `{:type :in-memory}`; for Postgres pass
+                          `{:type :postgres :server-name ... :port-number ...
+                          :username ... :password ... :database-name ...}` —
+                          see `ai.obney.grain.event-store-postgres-v3.interface.datasource/make-datasource`
+                          for the exact keys it reads)
+     :tenant-id         - the tenant to use (default a fresh random UUID)
+     :cache-dir         - the LMDB cache directory (default a fresh directory
+                          under `development/bench/.runner-cache/`, NOT /tmp —
+                          macOS's cleaner reaps unaccessed /tmp files after a
+                          few days, which gutted a worktree before; see
+                          `feedback_never_keep_worktrees_in_tmp`)
+   Every existing zero-arg caller keeps working unchanged."
+  ([] (create-context {}))
+  ([{:keys [event-store-conn tenant-id cache-dir]
+     :or {event-store-conn {:type :in-memory}}}]
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
-        event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
-        cache-dir (str "/tmp/orc-bench-" (random-uuid))
-        cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "bench"}))
-        tenant-id (random-uuid)
+        event-store (es/start {:conn event-store-conn :event-pubsub ps :logger nil})
+        cache-dir (or cache-dir (str "development/bench/.runner-cache/" (random-uuid)))
+        ;; LMDB's default map size is 10 MB, and a long sweep's projections outgrow
+        ;; it: the RS-7 baseline arm failed every task past ~220 with
+        ;; MapFullException. The map size only reserves address space, so a large
+        ;; ceiling costs nothing until used.
+        cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "bench"
+                                               :map-size bench-cache-map-size}))
+        tenant-id (or tenant-id (random-uuid))
         base-ctx {:event-store event-store
                   :cache cache
                   :tenant-id tenant-id
@@ -192,7 +228,7 @@
                                           :context base-ctx}))))
                     {}
                     @tp/processor-registry*)]
-    (assoc base-ctx :event-pubsub ps :processors processors)))
+    (assoc base-ctx :event-pubsub ps :processors processors))))
 
 (defn- stop-context [ctx]
   (doseq [[_ processor] (:processors ctx)] (tp/stop processor))
@@ -353,11 +389,14 @@
 ;; Public API
 ;; =============================================================================
 
-(defn- drive-projectors!
-  "Synchronously drive BOTH the C-2d-1 tree-class projector AND the R05a
-   behavioral-subtree projector over every :ontology/tree-description-updated
-   event in the store. Mirrors the c2e-behavioral-live-verify orchestrator
-   pattern."
+(defn drive-projectors!
+  "PUBLIC (RS-7): synchronously drive BOTH the C-2d-1 tree-class projector
+   AND the R05a behavioral-subtree projector over every
+   :ontology/tree-description-updated event in the store. Mirrors the
+   c2e-behavioral-live-verify orchestrator pattern. `rs7_traffic_sweep.clj`'s
+   `restore!` calls this after replaying a snapshot into a fresh context, so
+   the concept graph reflects the replayed events synchronously rather than
+   racing the live pubsub-subscribed processors."
   [ctx]
   (let [c2d1 (requiring-resolve
                'ai.obney.orc.ontology.core.todo-processors/on-tree-description-updated-project-concept)
@@ -416,23 +455,95 @@
   (Thread/sleep 1000)
   (println "Index state:" (pr-str (ontology/get-reindex-state ctx))))
 
+(defn- tenant-has-events?
+  "RS7-PS: decide 'already seeded' from the STORE'S OWN events for this
+   tenant — never a flag file. `:limit 1` keeps this cheap (a single-row
+   read) even against a Postgres store with a large history."
+  [ctx]
+  (boolean (seq (into [] (es/read (:event-store ctx)
+                                  {:tenant-id (:tenant-id ctx) :limit 1})))))
+
 (defn start!
   "Initialize the benchmark system. Also seeds the description corpus and
    builds the ColBERT index so tasks with `:rlm {:auto-classify? true}`
-   can exercise the R05 classifier path (R-Inject)."
+   can exercise the R05 classifier path (R-Inject).
+
+   RS7-PS: accepts an optional options map, forwarded verbatim to
+   `create-context` (`:event-store-conn` / `:tenant-id` / `:cache-dir`).
+   When the connected store ALREADY holds events for the given tenant (the
+   normal case on resuming a killed run against a persistent Postgres
+   store), the corpus and padding documents are NOT re-seeded: instead the
+   existing events are projected (`drive-projectors!`, the same path
+   `rs7-traffic-sweep/restore!` uses) and the ColBERT index is rebuilt once
+   (`ont-tp/force-rebuild!`) so retrieval reflects the restored state. A
+   fresh/empty store (the default in-memory case, or a brand-new Postgres
+   database) still seeds normally. Every existing zero-arg caller keeps
+   working unchanged.
+
+   Launcher note (RS-7): for a persistent Postgres store, use ONE database
+   per ARM (e.g. `rs7_pre_fix`), created before the run with
+   `docker exec orc-rs7-postgres createdb -U orc <name>`. Pass 2 continues
+   pass 1's database and tenant (the same results-dir), because it measures
+   stability against the tree pass 1 grew; `rs7-traffic-sweep/run-pass!`
+   refuses a pass 2 on any other tenant."
+  ([] (start! {}))
+  ([opts]
+   (when @system-state
+     (stop-context @system-state))
+   ;; CH-1: register every declared model AND assert the precondition BEFORE
+   ;; anything is built, so an undeclared model can never reach a live call.
+   (register-models!)
+   (let [ctx (create-context opts)]
+     (reset! system-state ctx)
+     (if (tenant-has-events? ctx)
+       (do
+         (println "RS7-PS: existing events found for tenant" (:tenant-id ctx)
+                   "— resuming without reseeding.")
+         (drive-projectors! ctx)
+         (println "Rebuilding ColBERT description index from restored state...")
+         (ont-tp/force-rebuild! ctx)
+         (println "Index state:" (pr-str (ontology/get-reindex-state ctx))))
+       (seed-corpus-and-build-index! ctx)))
+   (println "\n" (apply str (repeat 60 "=")) "\n")
+   (println "  ORC RLM Benchmark Runner started (corpus seeded, index built)")
+   (println "\n" (apply str (repeat 60 "=")) "\n")
+   :started))
+
+(defn start-reindex-processor!
+  "RS-7: start the `:ontology/on-description-updated-maybe-reindex`
+   processor on the ALREADY-RUNNING system (`create-context` skips it by
+   default — see its `skip-procs` comment) for the `:processor` reindex
+   policy arm, which wants the faithful async-reindex path rather than the
+   harness's synchronous `{:every-k K}` trigger. Call once, after
+   `start!`. Idempotent-ish: calling twice just re-subscribes a second
+   processor instance under the same key (the first is orphaned, not
+   stopped) — callers should call it exactly once per `start!`."
   []
-  (when @system-state
-    (stop-context @system-state))
-  ;; CH-1: register every declared model AND assert the precondition BEFORE
-  ;; anything is built, so an undeclared model can never reach a live call.
-  (register-models!)
-  (let [ctx (create-context)]
-    (reset! system-state ctx)
-    (seed-corpus-and-build-index! ctx))
-  (println "\n" (apply str (repeat 60 "=")) "\n")
-  (println "  ORC RLM Benchmark Runner started (corpus seeded, index built)")
-  (println "\n" (apply str (repeat 60 "=")) "\n")
-  :started)
+  (let [ctx @system-state
+        _ (when-not ctx (throw (ex-info "System not started — call (runner/start!) first" {})))
+        {:keys [handler-fn topics]} (get @tp/processor-registry*
+                                         :ontology/on-description-updated-maybe-reindex)
+        proc (tp/start {:event-pubsub (:event-pubsub ctx)
+                        :topics topics
+                        :handler-fn handler-fn
+                        :context ctx})]
+    (swap! system-state update :processors assoc
+           :ontology/on-description-updated-maybe-reindex proc)
+    :started))
+
+(defn active-index-id
+  "RS-7: the :index-id of the most-recently-created 'ontology-descriptions'
+   ColBERT index, or nil if none has been built yet. Mirrors
+   ontology.interface's PRIVATE `latest-ontology-descriptions-index`
+   (duplicated here because that fn is private and this is a dev-only
+   reporting need — which index a classify call resolved against — not a
+   production retrieval path)."
+  [ctx]
+  (->> (colbert/list-indexes ctx)
+       (filter #(= "ontology-descriptions" (:index-name %)))
+       (sort-by :created-at)
+       last
+       :index-id))
 
 (defn stop!
   "Stop the benchmark system."

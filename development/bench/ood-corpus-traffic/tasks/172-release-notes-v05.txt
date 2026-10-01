@@ -1,0 +1,12 @@
+; brief-id: b-025
+; group: release-notes
+; variant: 5
+
+Please take the 75 items from the v8.4 DevKit SDK sprint—currently a mix of raw commit messages, PR headers, and Jira tickets—and synthesize them into a polished set of public release notes according to these steps:
+
+1. Scrub all internal tracking data, including Jira ticket IDs like #SDK-402 and commit hashes such as a1b2c3d, to ensure a clean, external-facing document.
+2. Translate technical shorthand into benefit-oriented language for our developer community; for instance, rephrase "memory leak fix in polling loop" as "improved stability for long-running background sessions."
+3. Organize the content into exactly four categories: 'New,' 'Improved,' 'Fixed,' and 'Breaking.'
+4. Pay special attention to the 'Breaking' section by clearly highlighting the syntax change from 'onUpdate' to 'onStateChange' to prevent user build failures.
+5. Append a mandatory 'Upgrade Notes' section detailing the migration path from v8.3 to v8.4, specifically covering the new initialization requirements for the cross-platform bridge.
+6. Maintain a professional, concise tone throughout the document while ensuring the 30% performance optimization mentioned in the bridge serialization PR is prominently featured.

@@ -1,0 +1,7 @@
+; brief-id: b-032
+; group: worksheet-generation
+; variant: 4
+
+Hey! I am drowning in prep work for my 4th graders this week and could really use a hand. We’re diving into fractions, specifically adding and subtracting them with unlike denominators, and I need a solid practice sheet for them to work on tomorrow morning. Could you whip up a worksheet with 20 items? I’d like a mix of straightforward computation and a few word problems thrown in to keep them on their toes. Let's aim for a mid-elementary difficulty level. 
+
+I need the worksheet items listed first, and then a completely separate answer key at the end. For the key, please include the worked solutions—don’t just give the answer, show the step of finding the common denominator so I can show them exactly where they might have tripped up. Also, can you tag each problem as 'Level 1', 'Level 2', or 'Level 3' based on how tricky the denominators are? Just the questions and the tagged solutions, please—no need for a lesson plan or rubric. I’ve got a mountain of grading to get through before my next meeting, so you’re a lifesaver! Thank you!

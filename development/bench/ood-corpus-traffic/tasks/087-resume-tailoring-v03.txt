@@ -1,0 +1,13 @@
+; brief-id: b-039
+; group: resume-tailoring
+; variant: 3
+
+Please generate a tailored application package for a High School English Teacher position at a Tokyo-based international school, transitioning from a US public school background. Use the provided CV and job description to produce an output strictly adhering to the following schema:
+
+• REVISED CV: A restructured version of my resume that highlights IB curriculum alignment and international pedagogy. Formatting must be professional and localized for the Japanese private school market.
+• CHANGE LOG: A detailed table documenting all significant edits. Columns should include: Original Phrasing, Revised Phrasing, and Strategic Rationale.
+• COVER LETTER: A formal letter emphasizing ESL instructional strategies, experience coaching competitive debate, and long-term commitment to cross-cultural education.
+• GAP ANALYSIS: A bulleted assessment identifying missing credentials, such as specific MEXT certifications, required IB professional development workshops, or niche technical skills listed in the job post.
+• MITIGATION STEPS: For every item in the Gap Analysis, provide a concise one-sentence "bridge" statement to be used in the application to address how these requirements will be met.
+
+Do not provide interview coaching, general career advice, or grading rubrics. Focus exclusively on the requested documents and the strategic gap assessment.

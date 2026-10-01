@@ -1,0 +1,22 @@
+{:slug "091-research-synthesis-v03",
+ :group "research-synthesis",
+ :in-domain? false,
+ :variant 3,
+ :expected-output-kind
+ "themes with supporting quotes, an opportunity ranking, and recommendations with confidence",
+ :brief-id "b-029",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 931, :completion-tokens 303, :total-tokens 1234},
+  :draft-prompt-sha256
+  "1fd1eaaf8b6e00c48de299c0de074dd24a73e44ffcc799fb66c3666b4d8d9e3e",
+  :polish-usage
+  {:prompt-tokens 481, :completion-tokens 285, :total-tokens 766},
+  :polish-prompt-sha256
+  "c9450330aeb9eff2edf0822ae9ddce239c6646fae40ac9c3a2128d049d38f946",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

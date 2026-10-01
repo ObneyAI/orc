@@ -1,0 +1,17 @@
+; brief-id: b-007
+; group: marathon-training
+; variant: 3
+
+Please draft a 12-week 10k training program tailored for a beginner-intermediate runner returning from a six-month hiatus caused by a tibial stress reaction. The schedule must prioritize a conservative ramp-up to mitigate re-injury risks and must be entirely treadmill-compatible due to severe winter conditions. Account for a work schedule involving 12-hour shifts on Tuesdays and Thursdays; these days should be strictly reserved for rest or light mobility work. Do not include nutritional guidance or travel logistics.
+
+The output must adhere to the following schema:
+
+* WEEK [Number]: [Specific Phase Theme]
+    * Daily Run Schedule: [Distance/Duration] at [Target Pace or RPE]
+    * Strength & Stability: [Prescribed exercises targeting tibial health, calf strength, and core stability]
+    * Weekly Total Volume: [Total Mileage]
+* RECOVERY LOGIC: [A detailed breakdown of the programmed cutback week occurring every third week to ensure bone remodeling]
+* THE TAPER: [A specific 10-day volume reduction strategy leading into the target race]
+* RED FLAGS: [A bulleted list distinguishing normal muscle soreness from specific indicators of bone stress or impending injury]
+
+Ensure the plan reflects the user's specific running history and their most recent 5k PR to calculate appropriate pace zones.

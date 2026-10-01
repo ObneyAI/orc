@@ -1,0 +1,22 @@
+{:slug "113-risk-analysis-v03",
+ :group "risk-analysis",
+ :in-domain? true,
+ :variant 3,
+ :expected-output-kind
+ "obligations and penalties extracted per section, a risk matrix rated HIGH/MEDIUM/LOW with justification, and an executive summary",
+ :brief-id "b-003",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id #uuid "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+ :generator
+ {:draft-usage
+  {:prompt-tokens 973, :completion-tokens 230, :total-tokens 1203},
+  :draft-prompt-sha256
+  "b5a8786ddd7f0b06bba7b1f25d6d484f1ede8d68aafd8ab4ec8787bd6b88d8ca",
+  :polish-usage
+  {:prompt-tokens 408, :completion-tokens 250, :total-tokens 658},
+  :polish-prompt-sha256
+  "4df929ff620b42dcb7c2902ef5ff1e0737089070136587ffa95029267817d077",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

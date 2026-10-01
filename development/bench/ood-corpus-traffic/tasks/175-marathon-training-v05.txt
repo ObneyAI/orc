@@ -1,0 +1,14 @@
+; brief-id: b-007
+; group: marathon-training
+; variant: 5
+
+I am officially cleared to start training for the Turkey Trot 5k, and I need a structured 10-week plan to help me hit a sub-22:00 PR while protecting my right knee post-meniscus repair. Please review my attached physical therapy notes and pre-surgery data, then build a schedule that meets these specific requirements:
+
+1. Create a week-by-week training breakdown that includes exact interval paces and long-run targets calculated from my current 8:30 min/mile aerobic base.
+2. Integrate three days of heavy strength training per week, focusing specifically on the posterior chain and knee stability to support the joint.
+3. Program a low-impact cutback week every third week, reducing total mileage by 30% to allow for recovery.
+4. Design a 7-day taper leading up to the race that maintains leg speed and "snap" without excessive volume.
+5. All mid-week runs must be formatted for a treadmill since I’ll be training in the dark, though Saturday long runs should remain outdoor-focused.
+6. Provide a clear list of "Red Flag" symptoms that differentiate standard DOMS from signs of meniscus re-injury, indicating when I must stop immediately.
+
+I have already handled my fueling strategy and gear, so please omit any advice regarding nutrition or footwear. Focus entirely on the progression and injury prevention.

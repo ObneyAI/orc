@@ -1,0 +1,22 @@
+{:slug "200-security-haiku-v05",
+ :group "security-haiku",
+ :in-domain? false,
+ :variant 5,
+ :expected-output-kind
+ "one 5-7-5 haiku per finding that stays technically accurate without naming the vulnerability class",
+ :brief-id "b-011",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1596, :completion-tokens 383, :total-tokens 1979},
+  :draft-prompt-sha256
+  "07a6e297e81cb917783aaa5215b82b26e2ca951da056fc327b9d67241f6a8a75",
+  :polish-usage
+  {:prompt-tokens 556, :completion-tokens 352, :total-tokens 908},
+  :polish-prompt-sha256
+  "47a14ee9e86b2e7360b8c0cc80781ddaa474b7e4bbb383e8956ce3a1bb14a25d",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

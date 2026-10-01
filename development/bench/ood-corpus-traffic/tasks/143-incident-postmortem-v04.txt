@@ -1,0 +1,5 @@
+; brief-id: b-016
+; group: incident-postmortem
+; variant: 4
+
+Hey, can you help me out? I'm swamped trying to catch up on emails after that nightmare of a deployment yesterday. The frontend was basically a ghost town for two hours because of that bad merge, and I need to get a blameless postmortem ready for the retro tomorrow morning. I've uploaded the Slack history from #war-room, the GitHub PR logs, and those weird spikes we saw in Honeycomb. Can you pull together a solid draft? I need the full timeline from the first 'is it down?' message to the final rollback. Make sure to dig into the root cause—it looks like a dependency conflict in the build pipeline—and don't forget the contributing factors like the failing canary alerts. Also, let's list the impact on our North American users and highlight that the automated rollback actually saved us from a much longer outage. For action items, let's put 'Tighten CI linting' as high priority for @Frontend-Ops and 'Update staging parity' for @QA-Team. Keep it internal and constructive—no finger-pointing, just the facts. Thanks!

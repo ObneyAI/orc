@@ -1,0 +1,22 @@
+; brief-id: b-024
+; group: translation-glossary
+; variant: 6
+
+Subject: Glossary needs for the "Project Aether" French localization - Urgent
+
+Hi,
+
+Hope your week is off to a smoother start than mine! I’ve been juggling the final QA for the Aether expansion while trying to get my new puppy settled—he’s currently decided that my laptop charger is his favorite chew toy, so I’m typing this on borrowed time.
+
+I’ve uploaded the English game scripts and the preliminary French localization files to the shared drive. We’re seeing way too much inconsistency in the fantasy terminology, especially with the unique combat mechanics and character classes. The translation team is swapping between "Lame d'ombre" and "Ombralame" for the Shadowblade class, and it’s going to be a nightmare for the UI team if we don't pick one.
+
+Can you put together a bilingual glossary for these files? I need the English term, the approved French translation, a lore-based definition, and usage notes (e.g., if it’s for a skill tree icon vs. flavor text). Most importantly, I need you to document the "Forbidden Variants." We had a legal scare with a competitor’s trademark, so we absolutely cannot use "Spirit Stones" or "Aether Crystals." 
+
+Please follow this format for the entries:
+{ "Source_EN": "Shadowblade", "Target_FR": "Ombralame", "Lore_Def": "A rogue-class specialist using dark energy.", "Usage": "Class selection screen only.", "Forbidden": "Lame d'ombre, Assassin de l'ombre" }
+
+Don't worry about translating the full scripts yet; I just need this reference sheet so we can lock down the terminology before the voice actors start recording next week.
+
+Best,
+
+Mark

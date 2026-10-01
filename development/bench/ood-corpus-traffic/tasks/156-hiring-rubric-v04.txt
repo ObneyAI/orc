@@ -1,0 +1,9 @@
+; brief-id: b-019
+; group: hiring-rubric
+; variant: 4
+
+Hey! I'm finally getting a second to breathe—this hiring sprint for the new Lead DevOps Engineer is intense. We really need someone who can come in and fix our CI/CD bottlenecks, but more importantly, someone who can act as a bridge between the dev team and infra without starting a war. I’ve dropped the job description and my internal notes on the current tech debt into the folder for you.
+
+Could you help me put together a structured interview rubric? I want to focus on three core areas: Infrastructure as Code (Terraform is a must), Incident Response, and Cross-Team Mentorship. For the 'nice-to-haves', keep an eye out for Kubernetes certification or experience with GCP, but don't let those overshadow the core stuff. 
+
+I need the rubric to include specific behavioral indicators for each category, plus a 1-5 scoring scale with clear anchors so we aren't just 'vibing' our way through the feedback. Also, throw in three targeted, situational questions for each competency that'll really test their troubleshooting logic. Finally, please draft a decision rule to help us decide when to pull the trigger on a hire versus when to keep looking. Just the framework for now—no need to look at the actual candidates yet. Thanks!

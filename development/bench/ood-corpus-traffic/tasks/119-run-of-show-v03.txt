@@ -1,0 +1,15 @@
+; brief-id: b-034
+; group: run-of-show
+; variant: 3
+
+I need a comprehensive minute-by-minute production schedule for the 'Unity in Diversity' middle school musical this Friday. We have a strict 4-hour window in the auditorium, beginning at 6:00 PM and ending with a hard-out at 10:00 PM when the HVAC shuts off. The performance itself is 90 minutes, but the schedule must account for the pre-show setup, the full performance, and the final strike. Please synthesize the attached script, cast list, and stage manager’s notes regarding the lighting rig and our 6 working body mics.
+
+Output the schedule following this explicit schema:
+* [Time]: Exact timestamp (e.g., 18:15).
+* [Action/Segment]: Specific scene name, transition, or logistical task.
+* [Lead]: The specific student or faculty member in charge of that segment.
+* [Cues]: Detailed Sound/Light triggers (e.g., 'Spotlight fade to blue on Sarah’s exit').
+* [AV/Tech]: Mic hand-off rotations for the 20-person cast and prop placement notes.
+* [Contingency]: A 'Kill' or 'Loop' instruction for every scene to handle delays (e.g., specific chorus cuts or dialogue skips).
+
+Focus exclusively on technical execution and stage flow. Omit all non-production details like seating maps or bake sale information. We must remain on track to clear the building by 10:00 PM.

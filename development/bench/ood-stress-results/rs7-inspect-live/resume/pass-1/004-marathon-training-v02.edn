@@ -1,0 +1,122 @@
+{:index-id-at-classify #uuid "e8464120-87cf-4067-9105-7637e0aa35be",
+ :assigned-tree-id #uuid "87578758-6ee1-4372-b703-b72e5f725204",
+ :tick-id #uuid "97f28945-9c98-4f8f-b88f-729a75e25741",
+ :slug "004-marathon-training-v02",
+ :parent-tree-id nil,
+ :domain-label nil,
+ :timed-out? false,
+ :outcome :matched,
+ :reached-via :seed-match,
+ :domain-deferral nil,
+ :rerank-calls 2,
+ :usage
+ {:prompt-tokens 13319, :completion-tokens 1464, :total-tokens 14783},
+ :confounder-of nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "marathon-training-plan",
+  :domain-reasoning
+  "The representative use explicitly names training for a marathon, mileage progression, and race-day tapering, which covers the subject matter (marathon training), material (distance/timeline constraints), and output kind (training plan)."},
+ :corpus-in-domain? false,
+ :status :ok,
+ :node-id #uuid "102ecde3-421e-470f-b4ca-67a008a89524",
+ :top-1
+ {:target-id "87578758-6ee1-4372-b703-b72e5f725204",
+  :fitness-score 1.0,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "marathon-training-plan"},
+ :corpus-group "marathon-training",
+ :expected-seed-id nil,
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "87578758-6ee1-4372-b703-b72e5f725204",
+  :classified-at "2026-09-22T10:17:15.580263-05:00",
+  :reasoning
+  "The candidate's representative use is an exact structural and domain match, describing a week-by-week marathon training mileage progression with specific peak and taper requirements. It directly addresses the user's need for a structured physical training schedule based on a specific timeline and goal distance.",
+  :outcome :matched,
+  :source-node-id #uuid "102ecde3-421e-470f-b4ca-67a008a89524",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "abe48812-ad0f-3a27-a142-806558801fc0",
+    :confidence 0.95,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task is to produce a single committable plan (a marathon training schedule) from specific inputs (a 16-week timeline, a 10K base, and a 20-mile goal). This candidate's recommended-pattern for design (goal + constraints -> spec) perfectly matches the need to map these constraints into a structured plan with 'decisions' (mileage per day) and 'risks' (injury, fatigue).",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.75,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task requires integrating multiple constraints (current fitness, time until race, specific distance goals) into a cohesive narrative/schedule. The strength regarding 'scaffolding via a :code-built outline' is highly applicable for a 16-week schedule to ensure all weeks/milestones are covered.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "97f28945-9c98-4f8f-b88f-729a75e25741",
+  :event/tags
+  #{[:tick #uuid "97f28945-9c98-4f8f-b88f-729a75e25741"]
+    [:description-target
+     #uuid "87578758-6ee1-4372-b703-b72e5f725204"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-22T15:17:15.580421Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "marathon-training-plan",
+   :domain-reasoning
+   "The representative use explicitly names training for a marathon, mileage progression, and race-day tapering, which covers the subject matter (marathon training), material (distance/timeline constraints), and output kind (training plan)."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "87578758-6ee1-4372-b703-b72e5f725204",
+     :confidence 0.0,
+     :last-update "2026-09-22T09:59:38.340825-05:00"},
+    :domain-label "marathon-training-plan",
+    :content
+    "Representative uses: INSTRUCTION:\n\nI'm training for my first marathon in 12 weeks. My current long run is 8 miles. Can you build me a week-by-week mileage progression that peaks 3 weeks before race day and then tapers?\n\nREADS: (none)\nWRITES: (none)\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none).",
+    :domain-coverage :covered,
+    :rank 1,
+    :reasoning
+    "The candidate's representative use is an exact structural and domain match, describing a week-by-week marathon training mileage progression with specific peak and taper requirements. It directly addresses the user's need for a structured physical training schedule based on a specific timeline and goal distance.",
+    :cos-good-with-content 1.0,
+    :domain-reasoning
+    "The representative use explicitly names training for a marathon, mileage progression, and race-day tapering, which covers the subject matter (marathon training), material (distance/timeline constraints), and output kind (training plan).",
+    :cos-good 0.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.0,
+    :score 451.729631559113,
+    :cos-avoid-sans-content 0.0,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-class:#uuid \"87578758-6ee1-4372-b703-b72e5f725204\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.0,
+    :cos-avoid 0.0}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered [],
+  :event/id #uuid "01a0c9b1-4ebc-7087-815d-3a1d66a60f59",
+  :confidence 1.0,
+  :source-sheet-id #uuid "e0e23d5f-f679-4aae-8a9d-f4193e3d7a81",
+  :ranked-candidates
+  [{:target-id "87578758-6ee1-4372-b703-b72e5f725204",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 451.729631559113}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :deferred-events [],
+ :domain-children-considered [],
+ :sheet-id #uuid "e0e23d5f-f679-4aae-8a9d-f4193e3d7a81",
+ :payload-domain nil,
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 1 from corpus retrieval)\n#### Top match (confidence: 1.00)\nWhy this fits: The candidate's representative use is an exact structural and domain match, describing a week-by-week marathon training mileage progression with specific peak and taper requirements. It directly addresses the user's need for a structured physical training schedule based on a specific timeline and goal distance.\n\nPattern guidance (seed `:summary`):\nRepresentative uses: INSTRUCTION:\n\nI'm training for my first marathon in 12 weeks. My current long run is 8 miles. Can you build me a week-by-week mileage progression that peaks 3 weeks before race day and then tapers?\n\nREADS: (none)\nWRITES: (none)\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none).\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - INSTRUCTION:\n\nI'm training for my first marathon in 12 weeks. My current long run is 8 miles. Can you build me a week-by-week mileage progression that peaks 3 weeks before race day and then tapers?\n\nREADS: (none)\nWRITES: (none)\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none)\n\n### Behavioral competencies (top 2 from corpus retrieval)\n1. Behavioral: Design (confidence: 0.95)\n   Why this fits: The task is to produce a single committable plan (a marathon training schedule) from specific inputs (a 16-week timeline, a 10K base, and a 20-mile goal). This candidate's recommended-pattern for design (goal + constraints -> spec) perfectly matches the need to map these constraints into a structured plan with 'decisions' (mileage per day) and 'risks' (injury, fatigue).\n\n   Guidance (seed `:summary`):\n   Design produces a single committable plan/spec/architecture from inputs (goal + constraints + optional candidate options). Always structure as :map with named sections (decisions / open-questions / risks) — downstream automated stages bind on these. For non-trivial designs with interacting decisions, iterate via draft → critique → refined-spec. ALWAYS require an :open-questions field — empty means 'I'm confident', non-empty surfaces the gap before downstream stages run against an implicit guess. Composes into iterative-refinement (draft → critique → finalize) and sequential-pipeline (analysis → design → code-building) shells. Avoid when the task is option generation (use ideation) or execution against a known plan (use code-building).\n\nCapabilities:\n  - given a goal + constraints + (optionally) candidate options, produce a single concrete plan/spec/architecture as the chosen direction\n  - natural fit as the convergence stage after research/extraction/analysis/ideation; the gate before code-building or execution\n  - outputs are typically a single structured spec (sections / decisions / open-questions) with explicit decisions rather than a list of options\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** structure the design output as :map with named sections (decisions / open-questions / risks) — downstream code-building or execution can :read specific sections without re-parsing prose (confidence 1.00, evidence-count 1)\n    - Good when: the design will feed automated downstream stages (code-building, validation, execution)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:goal :constraints :options] :writes [:spec] :output-schemas {:spec [:map [:decisions [:vector :string]] [:open-questions [:vector :string]] [:risks [:vector :string]]]}}]\n      ```\n\n  - **Trait:** iterate design via draft → critique → refined-spec when the design is non-trivial — single-pass design tends to leave decisions implicit (confidence 1.00, evidence-count 1)\n    - Good when: the design has multiple interacting decisions AND the cost of a wrong call is high\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:goal] :writes [:draft-spec]}] [:llm {:reads [:draft-spec :goal] :writes [:critique]}] [:llm {:reads [:draft-spec :critique] :writes [:refined-spec]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** designs that leave open-questions implicit force the downstream stage to either fail or guess — both produce drift between intended and actual outcome (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages will execute against the design\n    - Recommended fix: require an explicit :open-questions field in the spec output — empty means 'I'm confident'; non-empty surfaces the gap\n\n  - **Failure mode:** design without explicit consideration of the constraints (as part of :reads) tends to produce specs that look reasonable but violate the constraints in subtle ways (confidence 1.00, evidence-count 1)\n    - Avoid when: the task has hard constraints (budget / API limits / shape requirements)\n    - Recommended fix: always include constraints as a separate :reads input on the design stage AND require the spec output to reference how each constraint was honored\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical architecture spec from a problem brief + constraints\n  - experiment design from a research question + dataset constraints\n  - API contract design from a feature spec + backwards-compat requirements\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent abe48812-ad0f-3a27-a142-806558801fc0)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Synthesis (confidence: 0.75)\n   Why this fits: The task requires integrating multiple constraints (current fitness, time until race, specific distance goals) into a cohesive narrative/schedule. The strength regarding 'scaffolding via a :code-built outline' is highly applicable for a 16-week schedule to ensure all weeks/milestones are covered.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\n\nI signed up for a marathon 16 weeks out and I've never run more than a 10K. Can you lay out a mileage build-up plan that gets me to a 20-mile long run before tapering, with rest days built in?",
+ :june-flags
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 12666,
+ :confidence 1.0,
+ :was-fresh-mint? false,
+ :assigned-via :match}

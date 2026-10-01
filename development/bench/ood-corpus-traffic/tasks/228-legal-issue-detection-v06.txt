@@ -1,0 +1,15 @@
+; brief-id: b-001
+; group: legal-issue-detection
+; variant: 6
+
+I’m currently in the middle of reviewing a draft sub-licensing agreement for a new software module we are looking to integrate into our core platform. The licensor is based out of Ontario, Canada, and after a first pass, I’m getting pretty worried about a couple of the clauses they’ve tucked in there. Specifically, the "Audit Rights" and "Termination for Convenience" sections seem incredibly aggressive for a startup of our size. I can’t have them poking around our production servers whenever they feel like it without a specific trigger, and we certainly can't risk a situation where they could effectively shut our service down with just a few days' notice.
+
+Could you please go through the specific text I’ve pasted below and provide a formal breakdown of the risks? For each issue you identify, I need the severity level, the relevant area of law (e.g., Contract Law or IP Licensing), a direct citation of the offending text, and a suggested revision. We need language that gives us more breathing room—specifically, more notice time and protection against a sudden, arbitrary service disruption.
+
+Here are the specific excerpts in question:
+{
+  "Clause 8.2 (Audit)": "Licensor shall have the right, upon twenty-four (24) hours' notice, to enter Licensee's premises or access Licensee’s cloud environments remotely to audit compliance with the usage limits. Licensee shall bear all costs associated with such audit regardless of the outcome.",
+  "Clause 11.4 (Termination)": "Licensor may terminate this Agreement for any reason or no reason upon five (5) business days’ written notice to Licensee. Upon termination, Licensee must immediately cease all use of the Module and delete all cached data."
+}
+
+I have a meeting to respond to their outside counsel by tomorrow morning, so having these revisions ready to go would be a lifesaver. Let me know if you need any more context on our current usage tiers to help draft the counter-proposals. Thanks!

@@ -1,0 +1,14 @@
+; brief-id: b-035
+; group: reorder-plan
+; variant: 6
+
+Hey, I’m currently stuck in transit heading to the trade show and won't have a spare moment to breathe until Monday, but we are cutting it way too close on several of our high-volume electronics SKUs. I’ve uploaded the latest CSVs containing our master SKU list of 420 items, the last 90 days of sales history pulled from the e-commerce backend, current lead times from both Shenzhen and the local warehouses, and our live stock-on-hand count. 
+
+To give you a quick sense of how the raw data is formatted across those files, here is a small excerpt from the stock and terms sheet:
+
+{SKU: POWER-SLIM-5K, Stock: 42, Lead Time: 22 days, MOQ: 500, Unit Cost: $8.40}
+{SKU: CABLE-USB-C-6FT, Stock: 815, Lead Time: 14 days, MOQ: 1000, Unit Cost: $1.20}
+
+I need you to process all 420 SKUs and generate a precise replenishment plan immediately. Please calculate the specific reorder point and the ideal order quantity for every single item, ensuring we hit the supplier volume breaks to optimize shipping costs without creating excess inventory bloat. I also need a detailed purchase schedule mapped out for the next 45 days—I need to know exactly which date each PO needs to be cut so we don’t hit zero while waiting for the boat to arrive. Finally, give me a total of the cash tied up in these proposed orders so I can clear the spend with accounting before the weekend.
+
+Just give me the actionable buy list, the schedule, and the cash totals. I don't need a long-term budget forecast or talking points for the factory reps right now. Thanks!

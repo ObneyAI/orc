@@ -1,0 +1,22 @@
+{:slug "227-schema-migration-v06",
+ :group "schema-migration",
+ :in-domain? false,
+ :variant 6,
+ :expected-output-kind
+ "ordered migration steps, a backfill and dual-write strategy, a cut-over and rollback plan, and verification queries",
+ :brief-id "b-010",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1679, :completion-tokens 356, :total-tokens 2035},
+  :draft-prompt-sha256
+  "691c2d1a44c5b9c39313b14387d8f9662e8a471634a4d8947fed3876227a359a",
+  :polish-usage
+  {:prompt-tokens 540, :completion-tokens 399, :total-tokens 939},
+  :polish-prompt-sha256
+  "ec590bf96f563645178ee521493b8f6334e436977c7d8eedede0da9d75821ed4",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

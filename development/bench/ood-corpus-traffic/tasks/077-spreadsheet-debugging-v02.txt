@@ -1,0 +1,11 @@
+; brief-id: b-040
+; group: spreadsheet-debugging
+; variant: 2
+
+Hi there, I hope you’re having a better Tuesday than I am. Honestly, between the dog needing an emergency vet visit this morning for eating a sock and the radiator in my home office making this high-pitched whistling sound, I am just completely frazzled. I’m trying to get these final grades pushed through for my Business Analytics seminar and my personal investment dashboard updated, but everything is just... breaking. 
+
+I’ve attached a document that has all the formulas from my 'Student_Grades_V4' Google Sheet and my 'Personal_Equity_Tracker' Excel file. I tried to port some of the logic from the grading sheet over to the financial model to track my weighted returns, but now neither of them is working. For the grade book, the final weighted average in column M is spitting out values over 100% even though the max is 100, and I’ve got some weird #VALUE! errors appearing in the 'Attendance_Bonus' column. I’ve included the raw sample data and the actual weird numbers I’m seeing in the output cells. 
+
+Then, in the Excel dashboard, the NPV calculation and the dividend yield tracker are just completely off. The yield is showing as a decimal that doesn't make sense—like 0.00004—and I think I might have messed up the absolute vs relative references when I dragged the formulas down for my new tech stock entries. 
+
+Could you please dig through these and find exactly where I messed up the math? I need to know why it’s happening (like, did I miss a bracket or reference the wrong row?), and I need the corrected formulas that I can just copy and paste back into the cells. Also, since I use Google Sheets for the class and Excel for my private stuff, please make sure the fixes work in both environments. If you could also give me a quick 'check' formula for each section—something I can put at the end of the row to make sure this doesn't happen again when I add more students or stocks—that would be a lifesaver. Thanks so much, Sarah.

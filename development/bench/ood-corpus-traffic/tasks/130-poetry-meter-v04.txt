@@ -1,0 +1,7 @@
+; brief-id: b-036
+; group: poetry-meter
+; variant: 4
+
+Hey, I'm trying to wrap my head around a few different pieces for a workshop tonight and I'm totally stuck in the weeds with the technical stuff. Could you help me break down the structure of these five texts I've pasted below? I've got a Petrarchan sonnet, some modern free verse, a translated ghazal, a Taylor Swift lyric, and a rhyme from a children's book. 
+
+I need you to go through and do a full scansion for every line, then tell me the formal name for each and the rhyme scheme they're using. Most importantly, can you flag anywhere they break their own rules? I'm looking for things like unexpected stressed syllables or slant rhymes that don't quite click. Just a quick note for each on how those "glitches" in the rhythm actually change the vibe or the emotional weight of the poem would be a lifesaver. I'm not looking for you to write anything new—just need the deep-dive analysis on these specific ones so I can explain it to the group. Thanks!

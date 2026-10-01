@@ -398,3 +398,359 @@
               structural (get-in result-node [:context :r05-classifier :structural])]
           (is (not (contains? structural :domain))
               ":domain key is absent, not nil-valued"))))))
+
+;; =============================================================================
+;; RS-7 Slice 0 characterisation — a plain :match whose ASSIGNED id happens
+;; to already BE a domain child (a newborn reached again) still carries no
+;; :domain key: maybe-assign-domain-child never ran here (classify-task is
+;; stubbed wholesale, as production dispatches it), so the render has no
+;; child line to show today even though the assigned target is itself a
+;; domain child. Pinned so Slice 1 (a domain child is a leaf on the domain
+;; axis) can flip this by name once the runtime produces a real :domain
+;; payload for this case.
+;; =============================================================================
+
+(deftest wedge-omits-domain-on-a-plain-match-whose-target-is-a-domain-child
+  (testing "RS-7 characterisation: a stubbed :match classify-task result
+            whose :assigned-tree-id is a domain child's own id still carries
+            no :domain key — not nil-valued, ABSENT."
+    (let [domain-child-id (random-uuid)
+          structural-result {:assigned-tree-id domain-child-id
+                              :confidence 0.9
+                              :was-fresh-mint? false
+                              :reasoning "deterministic match, assigned id happens to be a domain child"
+                              :top-candidates []
+                              :rerank-fallback? false
+                              :parent-tree-id nil
+                              :assigned-via :match}
+          behavioral-result {:behaviors [] :rerank-fallback? false}
+          node {:id (random-uuid)
+                :type :repl-researcher
+                :name "test"
+                :instruction "x"
+                :reads []
+                :writes []
+                :rlm {:auto-classify? true}}
+          wedge-ctx {:sheet-id (random-uuid) :tick-id (random-uuid)}]
+      (with-redefs [ontology/classify-task (constantly structural-result)
+                    ontology/classify-behaviors (constantly behavioral-result)
+                    ai.obney.grain.command-processor-v2.interface/process-command
+                    (constantly {:command-result/events []})]
+        (let [result-node (tp/maybe-auto-classify-and-set-context node wedge-ctx)
+              structural (get-in result-node [:context :r05-classifier :structural])]
+          (is (not (contains? structural :domain))
+              ":domain key is absent — no child line renders for this case today"))))))
+
+;; =============================================================================
+;; CV-B (C7) — the family's own body renders BENEATH the child line whenever
+;; it has substance, while the parent stays the primary entry until
+;; consolidated-from-event-count >= 1 (D5). Usefulness report 06: "the second
+;; recipe occurrence read the child line but was never shown what the child
+;; had learned" — the family's strengths were recorded (CV-2 enrichment) but
+;; invisible before consolidation.
+;; =============================================================================
+
+(defn- mk-behavioral-entry
+  "A minimal non-fresh-mint behavioral entry — enough to make format-
+   behavioral-section render its '### Behavioral competencies' header, so
+   the family-substance tests below have a real behavioral-section boundary
+   to assert ordering against."
+  [behavior-id reasoning confidence]
+  {:behavior-id behavior-id
+   :confidence confidence
+   :was-fresh-mint? false
+   :reasoning reasoning
+   :rerank-source :reranker})
+
+(deftest newborn-family-with-strengths-renders-them-under-the-child-line
+  (testing "CV-B cycle 1: a newborn domain child (not yet consolidated) whose
+            OWN body has accrued a strength and a weakness renders that
+            substance beneath the child-assignment line — after the child
+            line's index, before the behavioral section — while the parent's
+            full entry still renders FIRST, exactly as RS-4 already proved."
+    (let [parent-id (random-uuid)
+          child-id (random-uuid)
+          behavior-id (random-uuid)
+          domain-label "recipe-conversion"
+          parent-reasoning "Top-1 because the task shares the recipe shape."
+          parent-summary "RecipeConversion sequences ingredient scaling toward a target yield."
+          child-summary "Recipe-conversion child — one worked occurrence recorded, not yet consolidated."
+          strength-trait "Scales fractional ingredient units correctly"
+          weakness-trait "Drops unit conversion when the source uses imperial measures"
+          payload {:structural {:assigned-tree-id child-id
+                                 :confidence 0.85
+                                 :was-fresh-mint? true
+                                 :reasoning parent-reasoning
+                                 :top-candidates [(mk-structural-candidate
+                                                    parent-id parent-reasoning
+                                                    parent-summary 0.85)]
+                                 :rerank-fallback? false
+                                 :domain {:assigned-via :mint-domain-child
+                                          :parent-tree-id parent-id
+                                          :child-tree-id child-id
+                                          :domain-label domain-label}}
+                   :behavioral {:behaviors [(mk-behavioral-entry
+                                              behavior-id "fits the recipe task" 0.8)]
+                                :rerank-fallback? false}}
+          node (mk-node "Task: convert a recipe to metric" payload)
+          stub-bodies {parent-id {:summary parent-summary
+                                   :capabilities []
+                                   :strengths [{:trait "Sequences scaling steps in order"
+                                                :good-when "a target yield is given"
+                                                :confidence 0.9 :evidence-count 4}]
+                                   :weaknesses [] :representative-uses []
+                                   :avoid-when [] :version 4
+                                   :consolidated-from-event-count 6}
+                       child-id {:summary child-summary
+                                 :capabilities []
+                                 :strengths [{:trait strength-trait
+                                              :good-when "the recipe uses fractional units"
+                                              :confidence 0.75 :evidence-count 1}]
+                                 :weaknesses [{:trait weakness-trait
+                                               :avoid-when "the source recipe is in imperial units"
+                                               :recommended-alternative "convert units before scaling"
+                                               :confidence 0.6 :evidence-count 1}]
+                                 :representative-uses ["Halving a 4-serving pasta recipe"]
+                                 :avoid-when [] :version 2
+                                 :consolidated-from-event-count 0}
+                       behavior-id nil}
+          result (with-redefs [ontology/get-description
+                                (fn [_ctx _granularity target-id]
+                                  (get stub-bodies target-id))]
+                   (tp/apply-r05-classifier-context node {}))
+          instruction (:instruction result)
+          parent-strength-idx (str/index-of instruction "Sequences scaling steps in order")
+          child-line-idx (str/index-of instruction (str "Assigned to domain child " child-id))
+          strength-idx (str/index-of instruction strength-trait)
+          weakness-idx (str/index-of instruction weakness-trait)
+          behavioral-section-idx (str/index-of instruction "### Behavioral competencies")]
+
+      (testing "sanity: every marker was found"
+        (is (some? parent-strength-idx))
+        (is (some? child-line-idx))
+        (is (some? strength-idx))
+        (is (some? weakness-idx))
+        (is (some? behavioral-section-idx)))
+
+      (testing "the parent entry still renders FIRST"
+        (is (< parent-strength-idx child-line-idx)
+            "parent's strength (its full entry) precedes the child-assignment line"))
+
+      (testing "the family's strength and weakness render AFTER the child line"
+        (is (< child-line-idx strength-idx))
+        (is (< child-line-idx weakness-idx)))
+
+      (testing "the family's strength and weakness render BEFORE the behavioral section"
+        (is (< strength-idx behavioral-section-idx))
+        (is (< weakness-idx behavioral-section-idx)))
+
+      (testing "the family's representative use also renders"
+        (is (str/includes? instruction "Halving a 4-serving pasta recipe")))
+
+      (testing "the injection candidates contain the child id at its own body version (CC-13)"
+        (let [recorded (with-redefs [ontology/get-description
+                                     (fn [_ _ id] (get stub-bodies id))]
+                         (#'tp/injected-candidates {} payload))
+              child-row (some #(when (= (str child-id) (:candidate-id %)) %) recorded)]
+          (is (some? child-row) (pr-str recorded))
+          (is (= 2 (:version child-row)))
+          (is (= :structural (:axis child-row))))))))
+
+(deftest newborn-family-without-substance-renders-only-the-child-line
+  (testing "CV-B cycle 2: a newborn domain child whose body has NO substance
+            beyond its birth line renders exactly like today's RS-4 newborn
+            shape — no family-substance section headers appear anywhere."
+    (let [parent-id (random-uuid)
+          child-id (random-uuid)
+          domain-label "no-substance-family"
+          parent-reasoning "Top-1 because the task shares the shape."
+          parent-summary "NoSubstanceFamily sequences steps toward an outcome."
+          payload {:structural {:assigned-tree-id child-id
+                                 :confidence 0.85
+                                 :was-fresh-mint? true
+                                 :reasoning parent-reasoning
+                                 :top-candidates [(mk-structural-candidate
+                                                    parent-id parent-reasoning
+                                                    parent-summary 0.85)]
+                                 :rerank-fallback? false
+                                 :domain {:assigned-via :mint-domain-child
+                                          :parent-tree-id parent-id
+                                          :child-tree-id child-id
+                                          :domain-label domain-label}}
+                   :behavioral {:behaviors [] :rerank-fallback? false}}
+          node (mk-node "Task: do the no-substance thing" payload)
+          stub-bodies {parent-id {:summary parent-summary
+                                   :capabilities [] :strengths []
+                                   :weaknesses [] :representative-uses []
+                                   :avoid-when [] :version 3
+                                   :consolidated-from-event-count 5}
+                       child-id {:summary "No-substance family child — birth line only."
+                                 :capabilities [] :strengths [] :weaknesses []
+                                 :representative-uses [] :avoid-when []
+                                 :version 1 :consolidated-from-event-count 0}}
+          instruction (:instruction
+                       (with-redefs [ontology/get-description
+                                     (fn [_ _ id] (get stub-bodies id))]
+                         (tp/apply-r05-classifier-context node {})))]
+
+      (testing "no family-substance section headers render — byte-identical
+                to today's newborn shape"
+        (is (not (str/includes? instruction "Strengths (proven traits")))
+        (is (not (str/includes? instruction "Weaknesses (observed failure modes")))
+        (is (not (str/includes? instruction "Representative uses (concrete tasks"))))
+
+      (testing "the child line still renders, unchanged, exactly once"
+        (is (= 1 (occurrence-count instruction (str "Assigned to domain child " child-id))))
+        (is (str/includes? instruction domain-label)))
+
+      (testing "the injection candidates carry ONLY the parent — no family row"
+        (let [recorded (with-redefs [ontology/get-description
+                                     (fn [_ _ id] (get stub-bodies id))]
+                         (#'tp/injected-candidates {} payload))]
+          (is (= [(str parent-id)] (map :candidate-id recorded))))))))
+
+(deftest reached-family-renders-once-and-is-recorded-once
+  (testing "orchestrator inspection: a later task that reaches the newborn
+            family BY MATCH (C5 landing) carries the family itself among
+            top-candidates. The child line stands for it: it is not a
+            numbered entry, its substance renders once beneath the child
+            line, and the injection record lists it exactly once (record =
+            render)."
+    (let [parent-id (random-uuid)
+          child-id (random-uuid)
+          other-id (random-uuid)
+          strength-trait "Scales fractional ingredient units correctly"
+          payload {:structural {:assigned-tree-id child-id
+                                 :confidence 0.9
+                                 :was-fresh-mint? false
+                                 :reasoning "the family matches"
+                                 :top-candidates [(mk-structural-candidate child-id "the family matches" "Recipe-conversion family." 0.9)
+                                                  (mk-structural-candidate other-id "a weaker shape" "Other shape summary." 0.8)]
+                                 :rerank-fallback? false
+                                 :domain {:assigned-via :land-on-domain-child
+                                          :parent-tree-id parent-id
+                                          :child-tree-id child-id
+                                          :domain-label "recipe-conversion"}}
+                   :behavioral {:behaviors [] :rerank-fallback? false}}
+          stub-bodies {child-id {:summary "Recipe-conversion family."
+                                 :capabilities []
+                                 :strengths [{:trait strength-trait
+                                              :good-when "the recipe uses fractional units"
+                                              :confidence 0.75 :evidence-count 1}]
+                                 :weaknesses [] :representative-uses []
+                                 :avoid-when [] :version 2
+                                 :consolidated-from-event-count 0}
+                       parent-id {:summary "MarathonShape sequences weekly load toward a race date."
+                                  :capabilities [] :strengths [] :weaknesses []
+                                  :representative-uses [] :avoid-when [] :version 5
+                                  :consolidated-from-event-count 7}
+                       other-id {:summary "Other shape summary." :capabilities []
+                                 :strengths [] :weaknesses [] :representative-uses []
+                                 :avoid-when [] :version 1 :consolidated-from-event-count 3}}
+          node (mk-node "Task: convert a recipe to metric" payload)
+          [instruction recorded]
+          (with-redefs [ontology/get-description
+                        (fn [_ctx _granularity target-id] (get stub-bodies target-id))]
+            [(:instruction (tp/apply-r05-classifier-context node {}))
+             (#'tp/injected-candidates {} payload)])
+          structural-ids (->> recorded (filter #(= :structural (:axis %))) (map :candidate-id))]
+      (is (= 1 (count (filter #{(str child-id)} structural-ids)))
+          (str "family recorded exactly once: " (pr-str recorded)))
+      (is (= 1 (count (filter #{(str other-id)} structural-ids))))
+      (is (= 1 (count (re-seq (re-pattern (java.util.regex.Pattern/quote strength-trait)) instruction)))
+          "the family's substance renders once")
+      (is (= 1 (count (filter #{(str parent-id)} structural-ids)))
+          "the parent, reached by its graph edge and never retrieved, is recorded once")
+      (is (str/includes? instruction "MarathonShape sequences weekly load toward a race date.")
+          "the parent's full entry renders although it was not a retrieval candidate")
+      (is (< (str/index-of instruction "MarathonShape sequences weekly load")
+             (str/index-of instruction (str "Assigned to domain child " child-id)))
+          "the parent's entry comes before the child line")
+      (is (str/includes? instruction "top 2 from corpus retrieval")
+          "the parent and the other shape are the numbered entries; the family is not"))))
+
+(deftest consolidated-family-unchanged
+  (testing "CV-B guard: a CONSOLIDATED domain child's render is untouched by
+            the newborn-branch family-substance addition — the consolidated
+            arm of structural-display-candidates still returns exactly ONE
+            candidate (consolidated-domain-child-candidate), never a second
+            family entry, and the 2-arity injected-candidates/structural-
+            display-candidates forms (default suppress-claims? false) stay
+            behaviorally identical to before this bundle."
+    (let [parent-id (random-uuid)
+          child-id (random-uuid)
+          domain-label "consolidated-family"
+          top-reasoning "Top-1 because the task shares the shape."
+          parent-summary "ConsolidatedFamily sequences steps toward an outcome. It ships weekly."
+          child-summary "Consolidated family child — has its own accrued body."
+          payload {:structural {:assigned-tree-id child-id
+                                 :confidence 0.88
+                                 :was-fresh-mint? false
+                                 :reasoning top-reasoning
+                                 :top-candidates [(mk-structural-candidate
+                                                    parent-id top-reasoning
+                                                    "unused top-candidate content" 0.88)]
+                                 :rerank-fallback? false
+                                 :domain {:assigned-via :land-on-domain-child
+                                          :parent-tree-id parent-id
+                                          :child-tree-id child-id
+                                          :domain-label domain-label}}
+                   :behavioral {:behaviors [] :rerank-fallback? false}}
+          node (mk-node "Task: do the consolidated thing" payload)
+          stub-bodies {parent-id {:summary parent-summary
+                                   :capabilities [] :strengths []
+                                   :weaknesses [] :representative-uses []
+                                   :avoid-when [] :version 5
+                                   :consolidated-from-event-count 8}
+                       child-id {:summary child-summary
+                                 :capabilities []
+                                 :strengths [{:trait "Handles the consolidated case correctly"
+                                              :good-when "the family has accrued evidence"
+                                              :confidence 0.85 :evidence-count 5}]
+                                 :weaknesses [] :representative-uses []
+                                 :avoid-when [] :version 2
+                                 :consolidated-from-event-count 3}}
+          instruction (:instruction
+                       (with-redefs [ontology/get-description
+                                     (fn [_ _ id] (get stub-bodies id))]
+                         (tp/apply-r05-classifier-context node {})))]
+
+      (testing "the child's strength renders exactly once — no duplicate family entry"
+        (is (= 1 (occurrence-count instruction "Handles the consolidated case correctly"))))
+
+      (testing "the parent drops to exactly ONE shape-context line"
+        (is (= 1 (occurrence-count instruction parent-summary))))
+
+      (testing "no newborn child-assignment line (superseded, as RS-4 already proved)"
+        (is (not (str/includes? instruction "Assigned to domain child"))))
+
+      (testing "the injection record still names exactly the child at its body version"
+        (let [recorded (with-redefs [ontology/get-description
+                                     (fn [_ _ id] (get stub-bodies id))]
+                         (#'tp/injected-candidates {} payload))]
+          (is (= [{:axis :structural :candidate-id (str child-id) :version 2 :score 0.88}]
+                 recorded)))))))
+
+(deftest a-class-on-both-tree-axes-renders-once
+  (testing "RS-7 e2e: the ranking carries a tree class's tree-class and tree-fingerprint rows with
+            the same judgement; the render and the injection record show the class once"
+    (let [shape-id (random-uuid) other-id (random-uuid)
+          row (fn [id gran fit] (assoc-in (mk-structural-candidate id "fits" "Shape summary." fit)
+                                          [:document-metadata :granularity] gran))
+          payload {:structural {:assigned-tree-id shape-id :confidence 0.85 :was-fresh-mint? false
+                                :reasoning "fits"
+                                :top-candidates [(row shape-id :tree-class 0.85) (row shape-id :tree-fingerprint 0.85)
+                                                 (row other-id :tree-class 0.75)]
+                                :rerank-fallback? false}
+                   :behavioral {:behaviors [] :rerank-fallback? false}}
+          bodies {shape-id {:summary "Shape summary." :capabilities [] :strengths [] :weaknesses []
+                            :representative-uses [] :avoid-when [] :version 1 :consolidated-from-event-count 3}
+                  other-id {:summary "Other summary." :capabilities [] :strengths [] :weaknesses []
+                            :representative-uses [] :avoid-when [] :version 1 :consolidated-from-event-count 3}}
+          [instruction recorded]
+          (with-redefs [ontology/get-description (fn [_ _ id] (get bodies id))]
+            [(:instruction (tp/apply-r05-classifier-context (mk-node "Task: x" payload) {}))
+             (#'tp/injected-candidates {} payload)])]
+      (is (str/includes? instruction "top 2 from corpus retrieval"))
+      (is (= [(str shape-id) (str other-id)]
+             (mapv :candidate-id (filter #(= :structural (:axis %)) recorded)))))))

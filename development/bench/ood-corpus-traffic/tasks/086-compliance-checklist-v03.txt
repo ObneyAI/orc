@@ -1,0 +1,14 @@
+; brief-id: b-006
+; group: compliance-checklist
+; variant: 3
+
+Please provide a SOC 2 Type II implementation roadmap tailored for a 20-person SaaS startup operating on AWS and GitHub. We need to prepare for an enterprise audit occurring in six months, using the provided Trust Services Criteria (TSC) and stack overview as the basis. 
+
+The output must strictly follow this bulleted schema for every control identified:
+
+• Control ID & Description: The CC section (CC1.0–CC9.0) and a brief summary of the specific requirement, translated into an actionable step appropriate for a small dev-heavy team.
+• Owner: Assign responsibility to either 'CTO' (infrastructure/technical tasks) or 'Ops Lead' (policy/HR/governance tasks).
+• Evidence Required: The exact artifact needed for the auditor (e.g., 'JSON export of IAM roles', 'Signed NDA PDF', 'Quarterly access review log').
+• Due Date: A specific deadline following a staggered implementation schedule that concludes no later than October 30th.
+
+Do not include a risk assessment, gap analysis, or contractual comparisons. We only require a raw, direct list of controls and their corresponding documentation requirements to populate our evidence folders. Keep the language technical and concise.

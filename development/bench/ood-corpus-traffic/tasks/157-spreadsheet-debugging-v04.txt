@@ -1,0 +1,5 @@
+; brief-id: b-040
+; group: spreadsheet-debugging
+; variant: 4
+
+Hey, I’m hoping you can take a look at this 'Supply_Chain_Dashboard' I’ve been putting together. I’m having a nightmare of a time getting it to work across both Excel and Google Sheets—the warehouse team uses Sheets but the office is strictly Excel, so it needs to be bulletproof on both. Specifically, in the 'Replenishment_Logic' tab, the lead time calculations are acting crazy and spitting out dates from 1900, while the main dashboard isn't pulling safety stock levels at all; it just shows zeros across the board. I’ve attached the formulas from those cells, the procurement data, and a screenshot of the errors. Can you dig into this and find the exact cause for the date glitches and the empty values? I really need the corrected formulas to just drop back in. Also, could you add some kind of verification flag or check so it doesn’t break the next time someone adds new rows? Thanks a ton!

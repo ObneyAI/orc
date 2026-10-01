@@ -14,6 +14,7 @@
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.task-classifier :as tc]
+            [ai.obney.orc.ontology.core.embedding :as embedding]
             [ai.obney.orc.ontology.core.todo-processors :as ont-tp]
             [ai.obney.orc.ontology.test-helpers :as th]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -67,6 +68,31 @@
                        (tree-class-uri child-id))
             "the parent's narrower set contains the child — the same edge
              walk-down's own child lookup reads")))))
+
+(deftest a-family-birth-whose-embedding-fails-is-refused-and-appends-nothing
+  (testing "orchestrator inspection (DomainFamilyDescribesItselfFromBirth): a
+            family born with a birth description must be embedded at birth;
+            when the embedding cannot be generated the mint is refused
+            loudly and nothing lands, never an unembedded family"
+    (th/with-test-context [base]
+      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+            parent-id (random-uuid)
+            child-id (random-uuid)
+            cmd (assoc (mint-command parent-id child-id "marathon-training-plan")
+                       :birth-description "Plans a marathon build toward a race date.")
+            outcome (with-redefs [embedding/embed-text (fn [& _] nil)]
+                      (try {:result (dispatch! ctx cmd)}
+                           (catch Throwable t {:thrown t})))
+            minted (into [] (es/read (:event-store ctx)
+                                     {:tenant-id (:tenant-id ctx)
+                                      :types #{:ontology/domain-child-minted
+                                               :ontology/concept-created
+                                               :ontology/concept-embedded}}))]
+        (is (or (:thrown outcome)
+                (not (seq (:command-result/events (:result outcome)))))
+            (str "the mint is refused: " (pr-str (select-keys (:result outcome) [:command-result/events :error/message]))))
+        (is (empty? minted) "no concept, no embedding, no mint event landed")
+        (is (nil? (ontology/get-concept-by-uri ctx (tree-class-uri child-id))))))))
 
 (deftest mint-domain-child-is-idempotent-on-the-same-identity
   (testing "minting the same child identity again emits nothing new"
@@ -134,9 +160,20 @@
 
 (deftest get-tree-class-children-reads-tree-class-scope-description
   (testing "a child described ONLY by a :tree-class claim (CV-1's signature
-            route) IS returned by walk-down's own child lookup"
+            route) IS returned by walk-down's own child lookup, once the
+            child is declared NOT a domain family. CV-E
+            (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): every child
+            `mint-domain-child` creates IS a domain family by construction
+            (agent-authored provenance, a judged label) — walk-down now
+            excludes exactly this shape of child by default
+            (`non-family-child?`, real-store-backed). This test's own
+            concern is the :tree-class-scope preference (RS-5 gap A), not
+            family exclusion, so it declares that seam explicitly; the
+            family-exclusion guarantee itself is proven on this same real
+            mint in rs5_domain_child_chain_test.clj."
     (th/with-test-context [base]
-      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+      (let [ctx (assoc base :command-registry (cp/global-command-registry)
+                       :domain-family-parent-fn (fn [_ _] nil))
             parent-id (random-uuid)
             child-id (random-uuid)]
         (dispatch! ctx (mint-command parent-id child-id "marathon-training-plan"))
@@ -146,6 +183,21 @@
           (is (= child-id (:target-id (first children))))
           (is (some? (:description (first children)))
               "the child's :tree-class-scoped assembled description is returned"))))))
+
+(deftest get-tree-class-children-excludes-a-real-minted-domain-family
+  (testing "CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): with
+            the REAL `:domain-family-parent-fn` default (a real store read,
+            not stubbed), a real minted domain child (family) is excluded —
+            walk-down finds NO children under its parent"
+    (th/with-test-context [base]
+      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+            parent-id (random-uuid)
+            child-id (random-uuid)]
+        (dispatch! ctx (mint-command parent-id child-id "marathon-training-plan"))
+        (dispatch! ctx (claim-command ctx child-id "marathon training plan: 16-week schedule"))
+        (let [children (#'tc/get-tree-class-children ctx parent-id)]
+          (is (empty? children)
+              "the real minted family is excluded — walk-down sees no children"))))))
 
 (deftest get-tree-class-children-still-returns-tree-fingerprint-seeded-child
   (testing "GUARD: a seeded child described ONLY at :tree-fingerprint scope

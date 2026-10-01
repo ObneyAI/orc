@@ -1,0 +1,24 @@
+{:parallelism 1,
+ :corpus-sha256
+ "634a61a9634aaa20ae8f4e49e2753637a4f864e8a723976d32e3dedf3205d35e",
+ :started-at "2026-09-22T14:55:28.656867Z",
+ :reindex-policy {:every-k 3},
+ :dirty? true,
+ :task-order
+ ["001-marathon-training-v01"
+  "002-recipe-scaling-v01"
+  "003-legal-issue-detection-v01"
+  "004-marathon-training-v02"
+  "005-recipe-scaling-v02"
+  "006-legal-issue-detection-v02"],
+ :models {:reranker-model "google/gemini-3-flash-preview"},
+ :commit "51caa79856a7c6b2f9405d5b0c28619f3bac447c",
+ :thresholds {:rerank-timeout-ms 900000},
+ :jvm-args
+ ["-XX:-OmitStackTraceInFastThrow"
+  "--add-opens=java.base/java.nio=ALL-UNNAMED"
+  "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+  "-Djava.awt.headless=true"
+  "-Xmx1600m"
+  "-Dclojure.basis=.cpcache/2699853252.basis"],
+ :finished-at "2026-09-22T14:57:14.699465Z"}

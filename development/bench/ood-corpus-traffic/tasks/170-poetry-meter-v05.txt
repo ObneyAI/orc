@@ -1,0 +1,12 @@
+; brief-id: b-036
+; group: poetry-meter
+; variant: 5
+
+Please conduct a detailed technical audit of the five attached poetic samples to support the structural analysis for our upcoming 'Rhythm and Rupture' module. For each sample provided, follow these specific steps:
+
+1. Perform a complete scansion of every line, marking stressed syllables with '/' and unstressed syllables with 'x'.
+2. Formally classify the poetic structure (identifying if it is a Miltonic sonnet, a ghazal, etc.) and map out the exact rhyme scheme.
+3. Identify and document every instance where the established meter or rhyme is intentionally broken. I am particularly interested in pyrrhic feet, spondees, or internal slant rhymes that create friction within the flow.
+4. Provide a 50-word summary explaining how these technical irregularities reinforce the poem’s internal logic or facilitate an emotional shift.
+
+The target texts include Milton’s "When I Consider How My Light is Spent," an excerpt from Langston Hughes' "The Weary Blues," a translated ghazal by Mir Taqi Mir, a verse fragment from Kendrick Lamar’s "Fear," and the traditional nursery rhyme "Humpty Dumpty." Focus exclusively on analyzing these specific texts to show where the formal artifice breaks down; do not include outside examples.

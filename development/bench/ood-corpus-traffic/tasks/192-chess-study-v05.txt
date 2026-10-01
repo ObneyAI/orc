@@ -1,0 +1,13 @@
+; brief-id: b-022
+; group: chess-study
+; variant: 5
+
+I've finally pushed my Lichess rating to 2000, but it’s becoming clear that my conservative approach against the Sicilian is preventing me from hitting the next level. I want to shift away from my current quiet setups and fully embrace a sharp, theoretical repertoire based on the Open Sicilian. Specifically, I need a rigorous training roadmap to master the Yugoslav Attack against the Dragon and the English Attack against the Najdorf. Please put together a syllabus following these steps:
+
+1. Identify 5 "must-know" theoretical lines for the Yugoslav and English attacks, specifically highlighting the most critical and sharpest continuations I’ll face.
+2. Curate 4 essential model games played by either Fischer or Kasparov that perfectly illustrate the precise timing required for a successful kingside pawn storm.
+3. Design 3 specific daily tactical drills that isolate and reinforce common sacrifice motifs on the d5, e6, and b5 squares.
+4. Draft a 7-day weekly schedule, assuming I can commit 8 hours total, that balances move-order memorization with deep thematic middlegame study.
+5. Provide clear instructions for engine-sparring sessions, focused specifically on practicing how to neutralize and defend against typical Black counter-attacks on the c-file.
+
+This needs to be a high-level roadmap appropriate for a candidate master level player, focusing on practical application rather than just engine-heavy move lists.

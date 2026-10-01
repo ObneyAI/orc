@@ -1,0 +1,15 @@
+; brief-id: b-008
+; group: recipe-scaling
+; variant: 5
+
+Please provide a formal production plan for our 200-person taco truck takeover at the upcoming downtown festival, specifically scaling my Oaxacan Barbacoa recipe from its 5lb base to a 60lb raw brisket yield:
+
+1. Calculate the scaled ingredient list in grams. Please use culinary intuition rather than a linear 12x multiplier for the aromatics; specifically, dampen the ratios for the dried guajillo peppers and cloves to prevent the profile from becoming overly bitter or medicinal at this volume.
+
+2. Adapt the cooking technique for a 20-gallon tilting kettle. Provide specific searing intervals for the brisket chunks and a revised braising duration that accounts for the significant thermal mass of the large-scale equipment compared to a standard Dutch oven.
+
+3. Map out a detailed 48-hour production workflow designed for a cramped commissary kitchen. This must include specific timestamps for the initial spice rub application, the kettle schedule to ensure it is clear for subsequent prep, and a food safety plan for managing the overnight chill-down process.
+
+4. Perform a food cost analysis per taco based on a 3oz serving. Use current pricing of $5.80/lb for brisket, $14/lb for dried chilies, and $22 per bulk bag of avocado leaves.
+
+The meat must be fully rested and ready for transport by 10:00 AM, as we only have two burner spots available for sides once we are on-site.

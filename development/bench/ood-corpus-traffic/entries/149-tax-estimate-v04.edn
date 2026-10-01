@@ -1,0 +1,22 @@
+{:slug "149-tax-estimate-v04",
+ :group "tax-estimate",
+ :in-domain? false,
+ :variant 4,
+ :expected-output-kind
+ "an estimate with the calculation shown, quarterly payment amounts and dates, and assumptions to verify with a professional",
+ :brief-id "b-023",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1234, :completion-tokens 285, :total-tokens 1519},
+  :draft-prompt-sha256
+  "d4e0a4fd46602471df89b97ac8b6565c320e28fac23ae5777eeed3405ad9d70f",
+  :polish-usage
+  {:prompt-tokens 454, :completion-tokens 285, :total-tokens 739},
+  :polish-prompt-sha256
+  "a9ffab3150ec8d15c73d2dc9844c970b1c4975190f15034b383a80b8734cf3a1",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

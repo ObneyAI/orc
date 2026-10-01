@@ -1,0 +1,13 @@
+; brief-id: b-016
+; group: incident-postmortem
+; variant: 5
+
+Please take point on drafting the blameless postmortem for yesterday's 'Project Titan' database corruption in the US-East-2 cluster. I’m tied up in meetings all day, so I need you to lead the documentation process based on the RDS logs, Slack exports, and CloudWatch metrics I've attached. Follow these specific requirements:
+
+1. Construct a granular incident timeline. Using the provided logs, pinpoint the precise timestamp when write-latency spiked and the exact minute the manual snapshot restoration concluded.
+2. Conduct a technical root cause analysis. I need to know why the primary node failed to trigger an automatic failover and the mechanism by which corrupted WAL logs propagated to the read replicas.
+3. Quantify the impact. Focus on the 6-hour data loss window for the enterprise tier and the 850 accounts currently requiring manual reconciliation.
+4. Highlight "What Went Well." Make sure to mention the DBA team's efficiency in deploying the custom manual recovery script.
+5. Define the remediation path. Assign "Implement cross-region point-in-time recovery" to @DB-Arch and "Revamp automated failover health checks" to @Site-Reliability.
+
+Maintain an objective, engineering-focused tone throughout; this is strictly for our internal review.

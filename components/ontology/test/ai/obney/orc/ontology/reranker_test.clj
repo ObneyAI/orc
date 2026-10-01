@@ -331,6 +331,166 @@
               "ColBERT was asked for 20 (2x over-fetch) when :k 10 with rerank"))))))
 
 ;; =============================================================================
+;; Orchestrator inspection (convergence arc) — a granularity filter must not
+;; starve the reranker. Live finding: for a legal task the classifier's
+;; ColBERT top-10 over the WHOLE index held behavior descriptions in most
+;; slots; after filtering to the two tree axes only 4 entries (2 shapes)
+;; reached the reranker and the legal seed, 7th, was never shown to it.
+;; =============================================================================
+
+(deftest search-with-rerank-and-a-filter-gives-the-reranker-a-full-allowed-set
+  (with-test-ctx [ctx]
+    (inject-index-created! ctx)
+    (Thread/sleep 100)
+    (let [seen (atom nil)
+          asked-k (atom nil)
+          ;; the index's order: 6 behavior descriptions, then 14 tree entries
+          docs (vec (concat
+                     (for [i (range 6)]
+                       {:content (str "behavior " i) :score (- 1.0 (* 0.01 i)) :rank (inc i)
+                        :document-id (str "b" i)
+                        :document_metadata {:granularity "behavioral-subtree" :target-id (str "b" i)
+                                            :confidence 0.5 :last-update "2026"}})
+                     (for [i (range 14)]
+                       {:content (str "tree " i) :score (- 0.9 (* 0.01 i)) :rank (+ 7 i)
+                        :document-id (str "t" i)
+                        :document_metadata {:granularity (if (even? i) "tree-class" "tree-fingerprint")
+                                            :target-id (str "t" i) :confidence 0.5 :last-update "2026"}})))]
+      (with-redefs [colbert/search (fn [_ctx opts] (reset! asked-k (:k opts)) (vec (take (:k opts) docs)))
+                    reranker/rerank! (fn [_ctx opts]
+                                       (reset! seen (mapv :document-id (:candidates opts)))
+                                       (mapv (fn [c] {:document-id (:document-id c) :reasoning "ok" :fitness-score 0.5})
+                                             (:candidates opts)))]
+        (ontology/search-descriptions ctx {:query "q" :rerank-with-intent "i" :k 5
+                                           :granularity #{:tree-class :tree-fingerprint}})
+        (is (= 30 @asked-k) "a filtered rerank over-fetches 3x the reranker's set, like the unfiltered-path policy")
+        (is (= ["t0" "t1" "t2" "t3" "t4" "t5" "t6" "t7" "t8" "t9"] @seen)
+            "the reranker sees its full set of ten ALLOWED candidates, in ColBERT order")))))
+
+;; Orchestrator inspection (convergence arc): every tree class is indexed on both
+;; tree axes, so the reranker's ten rows held five distinct classes, and ColBERT's
+;; near-flat scores decided which five. A live in-domain task lost its seed that way.
+;; The reranker now sees one row per class (ten classes) and its judgement is
+;; applied to both axis rows of each class it returns.
+(deftest search-with-rerank-shows-the-reranker-distinct-tree-classes
+  (with-test-ctx [ctx]
+    (inject-index-created! ctx)
+    (Thread/sleep 100)
+    (let [seen (atom nil)
+          row (fn [i gran] {:content (str "class " i) :score (- 1.0 (* 0.01 i)) :rank (inc i)
+                            :document-id (str gran ":" i)
+                            :document_metadata {:granularity gran :target-id (str "c" i)
+                                                :confidence 0.5 :last-update "2026"}})
+          ;; ColBERT order: each class on both axes, fingerprint row first for even classes
+          docs (vec (mapcat (fn [i] (if (even? i)
+                                      [(row i "tree-fingerprint") (row i "tree-class")]
+                                      [(row i "tree-class") (row i "tree-fingerprint")]))
+                            (range 12)))]
+      (with-redefs [colbert/search (fn [_ctx opts] (vec (take (:k opts) docs)))
+                    reranker/rerank! (fn [_ctx opts]
+                                       (reset! seen (:candidates opts))
+                                       ;; the reranker prefers class 9 over everything
+                                       (->> (:candidates opts)
+                                            (mapv (fn [c] {:document-id (:document-id c) :reasoning "ok"
+                                                           :fitness-score (if (= "c9" (get-in c [:document-metadata :target-id])) 0.95 0.4)}))
+                                            (sort-by :fitness-score >) vec))]
+        (let [out (ontology/search-descriptions ctx {:query "q" :rerank-with-intent "i" :k 5
+                                                     :granularity #{:tree-class :tree-fingerprint}})]
+          (is (= (mapv #(str "c" %) (range 10)) (mapv #(get-in % [:document-metadata :target-id]) @seen))
+              "ten DISTINCT classes reach the reranker, in ColBERT order")
+          (is (every? #(= :tree-class (get-in % [:document-metadata :granularity])) @seen)
+              "the representative row is the instruction-aware tree-class row")
+          (is (= [["c9" :tree-class 0.95] ["c9" :tree-fingerprint 0.95]]
+                 (mapv (juxt #(get-in % [:document-metadata :target-id]) #(keyword (name (get-in % [:document-metadata :granularity]))) :fitness-score)
+                       (take 2 out)))
+              "the winner's judgement is applied to both of its axis rows")
+          (is (= 5 (count out)) "the caller's k still bounds the output"))))))
+
+;; =============================================================================
+;; CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5') — an optional
+;; :exclude? candidate predicate, applied WITH the granularity filter, before
+;; tree-class-representatives and any take. classify-task passes a family
+;; predicate (see the domain-family-leaf-on-retrieval tests); this file only
+;; proves the generic mechanism search-descriptions itself owns.
+;; =============================================================================
+
+(deftest search-with-rerank-excludes-candidates-via-predicate-before-the-take
+  (testing ":exclude? removes candidates BEFORE tree-class-representatives and
+            the take, and over-fetches enough that the reranker still gets its
+            full allowed count from the survivors"
+    (with-test-ctx [ctx]
+      (inject-index-created! ctx)
+      (Thread/sleep 100)
+      (let [seen (atom nil)
+            asked-k (atom nil)
+            ;; 20 distinct tree-class rows; the predicate excludes the odd ones.
+            docs (vec (for [i (range 20)]
+                        {:content (str "tree " i) :score (- 1.0 (* 0.01 i)) :rank (inc i)
+                         :document-id (str "t" i)
+                         :document_metadata {:granularity "tree-class" :target-id (str "t" i)
+                                             :confidence 0.5 :last-update "2026"}}))
+            odd-target? (fn [c] (odd? (Long/parseLong (subs (get-in c [:document-metadata :target-id]) 1))))]
+        (with-redefs [colbert/search (fn [_ctx opts] (reset! asked-k (:k opts)) (vec (take (:k opts) docs)))
+                      reranker/rerank! (fn [_ctx opts]
+                                         (reset! seen (mapv :document-id (:candidates opts)))
+                                         (mapv (fn [c] {:document-id (:document-id c) :reasoning "ok" :fitness-score 0.5})
+                                               (:candidates opts)))]
+          (ontology/search-descriptions ctx {:query "q" :rerank-with-intent "i" :k 5
+                                             :granularity :tree-class
+                                             :exclude? (fn [_ctx c] (odd-target? c))})
+          (is (= 60 @asked-k)
+              "a filtered rerank over-fetches 3x, and an :exclude? predicate over-fetches an EXTRA 2x")
+          (is (every? #(even? (Long/parseLong (subs % 1))) @seen)
+              "every excluded candidate is gone before the reranker ever sees it")
+          (is (= 10 (count @seen))
+              "the reranker still gets its usual full count (10) — the over-fetch absorbed the 50% exclusion")))))
+
+  (testing "with no :exclude? at all, behaviour is byte-identical to before this opt existed"
+    (with-test-ctx [ctx]
+      (inject-index-created! ctx)
+      (Thread/sleep 100)
+      (let [asked-k (atom nil)
+            docs (vec (for [i (range 20)]
+                        {:content (str "tree " i) :score (- 1.0 (* 0.01 i)) :rank (inc i)
+                         :document-id (str "t" i)
+                         :document_metadata {:granularity "tree-class" :target-id (str "t" i)
+                                             :confidence 0.5 :last-update "2026"}}))]
+        (with-redefs [colbert/search (fn [_ctx opts] (reset! asked-k (:k opts)) (vec (take (:k opts) docs)))
+                      reranker/rerank! (fn [_ctx opts]
+                                         (mapv (fn [c] {:document-id (:document-id c) :reasoning "ok" :fitness-score 0.5})
+                                               (:candidates opts)))]
+          (ontology/search-descriptions ctx {:query "q" :rerank-with-intent "i" :k 5
+                                             :granularity :tree-class})
+          (is (= 30 @asked-k)
+              "no :exclude? -> only the pre-existing 3x filtered over-fetch, unchanged"))))))
+
+(deftest search-with-rerank-exclude-predicate-reads-each-candidate-at-most-once
+  (testing "the :exclude? predicate is invoked at most once per distinct candidate
+            id, even though a tree class appears on both tree axes — without
+            caching each id would be checked twice"
+    (with-test-ctx [ctx]
+      (inject-index-created! ctx)
+      (Thread/sleep 100)
+      (let [calls (atom {})
+            row (fn [i gran] {:content (str "class " i) :score (- 1.0 (* 0.01 i)) :rank (inc i)
+                              :document-id (str gran ":" i)
+                              :document_metadata {:granularity gran :target-id (str "c" i)
+                                                  :confidence 0.5 :last-update "2026"}})
+            docs (vec (mapcat (fn [i] [(row i "tree-class") (row i "tree-fingerprint")]) (range 5)))]
+        (with-redefs [colbert/search (fn [_ctx opts] (vec (take (:k opts) docs)))
+                      reranker/rerank! (fn [_ctx opts]
+                                         (mapv (fn [c] {:document-id (:document-id c) :reasoning "ok" :fitness-score 0.5})
+                                               (:candidates opts)))]
+          (ontology/search-descriptions ctx {:query "q" :rerank-with-intent "i" :k 5
+                                             :granularity #{:tree-class :tree-fingerprint}
+                                             :exclude? (fn [_ctx c]
+                                                         (swap! calls update (get-in c [:document-metadata :target-id]) (fnil inc 0))
+                                                         false)})
+          (is (seq @calls) "the predicate ran at least once")
+          (is (every? #(= 1 %) (vals @calls))
+              "each distinct candidate id was checked exactly once, not once per axis row"))))))
+
+;; =============================================================================
 ;; RED #7 — hard-cap at 50 candidates regardless of caller's :k
 ;; =============================================================================
 

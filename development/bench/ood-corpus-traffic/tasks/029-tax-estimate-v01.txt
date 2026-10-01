@@ -1,0 +1,5 @@
+; brief-id: b-023
+; group: tax-estimate
+; variant: 1
+
+Calculate 2024 UK tax liability and NICs for a London-based sole trader. Total projected income is £72,000 from consultancy fees. Deductible expenses are £4,500 for home office, travel, and professional insurance. No other income sources exist. Provide a full calculation breakdown, exact quarterly amounts for Payments on Account, and all relevant deadlines. Include a specific list of assumptions to verify with an accountant, specifically current Class 2 and Class 4 NIC rates and VAT registration thresholds. Output must show a clear breakdown of the total annual estimate and the split payment schedule. Ensure all figures are precise based on current 2024 tax year regulations.

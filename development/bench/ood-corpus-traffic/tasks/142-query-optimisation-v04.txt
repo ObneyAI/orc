@@ -1,0 +1,5 @@
+; brief-id: b-012
+; group: query-optimisation
+; variant: 4
+
+Hey, sorry to drop this on you so late, but our MySQL reporting dashboard for the 'Inventory Oversight' view is basically unusable this morning. The procurement team is breathing down my neck because the main stored procedure that calculates lead times is taking nearly 40 seconds to return anything. I’ve grabbed the query, the EXPLAIN ANALYZE output, and the current cardinality stats for the parts and suppliers tables and attached them here. I’m stuck in back-to-back budget calls for the rest of the day, so I really can't dig into the execution plan myself. Could you take a look and tell me why it's dragging? I need a solid diagnosis of the bottleneck—I'm guessing it's a nasty nested loop or a missing composite index—along with the specific index DDLs and a rewrite of the query to make it more efficient. Please include an estimate of how much faster it'll run and the final SQL with the plan we should expect. Let’s just focus on fixing the speed of this procedure; I don't want to touch the schema structure or get into a data audit right now. Thanks a million!

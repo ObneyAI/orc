@@ -1,0 +1,13 @@
+; brief-id: b-009
+; group: game-balance
+; variant: 5
+
+Please follow these steps to finalize the balance tuning for the 'Neon Syndicate' expansion before the 2 PM production hand-off:
+
+1. Review the character statistics in the attached CSV alongside the 1,000 match logs pulled from the digital alpha to confirm the current meta imbalances.
+2. Execute a batch of 10,000 simulated 4-player matches designed to rebalance the 'Netrunner' (currently at a 67% win rate) and 'Street Samurai' (currently at 38%) archetypes.
+3. Calculate the necessary integer-based adjustments for 'Data Spike' damage and 'Katana Parry' defense values to bring all four character classes into a tight win rate corridor of 48-52%.
+4. Continue iterating the simulation models until the 'Corporate Fixer' pick rate stabilizes at exactly 25% (with a maximum variance of +/- 3%).
+5. Generate a final deliverables table that lists the adjusted stats, a performance summary for every class, and a brief rationale detailing how these specific numerical shifts mitigate mid-game 'Ability Spam.' 
+
+Ensure that all proposed changes stick strictly to the existing Action Point (AP) and Direct Damage frameworks—do not introduce new gear or modify core class mechanics. I just need the numbers fixed for the final build.

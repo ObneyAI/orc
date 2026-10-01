@@ -1,0 +1,22 @@
+{:slug "219-budget-forecast-v06",
+ :group "budget-forecast",
+ :in-domain? false,
+ :variant 6,
+ :expected-output-kind
+ "a 12-month forecast table with assumptions stated, a sensitivity analysis and a list of risks to the plan",
+ :brief-id "b-014",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1760, :completion-tokens 397, :total-tokens 2157},
+  :draft-prompt-sha256
+  "ae1717cc0a7a058b165ab3690fa6db805b639021dd96e3067e6fa57ca54a8cf9",
+  :polish-usage
+  {:prompt-tokens 581, :completion-tokens 438, :total-tokens 1019},
+  :polish-prompt-sha256
+  "6f0c3559bb3bebeb15f73d0b64f64a8520bc6bdd52f9856d0dae4ff382f2fa09",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

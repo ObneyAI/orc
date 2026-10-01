@@ -1,0 +1,16 @@
+; brief-id: b-029
+; group: research-synthesis
+; variant: 3
+
+I’ve finally got a moment between meetings to look at the feedback from the 'Pro' tier rollout. I have uploaded a folder containing 18 interview transcripts and 40 support tickets from a mix of enterprise B2B partners and individual power users. We are noticing significant friction points regarding the new pricing structure and the initial setup phase that need immediate attention. 
+
+Please synthesize this raw data into a report following this exact schema:
+
+* **Identified Themes**: List each major theme with a concise summary and exactly four direct, anonymized quotes that illustrate the specific pain point or behavior.
+* **Opportunity Ranking**: A prioritized list of product gaps, ranked 1 through N based on their potential to reduce churn. Include a brief justification for each rank.
+* **Actionable Recommendations**: Tactical product changes specifically for the onboarding sequence and pricing display. Each recommendation must include:
+    * **Proposed Change**: A clear description of the "what."
+    * **Confidence Score**: High, Medium, or Low, based on the frequency of mentions in the notes.
+    * **Supporting Evidence**: A one-sentence recap of the data density for that item.
+
+Stick strictly to this analysis. Do not include persona profiles or suggestions for future survey questions; focus entirely on what the current data tells us to fix immediately.

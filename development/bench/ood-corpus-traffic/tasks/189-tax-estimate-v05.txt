@@ -1,0 +1,14 @@
+; brief-id: b-023
+; group: tax-estimate
+; variant: 5
+
+I recently transitioned to full-time independent consulting here in Vancouver, BC, and I need a clear breakdown of my projected 2024 tax obligations to ensure I’m setting aside enough for the CRA. My billings are expected to reach $155,000 this year, a significant jump from the $55,000 salary I earned as an employee last year. I’ve tracked approximately $14,000 in deductible expenses so far, covering my coworking membership, professional dues, and business travel.
+
+Please provide a formal estimate following these requirements:
+
+1. Calculate the total annual tax liability, combining both federal and British Columbia provincial taxes, and ensure the self-employed portion of CPP contributions is fully accounted for.
+2. Provide a detailed, step-by-step breakdown of the calculations, specifically identifying which BC tax brackets my income falls into.
+3. Determine the exact quarterly installment amounts I should be paying, along with the specific CRA deadlines for the remaining 2024 payment dates.
+4. List the key assumptions used in this estimate that I should verify with my accountant, specifically regarding GST/HST input tax credits and the eligibility requirements for my home office expenses.
+
+I want to avoid any interest penalties or surprises next spring, so please be as precise as possible with the current 2024 rates.

@@ -1,0 +1,13 @@
+; brief-id: b-012
+; group: query-optimisation
+; variant: 3
+
+Please perform a technical deep-dive into the provided SQL Server stored procedure for our 'Client Billing Dashboard,' which is currently timing out at the 30-second mark. Use the attached T-SQL source, the .sqlplan XML file, and the IO/Time statistics for the 'Invoices' and 'LineItems' tables to identify performance regressions. Your response must adhere to the following structural schema:
+
+*   **BOTTLENECK DIAGNOSIS**: Pinpoint the exact operator, join type, or implicit conversion causing the stall (e.g., identifying specific Key Lookups or Hash Match spills).
+*   **INDEX RECOMMENDATIONS**: Provide the exact T-SQL syntax for any missing non-clustered indexes or suggested changes to existing include columns.
+*   **QUERY REWRITE**: A refactored version of the stored procedure utilizing T-SQL specific optimizations, specifically evaluating the use of Common Table Expressions (CTEs) versus local #Temp tables for intermediate sets.
+*   **PERFORMANCE ESTIMATE**: A quantitative projection of the reduction in Logical Reads and CPU time as a percentage.
+*   **EXPECTED EXECUTION PLAN**: A brief description of the target plan shape (e.g., transitioning from a Clustered Index Scan to a Seek).
+
+Note: This request is strictly limited to query and index tuning to bring the execution time under 2 seconds. Do not suggest architectural schema migrations or data-quality audits.

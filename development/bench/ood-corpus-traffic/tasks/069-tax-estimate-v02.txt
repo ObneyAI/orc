@@ -1,0 +1,12 @@
+; brief-id: b-023
+; group: tax-estimate
+; variant: 2
+
+Hi there, hope you're having a decent week so far. I am absolutely buried in project work and my head is spinning trying to keep the business side of things straight. I’m writing because I really need to get a handle on what I owe the CRA this year for my small corporation, "Maple Leaf Creative Solutions Inc." I’ve been so focused on the actual design work that I haven't looked at the tax situation since, gosh, maybe November? Anyway, I’m based in Ontario. Last year was a bit of a wash because I was transitioning from full-time employment, but for this fiscal year, I’m projecting the corporation will bring in about $145,000 in gross revenue from my various contracts.
+
+On the expense side, I’ve got about $22,000 in eligible business deductions—that's for my office rent, some new hardware I had to pick up, and the subcontracted developer I use for the heavy coding stuff. I’m also paying myself a base salary of $60,000 out of the corp, and I want to keep the rest of the profit inside the business for now to reinvest in a new rendering suite later. My dog, Barnaby, had a bit of a health scare last week (he’s fine now, just a very expensive vet bill!), so I’m really trying to be more disciplined with my cash flow and not get hit with a massive tax bill I haven't planned for.
+
+Could you please run the numbers and estimate the total annual corporate tax I’m looking at for the year? I need to know exactly what my quarterly installment amounts should be and when the deadlines are so I can set up calendar alerts. Please show me how you calculated the tax—especially the small business deduction part, since that always confuses me—and list out any assumptions you’re making that I should double-check with my accountant before I actually send the money. I just don't want any surprises when filing season rolls around. Thanks a million for the help, it really takes a weight off!
+
+Best,
+Sarah

@@ -1,0 +1,5 @@
+; brief-id: b-031
+; group: rpg-encounter
+; variant: 4
+
+Hey! My Call of Cthulhu group is meeting tomorrow and I'm totally stuck on this one scene. They're a bunch of 1920s investigators—a Private Eye, a cynical Journalist, and a Professor—and they've just tracked a lead to a foggy, abandoned pier in Arkham. They’re trying to stop a ritual before a shipment of cursed artifacts gets loaded onto a boat, but I want the "horror" to be more about the environment than just a straight-up fight. Could you help me sketch out an exploration-heavy encounter? I need the setup for the pier, stats for a 'Deep One Hybrid' and maybe some creepy 'Fog-Dwellers,' plus how the rotting wood and thick mist affect their rolls. Give me a breakdown of how the enemies use the shadows to mess with their Sanity, a rationale for why this is a 'Deadly' encounter given their lack of weapons, and some ways to dial it back if they’re already half-insane. Just this one scene at the docks, please!

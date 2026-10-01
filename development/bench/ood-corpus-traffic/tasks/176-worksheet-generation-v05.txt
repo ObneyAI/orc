@@ -1,0 +1,14 @@
+; brief-id: b-032
+; group: worksheet-generation
+; variant: 5
+
+I’m running a literacy workshop for ESL adults this Saturday and I’m scrambling to finish my materials before I head to the airport. Could you put together a 12-item reading comprehension worksheet based on a narrative about someone navigating a busy metropolitan train station? I need the following:
+
+1. Create 12 multiple-choice questions that mix literal recall (specific names, times, locations) with inferential reasoning (the protagonist’s feelings, subtext, or motivations).
+2. Keep the vocabulary at an intermediate B1 level so it’s challenging but accessible for this group.
+3. Provide a separate, detailed answer key at the bottom.
+4. For every answer in the key, include a "worked solution" that quotes the specific sentence from the story proving the answer is correct, along with a brief explanation of the logic.
+5. Assign a difficulty tag to each question—use 'Foundational', 'Target', or 'Stretch' depending on how complex the inference is.
+6. Please strip out any introductory filler, objectives, or grading rubrics; I just need the raw questions and the key so I can print it immediately.
+
+I’m catching a flight in three hours, so I really appreciate you getting this ready quickly!

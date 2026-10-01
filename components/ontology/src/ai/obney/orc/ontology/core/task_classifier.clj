@@ -149,6 +149,16 @@
 ;; STILL accrue (the counter keeps ticking) — the gate only governs
 ;; candidacy, never accrual.
 (def ^:private default-retrieval-gate 3)
+
+;; default-merge-candidate-count: CV-C / `specs/ontology.allium`'s
+;; `merge_candidate_count: Integer = 5` — the bound on how many nearest
+;; existing families `nearest-families` shows the merge judge. A RANK bound
+;; only (grill C3: "no similarity cutoff") — overridable via
+;; `:merge-candidate-count` on ctx, same override-seam shape as
+;; `resolve-timeout-ms`/`resolve-model` give the reranker's other policy
+;; knobs.
+(def ^:private default-merge-candidate-count 5)
+
 (def ^:private max-walk-depth
   "Hard depth cap on walk-down recursion (R-C2d-2 mitigation). At
    this depth we stop walking even if more children would fit and log
@@ -221,8 +231,38 @@
   ((requiring-resolve 'ai.obney.orc.ontology.interface/get-concept-by-uri)
    ctx uri))
 
+(declare default-domain-family-parent-fn)
+
+(defn- non-family-child?
+  "CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): true when
+   `child-id` is NOT a domain family — walk-down only ever descends into a
+   non-family child; a family is a leaf on the domain axis, never a
+   shape-ranking or walk-down candidate. Same discriminator CV-A's
+   `shape-candidates-only` / classify-task's own `family-candidate?` use,
+   via the `:domain-family-parent-fn` seam (default: the real store read).
+   Fail closed: a failed lookup is NOT knowledge that the child is safe to
+   descend into — it is excluded too, same as a confirmed family."
+  [ctx child-id]
+  (let [family-parent-fn (or (:domain-family-parent-fn ctx) default-domain-family-parent-fn)]
+    (try (nil? (family-parent-fn ctx child-id))
+         (catch Throwable t
+           (u/log ::walk-down-family-lookup-failed :target-id child-id :error (.getMessage t))
+           false))))
+
 (defn- rerank! [ctx opts]
   ((requiring-resolve 'ai.obney.orc.ontology.core.reranker/rerank!)
+   ctx opts))
+
+(defn- existing-domain-families* [ctx]
+  ((requiring-resolve 'ai.obney.orc.ontology.interface/existing-domain-families)
+   ctx))
+
+(defn- hybrid-search* [ctx opts]
+  ((requiring-resolve 'ai.obney.orc.ontology.interface/hybrid-search)
+   ctx opts))
+
+(defn- merge-family!* [ctx opts]
+  ((requiring-resolve 'ai.obney.orc.ontology.core.reranker/merge-family!)
    ctx opts))
 
 ;; =============================================================================
@@ -311,21 +351,28 @@
    description was actually found under (`:tree-class` or
    `:tree-fingerprint`), never hardcoded — so `pick-best-child` can stamp
    the synthetic candidate's `:document-metadata :granularity` with the
-   scope it was read under instead of a hardcoded axis."
+   scope it was read under instead of a hardcoded axis.
+
+   CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): a child that IS
+   a domain family (`non-family-child?`) is dropped BEFORE its description
+   is even read — walk-down never descends into a family, so a shape whose
+   only child is a family returns the shape itself (empty children here is
+   the genuine-leaf case one level up in `walk-down-from`)."
   [ctx parent-target-id]
   (let [parent-uri (str tree-class-uri-prefix parent-target-id)
         child-uris (or (get-narrower-concepts ctx parent-uri) #{})]
     (vec
       (keep (fn [child-uri]
-              (let [child-id (uri->target-id child-uri)
-                    tree-class-desc (get-description ctx :tree-class child-id)
-                    scope (if tree-class-desc :tree-class :tree-fingerprint)
-                    desc (or tree-class-desc
-                             (get-description ctx :tree-fingerprint child-id))]
-                (when desc
-                  {:target-id child-id
-                   :scope scope
-                   :description desc})))
+              (let [child-id (uri->target-id child-uri)]
+                (when (non-family-child? ctx child-id)
+                  (let [tree-class-desc (get-description ctx :tree-class child-id)
+                        scope (if tree-class-desc :tree-class :tree-fingerprint)
+                        desc (or tree-class-desc
+                                 (get-description ctx :tree-fingerprint child-id))]
+                    (when desc
+                      {:target-id child-id
+                       :scope scope
+                       :description desc})))))
             child-uris))))
 
 (defn- pick-best-child
@@ -521,6 +568,69 @@
                (< fit threshold))
       top-id)))
 
+(declare default-domain-family-parent-fn)
+
+(defn- shape-candidates-only
+  "The candidates a SHAPE-axis decision (the bundle) may land on: every
+   :tree-class candidate that is not a domain family. A family is never a shape
+   class (DomainFamilyIsALeafOnTheDomainAxis) and the bundle must not place a
+   task in one unjudged (live finding: a marathon task bundled into a
+   recipe-scaling family). CV-E: match and walk-down can no longer reach a
+   family at all (search-descriptions excludes them from the ranking, and
+   walk-down excludes them from its children), so this is now belt-and-braces
+   for the bundle's own candidate set specifically. A failed lookup drops the
+   candidate too: a bundle never lands on an unverified class. Non-tree-class
+   candidates pass through (bundle-decision ignores them)."
+  [ctx candidates]
+  (let [family-parent-fn (or (:domain-family-parent-fn ctx) default-domain-family-parent-fn)]
+    (filterv (fn [c]
+               (or (not (tree-class-candidate? c))
+                   (let [id (candidate-class-id c)]
+                     (and id
+                          (try (nil? (family-parent-fn ctx id))
+                               (catch Throwable t
+                                 (u/log ::bundle-family-lookup-failed :target-id id :error (.getMessage t))
+                                 false))))))
+             candidates)))
+
+;; =============================================================================
+;; CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5') — a domain family
+;; is never a shape-ranking candidate. The shape ranking (classify-task's own
+;; retrieval, the reranker's candidate set) holds shape classes and curated
+;; seeds only; walk-down (above) never descends into a family; a family is
+;; reached only by being PROPOSED to the merge judge (its label, a shape's
+;; child label, or the judge's own nearest-family neighbourhood) and judged.
+;; =============================================================================
+
+(defn- family-candidate?
+  "The `:exclude?` predicate classify-task hands `search-descriptions`: true
+   when `candidate` is a domain family, so search-descriptions drops it
+   BEFORE the granularity-filtered set is handed to `tree-class-representatives`
+   and the reranker's take — never after, when it would already have crowded
+   out a generic seed (families carry specific birth descriptions and outrank
+   them). Same discriminator as `shape-candidates-only` / `family-concept?` —
+   agent-authored provenance, a label that is not its own bare id — via the
+   `:domain-family-parent-fn` seam (default: the real store read). Only
+   :tree-class candidates are ever families; every other axis passes straight
+   through. Fail closed: a failed lookup (or an id that fails to resolve)
+   EXCLUDES the candidate — never lets an unverified class compete.
+   `search-descriptions` caches this predicate per distinct candidate id, so
+   one classification costs at most one read per distinct candidate, not one
+   per axis row."
+  [ctx candidate]
+  (boolean
+    (and (tree-class-candidate? candidate)
+         (let [id (candidate-class-id candidate)]
+           (or (nil? id)
+               (let [family-parent-fn (or (:domain-family-parent-fn ctx) default-domain-family-parent-fn)]
+                 (try (some? (family-parent-fn ctx id))
+                      (catch Throwable t
+                        (u/log ::classify-family-exclusion-lookup-failed
+                               :target-id id :error (.getMessage t))
+                        true))))))))
+
+(declare default-newborn?-fn)
+
 (defn- gate-candidates
   "EL-1b Part 2 — EVIDENCE GATE. Filter the candidate set so a RUNTIME-EMERGENT
    :tree-class is only a retrievable candidate once it has RECURRED past the
@@ -539,6 +649,14 @@
                             count-only >= gate filter would wrongly demote every
                             seed, which has total 0 — verified breaking baseline
                             matching in dev; this band keeps seeds reachable.)
+                            CV-A item 4 (`NewbornFamilyIsMatchableNotSurfaced`)
+                            narrows this: a total-0 class that IS a newborn
+                            domain family (the `:newborn?-fn` seam, default:
+                            agent-authored provenance) is excluded from this
+                            SURFACED view too — matching stays ungated (the
+                            gate runs only here, AFTER match/bundle/walk-down
+                            already ran on the raw candidates), a curated seed
+                            still passes at 0.
      0 < total < gate     → a runtime fresh-mint / bundle that has occurred but
                             NOT yet recurred enough — a possible one-off junk
                             class → FILTER from candidacy. It STILL accrues (the
@@ -550,14 +668,21 @@
    — the gate rides only the instruction-aware axis the emergence loop accrues
    on."
   [ctx candidates retrieval-gate]
-  (filterv (fn [c]
-             (if (tree-class-candidate? c)
-               (if-let [id (candidate-class-id c)]
-                 (let [total (get-consolidation-total* ctx :tree-class id)]
-                   (or (zero? total) (>= total retrieval-gate)))
-                 false)
-               true))
-           candidates))
+  (let [newborn?-fn (or (:newborn?-fn ctx) default-newborn?-fn)
+        newborn? (fn [id]
+                   (try (boolean (newborn?-fn ctx id))
+                        (catch Throwable _ false)))]
+    (filterv (fn [c]
+               (if (tree-class-candidate? c)
+                 (if-let [id (candidate-class-id c)]
+                   (let [total (get-consolidation-total* ctx :tree-class id)]
+                     (cond
+                       (and (zero? total) (newborn? id)) false
+                       (zero? total) true
+                       :else (>= total retrieval-gate)))
+                   false)
+                 true))
+             candidates)))
 
 ;; =============================================================================
 ;; Task signature builder — pure
@@ -723,22 +848,353 @@
 (defn- domain-deferral
   "RS-2's `:domain-deferral` marker: the domain axis could not be resolved
    (coverage :unknown/missing/malformed, a blank/nil label where a child
-   would have been minted — 'no child from an empty label' — or a failed
-   children lookup). No child is created; the pre-existing match/walk-down
-   assignment is left exactly as it was, and the reason is recorded."
+   would have been minted — 'no child from an empty label' — a failed
+   children/families lookup, an unresolved merge verdict, or CV-D's
+   `:label-taken` identity collision). No child is created; the
+   pre-existing match/walk-down assignment is left exactly as it was, and
+   the reason is recorded."
   ([] (domain-deferral :unknown-coverage))
   ([reason] {:axis :domain :reason reason}))
 
+;; =============================================================================
+;; CV-A (domain-child convergence) — injected-capability seam DEFAULTS
+;;
+;; The two identity lookups (families, family parent) read the store with no
+;; store-less fallback: a missing store or a failed read propagates, and the
+;; caller defers on the domain axis (:families-lookup-failed); it is never
+;; read as "no families" (fail closed). A pure classify-task test declares
+;; its world by passing the seams on ctx (or a fixture), never by omitting a
+;; store. The newborn check governs only SURFACING, so it reads a failure as
+;; "not a newborn".
+;; =============================================================================
+
+(defn default-domain-families-fn
+  "CV-A item 1 — the real default for the `:domain-families-fn` injected
+   capability: every domain family in the tenant, tenant-wide (see
+   `ontology/existing-domain-families`), most-recently-minted first."
+  [ctx]
+  ;; No store-less fallback: a missing store must fail (the caller defers
+  ;; :families-lookup-failed), never read as 'no families' and mint.
+  (existing-domain-families* ctx))
+
+(defn default-domain-family-parent-fn
+  "CV-A item 3 (`DomainFamilyIsALeafOnTheDomainAxis`) — the real default for
+   the `:domain-family-parent-fn` injected capability: when `target-id`'s
+   own tree-class concept IS a domain family (agent-authored provenance, a
+   non-blank label that is not its own bare id — the same discriminator
+   `default-domain-children-fn` uses per child), returns
+   `{:parent-id :domain-label}` — its OWN birth shape (first skos:broader
+   edge) and its own concept label. Returns nil when `target-id` is not a
+   family (an ordinary shape class), so the caller never mistakes 'not a
+   family' for a lookup failure."
+  [ctx target-id]
+  (do
+    (let [uri (str tree-class-uri-prefix target-id)
+          concept (get-concept-by-uri ctx uri)
+          label (:label concept)]
+      (when (and concept
+                 (= :agent-authored (:kind (:provenance concept)))
+                 (string? label)
+                 (not (clojure.string/blank? label))
+                 (not= label (str target-id)))
+        (let [broader-uri (first (:broader concept))]
+          {:parent-id (when broader-uri (uri->target-id broader-uri))
+           :domain-label label})))))
+
+(defn default-newborn?-fn
+  "CV-A item 4 (`NewbornFamilyIsMatchableNotSurfaced`) — the real default
+   for the `:newborn?-fn` injected capability: true when `target-id`'s
+   tree-class concept carries agent-authored provenance (a runtime-minted
+   domain family), false for a curated/seeded class and for any read that
+   cannot be resolved (this seam only governs SURFACING, never an
+   identity/mint decision, so it is safe to read a failure as \"not a
+   newborn\" rather than deferring the whole classification over it)."
+  [ctx target-id]
+  (try
+    (boolean
+     (when (:event-store ctx)
+       (let [uri (str tree-class-uri-prefix target-id)
+             concept (get-concept-by-uri ctx uri)]
+         (= :agent-authored (:kind (:provenance concept))))))
+    (catch Throwable _ false)))
+
+(defn- family-concept?
+  "Same discriminator `default-domain-family-parent-fn` / `existing-domain-
+   families` use: agent-authored provenance, a non-blank :label that is not
+   the concept's own bare id (the generic placeholder an ordinary,
+   non-domain tree-class concept carries as its label)."
+  [concept bare-id]
+  (and concept
+       (= :agent-authored (:kind (:provenance concept)))
+       (string? (:label concept))
+       (not (clojure.string/blank? (:label concept)))
+       (not= (:label concept) (str bare-id))))
+
+(defn nearest-families
+  "CV-C item 3 (`DomainFamilyMergeIsJudged`) — the nearest EXISTING domain
+   families BY RANK for a would-be mint's merge judge: `ontology/hybrid-
+   search` (graph + embedding, rank-fused) over the tree-class ontology,
+   query text = signature + reasoning, seeded by the RANKING's own
+   :tree-class candidate URIs, filtered to agent-authored family concepts
+   (an ordinary shape class anywhere in the neighbourhood is dropped —
+   never shown to the judge), bounded to merge-candidate-count. Rank order
+   PRESERVED; no score is ever read for a decision (grill C3) — and
+   `:min-similarity` is pinned to 0.0 so hybrid-search's own similarity
+   floor can never silently act as the cutoff the spec forbids ('no
+   similarity cutoff').
+
+   `:label`/`:description` are re-read from the LIVE event-sourced concept
+   (`get-concept-by-uri`), never taken from hybrid-search's own enrichment:
+   `fuse-and-enrich` resolves :label/:description from the STATIC seed
+   ontology only (`static-ontology/get-concept-by-uri`), which never
+   contains a runtime-minted :tree-class family — trusting it would show
+   the judge every family with a BLANK body (found by reading the
+   retrieval code, not assumed; root-caused rather than routed around).
+
+   CV-D (`DomainFamilyMergeIsJudged`, revised C3'): `:proposed` — the
+   family a landing would choose without a judge (a tenant-wide canonical-
+   label match, a per-parent existing child, or a match/walk-down that
+   REACHES a family) — is ALWAYS included among the returned candidates
+   when non-nil. When the hybrid search already surfaced it, nothing
+   changes. When it did not, its concept is fetched directly
+   (`get-concept-by-uri`) and prepended, and the bound (merge-candidate-
+   count) still applies to the REST of the list — the proposed family is
+   never the one dropped to make room.
+
+   Returns [{:id :label :description} ...]. Fail closed: any exception
+   here PROPAGATES — the caller (`default-domain-merge-fn`, by way of
+   `mint-domain-family-via-merge`'s try/catch) reads it as :unknown, never
+   as \"no families\"."
+  [ctx {:keys [signature reasoning ranking proposed]}]
+  (let [merge-candidate-count (or (:merge-candidate-count ctx) default-merge-candidate-count)
+        seed-uris (into []
+                        (comp (filter tree-class-candidate?)
+                              (keep candidate-class-id)
+                              (map #(str tree-class-uri-prefix %))
+                              (distinct))
+                        ranking)
+        query-text (clojure.string/trim (str (or signature "") " " (or reasoning "")))
+        {:keys [results]} (hybrid-search* ctx {:seed-uris seed-uris
+                                               :query-text query-text
+                                               :scope :tree-class
+                                               :min-similarity 0.0
+                                               :limit (* 4 merge-candidate-count)})
+        found (into []
+                    (comp (keep (fn [{:keys [uri]}]
+                                  (let [id (uri->target-id uri)
+                                        concept (get-concept-by-uri ctx uri)]
+                                    (when (family-concept? concept id)
+                                      {:id id
+                                       :label (:label concept)
+                                       :description (:description concept)}))))
+                          (take merge-candidate-count))
+                    results)]
+    (if (or (nil? proposed) (some #(= proposed (:id %)) found))
+      found
+      (let [proposed-uri (str tree-class-uri-prefix proposed)
+            proposed-concept (get-concept-by-uri ctx proposed-uri)]
+        (if (family-concept? proposed-concept proposed)
+          (into [{:id proposed
+                  :label (:label proposed-concept)
+                  :description (:description proposed-concept)}]
+                (take (dec merge-candidate-count) found))
+          found)))))
+
+(defn default-domain-merge-fn
+  "CV-C (`DomainFamilyMergeIsJudged`) — the seam's real default: retrieves
+   `nearest-families` and, when the neighbourhood is non-empty, asks ONE
+   discrete question (`reranker/merge-family!`) with their full
+   descriptions in view. An EMPTY neighbourhood is `:new` WITHOUT a call
+   (grill C3 — nothing to compare against yet). `:same` naming a family
+   NOT among the candidates actually shown to the judge is read as
+   `:unknown` (a hallucinated / out-of-context id never lands); the
+   returned `:family` is always OUR OWN copy of the shown candidate's id,
+   never the judge's echoed string, so a JSON round-trip can never change
+   its type/identity. An out-of-set or malformed verdict kind is
+   `:unknown`, never coerced.
+
+   `query` carries `:ranking` (`mint-domain-family-via-merge`'s `candidates`
+   — the pre-gate retrieval ranking) alongside `:signature`/`:reasoning`;
+   a caller-supplied `:domain-merge-fn` stub that ignores extra keys is
+   unaffected (existing CV-A tests stub this seam with a 2-arg `[ctx
+   query]` fn exactly as before). CV-D adds `:proposed` — the family a
+   landing would choose without a judge — threaded straight to
+   `nearest-families` so it is always among the shown candidates."
+  [ctx {:keys [signature reasoning ranking proposed]}]
+  (let [candidates (nearest-families ctx {:signature signature
+                                          :reasoning reasoning
+                                          :ranking ranking
+                                          :proposed proposed})]
+    (if (empty? candidates)
+      {:kind :new}
+      (let [{judge-kind :kind judge-family :family judge-reasoning :reasoning}
+            (merge-family!* ctx {:signature signature
+                                 :reasoning reasoning
+                                 :candidates candidates})
+            shown (some #(when (= (str (:id %)) (str judge-family)) %) candidates)
+            kind (cond
+                   (not (contains? #{:same :new :unknown} judge-kind)) :unknown
+                   (and (= judge-kind :same) (not shown)) :unknown
+                   :else judge-kind)]
+        (cond-> {:kind kind}
+          (and (= kind :same) shown) (assoc :family (:id shown))
+          judge-reasoning (assoc :reasoning judge-reasoning))))))
+
+(defn- family-by-canonical-label
+  "The tenant-wide family, if any, whose OWN label canonicalises to
+   `canonical-label` — the cheap, judge-free landing path (C1)."
+  [families canonical-label]
+  (some (fn [f]
+          (when (= canonical-label (canonicalize-domain-label (:domain-label f)))
+            f))
+        families))
+
+(defn- family-parented-under?
+  [families target-id]
+  (some #(= target-id (:parent-id %)) families))
+
+(defn covered-leaf-neighbour
+  "CV-A item 2 (`CoveredSeedProtection`): the first :tree-class candidate
+   (RANK ORDER — `candidates` is the pre-gate ranking) that is judged
+   `:covered`, has no domain families of its own (neither via the
+   tenant-wide `families` set nor the legacy per-parent
+   `:existing-domain-children` enrichment), and whose fitness is at or
+   above `threshold` — or nil.
+
+   Pure: no store access — `candidates` already carry RS-1's per-candidate
+   domain verdict (`apply-rerank`'s JOIN) and `:existing-domain-children`
+   (EL-2's enrichment); `families` is the tenant-wide set the caller already
+   fetched once for the landing step below it."
+  [candidates families threshold]
+  (some (fn [c]
+          (when (and (tree-class-candidate? c)
+                     (= :covered (:domain-coverage c))
+                     (not (family-parented-under? families (candidate-class-id c)))
+                     (empty? (:existing-domain-children c))
+                     (>= (or (:fitness-score c) 0.0) threshold))
+            {:target-id (candidate-class-id c)}))
+        candidates))
+
+(defn- identity-already-taken?
+  "CV-D item 4 (`MintDomainFamily`'s identity-collision guard): is a `:new`
+   verdict's derived identity (`stable-domain-child-identity` of the shape
+   + canonical label) already an EXISTING family's identity? Nothing else
+   ever creates a concept at that exact derived URI, so a hit here means
+   minting again would silently duplicate/overwrite it — the judge said
+   :new, but the identity says otherwise.
+
+   Reuses the `:domain-family-parent-fn` seam (CV-A item 3's own \"is this
+   id a family\" check, `default-domain-family-parent-fn`) rather than
+   reading the concept directly: every caller already provides or defaults
+   this seam, so a pure test's declared world (no store, or a stubbed
+   family set) governs this check exactly as it governs every other family
+   lookup in this namespace — no second, unseamed store touch. Not
+   fail-closed itself — the caller wraps this in its own try/catch and
+   treats a failed check as unresolved, never as \"free\"."
+  [ctx child-identity]
+  (let [family-parent-fn (or (:domain-family-parent-fn ctx) default-domain-family-parent-fn)]
+    (boolean (family-parent-fn ctx child-identity))))
+
+(defn- mint-domain-family-via-merge
+  "CV-A item 7 / CV-C / CV-D (`DomainFamilyMergeIsJudged`, revised C3') —
+   the ONE call site where every proposal and every would-be mint is
+   judged via the `:domain-merge-fn` seam (CV-C's `default-domain-merge-fn`
+   real implementation, or a caller-supplied stub): `:kind :new` mints
+   (guarded by the identity-collision check below), with the raw verdict
+   carried on `:merge-verdict` so the wedge knows this is a genuine family
+   birth (item 5's rich description + embedding); `:kind :same` lands on
+   the named family instead (which may differ from `proposed`); anything
+   else — including a seam failure — defers `:merge-unresolved`, mints
+   nothing.
+
+   `proposed` (CV-D) is the family a landing would choose WITHOUT a judge —
+   a tenant-wide canonical-label match, a per-parent existing child, or a
+   match/walk-down that reached a family — or nil for a genuine would-be
+   FIRST mint with no such candidate. Threaded to the seam so
+   `nearest-families` always shows it to the judge."
+  [ctx base parent-id canonical-label verdict signature ranking proposed]
+  (let [merge-fn (or (:domain-merge-fn ctx) default-domain-merge-fn)
+        query {:signature signature
+               :reasoning (:domain-reasoning verdict)
+               :label canonical-label
+               ;; CV-C item 3: the pre-gate retrieval ranking, so the real
+               ;; default can derive `nearest-families`' seed-uris. Extra
+               ;; key — a caller-supplied 2-arg stub `(fn [ctx query] ...)`
+               ;; ignores it exactly as every existing CV-A test does.
+               :ranking ranking
+               ;; CV-D: the proposed family, always shown to the judge.
+               :proposed proposed}
+        verdict* (try (or (merge-fn ctx query) {:kind :unknown})
+                      (catch Throwable t
+                        (u/log ::domain-merge-failed :error (.getMessage t))
+                        {:kind :unknown}))]
+    (case (:kind verdict*)
+      :new
+      (let [child-identity (stable-domain-child-identity parent-id canonical-label)
+            taken (try {:taken? (identity-already-taken? ctx child-identity)}
+                       (catch Throwable t
+                         (u/log ::domain-identity-check-failed :error (.getMessage t))
+                         {:failed? true}))]
+        (cond
+          (:failed? taken)
+          (-> base
+              (assoc :domain-deferral (domain-deferral :merge-unresolved))
+              (assoc :merge-verdict verdict*))
+
+          (:taken? taken)
+          (-> base
+              (assoc :domain-deferral (domain-deferral :label-taken))
+              (assoc :merge-verdict verdict*))
+
+          :else
+          (-> base
+              (assoc :assigned-tree-id child-identity)
+              (assoc :assigned-via :mint-domain-child)
+              (assoc :parent-tree-id parent-id)
+              (assoc :domain-label canonical-label)
+              (assoc :was-fresh-mint? true)
+              (assoc :merge-verdict verdict*))))
+
+      :same
+      (let [family-id (:family verdict*)
+            family-parent-fn (or (:domain-family-parent-fn ctx) default-domain-family-parent-fn)
+            family-parent (when family-id (family-parent-fn ctx family-id))]
+        ;; A 'same' verdict naming something that is not a family (no parent
+        ;; edge, no label) is not a landing: it defers like any unresolved
+        ;; verdict rather than assigning a family with no parent.
+        (if-not (:parent-id family-parent)
+          (-> base
+              (assoc :domain-deferral (domain-deferral :merge-unresolved))
+              (assoc :merge-verdict verdict*))
+        (-> base
+            (assoc :assigned-tree-id family-id)
+            (assoc :assigned-via :land-on-domain-child)
+            (assoc :parent-tree-id (:parent-id family-parent))
+            (assoc :domain-label (or (:domain-label family-parent) canonical-label))
+            (assoc :was-fresh-mint? false)
+            (assoc :merge-verdict verdict*))))
+
+      (-> base
+          (assoc :domain-deferral (domain-deferral :merge-unresolved))
+          (assoc :merge-verdict verdict*)))))
+
 (defn- assign-domain-child
-  "RS-2: apply MintDomainChild / LandOnDomainChild / MintSiblingDomainChild
-   to a :match result already known to be on the :tree-class axis, with
+  "RS-2 + CV-A: apply the LEGACY per-parent domain-child logic
+   (LandOnDomainChild / MintSiblingDomainChild when this shape already has
+   domain children of its own; a plain :covered no-op / defer when it does
+   not) to a :match result already known to be on the :tree-class axis and
+   already known NOT to land on an existing tenant-wide family, with
    `parent-id` = the assigned class and `verdict` = the assigned
    candidate's {:domain-coverage :domain-label :domain-reasoning} (RS-1).
+
+   The one case this delegates onward: NO legacy children AND a would-mint
+   coverage — CV-A's `MintDomainFamily`, judged by the merge seam
+   (`mint-domain-family-via-merge`) rather than minted unconditionally.
 
    Every branch carries :domain-verdict (the RAW verdict, unnormalised) and
    :domain-children-considered (the RAW labels the seam returned) so RS-3
    can record them."
-  [ctx result parent-id verdict]
+  [ctx result parent-id verdict signature ranking]
   (let [children-fn (or (:domain-children-fn ctx) default-domain-children-fn)
         children (try (or (children-fn ctx parent-id) [])
                       (catch Throwable t
@@ -766,26 +1222,19 @@
       ;; decides (sibling reuse vs mint) — the verdict is NOT consulted.
       (if-not canonical-label
         (assoc base :domain-deferral (domain-deferral))
-        (if-let [existing (some (fn [c]
-                                  (when (= canonical-label
-                                          (canonicalize-domain-label (:domain-label c)))
-                                    c))
-                                children)]
-          (-> base
-              (assoc :assigned-tree-id (:target-id existing))
-              (assoc :assigned-via :land-on-domain-child)
-              (assoc :parent-tree-id parent-id)
-              ;; RS-4 inspection: the landed child's label is a fact of the
-              ;; outcome (the spec's TaskClassified carries domain_label on
-              ;; every rule); the R-Inject render names the child by it.
-              (assoc :domain-label canonical-label)
-              (assoc :was-fresh-mint? false))
-          (-> base
-              (assoc :assigned-tree-id (stable-domain-child-identity parent-id canonical-label))
-              (assoc :assigned-via :mint-sibling-domain-child)
-              (assoc :parent-tree-id parent-id)
-              (assoc :domain-label canonical-label)
-              (assoc :was-fresh-mint? true))))
+        (let [existing (some (fn [c]
+                               (when (= canonical-label
+                                       (canonicalize-domain-label (:domain-label c)))
+                                 c))
+                             children)]
+          ;; CV-D (`DomainFamilyMergeIsJudged`, revised C3'): a per-parent
+          ;; existing-child label match is now a PROPOSED landing, judged
+          ;; like any other — never an unjudged direct land. ADR 0007 /
+          ;; MintDomainFamily: a NEW label (no `existing` match) is a
+          ;; judged family birth too, including a second family under a
+          ;; shape that already has one.
+          (mint-domain-family-via-merge ctx base parent-id canonical-label verdict signature ranking
+                                        (:target-id existing))))
 
       :else
       (case coverage
@@ -794,28 +1243,114 @@
         (:partial :uncovered)
         (if-not canonical-label
           (assoc base :domain-deferral (domain-deferral))
-          (-> base
-              (assoc :assigned-tree-id (stable-domain-child-identity parent-id canonical-label))
-              (assoc :assigned-via :mint-domain-child)
-              (assoc :parent-tree-id parent-id)
-              (assoc :domain-label canonical-label)
-              (assoc :was-fresh-mint? true)))
+          (mint-domain-family-via-merge ctx base parent-id canonical-label verdict signature ranking nil))
 
         (assoc base :domain-deferral (domain-deferral))))))
 
+(defn- run-domain-axis-for-match
+  "CV-A/CV-D/CV-E: the domain axis for a :match already known to be on the
+   :tree-class axis and already known NOT to itself be a domain family
+   (`maybe-assign-domain-child` checks that first — DomainFamilyIsALeafOnTheDomainAxis).
+
+   Order (grill C3/C4, `DomainChildrenAreAlwaysConsidered`): covered-seed
+   protection → the judged question (a tenant-wide canonical-label match, or
+   a genuine would-be mint — the legacy per-parent mechanism's own
+   child-label proposal included) — CV-D (`DomainFamilyMergeIsJudged`,
+   revised C3'): there is no unjudged landing; a proposed family is always
+   among the judge's candidates.
+
+   `families` is fetched ONCE (a failed read defers
+   `:families-lookup-failed`, never read as \"no families\") and reused by
+   both protection and the tenant-wide proposal, so a pre-existing
+   mis-parented family never captures a task a covered seed should have
+   kept (`protection-runs-before-family-landing`).
+
+   CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): there is no
+   longer a `reached-family-id` — `search-descriptions` excludes every
+   family from the ranking and walk-down excludes them from its children,
+   so a match can never REACH a family in the first place. A family is
+   proposed to the judge only by its label (the tenant-wide match below) or
+   a shape's own existing child label (`assign-domain-child`)."
+  [ctx result candidates verdict threshold signature]
+  (let [parent-id (:assigned-tree-id result)
+        canonical-label (canonicalize-domain-label (:domain-label verdict))
+        coverage (:domain-coverage verdict)
+        base (assoc result :domain-verdict verdict)]
+    (if-not canonical-label
+      (assign-domain-child ctx base parent-id verdict signature candidates)
+      (let [families-fn (or (:domain-families-fn ctx) default-domain-families-fn)
+            fetch (try {:families (or (families-fn ctx) [])}
+                       (catch Throwable t
+                         (u/log ::domain-families-lookup-failed :error (.getMessage t))
+                         {:failed? true}))
+            families (:families fetch)
+            neighbour (when (and (contains? #{:partial :uncovered} coverage) (not (:failed? fetch)))
+                        (covered-leaf-neighbour candidates families threshold))
+            label-family (when-not (:failed? fetch)
+                          (family-by-canonical-label families canonical-label))
+            ;; CV-D/CV-E: proposed_family(ranking, canonical_label) — the
+            ;; family carrying that label, or nil (a family is never reached
+            ;; by the ranking's own top match any more).
+            proposed-id (:target-id label-family)]
+        (cond
+          (:failed? fetch)
+          (assoc base :domain-deferral (domain-deferral :families-lookup-failed))
+
+          neighbour
+          (-> base
+              (assoc :assigned-tree-id (:target-id neighbour))
+              (assoc :assigned-via :match)
+              (assoc :was-fresh-mint? false)
+              (assoc :domain-selection {:preferred (:target-id neighbour)
+                                        :over parent-id
+                                        :reason :covered-leaf-neighbour}))
+
+          ;; A label proposes a family only when the matched class does NOT cover
+          ;; the task. A covered match keeps its class (DomainFamilyMergeIsJudged:
+          ;; never asked on a covered match); the RS-7 post-fix arm showed a
+          ;; covered curated seed at fitness 1.0 pulled into a look-alike family
+          ;; because the reranker reused that family's label. A covered class
+          ;; that has families of its own is still handled by
+          ;; `assign-domain-child` (D7b: its children's labels decide, judged).
+          (and proposed-id (contains? #{:partial :uncovered} coverage))
+          (mint-domain-family-via-merge ctx base parent-id canonical-label verdict signature candidates proposed-id)
+
+          :else
+          (assign-domain-child ctx base parent-id verdict signature candidates))))))
+
 (defn- maybe-assign-domain-child
-  "RS-2 entry point: after the existing match/bundle/walk-down/deferral
-   logic produces `result`, widen a :tree-class-axis :match with the
-   MintDomainChild/LandOnDomainChild/MintSiblingDomainChild outcome.
-   :bundle, walk-down's own :mint, :uncertain, and a :tree-fingerprint-axis
-   :match pass through UNTOUCHED — this only ever widens a :tree-class
-   :match."
-  [ctx result top-1]
-  (if (and (= :match (:assigned-via result))
-           (= :tree-class (-> top-1 :document-metadata :granularity)))
-    (assign-domain-child ctx result (:assigned-tree-id result)
-                         (select-keys top-1 [:domain-coverage :domain-label :domain-reasoning]))
-    result))
+  "RS-2 + CV-A entry point: after the existing match/bundle/walk-down/
+   deferral logic produces `result`, widen it with the domain-axis outcome.
+
+   :bundle, walk-down's own :mint, :walk-down proper, :uncertain, and a
+   :tree-fingerprint-axis :match pass through UNTOUCHED. Only a :match that
+   resolves to a :tree-class candidate runs the domain axis.
+
+   CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): there is no
+   longer a family-reach check here. Before this bundle, a :match or
+   :walk-down could land ON a domain family (search-descriptions' ranking
+   and walk-down's own children both used to include them), so this
+   function first asked whether the assigned class was itself a family and,
+   if so, rewrote the result into a match on the family's OWN parent shape.
+   Now `search-descriptions` excludes every family from the ranking
+   (`family-candidate?`, passed as classify-task's own `:exclude?`) and
+   walk-down excludes them from its children (`get-tree-class-children`'s
+   `non-family-child?`), so neither route can ever hand this function a
+   family as the assigned class — the lookup and rewrite are UNREACHABLE
+   from any live caller (classify-task is the only caller) and have been
+   removed. A family is still reachable, but only as a PROPOSAL to the
+   merge judge: its label (`assign-domain-child` / `run-domain-axis-for-
+   match`'s tenant-wide match) or a shape's own existing child label
+   (`assign-domain-child`)."
+  [ctx result top-1 candidates threshold signature]
+  (let [via (:assigned-via result)
+        tree-class-match? (and (= :match via)
+                               (= :tree-class (-> top-1 :document-metadata :granularity)))]
+    (if tree-class-match?
+      (run-domain-axis-for-match ctx result candidates
+                                 (select-keys top-1 [:domain-coverage :domain-label :domain-reasoning])
+                                 threshold signature)
+      result)))
 
 (defn classify-task
   "Pure classification function: given a task signature + optional
@@ -875,12 +1410,16 @@
         ;; matches the recorded class (coerce-to-uuid of the winner's
         ;; target-id already handles either axis; walk-down + thresholds
         ;; unchanged).
+        ;; CV-E (DomainFamilyIsALeafOnTheDomainAxis, revised C5'): :exclude?
+        ;; drops a domain family BEFORE the reranker's candidate set is taken,
+        ;; so the shape ranking holds shape classes and curated seeds only.
         raw-candidates (search-descriptions ctx
                          {:query signature
                           :granularity #{:tree-fingerprint :tree-class}
                           :rerank-with-intent classifier-intent
                           :k classify-retrieval-k
-                          :model model})
+                          :model model
+                          :exclude? family-candidate?})
         ;; CV-1 (ADR 0017) — the retrieval gate governs SURFACING, not accrual.
         ;; EL-1b originally filtered a :tree-class whose consolidation total was
         ;; in (0, gate) OUT OF CANDIDACY. That was the bootstrap DEADLOCK: a
@@ -970,7 +1509,7 @@
       ;; genuinely-new specialization still gets its own provisional class and
       ;; distinct tasks are NOT over-merged.
       (not matched?)
-      (if-let [bundle-id (bundle-decision candidates bundle-threshold threshold)]
+      (if-let [bundle-id (bundle-decision (shape-candidates-only ctx candidates) bundle-threshold threshold)]
         {:assigned-tree-id bundle-id
          :confidence       top-score
          :top-candidates   (vec surfaced-candidates)
@@ -1053,7 +1592,7 @@
                          :else :walk-down))
                 (assoc :outcome :matched)
                 (assoc :rerank-fallback? rerank-fallback?))))))
-      top-1)
+      top-1 candidates threshold signature)
      threshold)))
 
 ;; =============================================================================

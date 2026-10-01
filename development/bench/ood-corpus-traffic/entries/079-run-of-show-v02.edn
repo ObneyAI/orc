@@ -1,0 +1,22 @@
+{:slug "079-run-of-show-v02",
+ :group "run-of-show",
+ :in-domain? false,
+ :variant 2,
+ :expected-output-kind
+ "a timed run of show with cues, owners, AV needs and contingency for overruns",
+ :brief-id "b-034",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 526, :completion-tokens 463, :total-tokens 989},
+  :draft-prompt-sha256
+  "62f3bde67c8ef06bdde186d0dbf17ff23012e3efe6c21617e3a6b9aaf819748a",
+  :polish-usage
+  {:prompt-tokens 645, :completion-tokens 463, :total-tokens 1108},
+  :polish-prompt-sha256
+  "f96253036134fcf6c95755cc5e64657549b362f9b6ce2c4b4aff73a9bcd389f9",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

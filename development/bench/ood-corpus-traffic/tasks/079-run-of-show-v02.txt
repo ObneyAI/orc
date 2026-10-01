@@ -1,0 +1,17 @@
+; brief-id: b-034
+; group: run-of-show
+; variant: 2
+
+Hi there, I’m finally sitting down to deal with the logistics for the 'Future of FinTech' summit next Tuesday. My head is spinning a bit because my youngest decided that 4 AM was the perfect time to start practicing the recorder, so if I’m not making total sense, that’s why. Coffee hasn't kicked in yet. 
+
+Anyway, I’ve attached the draft agenda and the list of speakers we’ve confirmed. You’ll see we have the ballroom from 8 AM to 3 PM, but the actual programming is about six hours total. The venue has some weird quirks—there’s a freight elevator right behind the stage that’s noisy, so we can’t have anyone speaking while they’re moving gear between 10:30 and 11:00. Also, the Wi-Fi in there is patchy, so for the technical needs, we really need to make sure the AV team knows which demos are live and which need to be pre-cached.
+
+Could you put together a really detailed, minute-by-minute run of show for me? I need it to be super granular—cues for the lighting transitions, when the mics need to be swapped (we only have four wireless packs, so the hand-offs are crucial), and who is responsible for each segment. I also need a specific column for AV needs, like when the screen should switch from the branded loop to the slide decks.
+
+Most importantly, we have a lot of 'talkers' on this lineup. I need a clear contingency plan for every single segment. If the panel on blockchain runs ten minutes over, what do we trim? If the keynote speaker starts late because his flight is tight, how do we adjust? I need to see exactly where we can claw back time so we don't hit that 3 PM hard stop and get charged the overtime rate by the hotel. 
+
+Please don't worry about the seating charts or the press releases—the marketing team is handling that headache. I just need the production flow to be airtight so I don't have to panic on the day.
+
+Thanks so much,
+
+Sarah

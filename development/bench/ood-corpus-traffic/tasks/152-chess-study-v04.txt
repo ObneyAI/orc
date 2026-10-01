@@ -1,0 +1,5 @@
+; brief-id: b-022
+; group: chess-study
+; variant: 4
+
+Hey! I've been grinding a lot of blitz lately and I've finally hit 900 on Chess.com, but I'm getting absolutely crushed every time I face the Sicilian Defense. I'm a pretty aggressive player—I love attacking and open lines—so I want to learn how to play the Smith-Morra Gambit to just blow things open right away. I’ve only got about 30 minutes a day during my commute and maybe an hour on Saturdays to actually sit down with a board. Can you build me a structured study plan to master the Morra? I need a weekly schedule that includes the must-know lines to avoid getting trapped, some model games from attacking specialists like Esserman to see how the pressure works, and some specific tactical drills for those typical sacrifice patterns on d5 or f7. I'm looking for a full roadmap for a club player, not just an engine analysis of a single game. I really want to stop being afraid when I see 1... c5! Thanks!

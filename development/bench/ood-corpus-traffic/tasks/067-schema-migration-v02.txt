@@ -1,0 +1,17 @@
+; brief-id: b-010
+; group: schema-migration
+; variant: 2
+
+Hi there, hope you're having a decent week. Honestly, mine has been a total whirlwind—between the kids coming down with that stomach bug and the water heater deciding to give up the ghost this morning, I am barely keeping my head above water. But, work waits for no one, and we really need to get this DynamoDB migration moving before our throughput costs start hitting that next tier.
+
+I’ve attached the current schema for our 'OrderHistory' table and the target definitions I've been sketching out. Basically, we’ve realized that the way we originally modeled the sort keys just doesn't support the new access patterns the mobile team is pushing for in Q4. We need to transition from a single monolithic table to a version that utilizes a different GSI structure and a modified partition key strategy to handle the way we're now querying by 'RegionID' instead of just 'Timestamp'. 
+
+Since this is our core transaction ledger, I absolutely cannot afford any downtime. If the checkout service blips for even five minutes, I'll never hear the end of it from the VP. I need you to put together a comprehensive migration plan for me. Please outline the exact steps for implementing a dual-write approach in the application logic so we’re hitting both the old and new tables simultaneously. I also need a solid strategy for backfilling the historical data—I’m worried about hitting our RCU limits, so maybe suggest a way to throttle that backfill so it doesn't impact production traffic?
+
+Also, give me a clear cut-over plan for when we officially make the new table the primary source of truth, and definitely include a rollback sequence in case we see a spike in 400 errors or latency. Lastly, could you write up some verification scripts or queries I can run to ensure the data in the new table is actually parity-perfect with the old one before we flip the switch? 
+
+I’m going to go try and deal with this plumber now, but I’ll check back in a bit to see what you’ve come up with. Thanks a ton for the help—I really need a win today.
+
+Best,
+
+Mark

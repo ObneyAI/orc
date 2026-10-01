@@ -533,6 +533,14 @@
         mint (first mints)
         domain-deferrals (filterv domain-axis-deferral? effects)
         domain-deferral (first domain-deferrals)
+        ;; CV-A item 5: a genuine tenant-wide family birth (the outcome
+        ;; carries a :merge-verdict — the merge judge ran, never the legacy
+        ;; per-parent sibling mint) embeds the minted concept SYNCHRONOUSLY
+        ;; inside the SAME :ontology/mint-domain-child event batch (never a
+        ;; separate staged effect — a checkpointed commit prepares every
+        ;; effect from one pre-commit snapshot, so a second command could
+        ;; never read back a concept this same commit is creating). No
+        ;; :ontology/embed-concept effect is ever staged by this wedge.
         bound-to-campaign?
         (fn [effect]
           (and (= sheet-id (:source-sheet-id effect))

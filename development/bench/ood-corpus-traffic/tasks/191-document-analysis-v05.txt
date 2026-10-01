@@ -1,0 +1,15 @@
+; brief-id: b-004
+; group: document-analysis
+; variant: 5
+
+Please review the uploaded 120-page document titled "2024 Green Horizons Federal Grant Call for Sustainable Urban Agriculture" and provide a structured breakdown for my board meeting preparation based on these steps:
+
+1. Provide a high-level summary of the grant’s core objectives. I need to understand exactly what kind of community-led initiatives the reviewers are prioritizing for this funding cycle.
+2. Build a complete chronological timeline that captures every significant date in the manual. Ensure you include the deadline for the letter of intent, the scheduled technical Q&A session, the final portal closure time, and the date when awards are expected to be announced.
+3. Extract and categorize all named entities into the following groups:
+    - Organizations: Identify all federal agencies, potential non-profit partners, and university oversight bodies mentioned.
+    - People: List the specific grant coordinators and departmental heads designated as points of contact.
+    - Places: Detail the eligible target zones and specific disadvantaged census tracts defined in the text.
+    - Amounts: Document the total funding pool available along with the minimum and maximum award ceilings.
+
+Do not include a feasibility study or a risk assessment; I only require these three specific components in your response.
