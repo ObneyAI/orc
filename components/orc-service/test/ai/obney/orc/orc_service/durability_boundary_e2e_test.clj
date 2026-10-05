@@ -7,6 +7,13 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]))
 
 (def effect-count (atom 0))
+
+(defn- an-hour-later
+  "The recovering worker's view an hour after the stopped owner's lease was
+   last renewed: that lease has expired (ExecutionRecovery OwnedWorkIsNotAbandoned)."
+  [ctx]
+  (assoc ctx :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))
+
 (def restart-state (atom nil))
 
 (defn selected-effect [_]
@@ -171,8 +178,8 @@
               (is (< summary-index first-start-index)
                   "routing evidence is committed before the selected effect can start")
               (is (= 1 @completed-count))
-              (is (= 1 (count (filter :resumed? (sheet/resume-in-progress! ctx)))))
-              (is (empty? (sheet/resume-in-progress! ctx)))
+              (is (= 1 (count (filter :resumed? (sheet/resume-in-progress! (an-hour-later ctx))))))
+              (is (empty? (sheet/resume-in-progress! (an-hour-later ctx))))
               (let [result (deref execution 10000 ::timeout)]
                 (is (= :success (:status result)))
                 (is (= "x-durable-resumed" (get-in result [:outputs :output])))

@@ -887,6 +887,16 @@
     [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]
     [:inputs [:map-of :keyword :any]]]
 
+   :sheet/renew-node-execution-lease
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:exec-context {:optional true} [:map-of :keyword :any]]
+    [:start-event-id :uuid]
+    [:lease-owner :uuid]
+    [:lease-expires-at :string]]
+
    :sheet/checkpoint-researcher-iteration
    ;; Preserve strict version-1 validation while admitting the split version-2
    ;; write. A partial v2 command must not fall through to the legacy handler.
@@ -1601,7 +1611,22 @@
     [:resumed-from-event-id {:optional true} :uuid]
     ;; Candidate ownership is carried only by a recovered checkpointed
     ;; researcher start. Ordinary starts and leaf/delegate recovery omit it.
-    [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]]
+    [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]
+    ;; OwnedWorkIsNotAbandoned: a leaf or delegate start names the worker that
+    ;; owns it and when that ownership lapses unless renewed. Absent on
+    ;; historical starts, which recovery treats as an expired lease.
+    [:lease-owner {:optional true} :uuid]
+    [:lease-expires-at {:optional true} :string]]
+
+   :sheet/node-execution-lease-renewed
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:exec-context {:optional true} [:map-of :keyword :any]]
+    [:start-event-id :uuid]
+    [:lease-owner :uuid]
+    [:lease-expires-at :string]]
 
    :sheet/ephemeral-evaluations-recorded
    [:map

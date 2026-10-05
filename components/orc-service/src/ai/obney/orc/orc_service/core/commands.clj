@@ -7,6 +7,7 @@
    - Return cognitect anomaly on failure
    - Last write wins (no optimistic concurrency)"
   (:require [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
+            [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
             [ai.obney.orc.orc-service.core.read-models :as rm]
@@ -1182,10 +1183,12 @@
             :tags #{[:sheet sheet-id]
                     [:node node-id]
                     [:tick new-tick-id]}
-            :body {:sheet-id sheet-id
-                   :tick-id new-tick-id
-                   :node-id node-id
-                   :inputs inputs-with-overrides}})]}))))
+            :body (execution-lease/stamp
+                   ctx node
+                   {:sheet-id sheet-id
+                    :tick-id new-tick-id
+                    :node-id node-id
+                    :inputs inputs-with-overrides})})]}))))
 
 (defcommand :sheet resume-node-execution
   {:authorized? authenticated?}
@@ -1238,6 +1241,12 @@
                          :node-id node-id
                          :inputs inputs
                          :resumed-from-event-id original-start-event-id}
+                  ;; AbandonedWorkStaysRecoverable: the resumed start is itself
+                  ;; leased by the recovering worker.
+                  (execution-lease/leased-node?
+                   (get-in (rm/get-tick-execution-context ctx tick-id)
+                           [:nodes-by-id node-id]))
+                  (merge (execution-lease/fields ctx))
                   researcher-ownership-epoch
                   (assoc :researcher-ownership-epoch
                          researcher-ownership-epoch))})]
@@ -1265,6 +1274,23 @@
                                       (= original-start-event-id
                                          (:resumed-from-event-id %))))
                            later))))}})))
+
+(defcommand :sheet renew-node-execution-lease
+  {:authorized? authenticated?}
+  "Extend the durable ownership lease of one running leaf or delegate start."
+  [{{:keys [sheet-id tick-id node-id exec-context start-event-id
+            lease-owner lease-expires-at]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :sheet/node-execution-lease-renewed
+      :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+      :body (cond-> {:sheet-id sheet-id
+                     :tick-id tick-id
+                     :node-id node-id
+                     :start-event-id start-event-id
+                     :lease-owner lease-owner
+                     :lease-expires-at lease-expires-at}
+              (seq exec-context) (assoc :exec-context exec-context))})]})
 
 (defn- commit-researcher-iteration-v2
   [{{:keys [sheet-id tick-id node-id resume-state iteration-record inputs resume?

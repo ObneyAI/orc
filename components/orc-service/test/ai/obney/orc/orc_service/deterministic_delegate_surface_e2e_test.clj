@@ -1232,6 +1232,13 @@
                                                 (:tick-id (first starts))))))))
       (finally (deliver @empty-release true)))))
 
+
+(defn- an-hour-later
+  "The recovering worker's view an hour after the stopped owner's lease was
+   last renewed: that lease has expired (ExecutionRecovery OwnedWorkIsNotAbandoned)."
+  [ctx]
+  (assoc ctx :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))
+
 (deftest det-e2e-205-recovery-while-child-running
   ;; The run and delegate bounds are 600 s, not 120 s: on the hosted runner the
   ;; stop, drain and recovery settle of this test approached two minutes, and a
@@ -1277,7 +1284,8 @@
             last-scan (atom nil)]
         (try
           (is (h/settle-until!
-               #(some :resumed? (reset! last-scan (runtime/resume-in-progress! recovered-ctx)))
+               #(some :resumed? (reset! last-scan (runtime/resume-in-progress!
+                                                     (an-hour-later recovered-ctx))))
                :timeout-ms 30000)
               ;; A CI-only failure here said nothing; the message now carries
               ;; what the last scan actually returned and which of the

@@ -211,6 +211,33 @@ that verifies the stated observable results.
   verbatim, true/false both succeed, Jev records distribution/confidence/probability, the chat
   model records none and a floor on it abstains explicitly. Verified twice by
   `real_llm_decision_e2e_test.clj` (2 tests / 23 assertions each run).
+- [x] **DET-E2E-302 — An authored code leaf keeps its tool gate.** `sheet/code :tool-caller-fn`
+  survives authoring, build, the stored definition and DSL round-trip (same sheet id); every tool
+  call uses the gate, never the ungated caller; an unresolvable gate or one that builds no caller
+  fails the node with no fallback; with no gate the ordinary caller is unchanged; the gate is built
+  with the node, node id, tick id and the execution's absolute deadline. LeafExecutor
+  `CodeLeafToolGateIsPreserved`, `ToolGateSeesInvocationIdentity`. Verified by
+  `code_leaf_tool_gate_test.clj` (7 tests).
+- [x] **DET-E2E-303 — Declared tool contracts are enforced through one seam.** Researcher (plain,
+  RLM sandbox, checkpointed) and code-leaf tool calls: invalid arguments never reach the tool and a
+  checkpointed researcher claims no effect; invalid results are never returned as success; a field
+  under two spellings is rejected; the tool receives and the caller sees original values; every
+  researcher-facing failure (typed or untyped, plain or checkpointed) is a stable kind with a safe
+  message — never raw exception text — plus any host-declared `:orc.tool/message`; a code leaf
+  gets contract outcomes and sees its own tool exceptions unchanged; `sheet/code :tool-contracts`
+  round-trips. LeafExecutor `DeclaredToolContractsAreEnforced`, `ToolArgumentIdentityIsExact`,
+  `ToolOutcomesAreStructured`. Verified by `tool_contract_enforcement_test.clj` (14 tests).
+- [x] **DET-E2E-304 — Recovery never replays healthy work; abandoned work stays recoverable.**
+  Every leaf/delegate start carries a durable lease (owner, expiry); the owner renews it while the
+  work runs; recovery (requested, periodic, or the actual registered scheduler) resumes a start
+  only once its latest lease has expired and the recovering worker is not running it — a healthy
+  gated leaf is invoked exactly once (the same test fails with two invocations on the pre-lease
+  code), a queued start under a live lease (own or foreign) is not resumed, an expired lease is
+  resumed exactly once with a fresh lease owned by the recoverer, and a resumed start whose resumer
+  also stopped is resumed again in turn. ExecutionRecovery `OwnedWorkIsNotAbandoned`,
+  `AbandonedWorkStaysRecoverable`. Verified by `execution_lease_recovery_test.clj` (9 tests);
+  in-process restart tests (DET-E2E-108, 152/153, 205, 274) now view recovery through an injected
+  clock an hour later, assertions unchanged. Open: the fresh-JVM SQLite restart probe.
 
 ## P1 — Observability and streaming
 

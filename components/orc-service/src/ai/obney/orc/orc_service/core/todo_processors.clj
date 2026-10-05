@@ -10,6 +10,7 @@
             [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
+            [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
             [ai.obney.orc.orc-service.core.researcher-mode :as researcher-mode]
             [ai.obney.orc.orc-service.core.block :as block]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
@@ -2302,7 +2303,9 @@
        [(->event
          {:type :sheet/node-execution-started
           :tags (node-execution-tags context sheet-id tick-id root-id)
-          :body {:sheet-id sheet-id
+          :body (execution-lease/stamp
+                 context root-node
+                 {:sheet-id sheet-id
                  :tick-id tick-id
                  :node-id root-id
                  ;; A re-tick reuses the durable tick identity, so iteration
@@ -2312,7 +2315,7 @@
                  ;; newly started tree.
                  :inputs (cond-> {}
                            (> (or (:iteration event) 1) 1)
-                           (assoc ::tick-iteration (:iteration event)))}})]}))))
+                           (assoc ::tick-iteration (:iteration event)))})})]}))))
 
 ;; =============================================================================
 ;; Node Execution Processor
@@ -2514,6 +2517,15 @@
                  ;; gives the pipeline a single context-prepend contract.
                  (apply-r05-classifier-context context))]
     (when (= :leaf (:type node))
+      ;; OwnedWorkIsNotAbandoned: the worker accepts the start, and so is
+      ;; running it for recovery's purposes, from the first moment of the
+      ;; handler. The lease ends in the work's own `finally`, or here if the
+      ;; work never launches.
+      (let [lease (execution-lease/begin!
+                   context {:sheet-id sheet-id :tick-id tick-id :node-id node-id
+                            :exec-context (extract-execution-context event-inputs)
+                            :start-event-id (:event/id event)})]
+      (try
       ;; Hydrate only what this leaf declared it reads. gather-inputs,
       ;; extract-read-inputs and compute-input-profile all restrict themselves
       ;; to (:reads node); read-sources needs only :source, which is
@@ -2581,6 +2593,7 @@
                        :thread (.getName (Thread/currentThread)))))
             (execution-budget/register-work! tick-id node-id (future
             (try
+              (try
               (if (rm/is-tick-or-ancestor-cancelled? context tick-id)
                 ;; Cancellation guard: the tick was cancelled between event
                 ;; emission and this future starting (or while queued). Fail
@@ -2755,9 +2768,13 @@
                           :node-id node-id
                           :error (.getMessage t)}))
 
-                :else (throw t)))))))
+                :else (throw t))))
+              (finally (execution-lease/end! lease))))))
         ;; Return nil - completion will be handled by the future via process-command
-        nil))))
+        nil)
+      (catch Throwable t
+        (execution-lease/end! lease)
+        (throw t)))))))
 
 ;; =============================================================================
 ;; REPL Researcher Node Execution Processor
@@ -3941,6 +3958,11 @@
                 (release-delegate! child-tick-id)
 
                 :else
+                (let [lease (execution-lease/begin!
+                             context {:sheet-id sheet-id :tick-id tick-id
+                                      :node-id node-id :exec-context exec-context
+                                      :start-event-id (:event/id event)})]
+                (try
                 (future
           (try
             (let [start-time (System/currentTimeMillis)
@@ -4004,9 +4026,13 @@
                         :node-id node-id
                         :error (.getMessage e)})))
             (finally
-              (release-delegate! child-tick-id)))
+              (release-delegate! child-tick-id)
+              (execution-lease/end! lease)))
             ;; Return nil - completion handled async via process-command
-            nil)))))))))
+            nil)
+                (catch Throwable t
+                  (execution-lease/end! lease)
+                  (throw t))))))))))))
 
 ;; =============================================================================
 ;; Condition Node Execution Processor
@@ -4305,9 +4331,11 @@
              summary (conj summary)
              true (conj (->event {:type :sheet/node-execution-started
                                   :tags (node-execution-tags context sheet-id tick-id boundary)
-                                  :body {:sheet-id sheet-id :tick-id tick-id
-                                         :node-id boundary
-                                         :inputs (or iteration-context {})}})))}
+                                  :body (execution-lease/stamp
+                                         context (get nodes-by-id boundary)
+                                         {:sheet-id sheet-id :tick-id tick-id
+                                          :node-id boundary
+                                          :inputs (or iteration-context {})})})))}
 
           boundary nil
 
@@ -4366,10 +4394,12 @@
              [(->event
                {:type :sheet/node-execution-started
                 :tags (node-execution-tags context sheet-id tick-id first-child-id)
-                :body {:sheet-id sheet-id
-                       :tick-id tick-id
-                       :node-id first-child-id
-                       :inputs inputs}})]}))))))
+                :body (execution-lease/stamp
+                       context (get nodes-by-id first-child-id)
+                       {:sheet-id sheet-id
+                        :tick-id tick-id
+                        :node-id first-child-id
+                        :inputs inputs})})]}))))))
 
 ;; =============================================================================
 ;; Parallel Node Execution Processor
@@ -4411,10 +4441,12 @@
               (->event
                {:type :sheet/node-execution-started
                 :tags (node-execution-tags context sheet-id tick-id child-id)
-                :body {:sheet-id sheet-id
-                       :tick-id tick-id
-                       :node-id child-id
-                       :inputs exec-context}})))})))))
+                :body (execution-lease/stamp
+                       context (get nodes-by-id child-id)
+                       {:sheet-id sheet-id
+                        :tick-id tick-id
+                        :node-id child-id
+                        :inputs exec-context})})))})))))
 
 ;; =============================================================================
 ;; Child Completion Handler
@@ -4616,10 +4648,12 @@
                     (->event
                      {:type :sheet/node-execution-started
                       :tags (node-execution-tags context sheet-id tick-id next-child-id)
-                      :body {:sheet-id sheet-id
-                             :tick-id tick-id
-                             :node-id next-child-id
-                             :inputs inputs}})]}))
+                      :body (execution-lease/stamp
+                             context (get nodes-by-id next-child-id)
+                             {:sheet-id sheet-id
+                              :tick-id tick-id
+                              :node-id next-child-id
+                              :inputs inputs})})]}))
               ;; All children succeeded — sequence completes.
               ;; D-008 sticky :partial: if ANY prior sibling completed with :partial,
               ;; propagate :partial up so the at-a-glance status truthfully reflects
@@ -4755,10 +4789,12 @@
                  [(->event
                    {:type :sheet/node-execution-started
                     :tags (node-execution-tags context sheet-id tick-id next-child-id)
-                    :body {:sheet-id sheet-id
-                           :tick-id tick-id
-                           :node-id next-child-id
-                           :inputs inputs}})]})
+                    :body (execution-lease/stamp
+                           context (get nodes-by-id next-child-id)
+                           {:sheet-id sheet-id
+                            :tick-id tick-id
+                            :node-id next-child-id
+                            :inputs inputs})})]})
               ;; All children failed - fallback fails
               {:result/events
                [(->event
@@ -4986,7 +5022,8 @@
   (mapcat
    (fn [idx]
      (let [item (nth (:items state) idx)
-           child-id (:child-id state)]
+           child-id (:child-id state)
+           child-node (get (resolve-nodes-by-id context sheet-id tick-id) child-id)]
        [(make-bb-write-event context sheet-id tick-id (:item-key state) item
                              {:node-id child-id
                               :input-seed? true
@@ -4995,10 +5032,12 @@
         (->event
          {:type :sheet/node-execution-started
           :tags (node-execution-tags context sheet-id tick-id child-id)
-          :body {:sheet-id sheet-id :tick-id tick-id :node-id child-id
-                 :inputs {(:item-key state) item
-                          ::map-each-index idx
-                          ::map-each-parent parent-id}}})]))
+          :body (execution-lease/stamp
+                 context child-node
+                 {:sheet-id sheet-id :tick-id tick-id :node-id child-id
+                  :inputs {(:item-key state) item
+                           ::map-each-index idx
+                           ::map-each-parent parent-id}})})]))
    indices))
 
 (defn- declared-map-each-source
