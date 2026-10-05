@@ -104,6 +104,14 @@ contract GeneratedExecutorRuntime {
         -- A generated executor reads declared inputs, invokes its originating
         -- MCP tool through execution context, and returns declared outputs.
 
+    @invariant ExecutorsUseTheNodesToolCaller
+        -- An MCP executor running in a workflow invokes its tool through the
+        -- node's tool caller when one is supplied, so a configured gate and
+        -- declared contracts apply; otherwise through the execution's MCP
+        -- connection. With neither, the invocation fails explicitly. A
+        -- stand-in result is produced only when the execution explicitly asks
+        -- for a dry run, and it is marked as one.
+
     @invariant SourceIntegrity
         -- Runtime loading rejects a definition whose source does not match its
         -- supplied checksum unless explicitly replaced by an authorized force load.

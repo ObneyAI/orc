@@ -556,7 +556,10 @@
           ;; Phase 4B: a generated code node may carry a gated tool-caller
           ;; builder FQN. Thread it onto the child sheet's leaf so the child
           ;; tick rebuilds the gated caller from its blackboard :tool-context.
-          tool-caller-fn (:tool-caller-fn opts)]
+          tool-caller-fn (:tool-caller-fn opts)
+          ;; The researcher's declared contracts ride with the leaf (plain
+          ;; data) so the child tick enforces them.
+          tool-contracts (:tool-contracts opts)]
       ;; Set I/O
       (run-command! context
         {:command/name :sheet/set-node-io
@@ -575,7 +578,8 @@
                  :node-id leaf-id
                  :executor :code
                  :fn fn-value}
-          tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)))
+          tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+          (seq tool-contracts) (assoc :tool-contracts tool-contracts)))
       {:node-id leaf-id
        :ephemeral-fn-keys ephemeral-keys})
 

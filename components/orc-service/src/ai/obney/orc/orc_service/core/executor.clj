@@ -1092,18 +1092,27 @@
    BUILDER FQN onto the generated code nodes so the child tick rebuilds the
    gated caller from its own blackboard :tool-context (plain data, which
    does survive the boundary) — exactly how the parent node builds it."
-  [tree tool-caller-fn]
-  (if (nil? tool-caller-fn)
-    tree
-    (walk/postwalk
-      (fn [node]
-        (if (and (seq? node)
-                 (= 'sheet/code (first node))
-                 (let [opts (try (apply hash-map (rest node)) (catch Exception _ nil))]
-                   (and opts (not (contains? opts :tool-caller-fn)))))
-          (concat node [:tool-caller-fn tool-caller-fn])
-          node))
-      tree)))
+  ([tree tool-caller-fn]
+   (inject-tool-caller-fn tree tool-caller-fn nil))
+  ([tree tool-caller-fn tool-contracts]
+   (if (and (nil? tool-caller-fn) (empty? tool-contracts))
+     tree
+     (walk/postwalk
+       (fn [node]
+         (if (and (seq? node)
+                  (= 'sheet/code (first node)))
+           (let [opts (try (apply hash-map (rest node)) (catch Exception _ nil))]
+             (if opts
+               (cond-> node
+                 (and tool-caller-fn (not (contains? opts :tool-caller-fn)))
+                 (concat [:tool-caller-fn tool-caller-fn])
+                 ;; The researcher's declared contracts govern its generated
+                 ;; subtree exactly as they govern its own tool calls.
+                 (and (seq tool-contracts) (not (contains? opts :tool-contracts)))
+                 (concat [:tool-contracts tool-contracts]))
+               node))
+           node))
+       tree))))
 
 ;; =============================================================================
 ;; Code Executor
@@ -4568,7 +4577,8 @@
                         ;; byte-identical) when the parent has no gate.
                         generated-tree (-> (:generated-tree @sandbox-vars)
                                            (inject-sub-model sub-model)
-                                           (inject-tool-caller-fn (:tool-caller-fn node)))
+                                           (inject-tool-caller-fn (:tool-caller-fn node)
+                                                                 (:tool-contracts node)))
                         generated-tree-raw (:generated-tree-raw @sandbox-vars)
                         generated-tree-source (:generated-tree-source @sandbox-vars)
                         ;; Debug: Print the generated tree

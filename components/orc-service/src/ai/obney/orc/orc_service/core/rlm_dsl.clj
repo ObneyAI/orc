@@ -143,7 +143,7 @@
       ;;       — resolved at execution time via ns-resolve.
       ;; Code nodes let the model design transforms (counts, joins, simple
       ;; reductions) without spending sub-LLM tokens on deterministic work.
-      (let [{:keys [reads writes tool-caller-fn output-schemas] :as opts} (first args)
+      (let [{:keys [reads writes tool-caller-fn tool-contracts output-schemas] :as opts} (first args)
             fn-ref (:fn opts)]
         (when-not (or (and (string? fn-ref) (seq fn-ref))
                       (fn? fn-ref))
@@ -157,6 +157,7 @@
                       :reads reads
                       :writes writes)
           tool-caller-fn (concat (list :tool-caller-fn tool-caller-fn))
+          (seq tool-contracts) (concat (list :tool-contracts tool-contracts))
           output-schemas (concat (list :output-schemas output-schemas))))
 
       ;; Default: unknown node type

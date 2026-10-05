@@ -120,11 +120,11 @@
                                     (:namespace-requires exec-def))
           executor (runtime/get-executor "testTool")
           result (executor {:inputs {:query "test query"}
-                            :context {}})]
-      ;; Without MCP session, should return mock response
+                            :context {:mcp/dry-run? true}})]
+      ;; An explicit dry run (and only that) yields a marked stand-in
       (is (map? result))
       (is (contains? result :testTool-result))
-      (is (get-in result [:testTool-result :mock])))))
+      (is (true? (get-in result [:testTool-result :dry-run?]))))))
 
 ;; ============================================================================
 ;; Registry Management Tests
