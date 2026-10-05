@@ -141,6 +141,17 @@ contract LeafExecutor {
         -- the consumer code handles it; a tool's own failure reaches the
         -- consumer code that owns that tool unchanged.
 
+    @invariant ToolLeafCallsOnlyAuthoredTools
+        -- A tool leaf names one tool when the workflow is authored and calls
+        -- it through the node's tool caller, with arguments taken from its
+        -- declared read keys, applying any gate and declared contract exactly
+        -- as a code leaf does, and writes the tool's result to its single
+        -- declared write key (when the result is a map holding that key, the
+        -- value under it, as for a single-write code leaf). A tool name
+        -- supplied at run time, by a model or
+        -- by the blackboard, is never an executable identity. A tool leaf with
+        -- no tool caller available fails explicitly.
+
     @invariant ResearcherSeesBoundToolContracts
         -- Before calling a bound tool, a researcher's Phase-1 model receives
         -- that tool's authoritative argument and result schemas. Nested,
@@ -322,6 +333,31 @@ contract ModelDecision {
         -- reported, whether the answer was set aside for abstention, the
         -- resolved model and the provider usage, retrievable through the same
         -- trace-detail surfaces as a model leaf.
+}
+
+contract DelegationBoundary {
+    delegate: (configuration: NodeConfiguration, inputs: Any) -> Any
+
+    @invariant FamilyBudgetIsShared
+        -- Every delegated child execution, whatever its target, draws on the
+        -- root execution's LLM-call budget and remaining wall-clock budget; no
+        -- provider invocation anywhere in the family begins once the family
+        -- budget is spent.
+
+    @invariant DelegateToolContextCrosses
+        -- The parent execution's durable consumer tool context reaches the
+        -- child execution, so a gated tool in the child sees the same consumer
+        -- context as the parent.
+
+    @invariant DelegateInputIdentityIsExact
+        -- Parent values reach the child's inputs by name. Two distinct parent
+        -- keys that would supply the same child input are rejected when the
+        -- workflow is built, never silently collapsed into one.
+
+    @invariant FamilyUsageIsQueryable
+        -- The total provider usage of an execution together with all of its
+        -- descendants is retrievable through a public query, separately from
+        -- the execution's own usage.
 }
 
 contract WorkflowDefinitionConstruction {
@@ -531,6 +567,17 @@ contract CheckpointedResearcherExecution {
         -- Retries remain recognisably the same logical action while every spend
         -- stays attributable; a recorded result is never returned for a
         -- different call.
+
+    @invariant GeneratedChildToolCallsAreCheckpointed
+        -- A tool call made by a checkpointed campaign's generated child tree
+        -- is a campaign effect exactly like an inline tool call: it has a
+        -- stable logical action identity that also names the child node, it
+        -- is claimed under the campaign's ownership epoch before it begins,
+        -- it requires the tool to be declared checkpoint-safe, and it
+        -- completes with a durable receipt. When the child runs again after a
+        -- restart, a call whose receipt is complete returns the recorded
+        -- result without calling the tool; a claim without a completed
+        -- receipt is treated as an inline call's unresolved claim is.
 
     @invariant EffectsAreClaimedBeforeTheyHappen
         -- A campaign durably claims an effect, under its ownership epoch, before
@@ -1952,6 +1999,7 @@ surface WorkflowExecutionAccess {
         fulfils CheckpointedResearcherExecution
         fulfils ModelBackedCondition
         fulfils ModelDecision
+        fulfils DelegationBoundary
         demands LeafExecutor
 
     @guarantee IsolatedBlackboard

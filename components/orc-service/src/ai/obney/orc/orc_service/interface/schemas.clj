@@ -333,6 +333,7 @@
     [:min-confidence {:optional true} :double]
     [:abstain {:optional true} :any]
     [:fn {:optional true} :string]                 ;; Fully-qualified fn symbol for :code executor
+    [:tool {:optional true} :string]               ;; Authored tool name for :tool executor
     [:tools {:optional true} [:vector :keyword]]   ;; Tools available to AI for :ai executor
     [:options {:optional true} :map]               ;; Per-node executor/ORC LLM options
     [:retry {:optional true} [:map
@@ -703,6 +704,7 @@
     [:executor executor-type]
     [:model {:optional true} :string]
     [:fn {:optional true} :string]
+    [:tool {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
     [:options-from {:optional true} :keyword]
@@ -1414,6 +1416,7 @@
     [:executor executor-type]
     [:model {:optional true} :string]
     [:fn {:optional true} :string]
+    [:tool {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
     [:options-from {:optional true} :keyword]

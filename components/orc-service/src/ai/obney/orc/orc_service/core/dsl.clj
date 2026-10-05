@@ -250,6 +250,37 @@
     tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
     tool-contracts (assoc :tool-contracts tool-contracts)))
 
+(defn tool
+  "Define a tool executor leaf node: one tool, named when the workflow is
+   authored, called through the node's tool caller.
+
+   Options:
+     :tool - the authored tool name (required, non-blank)
+     :reads - blackboard keys whose values become the tool's arguments
+              (read key -> keyword-keyed argument; nil reads are omitted)
+     :writes - exactly one blackboard key; receives the tool's result
+     :retry - {:max-attempts n :backoff-ms [100 500]}
+     :tool-caller-fn - Optional FQN of a consumer tool-gate builder, applied
+                       exactly as for a code leaf
+     :tool-contracts - Declared per-tool argument/result contracts, applied
+                       exactly as for a code leaf"
+  [name & {:keys [tool reads writes retry tool-caller-fn tool-contracts]}]
+  (when-not (and (string? tool) (not (clojure.string/blank? tool)))
+    (throw (ex-info "A tool leaf requires an authored :tool name"
+                    {:node name :tool tool})))
+  (when-not (= 1 (count writes))
+    (throw (ex-info "A tool leaf declares exactly one write key"
+                    {:node name :writes writes})))
+  (cond-> {:node-type :leaf
+           :name name
+           :executor :tool
+           :tool tool
+           :reads (vec reads)
+           :writes (vec writes)
+           :retry retry}
+    tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+    tool-contracts (assoc :tool-contracts tool-contracts)))
+
 (defn condition
   "Define a condition node.
 
@@ -598,8 +629,9 @@
           (h/make-set-node-executor-command sheet-id node-id (:executor node)
             :model (:model node)
             :fn (:fn node)
+            :tool (:tool node)
             :tool-caller-fn (:tool-caller-fn node)
-            :tool-contracts (when (= :code (:executor node)) (:tool-contracts node))
+            :tool-contracts (when (#{:code :tool} (:executor node)) (:tool-contracts node))
             :options (:options node)
             :options-from (:options-from node)
             :min-confidence (:min-confidence node)
@@ -901,9 +933,11 @@
                    (:executor node) (assoc :executor (:executor node))
                    (:model node) (assoc :model (:model node))
                    (:fn node) (assoc :fn (:fn node))
-                   (and (= :code (:executor node)) (:tool-caller-fn node))
+                   (and (= :tool (:executor node)) (:tool node))
+                   (assoc :tool (:tool node))
+                   (and (#{:code :tool} (:executor node)) (:tool-caller-fn node))
                    (assoc :tool-caller-fn (:tool-caller-fn node))
-                   (and (= :code (:executor node)) (:tool-contracts node))
+                   (and (#{:code :tool} (:executor node)) (:tool-contracts node))
                    (assoc :tool-contracts (:tool-contracts node))
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))
@@ -1014,8 +1048,9 @@
             (h/make-set-node-executor-command sheet-id node-id (:executor node)
               :model (:model node)
               :fn (:fn node)
+              :tool (:tool node)
               :tool-caller-fn (:tool-caller-fn node)
-              :tool-contracts (when (= :code (:executor node)) (:tool-contracts node))
+              :tool-contracts (when (#{:code :tool} (:executor node)) (:tool-contracts node))
               :options (:options node)
               :options-from (:options-from node)
               :min-confidence (:min-confidence node)
@@ -1256,6 +1291,15 @@
               (if (empty? opts)
                 (list (dsl-sym 'code) name)
                 (apply list (dsl-sym 'code) name opts)))
+
+      :tool (let [opts (build-keyword-args
+                         {:tool (:tool node)
+                          :tool-caller-fn (:tool-caller-fn node)
+                          :tool-contracts (:tool-contracts node)
+                          :reads (:reads node)
+                          :writes (:writes node)
+                          :retry (:retry node)})]
+              (apply list (dsl-sym 'tool) name opts))
 
       :decision (let [opts (build-keyword-args
                              {:model (:model node)

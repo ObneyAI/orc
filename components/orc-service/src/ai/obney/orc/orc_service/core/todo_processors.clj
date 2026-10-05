@@ -2488,6 +2488,56 @@
       (assoc :reserve-provider-attempt! reserve-provider-attempt!
              :provider-reservation-context reservation-context))))
 
+(defn- campaign-effect-capabilities
+  "The effect-claim capabilities and durable receipts a generated child leaf
+   needs to checkpoint its tool calls as effects of the checkpointed campaign
+   its tick belongs to (GeneratedChildToolCallsAreCheckpointed). The claims are
+   the campaign's own, under the campaign's identity and ownership epoch; the
+   claim records are read when the leaf starts, so a re-run sees every receipt
+   completed before it. Empty when the tick belongs to no checkpointed
+   campaign."
+  [context tick-options]
+  (let [epoch (:researcher-ownership-epoch tick-options)
+        campaign-sheet-id (:researcher-campaign-sheet-id tick-options)
+        campaign-tick-id (:researcher-campaign-tick-id tick-options)
+        campaign-node-id (:researcher-campaign-node-id tick-options)]
+    (when (and (integer? epoch) (pos? epoch)
+               campaign-sheet-id campaign-tick-id campaign-node-id)
+      (let [budget-root-tick-id (or (:llm-budget-root-tick-id tick-options)
+                                    campaign-tick-id)
+            command (fn [name fields]
+                      (cp/process-command
+                       (assoc context :command
+                              (merge {:command/id (random-uuid)
+                                      :command/timestamp (time/now)
+                                      :command/name name
+                                      :sheet-id campaign-sheet-id
+                                      :tick-id campaign-tick-id
+                                      :node-id campaign-node-id
+                                      :ownership-epoch epoch}
+                                     fields))))]
+        {:researcher-effect-claims
+         (rm/get-researcher-effect-claims context campaign-sheet-id
+                                          campaign-tick-id campaign-node-id)
+         :claim-researcher-effect!
+         (fn [{:keys [iteration-index logical-action-identity attempt-identity
+                      attempt-ordinal kind]}]
+           (command :sheet/claim-researcher-effect
+                    {:budget-root-tick-id budget-root-tick-id
+                     :iteration-index iteration-index
+                     :logical-action-identity logical-action-identity
+                     :attempt-identity attempt-identity
+                     :attempt-ordinal attempt-ordinal
+                     :kind kind
+                     :claimed-at (str (java.time.Instant/now))}))
+         :complete-researcher-effect!
+         (fn [{:keys [logical-action-identity attempt-identity result]}]
+           (command :sheet/complete-researcher-effect
+                    {:logical-action-identity logical-action-identity
+                     :attempt-identity attempt-identity
+                     :result result
+                     :resolved-at (str (java.time.Instant/now))}))}))))
+
 (defn execute-leaf-node
   "Execute a leaf node when node-execution-started is emitted.
    Supports multiple executor types:
@@ -2559,7 +2609,10 @@
                                         :node-id node-id
                                         :execution-deadline-ms
                                         (get-in tick-ctx [:options :execution-deadline-ms]))
-                           tool-context (assoc :tool-context tool-context))
+                           tool-context (assoc :tool-context tool-context)
+                           (#{:code :tool} (:executor node))
+                           (merge (campaign-effect-capabilities
+                                   context (:options tick-ctx))))
             ;; Use provider from context, fall back to default, or use mock if nil
             provider (or llm-provider *default-llm-provider*)
             executor-type (or (:executor node) :ai)
@@ -2620,7 +2673,7 @@
                                  :instruction-preview instr-preview)))
                     raw-result (cond
                              ;; Code executor doesn't need provider
-                             (= :code executor-type)
+                             (#{:code :tool} executor-type)
                              (executor/execute-leaf node blackboard nil
                                                     :context leaf-context)
                              ;; AI executor with provider

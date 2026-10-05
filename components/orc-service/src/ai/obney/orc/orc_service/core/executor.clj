@@ -7,7 +7,7 @@
    Supports multiple executor types:
    - :ai - ORC LLM AI execution with optional model selection
    - :code - Clojure function execution
-   - :tool - Direct tool invocation (future)
+   - :tool - Authored-tool invocation
    - :repl-researcher - Iterative LLM+SCI code execution
 
    Mapping:
@@ -1200,6 +1200,171 @@
         caller))
     (:call-tool-fn context)))
 
+(declare tool-caller-target tool-caller-arity tool-caller-arity-error)
+
+(defn- dispatch-claimed-tool-effect!
+  "The one claim -> dispatch -> validate -> complete sequence for a
+   checkpoint-safe tool call (LeafExecutor/CheckpointedResearcherExecution
+   EffectsAreClaimedBeforeTheyHappen). Both the inline researcher wrapper and
+   the generated-child wrapper run through here.
+
+   The claim is taken (when a claim capability exists) BEFORE the tool is
+   called; a claim anomaly throws. The tool's result must honour its declared
+   result contract before it is recorded; the durable completion is then
+   written under the same attempt identity, and an anomaly on completion
+   (ownership lost) throws. `wrap-errors?` turns a tool exception into the
+   safe :tool-error outcome (the model-facing researcher behaviour); a code
+   leaf passes false and sees the tool's own exception.
+
+   Returns {:result r :durable-result encoded-r}."
+  [{:keys [claim! complete! codecs contracts tool-name args action-id attempt-id
+           attempt-ordinal iteration-index caller caller-arity tool-context
+           wrap-errors?]}]
+  (let [claim-result (when claim!
+                       (claim! {:iteration-index iteration-index
+                                :logical-action-identity action-id
+                                :attempt-identity attempt-id
+                                :attempt-ordinal attempt-ordinal
+                                :kind :tool}))
+        _ (when (:cognitect.anomalies/category claim-result)
+            (throw (ex-info "Researcher tool claim conflicted"
+                            {:claim-result claim-result
+                             :logical-action-identity action-id
+                             :attempt-identity attempt-id})))
+        result (case caller-arity
+                 3 (if wrap-errors?
+                     (try
+                       (caller tool-name args tool-context)
+                       (catch Exception e
+                         ;; The tool's own failure reaches the researcher as
+                         ;; the safe :tool-error outcome, never its raw message.
+                         (throw (tool-invocation/tool-error tool-name e))))
+                     (caller tool-name args tool-context))
+                 (throw
+                  (ex-info
+                   tool-caller-arity-error
+                   {:expected-arities [3]})))
+        ;; Declared result contract: a violating result is never
+        ;; completed/recorded as a successful value.
+        _ (tool-invocation/validate-result! contracts tool-name result)
+        durable-result (encode-checkpoint-value codecs result)]
+    (when complete!
+      (let [completion (complete! {:logical-action-identity action-id
+                                   :attempt-identity attempt-id
+                                   :result durable-result})]
+        (when (:cognitect.anomalies/category completion)
+          (throw (ex-info "Researcher tool outcome lost ownership"
+                          {:completion-result completion
+                           :logical-action-identity action-id
+                           :attempt-identity attempt-id})))))
+    {:result result :durable-result durable-result}))
+
+(defn- checkpointed-campaign-epoch
+  "The ownership epoch of the checkpointed researcher campaign this tick
+   belongs to, or nil when it belongs to none."
+  [context]
+  (let [epoch (get-in context [:tick-options :researcher-ownership-epoch])]
+    (when (and (integer? epoch) (pos? epoch)) epoch)))
+
+(defn- checkpoint-child-call-tool-fn
+  "Wrap a generated child leaf's tool caller so each call is a campaign effect
+   exactly like an inline researcher tool call
+   (GeneratedChildToolCallsAreCheckpointed): the tool must be declared
+   checkpoint-safe; the call has a stable logical identity under the CAMPAIGN's
+   tick, node and iteration that also names the child node; it is claimed under
+   the campaign's ownership epoch before it begins; it completes with a durable
+   receipt. A call whose receipt is already complete returns the recorded
+   result without calling the tool; a claim with no completed receipt is
+   treated as an inline call's unresolved claim is (the new claim conflicts and
+   the call fails).
+
+   Identity: the child's generated code hash is not available to the child
+   leaf, so the child node id stands in for it. Returns a caller with the same
+   [tool args] / [tool args tool-context] arities."
+  [node context caller]
+  (let [tick-options (:tick-options context)
+        epoch (checkpointed-campaign-epoch context)
+        campaign-tick-id (:researcher-campaign-tick-id tick-options)
+        campaign-node-id (:researcher-campaign-node-id tick-options)
+        iteration-index (:researcher-iteration-index tick-options)
+        codecs (vec (or (:researcher-checkpoint-codecs context) []))
+        claim! (:claim-researcher-effect! context)
+        complete! (:complete-researcher-effect! context)
+        target (tool-caller-target caller)
+        arity (tool-caller-arity target)
+        completed (atom (reduce (fn [acc claim]
+                                  (if (= :completed (:status claim))
+                                    (assoc acc (:logical-action-identity claim)
+                                           (update claim :result
+                                                   #(decode-checkpoint-value codecs %)))
+                                    acc))
+                                {}
+                                (or (:researcher-effect-claims context) [])))
+        call (fn [tool-name args supplied-context]
+               (when-not (true? (get-in (:tool-contracts node)
+                                        [tool-name :checkpoint-safe?]))
+                 (throw (ex-info
+                         (str "Tool " tool-name
+                              " is not declared :checkpoint-safe? for resumable execution")
+                         {:tool tool-name :checkpoint-safe? false})))
+               (when-not (and (ifn? claim!) (ifn? complete!))
+                 (throw (ex-info
+                         "Checkpointed campaign child has no effect claim capability"
+                         {:tool tool-name})))
+               (tool-invocation/validate-arguments! (:tool-contracts node) tool-name args)
+               (let [action-id (researcher-effects/logical-action-identity
+                                {:tick-id campaign-tick-id
+                                 :node-id campaign-node-id
+                                 :iteration-index iteration-index
+                                 :child-node-id (:id node)
+                                 :kind :tool
+                                 :target tool-name
+                                 :arguments (encode-checkpoint-value codecs args)})]
+                 (if-let [receipt (get @completed action-id)]
+                   (:result receipt)
+                   (let [attempt-ordinal 0
+                         attempt-id (researcher-effects/attempt-identity
+                                     action-id epoch attempt-ordinal)
+                         tool-context (merge supplied-context
+                                             (:tool-context context)
+                                             {:orc/idempotency-key action-id
+                                              :orc/researcher-iteration iteration-index})
+                         {:keys [result]}
+                         (dispatch-claimed-tool-effect!
+                          {:claim! claim!
+                           :complete! complete!
+                           :codecs codecs
+                           :contracts (:tool-contracts node)
+                           :tool-name tool-name
+                           :args args
+                           :action-id action-id
+                           :attempt-id attempt-id
+                           :attempt-ordinal attempt-ordinal
+                           :iteration-index iteration-index
+                           :caller target
+                           :caller-arity arity
+                           :tool-context tool-context
+                           :wrap-errors? false})]
+                     (swap! completed assoc action-id {:status :completed :result result})
+                     result))))]
+    (fn
+      ([tool-name args] (call tool-name args nil))
+      ([tool-name args tool-context] (call tool-name args tool-context)))))
+
+(defn- resolve-node-tool-caller
+  "The node's tool caller exactly as a code leaf uses it: the gate (when
+   declared) or the static caller, guarded by the node's declared contracts
+   (the consumer's own tool exceptions pass through unchanged), and, inside a
+   checkpointed campaign's generated child, checkpointed as a campaign effect.
+   Returns nil when no caller is available."
+  [node blackboard context]
+  (let [call-tool-fn (-> (node-call-tool-fn node blackboard context)
+                         (tool-invocation/guarded-call-tool-fn (:tool-contracts node)
+                                                             :wrap-tool-errors? false))]
+    (if (and call-tool-fn (checkpointed-campaign-epoch context))
+      (checkpoint-child-call-tool-fn node context call-tool-fn)
+      call-tool-fn)))
+
 (defn execute-code
   "Execute a Clojure function as a leaf node.
 
@@ -1255,9 +1420,7 @@
               ;; node; the ungated caller is never used in its place.
               gate-context (cond-> (assoc context :node node)
                              (:id node) (assoc :node-id (:id node)))
-              call-tool-fn (-> (node-call-tool-fn node blackboard gate-context)
-                               (tool-invocation/guarded-call-tool-fn (:tool-contracts node)
-                                                                   :wrap-tool-errors? false))
+              call-tool-fn (resolve-node-tool-caller node blackboard gate-context)
               code-context (assoc gate-context :call-tool-fn call-tool-fn)
               ;; Call the function with context
               result (f (assoc code-context :inputs inputs :execution-context code-context))
@@ -1333,6 +1496,61 @@
             {:status :blocked
              :block-payload (block/block-payload t)
              :duration-ms (- (System/currentTimeMillis) start-time)}
+            (throw t)))))))
+
+(defn execute-tool
+  "Execute a tool leaf: call the ONE tool named when the workflow was authored
+   (`:tool`) through the node's tool caller (gate, declared contract and, in a
+   checkpointed campaign's child, effect receipts — exactly as a code leaf),
+   with arguments taken from the declared read keys, and write the result to
+   the single declared write key (LeafExecutor ToolLeafCallsOnlyAuthoredTools).
+   A tool name is never taken from the blackboard or from a model. No tool
+   caller available fails explicitly, naming the tool."
+  [node blackboard context]
+  (let [start-time (System/currentTimeMillis)
+        tool-name (:tool node)
+        elapsed #(- (System/currentTimeMillis) start-time)
+        failure (fn [message] {:status :failure :error message :duration-ms (elapsed)})]
+    (cond
+      (not (and (string? tool-name) (not (clojure.string/blank? tool-name))))
+      (failure "Tool executor requires an authored :tool name")
+
+      (not= 1 (count (:writes node)))
+      (failure (str "Tool executor for " tool-name " requires exactly one declared write"))
+
+      :else
+      (try
+        (let [args (reduce (fn [acc key-name]
+                             (let [value (:value (get blackboard key-name))]
+                               (if (nil? value) acc (assoc acc key-name value))))
+                           {}
+                           (:reads node))
+              gate-context (cond-> (assoc context :node node)
+                             (:id node) (assoc :node-id (:id node)))
+              call-tool-fn (resolve-node-tool-caller node blackboard gate-context)]
+          (if-not call-tool-fn
+            (failure (str "No tool caller available to call tool " tool-name))
+            (let [write-key (first (:writes node))
+                  raw (call-tool-fn tool-name args)
+                  ;; Same single-write reconciliation as a code leaf: a map
+                  ;; already keyed by the declared write supplies that value;
+                  ;; any other result is the value itself.
+                  result (if (and (map? raw) (contains? raw write-key))
+                           (get raw write-key)
+                           raw)]
+              (if (nil? result)
+                (failure (str "Tool " tool-name " returned nil for declared write "
+                              (pr-str write-key)))
+                {:status :success
+                 :outputs {write-key result}
+                 :duration-ms (elapsed)}))))
+        (catch Exception e
+          (failure (.getMessage e)))
+        (catch Throwable t
+          (if (block/blocking-condition? t)
+            {:status :blocked
+             :block-payload (block/block-payload t)
+             :duration-ms (elapsed)}
             (throw t)))))))
 
 ;; =============================================================================
@@ -3481,45 +3699,22 @@
                               {:timeout-kind :iteration
                                :tool tool-name
                                :timeout-ms tool-timeout-ms})))
-                        claim-result
-                        (when-let [claim! (:claim-researcher-effect! context)]
-                          (claim! {:iteration-index @current-iteration
-                                   :logical-action-identity action-id
-                                   :attempt-identity attempt-id
-                                   :attempt-ordinal attempt-ordinal
-                                   :kind :tool}))
-                        _ (when (:cognitect.anomalies/category claim-result)
-                            (throw (ex-info "Researcher tool claim conflicted"
-                                            {:claim-result claim-result
-                                             :logical-action-identity action-id
-                                             :attempt-identity attempt-id})))
-                        result (case checkpoint-tool-caller-arity
-                                 3 (try
-                                     (checkpoint-call-tool-fn tool-name args tool-context)
-                                     (catch Exception e
-                                       ;; The tool's own failure reaches the
-                                       ;; researcher as the safe :tool-error
-                                       ;; outcome, never its raw message.
-                                       (throw (tool-invocation/tool-error tool-name e))))
-                                 (throw
-                                  (ex-info
-                                   tool-caller-arity-error
-                                   {:expected-arities [3]})))
-                        ;; Declared result contract: a violating result is never
-                        ;; completed/recorded as a successful value.
-                        _ (tool-invocation/validate-result!
-                           (:tool-contracts node) tool-name result)]
-                    (let [durable-result (encode-checkpoint-value checkpoint-codecs result)]
-                    (when-let [complete! (:complete-researcher-effect! context)]
-                      (let [completion
-                            (complete! {:logical-action-identity action-id
-                                        :attempt-identity attempt-id
-                                        :result durable-result})]
-                        (when (:cognitect.anomalies/category completion)
-                          (throw (ex-info "Researcher tool outcome lost ownership"
-                                          {:completion-result completion
-                                           :logical-action-identity action-id
-                                           :attempt-identity attempt-id})))))
+                        {:keys [result durable-result]}
+                        (dispatch-claimed-tool-effect!
+                         {:claim! (:claim-researcher-effect! context)
+                          :complete! (:complete-researcher-effect! context)
+                          :codecs checkpoint-codecs
+                          :contracts (:tool-contracts node)
+                          :tool-name tool-name
+                          :args args
+                          :action-id action-id
+                          :attempt-id attempt-id
+                          :attempt-ordinal attempt-ordinal
+                          :iteration-index @current-iteration
+                          :caller checkpoint-call-tool-fn
+                          :caller-arity checkpoint-tool-caller-arity
+                          :tool-context tool-context
+                          :wrap-errors? true})]
                     (swap! completed-actions assoc action-id
                            {:status :completed :result result})
                     (when persist-action!
@@ -3527,7 +3722,7 @@
                                         :action-kind :tool
                                         :iteration @current-iteration
                                         :result durable-result}))
-                    result))))))
+                    result)))))
           (-> (phase1-call-tool-fn (assoc context :call-tool-fn raw-call-tool-fn))
               (tool-invocation/guarded-call-tool-fn (:tool-contracts node))))
         timeout-config (or (:timeouts rlm-config) {})
@@ -5115,7 +5310,7 @@
    Executor types:
    - :ai (default) - ORC LLM AI execution
    - :code - Clojure function execution
-   - :tool - Direct tool invocation (not yet implemented)
+   - :tool - Authored-tool invocation (one named tool, reads as arguments)
 
    Args:
      node - The leaf node map
@@ -5147,9 +5342,7 @@
                                                                    :node-attempt current-node-attempt
                                                                    :max-node-attempts max-node-attempts))
                        :code (execute-code node blackboard context)
-                       :tool {:status :failure
-                              :error "Tool executor not yet implemented"
-                              :duration-ms 0}
+                       :tool (execute-tool node blackboard context)
                        ;; Default to AI
                        (execute-ai node blackboard provider
                                    :options (assoc execution-options

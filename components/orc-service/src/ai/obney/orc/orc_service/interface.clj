@@ -223,6 +223,7 @@
 ;; Node builders
 (def llm dsl/llm)
 (def code dsl/code)
+(def tool dsl/tool)
 (def condition dsl/condition)
 (def llm-condition dsl/llm-condition)
 (def llm-decision dsl/llm-decision)

@@ -74,10 +74,14 @@
 
    Attempt number and evaluation order are deliberately absent."
   [{:keys [tick-id node-id iteration-index generated-code-hash kind target
-           arguments]}]
+           arguments child-node-id]}]
   (sha-256
-   (canonical-value [tick-id node-id iteration-index generated-code-hash
-                     kind target arguments])))
+   (canonical-value (cond-> [tick-id node-id iteration-index generated-code-hash
+                             kind target arguments]
+                      ;; A generated child's call also names the child node.
+                      ;; Absent for inline calls, so their identities are
+                      ;; unchanged.
+                      child-node-id (conj child-node-id)))))
 
 (defn provider-logical-action-identity
   "Stable pre-dispatch identity for a Phase-1 provider request.
