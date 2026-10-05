@@ -77,7 +77,12 @@
         (try
           (call-tool-fn tool-name args-map)
           (catch Exception e
-            {:error (.getMessage e)}))))))
+            ;; A seam outcome (invalid arguments / invalid result / tool error)
+            ;; is handed back as data carrying its stable kind; its message is
+            ;; already safe. Anything else keeps the established shape.
+            (if-let [kind (:orc.tool/outcome (ex-data e))]
+              {:error (.getMessage e) :orc.tool/outcome kind}
+              {:error (.getMessage e)})))))))
 
 (defn- parse-tool-name
   "Parse a tool name into [server-sym fn-sym] or [nil fn-sym].

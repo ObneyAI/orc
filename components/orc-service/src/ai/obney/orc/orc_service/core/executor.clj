@@ -34,6 +34,7 @@
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.iteration-evidence :as iteration-evidence]
             [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
+            [ai.obney.orc.orc-service.core.tool-invocation :as tool-invocation]
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
@@ -1245,7 +1246,9 @@
               ;; node; the ungated caller is never used in its place.
               gate-context (cond-> (assoc context :node node)
                              (:id node) (assoc :node-id (:id node)))
-              call-tool-fn (node-call-tool-fn node blackboard gate-context)
+              call-tool-fn (-> (node-call-tool-fn node blackboard gate-context)
+                               (tool-invocation/guarded-call-tool-fn (:tool-contracts node)
+                                                                   :wrap-tool-errors? false))
               code-context (assoc gate-context :call-tool-fn call-tool-fn)
               ;; Call the function with context
               result (f (assoc code-context :inputs inputs :execution-context code-context))
@@ -2299,9 +2302,10 @@
         ;; builder, else static (:call-tool-fn context)), then (WS-5b) wrap it
         ;; so inline Phase-1 tool calls forward the tick :tool-context as the
         ;; 3rd arg — gating an inline mutate exactly like Phase-2.
-        call-tool-fn (phase1-call-tool-fn
-                      (assoc context :call-tool-fn
-                             (node-call-tool-fn node blackboard context)))
+        call-tool-fn (-> (phase1-call-tool-fn
+                          (assoc context :call-tool-fn
+                                 (node-call-tool-fn node blackboard context)))
+                         (tool-invocation/guarded-call-tool-fn (:tool-contracts node)))
 
         ;; Build SCI context with MCP and browser tools injected
         sci-ctx (sci-sandbox/build-sci-context
@@ -3420,6 +3424,9 @@
                         (str "Tool " tool-name
                              " is not declared :checkpoint-safe? for resumable execution")
                         {:tool tool-name :checkpoint-safe? false})))
+              ;; Declared argument contract: enforced BEFORE any logical action
+              ;; identity, claim or dispatch, so an invalid call claims no effect.
+              (tool-invocation/validate-arguments! (:tool-contracts node) tool-name args)
               (let [ordinal (swap! action-ordinal inc)
                     attempt-ordinal (get iteration-attempts @current-iteration 0)
                     action-id
@@ -3478,11 +3485,21 @@
                                              :logical-action-identity action-id
                                              :attempt-identity attempt-id})))
                         result (case checkpoint-tool-caller-arity
-                                 3 (checkpoint-call-tool-fn tool-name args tool-context)
+                                 3 (try
+                                     (checkpoint-call-tool-fn tool-name args tool-context)
+                                     (catch Exception e
+                                       ;; The tool's own failure reaches the
+                                       ;; researcher as the safe :tool-error
+                                       ;; outcome, never its raw message.
+                                       (throw (tool-invocation/tool-error tool-name e))))
                                  (throw
                                   (ex-info
                                    tool-caller-arity-error
-                                   {:expected-arities [3]})))]
+                                   {:expected-arities [3]})))
+                        ;; Declared result contract: a violating result is never
+                        ;; completed/recorded as a successful value.
+                        _ (tool-invocation/validate-result!
+                           (:tool-contracts node) tool-name result)]
                     (let [durable-result (encode-checkpoint-value checkpoint-codecs result)]
                     (when-let [complete! (:complete-researcher-effect! context)]
                       (let [completion
@@ -3502,7 +3519,8 @@
                                         :iteration @current-iteration
                                         :result durable-result}))
                     result))))))
-          (phase1-call-tool-fn (assoc context :call-tool-fn raw-call-tool-fn)))
+          (-> (phase1-call-tool-fn (assoc context :call-tool-fn raw-call-tool-fn))
+              (tool-invocation/guarded-call-tool-fn (:tool-contracts node))))
         timeout-config (or (:timeouts rlm-config) {})
         pre-classification-timing (:researcher-campaign-timing context)
         campaign-timing

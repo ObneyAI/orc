@@ -238,7 +238,7 @@
                        tool call the leaf makes uses that gate; an unresolvable
                        gate fails the node, never falling back to the ungated
                        caller."
-  [name & {:keys [fn reads writes retry judges tool-caller-fn]}]
+  [name & {:keys [fn reads writes retry judges tool-caller-fn tool-contracts]}]
   (cond-> {:node-type :leaf
            :name name
            :executor :code
@@ -247,7 +247,8 @@
            :writes (vec writes)
            :retry retry}
     judges (assoc :judges (vec judges))
-    tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)))
+    tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+    tool-contracts (assoc :tool-contracts tool-contracts)))
 
 (defn condition
   "Define a condition node.
@@ -598,6 +599,7 @@
             :model (:model node)
             :fn (:fn node)
             :tool-caller-fn (:tool-caller-fn node)
+            :tool-contracts (when (= :code (:executor node)) (:tool-contracts node))
             :options (:options node)
             :options-from (:options-from node)
             :min-confidence (:min-confidence node)
@@ -901,6 +903,8 @@
                    (:fn node) (assoc :fn (:fn node))
                    (and (= :code (:executor node)) (:tool-caller-fn node))
                    (assoc :tool-caller-fn (:tool-caller-fn node))
+                   (and (= :code (:executor node)) (:tool-contracts node))
+                   (assoc :tool-contracts (:tool-contracts node))
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (seq (:writes node)) (assoc :writes (:writes node))
@@ -1011,6 +1015,7 @@
               :model (:model node)
               :fn (:fn node)
               :tool-caller-fn (:tool-caller-fn node)
+              :tool-contracts (when (= :code (:executor node)) (:tool-contracts node))
               :options (:options node)
               :options-from (:options-from node)
               :min-confidence (:min-confidence node)
@@ -1244,6 +1249,7 @@
       :code (let [opts (build-keyword-args
                          {:fn (:fn node)
                           :tool-caller-fn (:tool-caller-fn node)
+                          :tool-contracts (:tool-contracts node)
                           :reads (:reads node)
                           :writes (:writes node)
                           :retry (:retry node)})]

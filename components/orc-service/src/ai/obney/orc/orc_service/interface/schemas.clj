@@ -710,7 +710,8 @@
     [:abstain {:optional true} :any]
     ;; Phase 4B: opt-in gated tool-caller builder FQN for :code nodes inside
     ;; generated (Phase-2) trees. Mirrors the node-level :tool-caller-fn hook.
-    [:tool-caller-fn {:optional true} :string]]
+    [:tool-caller-fn {:optional true} :string]
+    [:tool-contracts {:optional true} tool-contracts]]
 
    :sheet/set-node-retry
    [:map
@@ -1410,6 +1411,7 @@
     [:abstain {:optional true} :any]
     ;; Phase 4B: opt-in gated tool-caller builder FQN (see set-node-executor).
     [:tool-caller-fn {:optional true} :string]
+    [:tool-contracts {:optional true} tool-contracts]
     [:previous-executor {:optional true} executor-type]
     [:previous-model {:optional true} :string]
     [:previous-fn {:optional true} :string]

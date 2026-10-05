@@ -451,7 +451,7 @@
    - :ai executor uses ORC LLM with optional model selection
    - :code executor runs a Clojure function
    - :tool executor directly invokes a tool"
-  [{{:keys [sheet-id node-id executor model fn tools options tool-caller-fn
+  [{{:keys [sheet-id node-id executor model fn tools options tool-caller-fn tool-contracts
                 options-from min-confidence abstain]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)]
@@ -482,6 +482,7 @@
                   tools (assoc :tools (vec tools))
                   options (assoc :options options)
                   tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+                  tool-contracts (assoc :tool-contracts tool-contracts)
                   options-from (assoc :options-from options-from)
                   min-confidence (assoc :min-confidence min-confidence)
                   (some? abstain) (assoc :abstain abstain)

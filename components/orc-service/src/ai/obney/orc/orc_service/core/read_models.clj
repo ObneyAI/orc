@@ -359,6 +359,7 @@
       (assoc-in [(:node-id event) :options] (:options event))
       ;; Phase 4B: opt-in gated tool-caller builder for :code nodes.
       (assoc-in [(:node-id event) :tool-caller-fn] (:tool-caller-fn event))
+      (assoc-in [(:node-id event) :tool-contracts] (:tool-contracts event))
       ;; :decision executor: run-time options key, confidence floor, abstention.
       (assoc-in [(:node-id event) :options-from] (:options-from event))
       (assoc-in [(:node-id event) :min-confidence] (:min-confidence event))

@@ -114,6 +114,31 @@ contract LeafExecutor {
         -- serves: the execution, the node and the effective remaining
         -- deadline, alongside the execution's durable consumer context.
 
+    @invariant DeclaredToolContractsAreEnforced
+        -- When a tool's argument or result contract is declared for the node
+        -- calling it, that contract is enforced at every call, not only shown
+        -- to the model. Arguments that violate it never reach the tool and a
+        -- checkpointed researcher claims no effect for them; a result that
+        -- violates it is never handed to the caller as a successful value.
+        -- A side with no declared contract stays untyped, as before. The tool
+        -- receives the caller's arguments exactly as given.
+
+    @invariant ToolArgumentIdentityIsExact
+        -- An argument or result field supplied under two spellings of the
+        -- same name is rejected as invalid rather than collapsed into one,
+        -- so normalisation can never silently replace a supplied value.
+
+    @invariant ToolOutcomesAreStructured
+        -- Every unsuccessful tool call has one stable outcome kind: invalid
+        -- arguments, invalid result, or tool error. A researcher receives
+        -- every one of them, for typed and untyped tools alike, as data it can
+        -- act on: the kind and a safe message that never echoes the rejected
+        -- values or the tool's own error text, except a message the tool's host
+        -- explicitly declares safe to share. A code leaf receives a contract
+        -- violation as a failure carrying its kind, which fails the node unless
+        -- the consumer code handles it; a tool's own failure reaches the
+        -- consumer code that owns that tool unchanged.
+
     @invariant ResearcherSeesBoundToolContracts
         -- Before calling a bound tool, a researcher's Phase-1 model receives
         -- that tool's authoritative argument and result schemas. Nested,
@@ -422,6 +447,26 @@ contract ExecutionRecovery {
     @invariant IdempotentResume
         -- Repeated recovery requests converge on the same frontier and do not
         -- duplicate resumptions, completions, or externally visible effects.
+
+    @invariant OwnedWorkIsNotAbandoned
+        -- Every start of a leaf or delegate carries a durable ownership lease
+        -- naming the worker that owns it, from the moment the start is
+        -- recorded, including while the work is queued. The owning worker
+        -- renews the lease while the work runs, however long it takes.
+        -- Recovery, whether automatic, periodic or requested, resumes a start
+        -- only when its owner is known not to be working on it: the recovering
+        -- worker is the owner and is no longer running it, or the latest lease
+        -- has expired. Work under a live lease held by another worker, or still
+        -- running in the recovering worker, is left to finish, so recovery
+        -- never begins a second invocation of healthy work, in one process or
+        -- across many sharing the same execution record.
+
+    @invariant AbandonedWorkStaysRecoverable
+        -- A start whose lease has expired without a completion, because its
+        -- owner stopped, is resumed under the same execution and node
+        -- identity. A resumed start is itself leased, so work whose resumer
+        -- also stops remains recoverable in turn; each start is resumed at
+        -- most once.
 }
 
 contract CheckpointedResearcherExecution {
