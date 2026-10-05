@@ -451,7 +451,8 @@
    - :ai executor uses ORC LLM with optional model selection
    - :code executor runs a Clojure function
    - :tool executor directly invokes a tool"
-  [{{:keys [sheet-id node-id executor model fn tools options tool-caller-fn]} :command
+  [{{:keys [sheet-id node-id executor model fn tools options tool-caller-fn
+                options-from min-confidence abstain]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)]
     (cond
@@ -481,6 +482,9 @@
                   tools (assoc :tools (vec tools))
                   options (assoc :options options)
                   tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+                  options-from (assoc :options-from options-from)
+                  min-confidence (assoc :min-confidence min-confidence)
+                  (some? abstain) (assoc :abstain abstain)
                   (:executor node) (assoc :previous-executor (:executor node))
                   (:model node) (assoc :previous-model (:model node))
                   (:fn node) (assoc :previous-fn (:fn node))
@@ -1705,7 +1709,7 @@
             status writes rejected-writes write-sources write-references? duration-ms
             observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage model
             node-type completion-kind raw-response failure-kind provider-evidence
-            block-payload read-sources]} :command
+            condition-answer decision block-payload read-sources]} :command
     :as ctx}]
   (if (or (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
           (and completion-id
@@ -1843,6 +1847,8 @@
                                     ;; (node-output <node-id>) drill-down.
                                     raw-response (assoc :raw-response raw-response)
                                     failure-kind (assoc :failure-kind failure-kind)
+                                    (boolean? condition-answer) (assoc :condition-answer condition-answer)
+                                    decision (assoc :decision decision)
                                     provider-evidence (assoc :provider-evidence provider-evidence)
                                     ;; :inputs keeps ONLY the namespaced
                                     ;; execution-context keys. Those are not
@@ -2293,7 +2299,13 @@
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (seq (:writes node)) (assoc :writes (:writes node))
                    (:tools node) (assoc :tools (:tools node))
-                   (:retry node) (assoc :retry (:retry node))))
+                   (:retry node) (assoc :retry (:retry node))
+                   (= :decision (:executor node))
+                   (merge (cond-> {}
+                            (:options-from node) (assoc :options-from (:options-from node))
+                            (:min-confidence node) (assoc :min-confidence (:min-confidence node))
+                            (some? (:abstain node)) (assoc :abstain (:abstain node))
+                            (:options node) (assoc :options (:options node))))))
           ;; Condition-specific
           (= :condition (:type node))
           (merge (cond-> {}

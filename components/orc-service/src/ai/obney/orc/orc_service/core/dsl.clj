@@ -51,6 +51,7 @@
    - Reordering nodes preserves their IDs
    - Renaming a node = new identity"
   (:require [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.decision :as decision]
             [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.grain.time.interface :as time]
@@ -185,6 +186,44 @@
     context (assoc :context context)
     options (assoc :options options)))
 
+(defn llm-decision
+  "Define a model decision: a data-producing leaf that asks the model to choose
+   and writes its answer to ONE declared blackboard key. The key's blackboard
+   schema determines the decision: `:boolean` asks whether a proposition holds;
+   a finite `[:enum {:descriptions {id description}} id ...]` asks which member
+   applies. Options may instead be supplied at run time by a declared read key
+   (`:options-from`) holding a vector of `{:id :description}`; the answer key may
+   then be `:string`. Any other answer key is rejected when the workflow is built.
+
+   A valid answer is a successful assessment (false and a declared none/other
+   option included). A missing, malformed or out-of-set answer fails the node and
+   writes nothing.
+
+   Options:
+     :instruction - What the model is deciding
+     :reads - Evidence keys (like every node); must include :options-from's key
+     :writes - Exactly one answer key
+     :options-from - Optional read key holding run-time `[{:id :description}]`
+     :min-confidence - Optional confidence floor; requires :abstain
+     :abstain - Option written instead when confidence is below the floor or
+                none is reported; must be one of the offered options
+     :model - Optional per-node model
+     :retry - {:max-attempts n :backoff-ms [100 500]}
+     :options - Executor options passed through to ORC LLM for this node"
+  [name & {:keys [model instruction reads writes options-from min-confidence abstain retry options]}]
+  (cond-> {:node-type :leaf
+           :name name
+           :executor :decision
+           :model model
+           :instruction instruction
+           :reads (vec reads)
+           :writes (vec writes)}
+    options-from (assoc :options-from options-from)
+    min-confidence (assoc :min-confidence (double min-confidence))
+    (some? abstain) (assoc :abstain abstain)
+    retry (assoc :retry retry)
+    options (assoc :options options)))
+
 (defn code
   "Define a code executor leaf node.
 
@@ -193,8 +232,13 @@
      :reads - Vector of blackboard keys to read (e.g., [:input])
      :writes - Vector of blackboard keys to write (e.g., [:output])
      :retry - {:max-attempts n :backoff-ms [100 500]}
-     :judges - Vector of judge names (defined in sheet/judges)"
-  [name & {:keys [fn reads writes retry judges]}]
+     :judges - Vector of judge names (defined in sheet/judges)
+     :tool-caller-fn - Optional FQN of a consumer tool-gate builder
+                       (fn [blackboard context] call-tool-fn). When named, every
+                       tool call the leaf makes uses that gate; an unresolvable
+                       gate fails the node, never falling back to the ungated
+                       caller."
+  [name & {:keys [fn reads writes retry judges tool-caller-fn]}]
   (cond-> {:node-type :leaf
            :name name
            :executor :code
@@ -202,7 +246,8 @@
            :reads (vec reads)
            :writes (vec writes)
            :retry retry}
-    judges (assoc :judges (vec judges))))
+    judges (assoc :judges (vec judges))
+    tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)))
 
 (defn condition
   "Define a condition node.
@@ -552,7 +597,11 @@
           (h/make-set-node-executor-command sheet-id node-id (:executor node)
             :model (:model node)
             :fn (:fn node)
-            :options (:options node)))
+            :tool-caller-fn (:tool-caller-fn node)
+            :options (:options node)
+            :options-from (:options-from node)
+            :min-confidence (:min-confidence node)
+            :abstain (:abstain node)))
         ;; Set instruction if AI node
         (when (:instruction node)
           (run-build-command! ctx
@@ -709,6 +758,11 @@
       (throw (ex-info (str "Workflow node names must be unique: " duplicate-names)
                       {:duplicate-node-names duplicate-names})))
     (doseq [node nodes
+            :when (= :decision (:executor node))
+            :let [error (decision/declaration-error node blackboard-schema)]
+            :when error]
+      (throw (ex-info error {:node (:name node) :decision-declaration-error true})))
+    (doseq [node nodes
             key (concat (:reads node) (:writes node)
                         (when-let [k (get-in node [:check :key])] [k])
                         (when (= :map-each (:node-type node))
@@ -845,11 +899,19 @@
                    (:executor node) (assoc :executor (:executor node))
                    (:model node) (assoc :model (:model node))
                    (:fn node) (assoc :fn (:fn node))
+                   (and (= :code (:executor node)) (:tool-caller-fn node))
+                   (assoc :tool-caller-fn (:tool-caller-fn node))
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (seq (:writes node)) (assoc :writes (:writes node))
                    (:retry node) (assoc :retry (:retry node))
-                   (:context node) (assoc :context (:context node))))
+                   (:context node) (assoc :context (:context node))
+                   (= :decision (:executor node))
+                   (merge (cond-> {}
+                            (:options-from node) (assoc :options-from (:options-from node))
+                            (:min-confidence node) (assoc :min-confidence (:min-confidence node))
+                            (some? (:abstain node)) (assoc :abstain (:abstain node))
+                            (:options node) (assoc :options (:options node))))))
           ;; Condition-specific
           (= :condition (:type node))
           (merge (cond-> {}
@@ -947,7 +1009,12 @@
           (h/run-and-apply! ctx
             (h/make-set-node-executor-command sheet-id node-id (:executor node)
               :model (:model node)
-              :fn (:fn node))))
+              :fn (:fn node)
+              :tool-caller-fn (:tool-caller-fn node)
+              :options (:options node)
+              :options-from (:options-from node)
+              :min-confidence (:min-confidence node)
+              :abstain (:abstain node))))
         ;; Set instruction if AI node
         (when (:instruction node)
           (h/run-and-apply! ctx
@@ -1176,12 +1243,27 @@
 
       :code (let [opts (build-keyword-args
                          {:fn (:fn node)
+                          :tool-caller-fn (:tool-caller-fn node)
                           :reads (:reads node)
                           :writes (:writes node)
                           :retry (:retry node)})]
               (if (empty? opts)
                 (list (dsl-sym 'code) name)
                 (apply list (dsl-sym 'code) name opts)))
+
+      :decision (let [opts (build-keyword-args
+                             {:model (:model node)
+                              :instruction (:instruction node)
+                              :reads (:reads node)
+                              :writes (:writes node)
+                              :options-from (:options-from node)
+                              :min-confidence (:min-confidence node)
+                              :abstain (:abstain node)
+                              :retry (:retry node)
+                              :options (:options node)})]
+                  (if (empty? opts)
+                    (list (dsl-sym 'llm-decision) name)
+                    (apply list (dsl-sym 'llm-decision) name opts)))
 
       ;; Default fallback for unknown executors
       (list (dsl-sym 'llm) name))))
@@ -1479,7 +1561,7 @@
       (map-each-form->pretty-string form indent-level)
 
       ;; Leaf nodes
-      (and fn-sym (contains? #{"llm" "code" "condition" "llm-condition"} fn-name))
+      (and fn-sym (contains? #{"llm" "code" "condition" "llm-condition" "llm-decision"} fn-name))
       (leaf-form->pretty-string form indent-level)
 
       ;; Blackboard

@@ -225,6 +225,7 @@
 (def code dsl/code)
 (def condition dsl/condition)
 (def llm-condition dsl/llm-condition)
+(def llm-decision dsl/llm-decision)
 (def sequence dsl/sequence)
 (def fallback dsl/fallback)
 (def parallel dsl/parallel)

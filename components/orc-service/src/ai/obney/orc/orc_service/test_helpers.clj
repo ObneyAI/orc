@@ -751,7 +751,7 @@
   "Create a set-node-executor command.
    executor-type: :ai, :code, or :tool
    opts: {:model \"...\", :fn \"...\", :tools [...], :options {...}}"
-  [sheet-id node-id executor-type & {:keys [model fn tools options]}]
+  [sheet-id node-id executor-type & {:keys [model fn tools options options-from min-confidence abstain tool-caller-fn]}]
   (cond-> {:command/name :sheet/set-node-executor
            :command/id (random-uuid)
            :command/timestamp (time/now)
@@ -761,7 +761,11 @@
     model (assoc :model model)
     fn (assoc :fn fn)
     tools (assoc :tools tools)
-    options (assoc :options options)))
+    options (assoc :options options)
+    options-from (assoc :options-from options-from)
+    tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+    min-confidence (assoc :min-confidence min-confidence)
+    (some? abstain) (assoc :abstain abstain)))
 
 (defn make-set-node-retry-command
   "Create a set-node-retry command."

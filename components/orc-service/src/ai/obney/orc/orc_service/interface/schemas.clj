@@ -20,7 +20,36 @@
 
 (def executor-type
   "Executor types for leaf nodes"
-  [:enum :ai :code :tool])
+  [:enum :ai :code :tool :decision])
+
+(def decision-record
+  "Durable record of one model decision: what was offered, what the provider
+   answered, and whether the answer was set aside for the abstention option.
+   A native decision model's own reported distribution, confidence (choice) or
+   probability (yes/no) is carried exactly as reported; none is ever
+   synthesised from a bare answer, so these keys are absent for providers that
+   report none."
+  [:map {:closed true
+         :description "Durable record of one model decision"}
+   [:offered {:description "Every option id the model was offered, verbatim"}
+    [:vector :any]]
+   [:answer {:optional true
+             :description "The answer the provider returned (present when one was obtained)"}
+    :any]
+   [:abstained? {:description "True when the answer was set aside for the abstention option"}
+    :boolean]
+   [:set-aside {:optional true
+                :description "The answer that was set aside when abstained? is true"}
+    :any]
+   [:probabilities {:optional true
+                    :description "Provider-reported probability per offered option id"}
+    [:map-of :string number?]]
+   [:confidence {:optional true
+                 :description "Provider-reported confidence of a choice, as reported"}
+    number?]
+   [:probability {:optional true
+                  :description "Provider-reported probability that a yes/no proposition holds"}
+    number?]])
 
 (def node-status
   "Node execution status.
@@ -298,6 +327,11 @@
     ;; Executor fields (for leaf nodes)
     [:executor {:optional true} executor-type]     ;; :ai, :code, :tool
     [:model {:optional true} :string]              ;; OpenRouter model ID (e.g., "google/gemini-2.5-flash")
+    ;; :decision executor only: read key holding run-time options, confidence
+    ;; floor and the abstention option written when the floor is not met.
+    [:options-from {:optional true} :keyword]
+    [:min-confidence {:optional true} :double]
+    [:abstain {:optional true} :any]
     [:fn {:optional true} :string]                 ;; Fully-qualified fn symbol for :code executor
     [:tools {:optional true} [:vector :keyword]]   ;; Tools available to AI for :ai executor
     [:options {:optional true} :map]               ;; Per-node executor/ORC LLM options
@@ -671,6 +705,9 @@
     [:fn {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
+    [:options-from {:optional true} :keyword]
+    [:min-confidence {:optional true} :double]
+    [:abstain {:optional true} :any]
     ;; Phase 4B: opt-in gated tool-caller builder FQN for :code nodes inside
     ;; generated (Phase-2) trees. Mirrors the node-level :tool-caller-fn hook.
     [:tool-caller-fn {:optional true} :string]]
@@ -995,6 +1032,10 @@
     ;; for declared writes). Persisted so (node-output <node-id>) can
     ;; retrieve the full text post-hoc.
     [:raw-response {:optional true} :string]
+    ;; Model-backed condition: the boolean answer, present only when a valid
+    ;; answer was obtained (absent on provider failure).
+    [:condition-answer {:optional true} :boolean]
+    [:decision {:optional true} decision-record]
     [:failure-kind {:optional true} structured-failure-kind]
     [:provider-evidence {:optional true} provider-failure-evidence]
     ;; Gap-7: carry through to the event body. See :completion-kind on
@@ -1364,6 +1405,9 @@
     [:fn {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
+    [:options-from {:optional true} :keyword]
+    [:min-confidence {:optional true} :double]
+    [:abstain {:optional true} :any]
     ;; Phase 4B: opt-in gated tool-caller builder FQN (see set-node-executor).
     [:tool-caller-fn {:optional true} :string]
     [:previous-executor {:optional true} executor-type]
@@ -1615,6 +1659,10 @@
     ;; completions. Source for the (node-output <node-id>) drill-down
     ;; when a failed LLM leaf has no successful writes to show.
     [:raw-response {:optional true} :string]
+    ;; Model-backed condition: the boolean answer, present only when a valid
+    ;; answer was obtained (absent on provider failure).
+    [:condition-answer {:optional true} :boolean]
+    [:decision {:optional true} decision-record]
     [:failure-kind {:optional true} structured-failure-kind]
     [:provider-evidence {:optional true} provider-failure-evidence]
     ;; Optional per-node token usage when the node was an LLM call.
@@ -2397,6 +2445,8 @@
     [:outputs {:optional true} [:maybe :map]]
     [:rejected-outputs {:optional true} [:maybe :map]]
     [:failure-kind {:optional true} [:maybe structured-failure-kind]]
+    [:condition-answer {:optional true} [:maybe :boolean]]
+    [:decision {:optional true} [:maybe decision-record]]
     [:provider-evidence {:optional true} [:maybe provider-failure-evidence]]]
 
    ;; Run Detail Screen Query (single trace with full data)

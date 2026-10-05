@@ -101,6 +101,19 @@ contract LeafExecutor {
         -- back to an ungated caller. With no configured gate, the ordinary tool
         -- caller remains available for backwards compatibility.
 
+    @invariant CodeLeafToolGateIsPreserved
+        -- A code leaf authored by a consumer may name a consumer-supplied tool
+        -- gate, exactly as a generated code leaf may. The named gate survives
+        -- authoring, building, the stored workflow definition and its
+        -- round-trip, and every tool call that leaf makes uses that gate. A
+        -- configured gate that cannot be resolved or constructed fails the
+        -- node; it never falls back to an ungated caller.
+
+    @invariant ToolGateSeesInvocationIdentity
+        -- A tool gate is constructed with the identity of the invocation it
+        -- serves: the execution, the node and the effective remaining
+        -- deadline, alongside the execution's durable consumer context.
+
     @invariant ResearcherSeesBoundToolContracts
         -- Before calling a bound tool, a researcher's Phase-1 model receives
         -- that tool's authoritative argument and result schemas. Nested,
@@ -206,6 +219,82 @@ contract LeafExecutor {
         -- schema-invalid decoded arguments have distinct stable failure kinds.
         -- Evidence retains available usage and finish reason even when no text
         -- exists, and excludes arbitrary provider payloads and tool arguments.
+}
+
+contract ModelBackedCondition {
+    assess: (configuration: NodeConfiguration, inputs: Any) -> Boolean
+
+    @invariant ModelConditionPreservesItsAnswer
+        -- A model-backed condition succeeds exactly when the model's valid
+        -- answer is true and fails exactly when it is false. A missing, null
+        -- or non-boolean answer is never read as false: it fails the node as
+        -- a structured provider failure whose kind differs from a semantic
+        -- negative, so a consumer can tell "the proposition is false" from
+        -- "no valid answer was obtained".
+
+    @invariant ModelConditionSharesLeafExecutionPolicy
+        -- A model-backed condition is a provider invocation under the same
+        -- execution policy as a model leaf: each invocation consumes the
+        -- shared LLM-call budget and remaining wall-clock budget, a per-node
+        -- model choice reaches the provider, the default provider retry
+        -- applies, and cancellation or timeout of the execution stops it
+        -- before any further invocation begins.
+
+    @invariant ModelConditionEvidenceIsDurable
+        -- A completed model-backed condition durably records the declared
+        -- blackboard values it read, the boolean answer it obtained, the
+        -- resolved model and the provider usage, retrievable through the same
+        -- trace-detail surfaces as a model leaf. A failed one records
+        -- structured provider failure evidence instead of only an error text.
+}
+
+contract ModelDecision {
+    decide: (configuration: NodeConfiguration, inputs: Any) -> Any
+
+    @invariant DecisionKindFollowsDeclaredWrite
+        -- A model decision writes its answer to exactly one declared
+        -- blackboard key, and that key's schema determines the decision: a
+        -- boolean schema asks whether a proposition holds; a finite enum
+        -- schema asks which one of its members applies. Options may instead be
+        -- supplied at run time by a declared read key holding identified,
+        -- described options. A decision whose answer key is neither boolean
+        -- nor finite is rejected when the workflow is built.
+
+    @invariant DecisionOffersEveryOptionWithItsMeaning
+        -- The model is offered every allowed option together with its
+        -- description, and the decision's instruction. An answer that is not
+        -- a member of the set actually offered is never written; it fails the
+        -- node as a structured provider failure. Option identities are kept
+        -- verbatim, including identities discovered at run time.
+
+    @invariant ValidAssessmentSucceeds
+        -- Obtaining a valid answer is success, whatever the answer is: false
+        -- and a declared none or other option are successful assessments that
+        -- write their value. A missing, malformed or unavailable answer fails
+        -- the node with a structured failure kind and writes nothing to the
+        -- answer key, so routing guards never see a fabricated answer.
+
+    @invariant ConfidenceFloorIsExplicit
+        -- With no configured confidence floor, a valid answer is written as
+        -- obtained. When a floor is configured, a choice whose reported
+        -- confidence is below it, or that reports none, writes the decision's
+        -- declared abstention option instead and records the answer that was
+        -- set aside. The abstention option must be one of the offered options.
+        -- A confidence value is the provider's own reported statistic for that
+        -- primitive; it is never synthesised from a bare answer.
+
+    @invariant DecisionSharesLeafExecutionPolicy
+        -- A model decision is a provider invocation under the same execution
+        -- policy as a model leaf: shared LLM-call and wall-clock budgets,
+        -- per-node model choice, default provider retry, and cancellation or
+        -- timeout stopping it before any further invocation begins.
+
+    @invariant DecisionRecordIsDurable
+        -- Each completed decision durably records the options offered, the
+        -- answer obtained, any distribution or confidence the provider
+        -- reported, whether the answer was set aside for abstention, the
+        -- resolved model and the provider usage, retrievable through the same
+        -- trace-detail surfaces as a model leaf.
 }
 
 contract WorkflowDefinitionConstruction {
@@ -599,7 +688,7 @@ contract CheckpointedResearcherExecution {
 enum ExecutionMode { draft | published }
 
 enum NodeKind {
-    llm | code | tool | condition | llm_condition | sequence | fallback |
+    llm | code | tool | condition | llm_condition | llm_decision | sequence | fallback |
     parallel | map_each | repl_researcher | delegate
 }
 
@@ -1814,6 +1903,8 @@ surface WorkflowExecutionAccess {
         fulfils ExecutionDurability
         fulfils ExecutionRecovery
         fulfils CheckpointedResearcherExecution
+        fulfils ModelBackedCondition
+        fulfils ModelDecision
         demands LeafExecutor
 
     @guarantee IsolatedBlackboard

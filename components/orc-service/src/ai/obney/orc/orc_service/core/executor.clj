@@ -30,6 +30,7 @@
             [ai.obney.orc.orc-service.core.observability :as obs]
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.block :as block]
+            [ai.obney.orc.orc-service.core.decision :as decision]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.iteration-evidence :as iteration-evidence]
             [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
@@ -1237,8 +1238,15 @@
               ;; as :call-tool-fn. When absent, node-call-tool-fn returns the
               ;; static (:call-tool-fn context) unchanged — so existing code
               ;; nodes are byte-identical.
-              call-tool-fn (node-call-tool-fn node blackboard context)
-              code-context (assoc context :call-tool-fn call-tool-fn :node node)
+              ;; The gate is built with the invocation identity (node, node id,
+              ;; tick id, effective deadline), so :node is in the context the
+              ;; builder sees. A configured gate that cannot be resolved,
+              ;; throws or returns a non-function throws here and fails the
+              ;; node; the ungated caller is never used in its place.
+              gate-context (cond-> (assoc context :node node)
+                             (:id node) (assoc :node-id (:id node)))
+              call-tool-fn (node-call-tool-fn node blackboard gate-context)
+              code-context (assoc gate-context :call-tool-fn call-tool-fn)
               ;; Call the function with context
               result (f (assoc code-context :inputs inputs :execution-context code-context))
               duration-ms (- (System/currentTimeMillis) start-time)
@@ -1516,7 +1524,11 @@
                         ;; Verbatim completion text from ORC LLM (:with-metadata? true).
                         ;; Carried so a nil-parse failure can show WHAT the model
                         ;; actually returned instead of discarding it.
-                        :raw-response (:raw-response result)})))
+                        :raw-response (:raw-response result)
+                        ;; A native decision model reports per-question
+                        ;; evidence (distribution, confidence) beside its
+                        ;; outputs; carried so a decision can record it.
+                        :decisions (:decisions result)})))
 
         ;; Compute backoff delay for a given attempt
         backoff-for (fn [attempt]
@@ -1583,7 +1595,8 @@
     (loop [attempt 0
            accumulated-usage nil]
       (let [{:keys [options timeout-error]} (prepare-attempt attempt)
-            {:keys [outputs usage model error raw-response failure-kind provider-evidence]}
+            {:keys [outputs usage model error raw-response failure-kind provider-evidence
+                    decisions]}
             (if timeout-error
               {:error timeout-error :budget-timeout? true}
               (try
@@ -1733,7 +1746,8 @@
           (let [result (cond-> {:status :success :outputs (:outputs schema-result)
                                 :duration-ms (- (System/currentTimeMillis) start-time)
                                 :usage total-usage :model model}
-                         raw-response (assoc :raw-response raw-response))]
+                         raw-response (assoc :raw-response raw-response)
+                         (seq decisions) (assoc :decisions decisions))]
             (obs/log-ai-execution!
               {:node-id (:id node) :node-name (:name node) :model model
                :executor :ai :duration-ms (:duration-ms result)
@@ -1741,63 +1755,194 @@
             result))))))
 
 (defn execute-llm-condition
-  "Execute an LLM condition node - uses LLM to evaluate a yes/no question.
+  "Execute an LLM condition node - a provider invocation that answers a yes/no
+   question, under the SAME execution policy as a model leaf.
+
+   The condition is expressed as a leaf with one declared boolean write
+   (`:result`) and delegated to `execute-ai`, so provider retry, backoff,
+   deadline, LLM-call budget reservation, per-node model choice and
+   structured failure capture are shared rather than re-implemented.
 
    Args:
      node - The llm-condition node map with :instruction, :reads, :model
      blackboard - Map of key -> {:key, :schema, :value, :version}
      provider - ORC LLM provider keyword (e.g., :openrouter)
-     options - Optional ORC LLM options map
+     options - Optional ORC LLM options map (same policy options as execute-ai)
 
    Returns:
-     {:status :success/:failure
-      :result boolean?          - the LLM's yes/no answer
-      :error string?            - error message if failed
-      :duration-ms int          - execution time
-      :usage {:prompt-tokens N :completion-tokens N :total-tokens N} - token usage (when available)
-      :model string?}           - model used (when available)"
+     {:status :success/:failure/:timeout
+      :result boolean?          - the model's answer; present ONLY when a
+                                  valid boolean answer was obtained
+      :error string?            - error message if no valid answer
+      :failure-kind keyword?    - structured failure kind (never set for a
+                                  valid semantic negative)
+      :provider-evidence map?
+      :duration-ms int
+      :usage map?  :model string?}
+
+   A valid `true` is :status :success; a valid `false` is :status :failure with
+   :result false and no :failure-kind. A missing, nil or non-boolean answer is
+   a :failure with :failure-kind :schema-validation-failed and no :result."
   [node blackboard provider & {:keys [options] :or {options {}}}]
-  (let [start-time (System/currentTimeMillis)
-        ;; Build inputs from reads
-        inputs (mapv (fn [key-name]
-                       (if-let [entry (get blackboard key-name)]
-                         (build-field key-name entry)
-                         {:name key-name
-                          :original-key key-name
-                          :spec :string
-                          :description (str "Input: " key-name)}))
-                     (:reads node))
-        ;; Build module with fixed boolean output
-        module {:inputs inputs
-                :outputs [{:name :result
-                           :spec :boolean
-                           :description "True if the condition is met, false otherwise"}]
-                :instructions (:instruction node)}
-        ;; Gather input values
-        input-values (into {}
-                           (for [key-name (:reads node)
-                                 :let [entry (get blackboard key-name)]
-                                 :when entry]
-                             [key-name (:value entry)]))
-        ;; Request metadata for usage tracking
-        ;; Disable validation since inputs may be JSON serialized
-        ;; The node's :model rides through as a per-request override.
-        llm-options (cond-> (assoc options :validate? false)
-                         (:model node) (assoc :model (:model node)))]
-    (try
-      (let [response (llm/predict provider module input-values llm-options)
-            ;; Response now has {:outputs {...} :usage {...} :model "..."}
-            bool-result (get-in response [:outputs :result])
-            duration-ms (- (System/currentTimeMillis) start-time)]
-        {:status :success
-         :result (boolean bool-result)
-         :duration-ms duration-ms
-         :usage (normalize-usage (:usage response))
-         :model (:model response)})
-      (catch Exception e
-        {:status :failure
-         :error (.getMessage e)
-         :duration-ms (- (System/currentTimeMillis) start-time)}))))
+  (let [answer-key :result
+        ;; Reads without a declared schema fall back to a string field, as
+        ;; the condition has always tolerated undeclared reads.
+        condition-bb (reduce (fn [bb k]
+                               (if (get-in bb [k :schema])
+                                 bb
+                                 (assoc-in bb [k :schema] :string)))
+                             (assoc blackboard answer-key
+                                    {:key answer-key
+                                     :schema [:boolean
+                                              {:description "True if the condition is met, false otherwise"}]})
+                             (:reads node))
+        leaf (-> node
+                 (select-keys [:id :name :instruction :reads :model :options])
+                 (assoc :writes [answer-key]))
+        ;; A finite answer is requested as a structured (function-calling)
+        ;; response by default: in marker mode a bare "true" with no field
+        ;; marker is unparseable (the whole-text fallback covers only string
+        ;; outputs). An explicit caller/node option still wins.
+        result (execute-ai leaf condition-bb provider
+                           :options (merge {:use-function-calling? true} options))
+        answer (get-in result [:outputs answer-key])
+        valid? (and (= :success (:status result)) (boolean? answer))
+        base (dissoc result :outputs :rejected-writes)]
+    (cond
+      valid?
+      (if answer
+        (assoc base :status :success :result true)
+        (assoc base :status :failure :result false
+               :error "Condition evaluated to false"))
+
+      ;; The provider returned, but without a usable boolean answer: a
+      ;; structured provider failure, never a semantic negative.
+      (= :success (:status result))
+      (assoc base :status :failure
+             :failure-kind :schema-validation-failed
+             :error "Model-backed condition returned no valid boolean answer")
+
+      :else
+      (cond-> base
+        (and (= :failure (:status result)) (nil? (:failure-kind result)) (contains? result :outputs))
+        (assoc :failure-kind :schema-validation-failed)))))
+
+(defn execute-decision
+  "Execute a model decision: a leaf whose single declared write is a finite
+   answer (boolean, or one of an offered set of identified options), under the
+   SAME execution policy as a model leaf.
+
+   The decision is expressed as a synthetic leaf whose one write is the answer
+   key with a finite schema built from the options actually offered, then
+   delegated to `execute-ai`, so provider retry, backoff, deadline, LLM-call
+   budget reservation, per-node model choice and failure capture are shared.
+
+   Offered options: the answer key's static schema (`:boolean`, or an enum with
+   `:descriptions`), or, with :options-from, the run-time value of that read key
+   (`[{:id :description}]`). Every option id and description is rendered into
+   the provider-facing instruction.
+
+   Returns the `execute-ai` result shape plus :decision
+   `{:offered [...] :answer v :abstained? bool [:set-aside v]}`.
+   A valid answer is :status :success with :outputs {answer-key value}. A
+   missing, nil or out-of-set answer is :status :failure with
+   :failure-kind :schema-validation-failed and NO :outputs. No confidence is
+   synthesised: the floor is judged against a provider-reported :confidence
+   only (none is reported in this runtime yet), so a configured floor abstains."
+  [node blackboard provider & {:keys [options] :or {options {}}}]
+  (let [answer-key (first (:writes node))
+        fail (fn [error offered]
+               {:status :failure
+                :failure-kind :schema-validation-failed
+                :error error
+                :duration-ms 0
+                :decision {:offered (vec offered) :abstained? false}})
+        runtime? (some? (:options-from node))
+        runtime-opts (when runtime?
+                       (decision/runtime-options
+                        (get-in blackboard [(:options-from node) :value])))
+        static (when-not runtime?
+                 (decision/schema-options (get-in blackboard [answer-key :schema])))
+        kind (if runtime? :enum (:kind static))
+        option-list (cond
+                      runtime? runtime-opts
+                      (= :enum kind) (mapv (fn [id] {:id id
+                                                     :description (get (:descriptions static) id)})
+                                           (:ids static))
+                      :else nil)
+        offered (if (= :boolean kind) [true false] (mapv :id option-list))]
+    (cond
+      (nil? kind)
+      (fail (str "Decision '" (:name node) "' offers no valid options: answer key "
+                 (pr-str answer-key) " is not boolean or a finite enum"
+                 (when runtime? (str " and read key " (pr-str (:options-from node))
+                                     " holds no identified options")))
+            [])
+
+      (and runtime? (nil? runtime-opts))
+      (fail (str "Decision '" (:name node) "' read key " (pr-str (:options-from node))
+                 " holds no non-empty vector of {:id :description} options")
+            [])
+
+      (and (some? (:abstain node)) (not (some #(= (:abstain node) %) offered)))
+      (fail (str "Decision '" (:name node) "' abstention option " (pr-str (:abstain node))
+                 " is not one of the offered options " (pr-str offered))
+            offered)
+
+      :else
+      (let [offer-text (decision/render-options kind option-list)
+            answer-schema (if (= :boolean kind)
+                            [:boolean {:description (str "The decision's answer. " offer-text)}]
+                            (into [:enum {:description (str "The chosen option id. " offer-text)
+                                          :descriptions (into {}
+                                                              (keep (fn [{:keys [id description]}]
+                                                                      (when description [id description])))
+                                                              option-list)}]
+                                  offered))
+            decision-bb (reduce (fn [bb k]
+                                  (if (get-in bb [k :schema])
+                                    bb
+                                    (assoc-in bb [k :schema] :string)))
+                                (assoc blackboard answer-key
+                                       {:key answer-key :schema answer-schema})
+                                (:reads node))
+            leaf (-> node
+                     (select-keys [:id :name :reads :model :options])
+                     (assoc :instruction (str (:instruction node) "\n\n" offer-text)
+                            :writes [answer-key]))
+            ;; Structured (function-calling) response by default — found live:
+            ;; a chat model answering with the bare option id and no field
+            ;; marker is unparseable in marker mode, whose whole-text fallback
+            ;; covers only string outputs. An explicit node option still wins;
+            ;; a native decision provider ignores this flag.
+            result (execute-ai leaf decision-bb provider
+                               :options (merge {:use-function-calling? true} options))
+            answer (get-in result [:outputs answer-key])
+            ;; The decision has exactly one provider-facing output, so its
+            ;; evidence is the single entry the provider reported (if any).
+            reported (some-> (:decisions result) vals first)
+            reported-record (select-keys reported [:probabilities :confidence :probability])
+            base (dissoc result :outputs :rejected-writes :decisions)]
+        (if (= :success (:status result))
+          (let [{:keys [valid? value record]}
+                (decision/judge {:offered offered
+                                 :abstain (:abstain node)
+                                 :min-confidence (:min-confidence node)}
+                                answer
+                                (:confidence reported))
+                record (merge record reported-record)]
+            (if valid?
+              (assoc base :outputs {answer-key value} :decision record)
+              (assoc base :status :failure
+                     :failure-kind :schema-validation-failed
+                     :error (str "Model decision '" (:name node)
+                                 "' returned no answer among the offered options "
+                                 (pr-str offered))
+                     :decision record)))
+          (cond-> (assoc base :decision {:offered (vec offered) :abstained? false})
+            (and (= :failure (:status result)) (nil? (:failure-kind result))
+                 (contains? result :outputs))
+            (assoc :failure-kind :schema-validation-failed)))))))
 
 ;; =============================================================================
 ;; REPL Researcher Execution (RLM Pattern)
@@ -4969,6 +5114,10 @@
                                                        :node-attempt current-node-attempt
                                                        :max-node-attempts max-node-attempts)
                                        :stream stream)
+                       :decision (execute-decision node blackboard provider
+                                                   :options (assoc execution-options
+                                                                   :node-attempt current-node-attempt
+                                                                   :max-node-attempts max-node-attempts))
                        :code (execute-code node blackboard context)
                        :tool {:status :failure
                               :error "Tool executor not yet implemented"
