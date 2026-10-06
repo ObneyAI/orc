@@ -763,9 +763,9 @@
                          (sheet/delegate "second" :target-sheet-id child-id
                            :reads [:input] :writes [:result]))))
           result (sheet/execute ctx parent-id {:input "same"} :timeout-ms 3000)
-          family (get-in (h/run-query ctx {:query/name :sheet/get-trace-family
-                                            :trace-id (:trace-id result)})
-                         [:query/result])
+          ;; The trace projection is asynchronous: wait for the root and both
+          ;; children, as every other trace-family read in this file does.
+          family (settled-family ctx (:trace-id result) 3)
           children (filter :parent-trace-id (:traces family))
           deliveries (filter #(and (= :sheet/node-execution-completed (:event/type %))
                                    (:completion-id %))
