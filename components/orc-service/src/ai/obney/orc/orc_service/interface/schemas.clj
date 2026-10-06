@@ -80,7 +80,7 @@
 (def structured-failure-kind
   [:enum :transport-failure :missing-forced-tool-call
    :tool-call-parsing-failed :schema-validation-failed
-   :empty-provider-response])
+   :empty-provider-response :provider-finish-error])
 
 (def provider-failure-evidence
   [:map
@@ -88,6 +88,7 @@
    [:model {:optional true} [:maybe :string]]
    [:response-id {:optional true} [:maybe :string]]
    [:finish-reason {:optional true} [:maybe :string]]
+   [:native-finish-reason {:optional true} [:maybe :string]]
    [:tool-call-present? {:optional true} :boolean]
    [:tool-call-name {:optional true} [:maybe :string]]
    [:usage {:optional true} [:maybe [:map
