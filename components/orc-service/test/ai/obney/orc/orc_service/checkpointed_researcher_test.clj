@@ -91,6 +91,13 @@
       (throw (ex-info "researcher provider did not start" {}))))
   (throw (ex-info "parallel sibling ended the parent" {})))
 
+;; The campaign deadline is absolute. These fixtures stamp it when the test
+;; starts, but recovery runs only after processors stop and restart, which can
+;; take longer than 15 s inside a long full-suite JVM. That made the campaign
+;; time out before its first recovered model call. The headroom keeps the
+;; deadline out of what these recovery tests assert.
+(def ^:private recovery-headroom-ms 120000)
+
 (deftest det-e2e-235-automatic-recovery-recognises-a-researcher-frontier
   (testing "rebuilt runtimes resume a yielded campaign without execute or resume calls"
     ;; This tracer owns recovery ordering, not scheduler throughput. Dedicated
@@ -127,7 +134,7 @@
                           :cumulative-tree-ms 0
                           :iteration-attempts {}
                           :campaign-started-at-ms now-ms
-                          :campaign-deadline-ms (+ now-ms 15000)}
+                          :campaign-deadline-ms (+ now-ms recovery-headroom-ms)}
             iteration-record {:iteration-index 0
                               :attempt-ordinal 0
                               :status :success
@@ -319,7 +326,7 @@
                             :cumulative-tree-ms 0
                             :iteration-attempts {}
                             :campaign-started-at-ms now-ms
-                            :campaign-deadline-ms (+ now-ms 15000)}
+                            :campaign-deadline-ms (+ now-ms recovery-headroom-ms)}
               iteration-record {:iteration-index 0
                                 :attempt-ordinal 0
                                 :status :success
@@ -1000,7 +1007,7 @@
                           :cumulative-tree-ms 0
                           :iteration-attempts {}
                           :campaign-started-at-ms now-ms
-                          :campaign-deadline-ms (+ now-ms 15000)}
+                          :campaign-deadline-ms (+ now-ms recovery-headroom-ms)}
             iteration-record {:iteration-index 0
                               :attempt-ordinal 0
                               :status :success
@@ -1144,7 +1151,7 @@
                           :cumulative-tree-ms 0
                           :iteration-attempts {}
                           :campaign-started-at-ms now-ms
-                          :campaign-deadline-ms (+ now-ms 15000)}
+                          :campaign-deadline-ms (+ now-ms recovery-headroom-ms)}
             iteration-record {:iteration-index 0
                               :attempt-ordinal 0
                               :status :success
