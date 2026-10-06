@@ -21,6 +21,7 @@
             ;; DSL for workflow building
             [ai.obney.orc.orc-service.core.dsl :as dsl]
             [ai.obney.orc.orc-service.core.family-usage :as family-usage]
+            [ai.obney.orc.orc-service.core.execution-family :as execution-family]
             ;; Resolving blackboard values from the canonical write log
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             ;; WS-2a: the orc block-signal primitive (opaque payload)
@@ -85,6 +86,10 @@
 
 ;; Family usage: provider usage of an execution plus all its descendants.
 (def get-family-usage family-usage/get-family-usage)
+
+;; Execution family: every node execution of an execution and of every nested
+;; child execution, in durable completion order, with resolved values.
+(def get-execution-family execution-family/get-execution-family)
 
 ;; Tick functions
 (def get-tick rm/get-tick)

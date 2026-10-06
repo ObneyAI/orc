@@ -1005,11 +1005,11 @@
   {:authorized? authenticated?}
   "Set which evaluation judges apply to a node.
 
-   Gap-5: accepts both `:leaf` and `:repl-researcher` node types. The
-   judge runtime fires on `:sheet/node-execution-completed` events
-   regardless of executor kind; allowing repl-researcher attachment
-   lets consumers override the Gap-5 default-attachment behavior on
-   any repl-researcher node."
+   Any node of the sheet may carry judges: leaves, researchers, composites
+   (sequence, parallel, fallback, map-each), delegates, conditions and the
+   root. An attached judge monitors the completions of the node it is
+   attached to, so a judge on a composite or delegate grades the whole.
+   An unknown node, or a judge name not declared on the sheet, is rejected."
   [{{:keys [sheet-id node-id judges]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)
@@ -1019,10 +1019,6 @@
       (not node)
       {::anom/category ::anom/not-found
        ::anom/message "Node not found"}
-
-      (not (contains? #{:leaf :repl-researcher} (:type node)))
-      {::anom/category ::anom/incorrect
-       ::anom/message "Only :leaf and :repl-researcher nodes can have evaluation judges"}
 
       (seq unknown-judges)
       {::anom/category ::anom/not-found
