@@ -2696,7 +2696,8 @@
                     result (executor/validate-leaf-outputs blackboard raw-result is-llm-call?)
                   {:keys [status outputs rejected-writes error duration-ms usage raw-response
                           failure-kind provider-evidence block-payload decision]
-                   result-model :model} result
+                   result-model :model
+                   resolved-model :resolved-model} result
                   _ (when is-llm-call?
                       (u/log ::leaf-llm-subcall-completed
                              :node-id node-id
@@ -2757,13 +2758,19 @@
                                    (assoc :read-sources (read-sources (:reads node) blackboard exec-context)))))
                          (seq usage) (assoc :usage usage)
                          decision (assoc :decision decision)
-                         ;; A decision records the model the provider actually
-                         ;; resolved; other leaves keep the node's configured one.
-                         (and is-llm-call? (= :decision executor-type)
-                              (or result-model (:model node)))
+                         ;; ModelLeafRecordsResolvedModel: every model call
+                         ;; records the model the provider reported when it
+                         ;; reported one, else the configured one, in :model.
+                         ;; The two are also kept apart so neither stands in
+                         ;; for the other: :requested-model is only what the
+                         ;; node configured, :resolved-model only what the
+                         ;; provider reported (never invented on a failure).
+                         (and is-llm-call? (or result-model (:model node)))
                          (assoc :model (or result-model (:model node)))
-                         (and is-llm-call? (not= :decision executor-type) (:model node))
-                         (assoc :model (:model node)))))
+                         (and is-llm-call? (:model node))
+                         (assoc :requested-model (:model node))
+                         (and is-llm-call? resolved-model)
+                         (assoc :resolved-model resolved-model))))
               ;; ALSO emit the RLM-specific learning-signal event when an LLM
               ;; call has usage. Carries a precomputed structured node-path
               ;; and an :input-profile derived from the node's :reads so
@@ -4228,7 +4235,7 @@
                               {:status :failure
                                :error "No llm-provider configured for LLM condition"})
                      {:keys [status error duration-ms usage model failure-kind
-                             provider-evidence]} result
+                             provider-evidence resolved-model]} result
                      answer (:result result)
                      ;; true = success; valid false = failure; anything else
                      ;; is a provider outcome carried by the executor status.
@@ -4261,7 +4268,9 @@
                            (seq reads)
                            (assoc :read-sources (read-sources (:reads node) blackboard exec-context))
                            (seq usage) (assoc :usage usage)
-                           model (assoc :model model))))))
+                           model (assoc :model model)
+                           (:model node) (assoc :requested-model (:model node))
+                           resolved-model (assoc :resolved-model resolved-model))))))
              (catch Throwable t
                (if (instance? Exception t)
                  (cp/process-command

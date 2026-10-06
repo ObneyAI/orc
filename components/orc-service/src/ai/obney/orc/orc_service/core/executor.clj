@@ -1800,6 +1800,7 @@
                            (recur {:outputs outputs
                                    :usage (normalize-usage (:usage ev))
                                    :model (or (:model ev) (:model node))
+                                   :resolved-model (:model ev)
                                    :raw-response (:raw-response ev)}))
                   (recur terminal))
                 (or terminal {:error "LLM stream ended without a final result"})))))
@@ -1816,6 +1817,11 @@
                        {:outputs outputs
                         :usage (normalize-usage (:usage result))
                         :model (or (:model result) (:model node))
+                        ;; What the provider REPORTED, apart from the
+                        ;; configured fallback above (ModelLeafRecordsResolvedModel).
+                        ;; Only a metadata envelope can report one: a bare
+                        ;; outputs map may carry a declared write named :model.
+                        :resolved-model (when (:outputs result) (:model result))
                         :provider-evidence
                         (some-> (:provider-evidence result)
                                 (update :usage normalize-usage))
@@ -1893,8 +1899,8 @@
     (loop [attempt 0
            accumulated-usage nil]
       (let [{:keys [options timeout-error]} (prepare-attempt attempt)
-            {:keys [outputs usage model error raw-response failure-kind provider-evidence
-                    decisions]}
+            {:keys [outputs usage model resolved-model error raw-response failure-kind
+                    provider-evidence decisions]}
             (if timeout-error
               {:error timeout-error :budget-timeout? true}
               (try
@@ -1908,7 +1914,8 @@
                       provider-evidence
                       (assoc :provider-evidence provider-evidence
                              :usage (normalize-usage (:usage provider-evidence))
-                             :model (or (:model provider-evidence) (:model node))))))))
+                             :model (or (:model provider-evidence) (:model node))
+                             :resolved-model (:model provider-evidence)))))))
             budget-timeout? (boolean timeout-error)
             ;; Drop nil best-effort writes so an omitted evidence array is the
             ;; node's declared-optional absence, not a nil-gate failure.
@@ -1954,6 +1961,7 @@
                                 :duration-ms (- (System/currentTimeMillis) start-time)}
                          total-usage (assoc :usage total-usage)
                          model (assoc :model model)
+                         resolved-model (assoc :resolved-model resolved-model)
                          failure-kind (assoc :failure-kind failure-kind)
                          provider-evidence (assoc :provider-evidence provider-evidence))]
             (obs/log-ai-execution!
@@ -1998,6 +2006,7 @@
                         ;; Usage is preserved — these tokens were really spent
                         ;; and must not vanish from Phase-2 accounting.
                         :usage total-usage :model model
+                        :resolved-model resolved-model
                         :provider-evidence provider-evidence}]
             (obs/log-unparseable-output!
               {:node-id (:id node) :node-name (:name node) :model model
@@ -2033,6 +2042,7 @@
                               :duration-ms (- (System/currentTimeMillis) start-time)
                               :usage total-usage
                               :model model
+                              :resolved-model resolved-model
                               :failure-kind :schema-validation-failed
                               :provider-evidence provider-evidence)]
             (obs/log-ai-execution!
@@ -2045,7 +2055,8 @@
           :else
           (let [result (cond-> {:status :success :outputs (:outputs schema-result)
                                 :duration-ms (- (System/currentTimeMillis) start-time)
-                                :usage total-usage :model model}
+                                :usage total-usage :model model
+                                :resolved-model resolved-model}
                          raw-response (assoc :raw-response raw-response)
                          (seq decisions) (assoc :decisions decisions))]
             (obs/log-ai-execution!
