@@ -4187,7 +4187,10 @@
       ;; shared LLM-call budget, usage accounting, durable evidence.
       (= :llm-condition node-type)
       ;; execute-llm-condition assembles its prompt from (:reads node) only.
+      ;; A GEPA candidate's instruction for this node (the tick's instruction
+      ;; overrides) replaces the authored one, exactly as on the leaf path.
       (let [tick-ctx (rm/get-tick-execution-context context tick-id)
+            node (apply-instruction-override node (:instruction-overrides tick-ctx))
             blackboard (resolve-blackboard-values context sheet-id tick-id
                                                   (or (:reads node) []))
             provider (:llm-provider context)

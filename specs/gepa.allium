@@ -107,6 +107,13 @@ contract ReflectiveInstructionProposer {
     @invariant RoundRobinComponents
         -- Repeated mutation of a candidate rotates fairly through its named
         -- instruction components rather than repeatedly selecting one component.
+
+    @invariant EveryModelInstructionIsAComponent
+        -- Every node whose behaviour is driven by a model instruction — model
+        -- leaves, model decisions and model-backed conditions — contributes
+        -- its instruction as a named component, and a candidate's instruction
+        -- for a component is the one that node's model actually receives when
+        -- the candidate is evaluated.
 }
 
 contract ParetoPopulationSelection {
