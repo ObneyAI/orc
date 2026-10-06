@@ -110,9 +110,10 @@ contract LeafExecutor {
         -- node; it never falls back to an ungated caller.
 
     @invariant ToolGateSeesInvocationIdentity
-        -- A tool gate is constructed with the identity of the invocation it
-        -- serves: the execution, the node and the effective remaining
-        -- deadline, alongside the execution's durable consumer context.
+        -- A code or tool leaf's tool gate is constructed with the identity of
+        -- the invocation it serves: the execution, the node and the effective
+        -- remaining deadline, alongside the execution's durable consumer
+        -- context.
 
     @invariant DeclaredToolContractsAreEnforced
         -- When a tool's argument or result contract is declared for the node
@@ -123,16 +124,22 @@ contract LeafExecutor {
         -- A side with no declared contract stays untyped, as before. The tool
         -- receives the caller's arguments exactly as given. A researcher's
         -- declared contracts govern the tool calls of its generated subtree
-        -- exactly as they govern its own.
+        -- exactly as they govern its own; generated code may add contracts
+        -- for tools the researcher did not declare but can never relax,
+        -- replace or remove the researcher's.
 
     @invariant ToolArgumentIdentityIsExact
-        -- An argument or result field supplied under two spellings of the
-        -- same name is rejected as invalid rather than collapsed into one,
-        -- so normalisation can never silently replace a supplied value.
+        -- On a side with a declared contract, an argument or result field
+        -- supplied under two spellings of the same name is rejected as invalid
+        -- rather than collapsed into one, so normalisation can never silently
+        -- replace a supplied value.
 
     @invariant ToolOutcomesAreStructured
-        -- Every unsuccessful tool call has one stable outcome kind: invalid
-        -- arguments, invalid result, or tool error. A researcher receives
+        -- Every tool call that fails its declared contract, or whose tool
+        -- itself fails, has one stable outcome kind: invalid arguments,
+        -- invalid result, or tool error. A message names the tool and where
+        -- the contract failed using only declared field names, never a
+        -- supplied value or a supplied undeclared name. A researcher receives
         -- every one of them, for typed and untyped tools alike, as data it can
         -- act on: the kind and a safe message that never echoes the rejected
         -- values or the tool's own error text, except a message the tool's host
@@ -489,7 +496,8 @@ contract ExecutionRecovery {
         -- duplicate resumptions, completions, or externally visible effects.
 
     @invariant OwnedWorkIsNotAbandoned
-        -- Every start of a leaf or delegate carries a durable ownership lease
+        -- Every start of a leaf, delegate or researcher carries a durable
+        -- ownership lease
         -- naming the worker that owns it, from the moment the start is
         -- recorded, including while the work is queued. The owning worker
         -- renews the lease while the work runs, however long it takes.

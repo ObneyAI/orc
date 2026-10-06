@@ -2,9 +2,8 @@
   "Generated from ExecutionRecovery invariants OwnedWorkIsNotAbandoned and
    AbandonedWorkStaysRecoverable (specs/orc-service.allium).
 
-   Reproduces the ordinary-recovery handoff defect through the public runtime:
-   a healthy ordinary code leaf held at a gate must never be invoked a second
-   time by recovery. Ownership is per worker instance (`:orc/instance-id` in
+   Reproduces the replay defect through the public runtime: a healthy ordinary
+   code leaf held at a gate must never be invoked a second time by recovery. Ownership is per worker instance (`:orc/instance-id` in
    the context, defaulting to the real process identity); the lease length is
    `:orc/execution-lease-ms`. A stopped leaf processor stands in for an owner
    that is gone: its starts are recorded but never run or renewed."
@@ -25,6 +24,13 @@
   (when (= ::timeout (deref @gate 20000 ::timeout))
     (throw (ex-info "test gate never released" {})))
   {:out (* 2 (:n inputs))})
+
+(defn- later
+  "The recovering worker's view `hours` after the stopped owner last renewed:
+   a still-renewing in-process owner (a queued start) is only observably gone
+   from a later clock, never from real sleeping."
+  [ctx hours]
+  (assoc ctx :orc/clock-fn #(.plusSeconds (java.time.Instant/now) (* 3600 hours))))
 
 (defn- fq [f] (str "ai.obney.orc.orc-service.execution-lease-recovery-test/" f))
 
@@ -161,7 +167,7 @@
         ;; resumed start (pub/sub delivery is not replayed to late subscribers).
         (let [restarted (restart-leaf-processor! ctx)]
           (try
-            (is (= 1 (count (resumed (sheet/resume-in-progress! recoverer)))))
+            (is (= 1 (count (resumed (sheet/resume-in-progress! (later recoverer 1))))))
             (is (empty? (resumed (sheet/resume-in-progress! recoverer))) "idempotent")
             (let [[original resumed-start] (starts ctx sheet-id node-id)]
               (is (= (:event/id original) (:resumed-from-event-id resumed-start)))
@@ -203,7 +209,7 @@
         (Thread/sleep 900)
         (let [restarted (restart-leaf-processor! ctx)]
           (try
-            (is (= 1 (count (resumed (sheet/resume-in-progress! ctx)))))
+            (is (= 1 (count (resumed (sheet/resume-in-progress! (later ctx 1))))))
             (is (= 6 (get-in (deref run 20000 ::timeout) [:outputs :out])))
             (finally (tp/stop restarted))))))))
 
@@ -222,11 +228,11 @@
             run (future (sheet/execute ctx sheet-id {:n 10} :timeout-ms 30000))]
         (is (h/settle-until! #(= 1 (count (starts ctx sheet-id node-id))) :timeout-ms 10000))
         (Thread/sleep 900)
-        (is (= 1 (count (resumed (sheet/resume-in-progress! first-recoverer)))))
+        (is (= 1 (count (resumed (sheet/resume-in-progress! (later first-recoverer 1))))))
         (Thread/sleep 900)
         (let [restarted (restart-leaf-processor! ctx)]
           (try
-            (is (= 1 (count (resumed (sheet/resume-in-progress! second-recoverer))))
+            (is (= 1 (count (resumed (sheet/resume-in-progress! (later second-recoverer 2)))))
                 "the first resumer stopped too; its lease expired")
             (is (empty? (resumed (sheet/resume-in-progress! second-recoverer))))
             (let [[_ first-resume second-resume] (starts ctx sheet-id node-id)]
@@ -236,7 +242,7 @@
             (finally (tp/stop restarted))))))))
 
 (deftest real-periodic-recovery-scan-leaves-a-healthy-leaf-alone
-  (testing "the handoff reproduction: the actual registered recovery trigger fires while a healthy leaf runs"
+  (testing "the actual registered recovery trigger fires while a healthy leaf runs"
     (reset-gate!)
     (h/with-async-test-context [ctx]
       (let [sheet-id (sheet/build-workflow! ctx (workflow "lease-real-scheduler"))

@@ -992,3 +992,42 @@ One bounded full-bench run took three off-domain tasks end to end: each minted i
 prepend carried the parent's entry and the child line, the campaign succeeded, and its verdict occurrence landed on
 the child. Findings and per-task envelopes live under `development/bench/ood-stress-results/2026-09-16_05*-rs6-*`.
 The classify-only sweeps of June and September, which recorded the unresolved absorption, remain beside them.
+
+## Decision and tool runtime (DET-E2E-297..309)
+
+Behavioural obligations added by the decision + tool runtime arc, each covered through the public
+workflow (DSL → build → execute → durable events and `node-trace-detail`) with only the provider,
+transport or tool seam injected, plus gated REAL-model runs:
+
+- `ModelBackedCondition` (3 invariants + signature) — `model_backed_condition_test.clj`,
+  `real_llm_model_condition_e2e_test.clj` (DET-E2E-297/298).
+- `ModelDecision` (6 + signature) — `model_decision_test.clj`, `model_decision_protocol_test.clj`,
+  `real_llm_decision_e2e_test.clj` (DET-E2E-300/301).
+- llm `DecisionProtocolPrediction` (5 + signature) — `components/llm/.../decision_protocol_test.clj`,
+  `real_jev_decision_test.clj` (DET-E2E-299). Validation holds documented definitions to within the
+  provider's reported resolution (real OpenRouter responses round to 0.01).
+- `LeafExecutor` additions (`CodeLeafToolGateIsPreserved`, `ToolGateSeesInvocationIdentity`,
+  `DeclaredToolContractsAreEnforced`, `ToolArgumentIdentityIsExact`, `ToolOutcomesAreStructured`,
+  `ToolLeafCallsOnlyAuthoredTools`) — `code_leaf_tool_gate_test.clj`,
+  `tool_contract_enforcement_test.clj`, `tool_seam_unification_test.clj`, `tool_leaf_test.clj`,
+  `weed_followups_test.clj` (DET-E2E-302/303/305/306).
+- `CheckpointedResearcherExecution` `GeneratedChildToolCallsAreCheckpointed` —
+  `generated_child_receipts_test.clj` (DET-E2E-306).
+- `ExecutionRecovery` `OwnedWorkIsNotAbandoned`, `AbandonedWorkStaysRecoverable` —
+  `execution_lease_recovery_test.clj` (incl. the actual registered periodic trigger; proven to fail
+  on the pre-lease code), `weed_followups_test.clj`, and a two-JVM SQLite crash/restart probe
+  (DET-E2E-304).
+- `DelegationBoundary` (4 + signature) — `delegation_boundary_test.clj`, `weed_followups_test.clj`
+  (DET-E2E-307).
+- mcp-sheet-builder `ExecutorsUseTheNodesToolCaller` — `tool_seam_unification_test.clj`,
+  `weed_followups_test.clj` (DET-E2E-305).
+- gepa `EveryModelInstructionIsAComponent` — `components/gepa/.../decision_instructions_test.clj`
+  (DET-E2E-308).
+- End to end on real models (Jev + Gemini): `real_llm_arc_e2e_test.clj` (DET-E2E-309).
+
+Obligation line: 33 obligations, 33 covered, 0 uncovered. A whole-spec weed (check mode) over these
+obligations classified every divergence: code bugs fixed with RED tests (`weed_followups_test.clj`),
+spec bugs tended (gate identity scoped to code/tool leaves; two-spellings scoped to declared sides;
+outcome kinds scoped to contract and tool failures; GEPA components scoped to leaves, decisions and
+conditions). Diagnostic baseline unchanged: `allium check`/`analyse specs` = 151 diagnostics
+(115 information, 36 warnings), 0 errors — the arc adds prose invariants only.

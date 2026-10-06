@@ -665,6 +665,18 @@
 ;; Usage Normalization
 ;; =============================================================================
 
+(defn- usage-cost
+  "The provider-reported :cost of a usage map when it is a number, else nil."
+  [usage]
+  (let [c (:cost usage)] (when (number? c) c)))
+
+(defn- add-cost
+  "Add `usage`'s :cost (when present) onto the accumulator's :cost."
+  [acc usage]
+  (if-let [c (usage-cost usage)]
+    (assoc acc :cost (+ (or (:cost acc) 0) c))
+    acc))
+
 (defn- normalize-usage
   "Normalize ORC LLM/litellm usage map to kebab-case.
    Handles both snake_case (raw API) and kebab-case (already normalized) inputs."
@@ -1081,7 +1093,8 @@
 (defn- inject-tool-caller-fn
   "Phase 4B: Walk a canonical-DSL emit-tree! tree and inject the parent
    repl-researcher's `:tool-caller-fn` (gated tool-caller builder FQN) into
-   each (sheet/code ...) form that does not already declare one.
+   each (sheet/code ...) form, overriding any gate the model declared; the
+   researcher's contracts are merged over any model-declared ones.
 
    No-op when tool-caller-fn is nil (no parent gate) — backwards compatible,
    the child code nodes use the static (:call-tool-fn context) unchanged.
@@ -1103,13 +1116,20 @@
                   (= 'sheet/code (first node)))
            (let [opts (try (apply hash-map (rest node)) (catch Exception _ nil))]
              (if opts
-               (cond-> node
-                 (and tool-caller-fn (not (contains? opts :tool-caller-fn)))
-                 (concat [:tool-caller-fn tool-caller-fn])
-                 ;; The researcher's declared contracts govern its generated
-                 ;; subtree exactly as they govern its own tool calls.
-                 (and (seq tool-contracts) (not (contains? opts :tool-contracts)))
-                 (concat [:tool-contracts tool-contracts]))
+               ;; The researcher's gate and contracts ALWAYS govern its
+               ;; generated subtree: a model-authored gate is ignored, and a
+               ;; model-authored contract may only ADD a tool the researcher
+               ;; did not declare (the researcher wins per tool).
+               (let [opts' (cond-> opts
+                             tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+                             (seq tool-contracts)
+                             (assoc :tool-contracts
+                                    (merge (when (map? (:tool-contracts opts))
+                                             (:tool-contracts opts))
+                                           tool-contracts)))]
+                 (if (= opts opts')
+                   node
+                   (apply list 'sheet/code (mapcat identity opts'))))
                node))
            node))
        tree))))
@@ -3785,7 +3805,8 @@
                    (-> acc
                        (update :prompt-tokens (fnil + 0) (or (:prompt-tokens u) 0))
                        (update :completion-tokens (fnil + 0) (or (:completion-tokens u) 0))
-                       (update :total-tokens (fnil + 0) (or (:total-tokens u) 0))))))
+                       (update :total-tokens (fnil + 0) (or (:total-tokens u) 0))
+                       (add-cost u)))))
 
         ;; Persistent sandbox-vars across iterations (for store!/get-var)
         sandbox-vars (atom (or (:sandbox-vars checkpoint) {}))
@@ -4467,9 +4488,11 @@
                 _ (when-let [u (normalize-usage (:usage llm-result))]
                     (swap! total-usage
                            (fn [acc]
-                             {:prompt-tokens (+ (:prompt-tokens acc 0) (:prompt-tokens u))
-                              :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens u))
-                              :total-tokens (+ (:total-tokens acc 0) (:total-tokens u))})))]
+                             (-> {:prompt-tokens (+ (:prompt-tokens acc 0) (:prompt-tokens u))
+                                  :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens u))
+                                  :total-tokens (+ (:total-tokens acc 0) (:total-tokens u))}
+                                 (cond-> (:cost acc) (assoc :cost (:cost acc)))
+                                 (add-cost (:usage llm-result))))))]
 
             (cond
                 (str/blank? code)
@@ -5166,7 +5189,8 @@
                                                      (or (:completion-tokens p2-usage) 0))
                                              (update :total-tokens
                                                      (fnil + 0 0)
-                                                     (or (:total-tokens p2-usage) 0))))))
+                                                     (or (:total-tokens p2-usage) 0))
+                                             (add-cost p2-usage)))))
                             _ (dbg "\n[DEBUG RLM] Recursive recur — :tree-results entries:"
                                    (count (:tree-results @sandbox-vars))
                                    "summary status:" (:status summary))
@@ -5237,6 +5261,9 @@
                                                                           (:completion-tokens p2-usage 0))
                                                     :total-tokens (+ (:total-tokens p1-usage 0)
                                                                      (:total-tokens p2-usage 0))}
+                                             (or (usage-cost p1-usage) (usage-cost p2-usage))
+                                             (assoc :cost (+ (or (usage-cost p1-usage) 0)
+                                                             (or (usage-cost p2-usage) 0)))
                                              (seq p2-by-node) (assoc :by-node p2-by-node))]
                         {:status (:status phase2-result)
                          :outputs (:outputs phase2-result)
@@ -5294,12 +5321,16 @@
       ;; ticks; record this node's own share alongside it.
       (if (:usage result)
         (assoc result :own-usage
-               (let [d @descendant-usage]
-                 (into {}
-                       (map (fn [k]
-                              [k (max 0 (- (or (get (:usage result) k) 0)
-                                           (or (get d k) 0)))]))
-                       [:prompt-tokens :completion-tokens :total-tokens])))
+               (let [d @descendant-usage
+                     tokens (into {}
+                                  (map (fn [k]
+                                         [k (max 0 (- (or (get (:usage result) k) 0)
+                                                      (or (get d k) 0)))]))
+                                  [:prompt-tokens :completion-tokens :total-tokens])]
+                 ;; Own cost = total cost minus descendant cost, when costs exist.
+                 (if-let [total-cost (usage-cost (:usage result))]
+                   (assoc tokens :cost (max 0 (- total-cost (or (usage-cost d) 0))))
+                   tokens)))
         result))))
 
 ;; =============================================================================

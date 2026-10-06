@@ -77,12 +77,33 @@
 (defn- decoded-view [schema value]
   (m/decode schema value key-decoder))
 
+(defn- declared-keys
+  "Every map-entry key declared anywhere in `schema`."
+  [schema]
+  (let [acc (volatile! #{})]
+    (m/walk schema
+            (fn [sch _ children _]
+              (when (#{:map :multi} (m/type sch))
+                (when (= :map (m/type sch))
+                  (vswap! acc into (map first) (m/entries sch))))
+              children))
+    @acc))
+
+(defn- safe-path
+  "A failing path rendered so it can never echo what the caller supplied: an
+   element survives only when it is an index or a key DECLARED in the schema;
+   any other (a supplied undeclared or map-of key) becomes a placeholder."
+  [declared path]
+  (mapv (fn [el] (if (or (integer? el) (contains? declared el)) el "<undeclared>"))
+        path))
+
 (defn- failing-paths
   [schema value]
-  (->> (:errors (m/explain schema (decoded-view schema value)))
-       (map :in)
-       distinct
-       vec))
+  (let [declared (declared-keys schema)]
+    (->> (:errors (m/explain schema (decoded-view schema value)))
+         (map (comp (partial safe-path declared) :in))
+         distinct
+         vec)))
 
 (defn- check!
   "Throw the structured outcome `kind` unless `value` honours `schema` with no

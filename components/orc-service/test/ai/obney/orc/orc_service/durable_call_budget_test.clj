@@ -13,6 +13,11 @@
             [ai.obney.grain.time.interface :as time]
             [clojure.test :refer [deftest is testing]]))
 
+(defn- an-hour-later-clock
+  "Context map whose lease clock reads an hour after the crashed owner's last renewal."
+  [m]
+  (assoc m :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))
+
 (defn- budget-cache-atom []
   (var-get (ns-resolve 'ai.obney.orc.orc-service.core.todo-processors
                        'tick-llm-counts)))
@@ -692,8 +697,9 @@
                           {:outputs {:code "(final! {:summary \"unsafe\"})"}})]
             (let [reopened (h/create-async-test-context
                             {:event-store-conn connection
-                             :context {:llm-provider :test
-                                       :campaign-now-ms-fn (constantly 1000)}})
+                             :context (an-hour-later-clock
+                                       {:llm-provider :test
+                                        :campaign-now-ms-fn (constantly 1000)})})
                   _ (reset! reopened-context reopened)
                   triggers
                   (periodic/start-periodic-triggers!

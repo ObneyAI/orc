@@ -13,11 +13,11 @@
 
 (defn invoke-tool
   "Invoke an MCP tool for an executor. The ONE resolution order:
+   0. an explicit dry run (:mcp/dry-run? true) always wins: a stand-in marked
+      {:dry-run? true ...} and NO call of any kind;
    1. the node's tool caller (:call-tool-fn), which carries the configured gate
       and declared contracts;
    2. else the execution's MCP connection (:mcp-session);
-   3. else, only when the execution explicitly asked for a dry run
-      (:mcp/dry-run? true), a stand-in marked {:dry-run? true ...};
    4. else an explicit failure.
   `invocation` is the executor's argument; :context and :execution-context are
   merged under its top-level keys exactly as `call-mcp-tool` reads them."
@@ -26,9 +26,9 @@
         call-tool-fn (:call-tool-fn ctx)
         mcp-session (:mcp-session ctx)]
     (cond
+      (true? (:mcp/dry-run? ctx)) {:dry-run? true :tool tool-name :args tool-args}
       call-tool-fn (call-tool-fn tool-name tool-args)
       mcp-session (mcp-client/call-tool mcp-session tool-name tool-args)
-      (true? (:mcp/dry-run? ctx)) {:dry-run? true :tool tool-name :args tool-args}
       :else (throw (ex-info (str "Cannot invoke MCP tool '" tool-name
                                  "': no tool caller, no MCP session and no dry run requested")
                             {:tool tool-name})))))

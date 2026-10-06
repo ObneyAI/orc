@@ -21,6 +21,12 @@
             [cognitect.anomalies :as anom]
             [malli.core :as m]))
 
+(defn- an-hour-later
+  "The recovering worker's view an hour after the crashed owner last renewed:
+   that lease has expired (ExecutionRecovery OwnedWorkIsNotAbandoned)."
+  [ctx]
+  (assoc ctx :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))
+
 (defn- with-checkpoint-effect-capabilities
   "Supply the durable-effect seam to direct executor tests.
 
@@ -700,7 +706,7 @@
                               :lease-owned? (constantly true)}
                     :event-store-conn event-store-conn})]
               (reset! reopened-context reopened)
-              (let [scan (runtime/resume-in-progress! reopened)]
+              (let [scan (runtime/resume-in-progress! (an-hour-later reopened))]
                 (is (= 1 (count (filter :resumed? scan))) (pr-str scan)))
               (is (h/settle-until!
                    #(some? (runtime/durable-terminal-result reopened tick-id))

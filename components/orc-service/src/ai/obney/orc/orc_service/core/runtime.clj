@@ -698,15 +698,23 @@
                  node-type (:type node)]
              ;; OwnedWorkIsNotAbandoned / AbandonedWorkStaysRecoverable: a leaf
              ;; or delegate start (original or resumed) is resumed only when
-             ;; its owner is known not to be working on it. Researchers keep
-             ;; their epoch-based path: only original starts are candidates.
+             ;; its owner is known not to be working on it. Researchers use the
+             ;; same lease decision for WHETHER to resume (checkpointed or
+             ;; not) and keep their epoch-based path for WHAT is resumed:
+             ;; only original starts are candidates.
              (when (case node-type
                      (:leaf :delegate)
                      (execution-lease/abandoned?
                       context start
                       (get renewals-by-start (:event/id start))
                       (value-log/exec-context (:inputs start)))
-                     :repl-researcher (nil? (:resumed-from-event-id start))
+                     :repl-researcher (and (nil? (:resumed-from-event-id start))
+                                           (execution-lease/abandoned?
+                                            context start
+                                            (get renewals-by-start (:event/id start))
+                                            (value-log/exec-context (:inputs start))
+                                            {:fenced? (boolean
+                                                       (researcher-mode/checkpointed? node))}))
                      false)
                (let [researcher-ownership-epoch
                      (when (researcher-mode/checkpointed? node)

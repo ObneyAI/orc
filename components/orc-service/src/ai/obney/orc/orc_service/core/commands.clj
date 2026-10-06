@@ -1252,7 +1252,13 @@
                   (execution-lease/leased-node?
                    (get-in (rm/get-tick-execution-context ctx tick-id)
                            [:nodes-by-id node-id]))
-                  (merge (execution-lease/fields ctx))
+                  (as-> body
+                        (do (execution-lease/track-queued!
+                             ctx (get-in (rm/get-tick-execution-context ctx tick-id)
+                                         [:nodes-by-id node-id])
+                             {:sheet-id sheet-id :tick-id tick-id
+                              :node-id node-id :inputs inputs})
+                            (merge body (execution-lease/fields ctx))))
                   researcher-ownership-epoch
                   (assoc :researcher-ownership-epoch
                          researcher-ownership-epoch))})]

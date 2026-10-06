@@ -2944,6 +2944,11 @@
                      :llm-call-budget (:budget budget-root)
                      :llm-budget-root-sheet-id (:sheet-id budget-root)
                      :llm-budget-root-tick-id (:tick-id budget-root)))]
+        (let [lease (execution-lease/begin!
+                     context {:sheet-id sheet-id :tick-id tick-id :node-id node-id
+                              :exec-context exec-context
+                              :start-event-id (:event/id event)})]
+        (try
         (execution-budget/registered-future
          checkpointed? tick-id node-id
          (let [researcher-monotonic-ms-fn
@@ -3819,6 +3824,7 @@
                   (execution-budget/stop-ownership-monitor!
                    researcher-lease-monitor))
                 (finally
+                  (execution-lease/end! lease)
                   (when-let [worker-finished!
                              (:researcher-worker-finished-fn context)]
                     ;; Lifecycle instrumentation must never change the worker's
@@ -3827,7 +3833,10 @@
                     (try
                       (worker-finished!)
                       (catch Throwable _
-                        nil))))))))))
+                        nil)))))))))
+        (catch Throwable t
+          (execution-lease/end! lease)
+          (throw t)))))
         nil)))
 
 ;; =============================================================================
