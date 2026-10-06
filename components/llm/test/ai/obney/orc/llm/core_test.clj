@@ -891,3 +891,62 @@
                   {:choices [{:message {:content "[[ ## verdict ## ]]\ntrue\n\nsee [[ ## verdict ## ]] above"}}]})]
     (is (= {:verdict "above"}
            (llm/predict :test verdict-spec {:question "Grounded?"} {:validate? false})))))
+
+;; --------------------------------------------------------------------------- ;;
+;; DeclaredMeaningReachesTheModel (llm.allium): input descriptions reach the
+;; model whether the request is marker-form or function-calling.
+;; --------------------------------------------------------------------------- ;;
+
+(def ^:private described-inputs-spec
+  {:inputs [{:name :claim :spec :string :description "The claim under review"}
+            {:name :evidence :spec :string :description "Evidence offered for the claim"}
+            {:name :note :spec :string}]
+   :outputs [{:name :answer :spec :string :description "The verdict"}]
+   :instructions "Judge the claim."})
+
+(def ^:private described-inputs-values
+  {:claim "Water boils at 100C" :evidence "Textbook chapter 3" :note "n/a"})
+
+(defn- captured-user-text
+  [function-calling?]
+  (let [captured (atom nil)]
+    (with-redefs [router/supports-function-calling? (constantly function-calling?)
+                  router/completion
+                  (fn [_provider request]
+                    (reset! captured request)
+                    (if function-calling?
+                      {:choices [{:message {:tool-calls
+                                            [{:function {:name "submit_response"
+                                                         :arguments "{\"answer\":\"ok\"}"}}]}}]}
+                      {:choices [{:message {:content "[[ ## answer ## ]]\nok"}}]}))]
+      (llm/predict :test described-inputs-spec described-inputs-values {:validate? false})
+      (let [content (get-in @captured [:messages 0 :content])]
+        (if (string? content) content (pr-str content))))))
+
+(deftest function-calling-request-carries-each-input-description-beside-its-value
+  (let [text (captured-user-text true)]
+    (is (str/includes? text "The claim under review"))
+    (is (str/includes? text "Evidence offered for the claim"))
+    (is (str/includes? text "Water boils at 100C"))
+    (is (str/includes? text "Textbook chapter 3"))
+    (testing "description sits next to its own value"
+      (is (re-find #"(?s)claim[^\n]*The claim under review[^\n]*Water boils at 100C|claim[^\n]*Water boils at 100C" text))
+      (is (< (str/index-of text "The claim under review")
+             (str/index-of text "Water boils at 100C")
+             (str/index-of text "Evidence offered for the claim")
+             (str/index-of text "Textbook chapter 3"))))
+    (testing "an input without a description renders as before"
+      (is (str/includes? text "note: n/a")))))
+
+(deftest marker-request-body-is-unchanged-by-input-description-rendering
+  ;; Baseline captured from the marker path before the function-calling fix.
+  (is (= (str "Your input fields are:\n1. `claim` (str): The claim under review\n"
+              "2. `evidence` (str): Evidence offered for the claim\n3. `note` (str): \n"
+              "Your output fields are:\n1. `answer` (str): The verdict\n"
+              "All interactions will be structured in the following way, with the appropriate values filled in.\n\n"
+              "[[ ## claim ## ]]\n{claim}\n\n[[ ## evidence ## ]]\n{evidence}\n\n[[ ## note ## ]]\n{note}\n\n"
+              "[[ ## answer ## ]]\n{answer}\n[[ ## completed ## ]]\n"
+              "In adhering to this structure, your instructions are: Judge the claim.\n\n"
+              "[[ ## claim ## ]]\nWater boils at 100C\n\n[[ ## evidence ## ]]\nTextbook chapter 3\n\n"
+              "[[ ## note ## ]]\nn/a")
+         (captured-user-text false))))

@@ -189,10 +189,15 @@
   (let [image-names (set (map :name (filter #(= :image (:type %)) (:inputs spec))))]
     (str/join
      "\n\n"
-     (for [{:keys [name]} (:inputs spec)
+     (for [{:keys [name description]} (:inputs spec)
            :when (not (image-names name))]
        (str (when marker? (str "[[ ## " (clojure.core/name name) " ## ]]\n"))
-            (when-not marker? (str (clojure.core/name name) ": "))
+            ;; Function path has no `spec->prompt` preamble, so the declared
+            ;; description travels with the value (DeclaredMeaningReachesTheModel).
+            (when-not marker?
+              (str (clojure.core/name name)
+                   (when-not (str/blank? description) (str " (" description ")"))
+                   ": "))
             (get inputs name ""))))))
 
 (defn- marker-request [spec inputs options]
