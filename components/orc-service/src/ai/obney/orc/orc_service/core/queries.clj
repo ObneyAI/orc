@@ -526,6 +526,7 @@
                                %)
                             tick-events)]
         {:query/result
+         (merge
          {:node-id node-id
           :trace-instance-id trace-instance-id
           :exec-context (:exec-context node-trace)
@@ -544,7 +545,10 @@
           :failure-kind (:failure-kind completed)
           :condition-answer (:condition-answer completed)
           :decision (:decision completed)
-          :provider-evidence (:provider-evidence completed)}})
+          :provider-evidence (:provider-evidence completed)}
+         ;; ModelLeafRecordsResolvedModel: each present only when recorded, so
+         ;; an absent configured or reported model reads as absent.
+         (select-keys completed [:model :requested-model :resolved-model]))})
       {::anom/category ::anom/not-found
        ::anom/message (str "Node trace not found: " trace-instance-id)})))
 

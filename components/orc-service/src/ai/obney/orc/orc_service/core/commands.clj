@@ -1748,7 +1748,8 @@
             status writes rejected-writes write-sources write-references? duration-ms
             observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage own-usage model
             node-type completion-kind raw-response failure-kind provider-evidence
-            condition-answer decision block-payload read-sources]} :command
+            condition-answer decision block-payload read-sources
+            requested-model resolved-model]} :command
     :as ctx}]
   (if (or (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
           (and completion-id
@@ -1909,6 +1910,10 @@
                                     (seq usage) (assoc :usage usage)
                                     (seq own-usage) (assoc :own-usage own-usage)
                                     model (assoc :model model)
+                                    ;; ModelLeafRecordsResolvedModel: the configured
+                                    ;; and the provider-reported model, kept apart.
+                                    requested-model (assoc :requested-model requested-model)
+                                    resolved-model (assoc :resolved-model resolved-model)
                                     ;; C-2a-2: propagate :node-type so the
                                     ;; per-node-type aggregator can partition
                                     ;; without looking up via the sheets RM.

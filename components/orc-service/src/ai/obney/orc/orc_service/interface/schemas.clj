@@ -1074,6 +1074,13 @@
     ;; Resolved provider model for durable LLM-call provenance. Present on
     ;; every model-backed leaf completion; absent on deterministic leaves.
     [:model {:optional true} :string]
+    ;; ModelLeafRecordsResolvedModel: the model the node was configured with
+    ;; (absent when it runs on the provider's default) and the model the
+    ;; provider reported using (absent when none was reported, and on failures
+    ;; that carry no provider evidence). :model above is the resolved one when
+    ;; reported, else the configured one.
+    [:requested-model {:optional true} :string]
+    [:resolved-model {:optional true} :string]
     ;; D-008: present when a map-each terminates in :partial or :failure.
     [:partial-summary {:optional true} partial-summary]
     ;; C-2a-2: node-type keyword (:llm, :code, :map-each, :parallel, ...).
@@ -1722,6 +1729,9 @@
       [:total-tokens {:optional true} :int]
       [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     [:model {:optional true} :string]
+    ;; See :sheet/complete-node-execution :requested-model / :resolved-model.
+    [:requested-model {:optional true} :string]
+    [:resolved-model {:optional true} :string]
     ;; D-008: present on map-each completion events when status is :partial or :failure.
     [:partial-summary {:optional true} partial-summary]
     ;; C-2a-2: node-type keyword carried through from the command for the
@@ -2498,7 +2508,11 @@
     [:failure-kind {:optional true} [:maybe structured-failure-kind]]
     [:condition-answer {:optional true} [:maybe :boolean]]
     [:decision {:optional true} [:maybe decision-record]]
-    [:provider-evidence {:optional true} [:maybe provider-failure-evidence]]]
+    [:provider-evidence {:optional true} [:maybe provider-failure-evidence]]
+    ;; ModelLeafRecordsResolvedModel, from the node's completion event.
+    [:model {:optional true} [:maybe :string]]
+    [:requested-model {:optional true} [:maybe :string]]
+    [:resolved-model {:optional true} [:maybe :string]]]
 
    ;; Run Detail Screen Query (single trace with full data)
    :sheet/run-detail-screen
