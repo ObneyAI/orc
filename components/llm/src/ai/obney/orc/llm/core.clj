@@ -251,9 +251,42 @@
 ;; Callers whose tool schemas are free of additionalProperties can opt in per node with
 ;; {:force-tool-choice? true}.
 
+;; A map key the contract declares as a string stays a string; keys the contract
+;; leaves to convention are read as keywords. Malli's stock `key-transformer`
+;; keywordizes every key regardless of the declared key type, which made
+;; `[:map ["0" :double]]` unsatisfiable. (The same transformer lives in
+;; orc-service's executor for non-provider leaves; the llm public boundary is
+;; deliberately closed, so it is not exported.)
+(def ^:private declared-string-key-transformer
+  (mt/transformer
+   {:decoders
+    {:map
+     {:compile
+      (fn [schema _]
+        (let [string-keys (into #{} (filter string?) (map first (m/children schema)))]
+          (fn [x]
+            (if (map? x)
+              (reduce-kv (fn [m k v]
+                           (assoc m
+                                  (cond
+                                    (and (string? k) (not (contains? string-keys k)))
+                                    (keyword k)
+                                    ;; A declared string key may arrive as the same
+                                    ;; un-namespaced keyword (SIO parses provider JSON
+                                    ;; with :key-fn keyword). Namespaced keywords and
+                                    ;; undeclared names never map.
+                                    (and (keyword? k) (nil? (namespace k))
+                                         (contains? string-keys (name k)))
+                                    (name k)
+                                    :else k)
+                                  v))
+                         {}
+                         x)
+              x))))}}}))
+
 (def ^:private provider-json-transformer
   (mt/transformer
-   (mt/key-transformer {:decode keyword :encode name})
+   declared-string-key-transformer
    (mt/json-transformer)))
 
 (declare prepare-multi-dispatches)

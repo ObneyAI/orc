@@ -950,3 +950,72 @@
               "[[ ## claim ## ]]\nWater boils at 100C\n\n[[ ## evidence ## ]]\nTextbook chapter 3\n\n"
               "[[ ## note ## ]]\nn/a")
          (captured-user-text false))))
+
+(deftest provider-decode-keeps-declared-string-keys
+  (testing "declared string map keys stay strings; convention keys keywordize"
+    (is (= {"0" 0.41 "1" 0.59}
+           (llm/decode-provider-value [:map ["0" :double] ["1" :double]]
+                                      {"0" 0.41 "1" 0.59})))
+    (is (= {"0" 0.41 "1" 1.0}
+           (llm/decode-provider-value [:map ["0" :double] ["1" :double]]
+                                      {"0" 0.41 "1" 1}))
+        "values still decode through the schema")
+    (is (= {:a 1 "b" 2}
+           (llm/decode-provider-value [:map [:a :int] ["b" :int]]
+                                      {"a" 1 "b" 2})))
+    (is (= {"k" 1.0}
+           (llm/decode-provider-value [:map-of :string :double] {"k" 1})))
+    (is (= {:k 1.0}
+           (llm/decode-provider-value [:map-of :keyword :double] {"k" 1})))
+    (is (= [{"0" 0.1} {"0" 0.9}]
+           (llm/decode-provider-value [:vector [:map ["0" :double]]]
+                                      [{"0" 0.1} {"0" 0.9}])))
+    (is (= {:scores {"0" 1.0} :label "x"}
+           (llm/decode-provider-value [:map [:scores [:map ["0" :double]]] [:label :string]]
+                                      {"scores" {"0" 1} "label" "x"})))))
+
+(def ^:private string-key-output
+  {:inputs []
+   :outputs [{:name :probs :spec [:map ["0" :double] ["1" :double]]}
+             {:name :scores :spec [:map-of :string :double]}
+             {:name :tags :spec [:map-of :keyword :int]}]})
+
+(def ^:private string-key-args
+  (str "{\"probs\":{\"0\":0.41,\"1\":1},"
+       "\"scores\":{\"x\":1},\"tags\":{\"t\":2}}"))
+
+(deftest predict-keeps-declared-string-keys-through-sio-keyword-parsing
+  (testing "function-calling path"
+    (with-redefs
+      [router/supports-function-calling? (constantly true)
+       router/completion
+       (fn [& _]
+         {:choices [{:message {:tool-calls
+                               [{:function {:name "submit_response"
+                                            :arguments string-key-args}}]}}]})]
+      (is (= {:probs {"0" 0.41 "1" 1.0} :scores {"x" 1.0} :tags {:t 2}}
+             (llm/predict :test string-key-output {}
+                          {:validate? true :use-function-calling? true})))))
+  (testing "marker path"
+    (with-redefs
+      [router/supports-function-calling? (constantly false)
+       router/completion
+       (fn [& _]
+         {:choices [{:message {:content
+                               (str "[[ ## probs ## ]]\n{\"0\":0.41,\"1\":1}\n"
+                                    "[[ ## scores ## ]]\n{\"x\":1}\n"
+                                    "[[ ## tags ## ]]\n{\"t\":2}")}}]})]
+      (is (= {:probs {"0" 0.41 "1" 1.0} :scores {"x" 1.0} :tags {:t 2}}
+             (llm/predict :test string-key-output {}
+                          {:validate? true :use-function-calling? false})))))
+  (testing "decode-provider-value recovers keyword-arrived declared string keys only"
+    (is (= {"0" 1.0 :other 2}
+           (llm/decode-provider-value [:map ["0" :double] [:other :int]]
+                                      {:0 1 :other 2})))
+    (is (= {"0" 1.0 :undeclared 2}
+           (llm/decode-provider-value [:map ["0" :double] [:undeclared {:optional true} :int]]
+                                      {:0 1 :undeclared 2})))
+    (let [ns-key (keyword "x" "0")]
+      (is (= {"0" 1.0 ns-key 5}
+             (llm/decode-provider-value [:map ["0" :double] [ns-key {:optional true} :int]]
+                                        {:0 1 ns-key 5}))))))
