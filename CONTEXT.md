@@ -163,3 +163,59 @@ _Avoid_: failed call, lost call
 **Provider-call reservation**:
 A durable campaign-budget slot written immediately before one provider attempt. It belongs to the budget root, campaign iteration, ownership epoch, and node execution that requested the call. It remains spent even when a crash leaves the provider outcome unknown.
 _Avoid_: provider claim (a claim fences one logical campaign effect per ownership epoch; a reservation counts one physical provider attempt)
+
+**Judge**:
+A behaviour that grades recorded work against a rubric. Every judge is an ordinary workflow, built-in or custom, and may delegate, run parallel checks and call tools. It is declared once under a name together with its rubric, its model configuration and its purposes.
+_Avoid_: scorer, evaluator function, metric (a metric is what a judge's results are aggregated into)
+
+**Rubric**:
+The editable grading contract a judge reads: the criterion, the reviewer's stance, a description for every band, and whether feedback is required. Changing the rubric changes the judge's revision, never its tree.
+_Avoid_: prompt, criteria (criteria is one part of a rubric)
+
+**Band**:
+One described level of a rubric's ordered scale. A judge selects a band; the score is derived from it, never reported by the model.
+_Avoid_: rating, raw score
+
+**Judge revision**:
+The identity of a judge's exact definition (its behaviour, rubric and declared model) at the time it assessed something. Results under different revisions are never blended.
+_Avoid_: criteria version, judge version number
+
+**Assessment**:
+One judge's judgment of one assessment subject under one judge revision. It is requested durably when the subject completes and ends scored, failed or ungradable. Delivering the same completion again never creates a second assessment.
+_Avoid_: score (a score is part of a scored assessment), evaluation run
+
+**Assessment subject**:
+The completed execution an assessment is about: one execution of a leaf, a composite, a delegate or the whole tree. Repeated executions of one node in one run are distinct subjects.
+_Avoid_: target, node (a node is a definition; a subject is one execution of it)
+
+**Assessment outcome**:
+How an assessment ended. Scored carries a band, a score and optional feedback. Failed means the judgment could not be carried out (provider error, invalid result, missed deadline, unresolved model). Ungradable means the evidence did not permit a grade, including an exact tie between bands. Pending means it has not ended yet. Only scored outcomes carry a score.
+_Avoid_: zero score, abstention (for a failed or ungradable outcome)
+
+**Monitoring judge**:
+A judge whose results describe how its subjects are performing. Its feedback may be absent, so its results never reach the learning loops.
+_Avoid_: score-only learning judge
+
+**Learning judge**:
+A judge whose results also feed the loops that learn from judge feedback: Living Descriptions, harvest and instruction optimization. A learning judge must require feedback.
+_Avoid_: default judge (the default researcher judges are learning judges, but not every learning judge is a default)
+
+**Execution family**:
+Every node execution beneath one execution, in order, including the executions of workflows it delegated to, each with what it read, wrote, failed with and caused. The evidence a judge of a whole behaviour may read.
+_Avoid_: trace (a trace is one execution's record), lineage (lineage is the parent chain)
+
+**Assessment origin**:
+The durable mark that an execution exists to perform an assessment. It is inherited by the executions it delegates to, and work under it is never itself assessed automatically.
+_Avoid_: judge depth
+
+**Node version**:
+A node's effective definition at the moment it executed. Performance is collected per node version, so a changed instruction or model never blends with what came before.
+_Avoid_: sheet version (a sheet version is a published workflow; one node can change within it)
+
+**Coverage**:
+Beside any grade, how many assessments were expected and how many were scored, failed, ungradable or still pending. A grade without its coverage is never reported.
+_Avoid_: success rate
+
+**Performance threshold crossing**:
+A declared alert's signal that a node version's trailing performance fell below its threshold, raised once per crossing and re-armed on recovery. It prompts a decision; it never starts training by itself.
+_Avoid_: alarm, auto-retrain

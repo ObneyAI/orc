@@ -27,7 +27,14 @@ contract StructuredPrediction {
     @invariant DeclaredStructuredValues
         -- Inputs and outputs are interpreted using the caller's declared
         -- structured contract, including nested values, unions, literals,
-        -- canonical enum spellings, optional values, and images.
+        -- canonical enum spellings, optional values, and images. A map key the
+        -- contract declares as a string stays a string; keys the contract
+        -- leaves to convention are read as keywords.
+
+    @invariant DeclaredMeaningReachesTheModel
+        -- The description declared for each input reaches the model alongside
+        -- its value, whether the request is sent in marker form or through
+        -- function calling.
 
     @invariant OptionalOutputPresence
         -- A declared optional output may be absent from provider tool arguments
@@ -51,7 +58,9 @@ contract StructuredPrediction {
 
     @invariant PredictionMetadata
         -- A metadata-bearing blocking result preserves parsed outputs, token
-        -- usage, resolved model identity, and available response text. When a
+        -- usage, cost when the provider reports it (absent when not reported,
+        -- zero only when reported as zero), resolved model identity, and
+        -- available response text. When a
         -- structured response cannot be decoded, the failure preserves a
         -- sanitized provider-neutral evidence record captured before parsing:
         -- provider and model identity, response identifier, finish reason,
@@ -61,9 +70,12 @@ contract StructuredPrediction {
 
     @invariant StructuredFailureClassification
         -- A forced tool response with no tool call, malformed tool arguments,
-        -- schema-invalid decoded arguments, an empty provider response, and a
-        -- transport failure remain distinguishable by stable failure kinds.
-        -- Existing successful result shapes and values remain unchanged.
+        -- schema-invalid decoded arguments, an empty provider response, a
+        -- response the provider itself finished with an error, and a transport
+        -- failure remain distinguishable by stable failure kinds. A provider
+        -- finish error is a failure even when validation is not requested and
+        -- no tool was forced; its evidence includes the provider's own finish
+        -- detail. Existing successful result shapes and values remain unchanged.
 
     @invariant OneInvocationPerPrediction
         -- One prediction attempt performs at most one provider invocation;
@@ -90,8 +102,8 @@ contract DecisionProtocolPrediction {
         -- engage the decision protocol.
 
     @invariant DecisionModelsAnswerOnlyFiniteQuestions
-        -- A decision model answers declared outputs that are booleans or
-        -- finite option sets. A specification with any other output is
+        -- A decision model answers declared outputs that are booleans, finite
+        -- option sets, or ordered bands. A specification with any other output is
         -- refused before any provider invocation, with a failure naming the
         -- outputs that cannot be decided.
 
@@ -112,7 +124,11 @@ contract DecisionProtocolPrediction {
         -- Each of these holds to within the resolution at which the provider
         -- reports its numbers, and no further (a confidence reported without a
         -- distribution is kept as reported, since nothing can check it). A
-        -- yes/no probability of exactly one half decides nothing. Any
+        -- yes/no probability of exactly one half decides nothing. An ordered
+        -- band is asked as a score over its described levels; the selected
+        -- band is the uniquely most probable level, an exact tie for most
+        -- probable selects no band, and the reported expected position is
+        -- kept as reported and never rounded into a band. Any
         -- violation fails the prediction as schema-invalid; it is never
         -- repaired or replaced. A streaming prediction reaches the same
         -- protocol and ends with that one result or failure.

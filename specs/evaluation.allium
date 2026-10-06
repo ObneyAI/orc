@@ -6,6 +6,10 @@
 -- evidence before verdict, no-run-through validation, four built-in LLM judges,
 -- structural and custom judges, weighted aggregation, asynchronous per-node
 -- evaluation, idempotent score recording, composite scores, and trace summaries.
+-- Judges are behaviours: every judge is an ORC workflow reading a rubric value,
+-- attached to any node scope, and each judgment is a durable assessment with
+-- its own identity, outcome, purpose and provenance. Per-node-version
+-- performance is collected from assessment outcomes.
 -- Excludes: model-provider transport mechanics, prompt/tool-schema
 -- implementation, Grain processor mechanics, logging, and ORC trace storage.
 -- Durable resolved-model and usage provenance are included.
@@ -19,6 +23,9 @@ external entity EvaluationConsumer {}
 external entity OrcNode {
     node_type: String
 }
+
+-- The ORC execution of a judge behaviour on behalf of one assessment.
+external entity JudgeExecution {}
 
 ------------------------------------------------------------
 -- Value Types
@@ -82,6 +89,32 @@ value JudgeConfiguration {
     definition: Any
 }
 
+-- The editable grading contract a judge behaviour reads from its blackboard.
+-- Changing it never changes the judge's tree; it produces a new judge revision.
+value Rubric {
+    criterion: String
+    stance: String
+    scale: DiscreteScale
+    feedback: FeedbackMode
+}
+
+-- Native decision-model evidence for a band chosen from a distribution. The
+-- selected band is the unique most probable level; the distribution, the
+-- provider's expected position and its confidence are kept as returned.
+value BandDistribution {
+    probabilities: Any
+    expected_position: Decimal?
+    confidence: Decimal?
+}
+
+value Coverage {
+    expected: Integer
+    scored: Integer
+    failed: Integer
+    ungradable: Integer
+    pending: Integer
+}
+
 ------------------------------------------------------------
 -- Contracts
 ------------------------------------------------------------
@@ -124,8 +157,11 @@ contract TraceJudge {
         -- other judges evaluating the same completion.
 
     @invariant CustomJudgeConfinement
-        -- A custom judge runs as a bounded ORC subworkflow, must return a numeric
-        -- score from zero through one, and cannot recurse beyond configured depth.
+        -- A judge runs as a bounded ORC workflow. Its result is a band on its
+        -- rubric's scale, from which the score is derived. Work carried out on
+        -- behalf of an assessment is never itself assessed automatically, however
+        -- the work is scheduled and across process restarts; judges may still
+        -- delegate, run parallel checks and call tools inside their own tree.
 
     @invariant JudgesSeeTheWorkNotOnlyItsResult
         -- A judge scoring work that was carried out over several iterations
@@ -143,6 +179,77 @@ contract TraceJudge {
         -- A successful model-backed score retains the resolved model, trace
         -- identity, and token usage that produced it; provider mechanics remain
         -- outside this contract.
+
+    @invariant JudgesAreBehaviours
+        -- Every judge, built-in or custom, is an ORC workflow executed against
+        -- the assessment's evidence, so judge model calls are budgeted,
+        -- accounted, retried and selectable exactly like any other node's.
+        -- Heuristic structural judging is a deterministic code workflow.
+
+    @invariant JudgeModelResolvesLikeAnyNode
+        -- A judge's model comes from its declaration, else from the runtime's
+        -- configured provider, exactly as for any model-backed node. The engine
+        -- carries no built-in judge model. A judge whose model cannot be
+        -- resolved produces a failed assessment that says how to configure one.
+
+    @invariant EvidenceByScope
+        -- By default a judge sees the assessed execution's own resolved reads and
+        -- writes, its instruction, and the original task of the run as a
+        -- separate item. A judge on a composite, delegate or root may also read
+        -- the complete execution family beneath it and the assessments already
+        -- made within it. Child assessments are evidence for the parent judge,
+        -- never a substitute for its own grade. Evidence is never truncated.
+}
+
+contract AssessmentRecording {
+    request: (subject: Any, judge: Judge) -> Assessment
+    record_outcome: (assessment: Assessment, outcome: Any) -> Assessment
+
+    @invariant AssessmentIdentity
+        -- An assessment is identified by the completion it assesses, the judge
+        -- and the judge revision. Delivering the same completion again requests
+        -- nothing new and performs no judging; distinct executions of one node
+        -- in one run are distinct subjects.
+
+    @invariant NothingInvented
+        -- A missing band, an incomplete supporting dimension, blank feedback a
+        -- rubric requires, an unresolved model, a provider failure or a missed
+        -- deadline is a failed or ungradable outcome with its reason; none of
+        -- them becomes a score.
+
+    @invariant FeedbackIsOptional
+        -- A rubric declares whether feedback is required. A score-only
+        -- assessment carries no feedback rather than empty feedback, and no
+        -- explanation is ever synthesized for it.
+
+    @invariant ExactTieIsUngradable
+        -- When a decision model returns an exact tie for the most probable band,
+        -- the assessment is ungradable; the expected position is never rounded
+        -- into a band.
+
+    @invariant HistoryIsAdditive
+        -- Assessment and score records are never rewritten. Records made before
+        -- bands, revisions or node versions were recorded show them as absent.
+}
+
+contract PerformanceMonitoring {
+    performance: (node: OrcNode, node_version: String?, judge: Judge?) -> Any
+
+    @invariant PerformanceIsAlwaysCollected
+        -- Every assessment outcome contributes to the performance of the node
+        -- version it assessed, per judge and judge revision, with coverage
+        -- beside every grade.
+
+    @invariant NodeVersionsDoNotBlend
+        -- A node version is the node's effective definition when it executed;
+        -- performance of different versions is reported separately and can be
+        -- compared.
+
+    @invariant ThresholdWatchingIsOptIn
+        -- Only a declared alert watches a trailing window. A crossing is
+        -- signalled once and re-arms on recovery; a window whose coverage is too
+        -- low signals degraded coverage instead of poor performance. A signal
+        -- never starts training by itself.
 }
 
 contract EvaluationAttachmentResolver {
@@ -155,6 +262,12 @@ contract EvaluationAttachmentResolver {
     @invariant OptInDefaults
         -- With no explicit attachment, the five default judges apply only to
         -- repl-researcher nodes when Living Descriptions are enabled.
+
+    @invariant AttachmentIsMonitoring
+        -- An explicitly attached judge always assesses the completions of the
+        -- node it is attached to, whether or not Living Descriptions are
+        -- enabled. Any node may carry judges: leaves, researchers, composites,
+        -- delegates and the root.
 
     @invariant CompletionKindFiltering
         -- A judge declaring completion kinds runs only for matching non-null
@@ -170,6 +283,17 @@ enum JudgeType {
     heuristic_structural | custom
 }
 
+enum FeedbackMode {
+    required | none
+}
+
+-- What a judge's results are for. Monitoring results describe performance;
+-- learning results also feed the loops that learn from judge feedback, and so
+-- must carry feedback.
+enum JudgePurpose {
+    monitoring | learning
+}
+
 ------------------------------------------------------------
 -- Entities and Variants
 ------------------------------------------------------------
@@ -183,6 +307,34 @@ entity Judge {
     weight: Decimal?
     configuration: JudgeConfiguration
     applicable_completion_kinds: Set<String>?
+    rubric: Rubric?
+    purposes: Set<JudgePurpose>
+    revision: String
+}
+
+entity Assessment {
+    subject_completion: String
+    judge: Judge
+    judge_revision: String
+    node_version: String?
+    -- Assessments whose outcomes this one reads as evidence; fixed when the
+    -- assessment is requested.
+    depends_on: Set<Assessment>
+    status: pending | scored | failed | ungradable
+    band: Integer? when status = scored
+    score: Decimal when status = scored
+    feedback: String? when status = scored
+    band_distribution: BandDistribution?
+    reason: String when status = failed | ungradable
+    model_provenance: ModelProvenance?
+    late: Boolean
+
+    transitions status {
+        pending -> scored
+        pending -> failed
+        pending -> ungradable
+        terminal: scored, failed, ungradable
+    }
 }
 
 entity JudgeScore {
@@ -203,12 +355,111 @@ entity CompositeScore {
     tick_identifier: String
     score: Decimal
     contributing_scores: Set<JudgeScore>
+    coverage: Coverage?
+    partial: Boolean
     emitted_at: Timestamp
 }
 
 ------------------------------------------------------------
 -- Rules
 ------------------------------------------------------------
+
+rule RequestAssessment {
+    when: SubjectCompleted(subject_completion, judge, node_version, depends_on, under_assessment)
+    requires: not under_assessment
+    requires: not exists Assessment{
+        subject_completion: subject_completion,
+        judge: judge,
+        judge_revision: judge.revision
+    }
+
+    ensures: Assessment.created(
+        subject_completion: subject_completion,
+        judge: judge,
+        judge_revision: judge.revision,
+        node_version: node_version,
+        depends_on: depends_on,
+        status: pending,
+        late: false
+    )
+}
+
+rule StartAssessment {
+    when: assessment: Assessment.created
+    requires: assessment.depends_on.all(d => d.status != pending)
+
+    ensures: AssessmentJudgingStarted(assessment: assessment)
+}
+
+rule StartWaitingAssessment {
+    when: dependency: Assessment.status transitions_to scored | failed | ungradable
+    for waiting in Assessments where status = pending:
+        requires: dependency in waiting.depends_on
+        requires: waiting.depends_on.all(d => d.status != pending)
+        ensures: AssessmentJudgingStarted(assessment: waiting)
+}
+
+rule RecordScoredAssessment {
+    when: AssessmentGraded(assessment, band, score, feedback, band_distribution, model_provenance)
+    requires: assessment.status = pending
+    requires: score >= 0
+    requires: score <= 1
+    requires: assessment.judge.rubric = null
+        or assessment.judge.rubric.feedback = none
+        or feedback != null
+
+    ensures: assessment.status = scored
+    ensures: assessment.band = band
+    ensures: assessment.score = score
+    ensures: assessment.feedback = feedback
+    ensures: assessment.band_distribution = band_distribution
+    ensures: assessment.model_provenance = model_provenance
+}
+
+rule RecordFailedAssessment {
+    when: AssessmentFailed(assessment, reason, model_provenance)
+    requires: assessment.status = pending
+
+    ensures: assessment.status = failed
+    ensures: assessment.reason = reason
+    ensures: assessment.model_provenance = model_provenance
+}
+
+rule RecordUngradableAssessment {
+    when: AssessmentUngradable(assessment, reason, band_distribution, model_provenance)
+    requires: assessment.status = pending
+
+    ensures: assessment.status = ungradable
+    ensures: assessment.reason = reason
+    ensures: assessment.band_distribution = band_distribution
+    ensures: assessment.model_provenance = model_provenance
+}
+
+rule RecordLateResult {
+    when: AssessmentResultArrivedLate(assessment)
+    requires: assessment.status = failed
+
+    ensures: assessment.late = true
+}
+
+rule ReviseJudge {
+    when: JudgeRevised(judge, rubric, configuration, revision)
+    requires: revision != judge.revision
+
+    ensures: judge.rubric = rubric
+    ensures: judge.configuration = configuration
+    ensures: judge.revision = revision
+}
+
+rule SignalPerformanceThreshold {
+    when: PerformanceWindowEvaluated(node, node_version, judge, trailing_score, coverage_ratio, alert, previously_crossed)
+    requires: alert != null
+    requires: not previously_crossed
+    requires: coverage_ratio >= alert.min_coverage
+    requires: trailing_score < alert.below
+
+    ensures: PerformanceThresholdCrossed(node: node, node_version: node_version, judge: judge, trailing_score: trailing_score)
+}
 
 rule EvaluateCompletedNode {
     when: NodeCompletionAvailable(trace, effective_judges)
@@ -221,6 +472,9 @@ rule EvaluateCompletedNode {
 
 rule RecordSuccessfulJudgeEvaluation {
     when: JudgeEvaluationSucceeded(judge, trace, result)
+    -- The score record read by the learning loops comes only from judges whose
+    -- purpose includes learning, and only for a scored assessment.
+    requires: learning in judge.purposes
     requires: result.score >= 0
     requires: result.score <= 1
     requires: not exists JudgeScore{
@@ -285,6 +539,26 @@ invariant CompositeScoresAreBounded {
         result.score >= 0 and result.score <= 1
 }
 
+invariant OneAssessmentPerIdentity {
+    for a in Assessments:
+        for b in Assessments:
+            a != b implies not (
+                a.subject_completion = b.subject_completion
+                and a.judge = b.judge
+                and a.judge_revision = b.judge_revision
+            )
+}
+
+invariant ScoredAssessmentsAreBounded {
+    for a in Assessments:
+        a.status = scored implies (a.score >= 0 and a.score <= 1)
+}
+
+invariant LearningJudgesRequireFeedback {
+    for j in Judges:
+        (learning in j.purposes and j.rubric != null) implies j.rubric.feedback = required
+}
+
 invariant OneJudgeScorePerCompletion {
     for a in JudgeScores:
         for b in JudgeScores:
@@ -317,11 +591,17 @@ surface EvaluationAccess {
         Judge
         JudgeScore
         CompositeScore
+        Assessment
+
+    provides:
+        JudgeRevised(judge, rubric, configuration, revision)
 
     contracts:
         fulfils DiscreteBandScoring
         fulfils TraceJudge
         fulfils EvaluationAttachmentResolver
+        fulfils AssessmentRecording
+        fulfils PerformanceMonitoring
 
     @guarantee NonBlockingCompletionProcessing
         -- Node completion processing schedules judge work without waiting for
@@ -329,6 +609,50 @@ surface EvaluationAccess {
         -- score commands.
 
     @guarantee ActionableFeedback
-        -- Every successful score carries dimension-specific feedback suitable
-        -- for human diagnosis and downstream instruction optimization.
+        -- Every successful score from a learning judge carries dimension-specific
+        -- feedback suitable for human diagnosis and downstream instruction
+        -- optimization. Score-only monitoring results never reach the learning
+        -- loops.
+
+    @guarantee HonestComposite
+        -- A composite is formed once per subject after every attached judge's
+        -- assessment has settled, carries coverage, is marked partial when any
+        -- judge did not score, and never mixes monitoring-only and learning
+        -- results.
+
+    @guarantee PayForWhatYouUse
+        -- Execution-family evidence, waits on child assessments, composites,
+        -- learning records and threshold watching do no work unless a judge or
+        -- attachment declares that it needs them.
 }
+
+-- Completions of attached nodes, delivered by ORC execution, are what
+-- assessments are requested for; performance windows are re-evaluated as
+-- outcomes arrive.
+surface NodeCompletionFeed {
+    facing node: OrcNode
+
+    provides:
+        SubjectCompleted(subject_completion, judge, node_version, depends_on, under_assessment)
+        NodeCompletionAvailable(trace, effective_judges)
+        PerformanceWindowEvaluated(node, node_version, judge, trailing_score, coverage_ratio, alert, previously_crossed)
+}
+
+-- A judge behaviour's execution reports how its assessment ended.
+surface AssessmentExecution {
+    facing execution: JudgeExecution
+
+    provides:
+        AssessmentGraded(assessment, band, score, feedback, band_distribution, model_provenance)
+        AssessmentFailed(assessment, reason, model_provenance)
+        AssessmentUngradable(assessment, reason, band_distribution, model_provenance)
+        AssessmentResultArrivedLate(assessment)
+        JudgeEvaluationSucceeded(judge, trace, result)
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Assessment work currently runs as soon as it is requested, without a limit on how many run at once, and work in progress when a process stops stays pending. How many assessments may run concurrently, how is pending work claimed and recovered after a restart, and how are a judge body that outlives its deadline and in-flight work at shutdown stopped or drained?"
+
