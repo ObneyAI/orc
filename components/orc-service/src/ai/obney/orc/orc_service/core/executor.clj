@@ -1665,6 +1665,18 @@
                     :rejected-writes rejected-writes))
          (assoc result :outputs normalized))))))
 
+(def ^:private prediction-envelope-keys
+  "Keys llm/predict adds around :outputs when called with :with-metadata?."
+  #{:outputs :usage :model :raw-response :provider-evidence :decisions})
+
+(defn- prediction-envelope?
+  "True when `result` is llm/predict's metadata envelope rather than a direct
+   flat output map: it has an :outputs key and every key is prediction metadata."
+  [result]
+  (and (map? result)
+       (contains? result :outputs)
+       (every? prediction-envelope-keys (keys result))))
+
 (defn- outputs-have-nil?
   "Check if any output values are nil, including nested maps where all values are nil."
   [outputs]
@@ -1790,7 +1802,12 @@
                                               :fields (reassemble-flattened-outputs
                                                        (:fields ev) output-mapping)}))
                               (recur terminal))
-                  :error (recur {:error (str "LLM stream error: " (pr-str (:error ev)))})
+                  :error (recur (let [{:keys [failure-kind provider-evidence]} (:error ev)]
+                                  (cond-> {:error (str "LLM stream error: " (pr-str (:error ev)))}
+                                    failure-kind (assoc :failure-kind failure-kind)
+                                    provider-evidence
+                                    (assoc :provider-evidence
+                                           (update provider-evidence :usage normalize-usage)))))
                   :final (let [outputs (reassemble-flattened-outputs (:outputs ev) output-mapping)]
                            (when (:fields? stream)
                              (emit-delta! attempt
@@ -1810,10 +1827,23 @@
                    (if predict-stream-v2
                      (try-once-streaming attempt attempt-options)
                      (let [result (llm/predict provider llm-module inputs attempt-options)
-                           ;; ORC LLM returns outputs directly as a flat map, not wrapped in {:outputs ...}
-                           raw-outputs (or (:outputs result) result)
+                           ;; Unwrap EXPLICITLY. A metadata envelope is recognised by
+                           ;; its shape (an :outputs key and nothing but prediction
+                           ;; metadata keys); its :outputs are the node's writes even
+                           ;; when nil. Anything else is a direct flat output map. A nil
+                           ;; :outputs must never promote the envelope's metadata
+                           ;; (:usage, :raw-response, ...) into declared writes.
+                           raw-outputs (if (prediction-envelope? result)
+                                         (:outputs result)
+                                         result)
                            ;; Reassemble flattened outputs back into nested structure
-                           outputs (reassemble-flattened-outputs raw-outputs output-mapping)]
+                           outputs (if (and (prediction-envelope? result)
+                                            (nil? raw-outputs))
+                                     ;; The provider answered with no outputs at all:
+                                     ;; every declared write is unextractable, so the
+                                     ;; nil-gate below fails the node on THOSE keys.
+                                     (zipmap (:writes node) (repeat nil))
+                                     (reassemble-flattened-outputs raw-outputs output-mapping))]
                        {:outputs outputs
                         :usage (normalize-usage (:usage result))
                         :model (or (:model result) (:model node))
@@ -1821,7 +1851,7 @@
                         ;; configured fallback above (ModelLeafRecordsResolvedModel).
                         ;; Only a metadata envelope can report one: a bare
                         ;; outputs map may carry a declared write named :model.
-                        :resolved-model (when (:outputs result) (:model result))
+                        :resolved-model (when (prediction-envelope? result) (:model result))
                         :provider-evidence
                         (some-> (:provider-evidence result)
                                 (update :usage normalize-usage))

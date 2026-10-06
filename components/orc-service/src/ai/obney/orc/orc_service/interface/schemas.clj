@@ -86,7 +86,7 @@
 (def structured-failure-kind
   [:enum :transport-failure :missing-forced-tool-call
    :tool-call-parsing-failed :schema-validation-failed
-   :empty-provider-response
+   :empty-provider-response :provider-finish-error
    ;; A banded decision whose most probable level is an exact tie: no band is
    ;; selected (distinct from a malformed answer).
    :undecided])
@@ -97,6 +97,7 @@
    [:model {:optional true} [:maybe :string]]
    [:response-id {:optional true} [:maybe :string]]
    [:finish-reason {:optional true} [:maybe :string]]
+   [:native-finish-reason {:optional true} [:maybe :string]]
    [:tool-call-present? {:optional true} :boolean]
    [:tool-call-name {:optional true} [:maybe :string]]
    [:usage {:optional true} [:maybe [:map

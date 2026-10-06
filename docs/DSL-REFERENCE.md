@@ -301,10 +301,11 @@ The response is automatically parsed and stored to the specified blackboard key.
 When structured output fails, the node remains `:failure` and its trace carries
 an optional machine-readable `:failure-kind`. Current structured failure kinds
 are `:transport-failure`, `:missing-forced-tool-call`,
-`:tool-call-parsing-failed`, `:schema-validation-failed`, and
-`:empty-provider-response`. The accompanying `:provider-evidence` is a sanitized
-allowlist containing available provider/model identity, response ID, finish
-reason, tool-call presence/name, usage, and `:output-truncated?`. It never
+`:tool-call-parsing-failed`, `:schema-validation-failed`,
+`:empty-provider-response`, and `:provider-finish-error` (the provider itself
+finished the response with an error). The accompanying `:provider-evidence` is a
+sanitized allowlist containing available provider/model identity, response ID,
+finish reason, the provider's native finish detail when reported, tool-call presence/name, usage, and `:output-truncated?`. It never
 contains tool arguments or an arbitrary raw provider envelope.
 
 Use `:sheet/node-trace-detail` with the failed node's `:trace-instance-id` to

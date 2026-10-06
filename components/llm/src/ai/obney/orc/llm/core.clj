@@ -517,8 +517,12 @@
   [provider response]
   (let [choice (-> response :choices first)
         tool-calls (response-tool-calls response)
-        finish-reason (or (:finish-reason choice) (:finish_reason choice))]
-    {:provider (provider-name provider)
+        finish-reason (or (:finish-reason choice) (:finish_reason choice))
+        native-finish-reason (diagnostic-string
+                              (or (:native-finish-reason choice)
+                                  (:native_finish_reason choice)))]
+    (cond->
+     {:provider (provider-name provider)
      :model (diagnostic-string (:model response))
      :response-id (diagnostic-string (:id response))
      :finish-reason (diagnostic-string finish-reason)
@@ -528,7 +532,16 @@
                           (get-in tool-calls [0 :name])))
      :usage (:usage response)
      :output-truncated? (contains? #{"length" :length "max_tokens" :max_tokens}
-                                   finish-reason)}))
+                                   finish-reason)}
+      native-finish-reason (assoc :native-finish-reason native-finish-reason))))
+
+(defn- provider-finish-error?
+  "True when the provider itself reports the first choice finished with an
+   error (finish_reason \"error\"), whatever the request asked for."
+  [response]
+  (let [choice (-> response :choices first)
+        finish-reason (or (:finish-reason choice) (:finish_reason choice))]
+    (= "error" (diagnostic-string finish-reason))))
 
 (defn- structured-failure [message failure-kind evidence & [cause]]
   (ex-info message
@@ -909,6 +922,13 @@
                            response))
         raw-response (-> response :choices first :message :content)
         parsed-result (cond
+                 (provider-finish-error? response)
+                 (throw (structured-failure
+                         (str "Provider finished with an error"
+                              (when-let [detail (:native-finish-reason evidence)]
+                                (str ": " detail)))
+                         :provider-finish-error evidence))
+
                  (and function-calling? (empty? (:choices response)))
                  (throw (structured-failure "Provider returned an empty structured response"
                                             :empty-provider-response evidence))
@@ -985,8 +1005,11 @@
 (defn- error-event [error]
   {:orc/event :error
    :error (if (instance? Throwable error)
-            {:message (.getMessage ^Throwable error)
-             :class (str (class error))}
+            (let [{:keys [failure-kind provider-evidence]} (ex-data error)]
+              (cond-> {:message (.getMessage ^Throwable error)
+                       :class (str (class error))}
+                failure-kind (assoc :failure-kind failure-kind)
+                provider-evidence (assoc :provider-evidence provider-evidence)))
             error)})
 
 (defn- predict-decision-stream
@@ -1042,6 +1065,8 @@
             accumulated (atom "")
             usage (atom nil)
             model (atom nil)
+            response-id (atom nil)
+            finish (atom nil)
             last-fields-at (atom 0)]
         (go-loop []
           (if-let [chunk (<! stream-ch)]
@@ -1055,6 +1080,11 @@
                   (swap! usage accumulate-stream-usage chunk-usage))
                 (when-let [chunk-model (:model chunk)]
                   (reset! model chunk-model))
+                (when-let [chunk-id (:id chunk)]
+                  (reset! response-id chunk-id))
+                (when-let [choice (-> chunk :choices first)]
+                  (when-let [reason (or (:finish-reason choice) (:finish_reason choice))]
+                    (reset! finish {:choice choice})))
                 (when-let [delta (streaming/extract-content chunk)]
                   (swap! accumulated str delta)
                   (>! output-ch {:orc/event :delta :text delta})
@@ -1066,7 +1096,18 @@
                         (reset! last-fields-at now)))))
                 (recur)))
             (try
-              (let [parsed (sio/parse-streaming-output @accumulated spec)
+              (let [_ (when-let [choice (:choice @finish)]
+                        (let [response {:id @response-id :model @model
+                                        :usage (some-> @usage finalize-stream-usage)
+                                        :choices [choice]}]
+                          (when (provider-finish-error? response)
+                            (let [evidence (provider-evidence provider response)]
+                              (throw (structured-failure
+                                      (str "Provider finished with an error"
+                                           (when-let [detail (:native-finish-reason evidence)]
+                                             (str ": " detail)))
+                                      :provider-finish-error evidence))))))
+                    parsed (sio/parse-streaming-output @accumulated spec)
                     ;; See the matching comment in `predict`: dropping a null
                     ;; optional is normalization, independent of :validate?.
                     normalized (drop-null-optional-outputs (:outputs spec) parsed)

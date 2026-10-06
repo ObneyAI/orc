@@ -1019,3 +1019,119 @@
       (is (= {"0" 1.0 ns-key 5}
              (llm/decode-provider-value [:map ["0" :double] [ns-key {:optional true} :int]]
                                         {:0 1 ns-key 5}))))))
+
+;; ---------------------------------------------------------------------------
+;; J21 — a provider that finished with an error is a failure, never an output
+;; ---------------------------------------------------------------------------
+
+(def ^:private finish-error-response
+  {:id "gen-finish-error"
+   :model "google/gemini-2.5-flash"
+   :choices [{:index 0
+              :finish-reason :error
+              :native-finish-reason "MALFORMED_FUNCTION_CALL"
+              :message {:role "assistant" :content nil}}]})
+
+(defn- predict-failure [response options]
+  (with-redefs [router/supports-function-calling? (constantly (:fc? options true))
+                router/completion (fn [& _] response)]
+    (try
+      (llm/predict :openrouter qa {:question "Capital?"}
+                   (merge {:validate? false :with-metadata? true}
+                          (dissoc options :fc?)))
+      (catch clojure.lang.ExceptionInfo e e))))
+
+(deftest a-provider-finish-error-is-a-failure-without-validation-or-forced-tool
+  (let [failure (predict-failure finish-error-response {})
+        data (ex-data failure)]
+    (is (instance? clojure.lang.ExceptionInfo failure))
+    (is (= :provider-finish-error (:failure-kind data)))
+    (is (= {:provider "openrouter"
+            :model "google/gemini-2.5-flash"
+            :response-id "gen-finish-error"
+            :finish-reason "error"
+            :native-finish-reason "MALFORMED_FUNCTION_CALL"
+            :tool-call-present? false
+            :tool-call-name nil
+            :usage nil
+            :output-truncated? false}
+           (:provider-evidence data)))))
+
+(deftest a-provider-finish-error-is-a-failure-on-the-marker-path
+  (let [failure (predict-failure finish-error-response {:fc? false})]
+    (is (= :provider-finish-error (:failure-kind (ex-data failure))))))
+
+(deftest a-provider-finish-error-reports-usage-only-when-the-provider-did
+  (let [usage {:prompt-tokens 5 :completion-tokens 0 :total-tokens 5}
+        failure (predict-failure (assoc finish-error-response :usage usage) {})]
+    (is (= usage (get-in (ex-data failure) [:provider-evidence :usage])))))
+
+(deftest successful-and-neighbouring-shapes-keep-their-classification
+  (testing "a tool-call success with nil text content parses"
+    (is (= {:outputs {:answer "Paris"}}
+           (select-keys
+            (predict-failure
+             {:id "ok" :model "m"
+              :choices [{:finish-reason :tool_calls
+                         :message {:content nil
+                                   :tool-calls [{:function {:name "submit_response"
+                                                            :arguments "{\"answer\":\"Paris\"}"}}]}}]}
+             {})
+            [:outputs]))))
+  (testing "a forced tool with no call stays missing-forced-tool-call"
+    (is (= :missing-forced-tool-call
+           (:failure-kind (ex-data (predict-failure
+                                    {:id "x" :choices [{:finish-reason :stop :message {:content nil}}]}
+                                    {:force-tool-choice? true}))))))
+  (testing "a valid marker response stays valid"
+    (is (= {:answer "Paris"}
+           (:outputs (predict-failure
+                      {:id "m" :model "m"
+                       :choices [{:finish-reason :stop
+                                  :message {:content "[[ ## answer ## ]]\nParis\n[[ ## completed ## ]]"}}]}
+                      {:fc? false})))))
+  (testing "length truncation is not reclassified as a finish error"
+    (let [r (predict-failure
+             {:id "l" :choices [{:finish-reason :length :message {:content nil}}]}
+             {:force-tool-choice? true})]
+      (is (= :missing-forced-tool-call (:failure-kind (ex-data r))))
+      (is (true? (get-in (ex-data r) [:provider-evidence :output-truncated?]))))))
+
+(deftest receipt-82-replay-is-a-provider-finish-error
+  ;; Decoded OpenRouter body of campaign receipt 82 (only the response-shape
+  ;; fields), converted to litellm's transformed choice shape.
+  (let [decoded {:id "gen-1791252150-kF8Cdkfpix3iXEutQA3H"
+                 :model "google/gemini-2.5-flash"
+                 :choices [{:index 0 :finish_reason "error"
+                            :native_finish_reason "MALFORMED_FUNCTION_CALL"
+                            :message {:role "assistant" :content nil}}]}
+        transformed (update decoded :choices
+                            (fn [cs] (mapv (fn [c]
+                                             {:index (:index c)
+                                              :finish-reason (keyword (:finish_reason c))
+                                              :native-finish-reason (:native_finish_reason c)
+                                              :message (:message c)})
+                                           cs)))
+        data (ex-data (predict-failure transformed {}))]
+    (is (= :provider-finish-error (:failure-kind data)))
+    (is (= "MALFORMED_FUNCTION_CALL"
+           (get-in data [:provider-evidence :native-finish-reason])))
+    (is (= "gen-1791252150-kF8Cdkfpix3iXEutQA3H"
+           (get-in data [:provider-evidence :response-id])))))
+
+(deftest streaming-provider-finish-error-is-a-terminal-error-not-a-final
+  (with-redefs [router/completion
+                (fn [& _]
+                  (fake-stream [{:id "gen-stream-err" :model "m"
+                                 :choices [{:delta {:content "partial"}}]}
+                                {:choices [{:delta {}
+                                            :finish-reason :error
+                                            :native-finish-reason "MALFORMED_FUNCTION_CALL"}]}]))]
+    (let [events (drain (llm/predict-stream-v2 :test qa {:question "Capital?"}
+                                                {:debounce-ms 0}))
+          terminal (last events)]
+      (is (= :error (:orc/event terminal)))
+      (is (not-any? #(= :final (:orc/event %)) events))
+      (is (= :provider-finish-error (get-in terminal [:error :failure-kind])))
+      (is (= "MALFORMED_FUNCTION_CALL"
+             (get-in terminal [:error :provider-evidence :native-finish-reason]))))))
