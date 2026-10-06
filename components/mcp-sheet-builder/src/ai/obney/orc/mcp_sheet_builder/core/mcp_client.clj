@@ -799,10 +799,26 @@
   [mcp-conn]
   (list-tools* mcp-conn))
 
+(defn- tool-error-text
+  "The text an isError tool result carries for its caller, bounded."
+  [result]
+  (let [text (->> (:content result) (keep :text) (str/join "\n"))]
+    (subs text 0 (min 500 (count text)))))
+
 (defn call-tool
-  "Call a tool on an MCP connection."
+  "Call a tool on an MCP connection.
+
+   MCP servers report a tool's own failure inside a normal result
+   (`isError: true`, with content meant for the caller). Such a result is a
+   failed call, never a value: it throws, carrying the server's text as
+   `:orc.tool/message` so the tool seam can share it safely with a model."
   [mcp-conn tool-name args]
-  (call-tool* mcp-conn tool-name args))
+  (let [result (call-tool* mcp-conn tool-name args)]
+    (if (true? (:isError result))
+      (throw (ex-info (str "MCP tool " tool-name " reported an error")
+                      {:orc.tool/message (tool-error-text result)
+                       :mcp/tool tool-name}))
+      result)))
 
 (defn close
   "Close an MCP connection."

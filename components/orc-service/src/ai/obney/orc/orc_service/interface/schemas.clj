@@ -20,7 +20,36 @@
 
 (def executor-type
   "Executor types for leaf nodes"
-  [:enum :ai :code :tool])
+  [:enum :ai :code :tool :decision])
+
+(def decision-record
+  "Durable record of one model decision: what was offered, what the provider
+   answered, and whether the answer was set aside for the abstention option.
+   A native decision model's own reported distribution, confidence (choice) or
+   probability (yes/no) is carried exactly as reported; none is ever
+   synthesised from a bare answer, so these keys are absent for providers that
+   report none."
+  [:map {:closed true
+         :description "Durable record of one model decision"}
+   [:offered {:description "Every option id the model was offered, verbatim"}
+    [:vector :any]]
+   [:answer {:optional true
+             :description "The answer the provider returned (present when one was obtained)"}
+    :any]
+   [:abstained? {:description "True when the answer was set aside for the abstention option"}
+    :boolean]
+   [:set-aside {:optional true
+                :description "The answer that was set aside when abstained? is true"}
+    :any]
+   [:probabilities {:optional true
+                    :description "Provider-reported probability per offered option id"}
+    [:map-of :string number?]]
+   [:confidence {:optional true
+                 :description "Provider-reported confidence of a choice, as reported"}
+    number?]
+   [:probability {:optional true
+                  :description "Provider-reported probability that a yes/no proposition holds"}
+    number?]])
 
 (def node-status
   "Node execution status.
@@ -298,7 +327,13 @@
     ;; Executor fields (for leaf nodes)
     [:executor {:optional true} executor-type]     ;; :ai, :code, :tool
     [:model {:optional true} :string]              ;; OpenRouter model ID (e.g., "google/gemini-2.5-flash")
+    ;; :decision executor only: read key holding run-time options, confidence
+    ;; floor and the abstention option written when the floor is not met.
+    [:options-from {:optional true} :keyword]
+    [:min-confidence {:optional true} :double]
+    [:abstain {:optional true} :any]
     [:fn {:optional true} :string]                 ;; Fully-qualified fn symbol for :code executor
+    [:tool {:optional true} :string]               ;; Authored tool name for :tool executor
     [:tools {:optional true} [:vector :keyword]]   ;; Tools available to AI for :ai executor
     [:options {:optional true} :map]               ;; Per-node executor/ORC LLM options
     [:retry {:optional true} [:map
@@ -669,11 +704,16 @@
     [:executor executor-type]
     [:model {:optional true} :string]
     [:fn {:optional true} :string]
+    [:tool {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
+    [:options-from {:optional true} :keyword]
+    [:min-confidence {:optional true} :double]
+    [:abstain {:optional true} :any]
     ;; Phase 4B: opt-in gated tool-caller builder FQN for :code nodes inside
     ;; generated (Phase-2) trees. Mirrors the node-level :tool-caller-fn hook.
-    [:tool-caller-fn {:optional true} :string]]
+    [:tool-caller-fn {:optional true} :string]
+    [:tool-contracts {:optional true} tool-contracts]]
 
    :sheet/set-node-retry
    [:map
@@ -849,6 +889,16 @@
     [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]
     [:inputs [:map-of :keyword :any]]]
 
+   :sheet/renew-node-execution-lease
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:exec-context {:optional true} [:map-of :keyword :any]]
+    [:start-event-id :uuid]
+    [:lease-owner :uuid]
+    [:lease-expires-at :string]]
+
    :sheet/checkpoint-researcher-iteration
    ;; Preserve strict version-1 validation while admitting the split version-2
    ;; write. A partial v2 command must not fall through to the legacy handler.
@@ -995,6 +1045,10 @@
     ;; for declared writes). Persisted so (node-output <node-id>) can
     ;; retrieve the full text post-hoc.
     [:raw-response {:optional true} :string]
+    ;; Model-backed condition: the boolean answer, present only when a valid
+    ;; answer was obtained (absent on provider failure).
+    [:condition-answer {:optional true} :boolean]
+    [:decision {:optional true} decision-record]
     [:failure-kind {:optional true} structured-failure-kind]
     [:provider-evidence {:optional true} provider-failure-evidence]
     ;; Gap-7: carry through to the event body. See :completion-kind on
@@ -1006,7 +1060,17 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
+    ;; The part of :usage this node spent itself. Present only when :usage
+    ;; also folds in generated child ticks (a repl-researcher's Phase-2
+    ;; tree), which record the same tokens on their own completions.
+    [:own-usage {:optional true}
+     [:map
+      [:prompt-tokens {:optional true} :int]
+      [:completion-tokens {:optional true} :int]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     ;; Resolved provider model for durable LLM-call provenance. Present on
     ;; every model-backed leaf completion; absent on deterministic leaves.
     [:model {:optional true} :string]
@@ -1044,7 +1108,8 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     ;; Optional :input-profile keyed by node :reads — describes input
     ;; characteristics so future judges/pattern-matchers can correlate
     ;; outcomes to input shape.
@@ -1362,10 +1427,15 @@
     [:executor executor-type]
     [:model {:optional true} :string]
     [:fn {:optional true} :string]
+    [:tool {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
+    [:options-from {:optional true} :keyword]
+    [:min-confidence {:optional true} :double]
+    [:abstain {:optional true} :any]
     ;; Phase 4B: opt-in gated tool-caller builder FQN (see set-node-executor).
     [:tool-caller-fn {:optional true} :string]
+    [:tool-contracts {:optional true} tool-contracts]
     [:previous-executor {:optional true} executor-type]
     [:previous-model {:optional true} :string]
     [:previous-fn {:optional true} :string]
@@ -1555,7 +1625,22 @@
     [:resumed-from-event-id {:optional true} :uuid]
     ;; Candidate ownership is carried only by a recovered checkpointed
     ;; researcher start. Ordinary starts and leaf/delegate recovery omit it.
-    [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]]
+    [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]
+    ;; OwnedWorkIsNotAbandoned: a leaf or delegate start names the worker that
+    ;; owns it and when that ownership lapses unless renewed. Absent on
+    ;; historical starts, which recovery treats as an expired lease.
+    [:lease-owner {:optional true} :uuid]
+    [:lease-expires-at {:optional true} :string]]
+
+   :sheet/node-execution-lease-renewed
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:exec-context {:optional true} [:map-of :keyword :any]]
+    [:start-event-id :uuid]
+    [:lease-owner :uuid]
+    [:lease-expires-at :string]]
 
    :sheet/ephemeral-evaluations-recorded
    [:map
@@ -1615,6 +1700,10 @@
     ;; completions. Source for the (node-output <node-id>) drill-down
     ;; when a failed LLM leaf has no successful writes to show.
     [:raw-response {:optional true} :string]
+    ;; Model-backed condition: the boolean answer, present only when a valid
+    ;; answer was obtained (absent on provider failure).
+    [:condition-answer {:optional true} :boolean]
+    [:decision {:optional true} decision-record]
     [:failure-kind {:optional true} structured-failure-kind]
     [:provider-evidence {:optional true} provider-failure-evidence]
     ;; Optional per-node token usage when the node was an LLM call.
@@ -1622,7 +1711,16 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
+    ;; See :sheet/complete-node-execution :own-usage. Family-usage sums
+    ;; (or :own-usage :usage) so descendants are never counted twice.
+    [:own-usage {:optional true}
+     [:map
+      [:prompt-tokens {:optional true} :int]
+      [:completion-tokens {:optional true} :int]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     [:model {:optional true} :string]
     ;; D-008: present on map-each completion events when status is :partial or :failure.
     [:partial-summary {:optional true} partial-summary]
@@ -1657,7 +1755,8 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     ;; :input-profile keyed by :reads keys. Each value is
     ;; {:length N :word-count N :line-count N}. Captures input shape
     ;; so future judges can correlate quality outcomes to inputs.
@@ -2397,6 +2496,8 @@
     [:outputs {:optional true} [:maybe :map]]
     [:rejected-outputs {:optional true} [:maybe :map]]
     [:failure-kind {:optional true} [:maybe structured-failure-kind]]
+    [:condition-answer {:optional true} [:maybe :boolean]]
+    [:decision {:optional true} [:maybe decision-record]]
     [:provider-evidence {:optional true} [:maybe provider-failure-evidence]]]
 
    ;; Run Detail Screen Query (single trace with full data)

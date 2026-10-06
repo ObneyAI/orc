@@ -10,9 +10,11 @@
             [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
+            [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
             [ai.obney.orc.orc-service.core.researcher-mode :as researcher-mode]
             [ai.obney.orc.orc-service.core.block :as block]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
+            [ai.obney.orc.orc-service.core.family-usage :as family-usage]
             [ai.obney.orc.orc-service.core.streaming :as streaming]
             [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.core.profile :as profile]
@@ -2302,7 +2304,9 @@
        [(->event
          {:type :sheet/node-execution-started
           :tags (node-execution-tags context sheet-id tick-id root-id)
-          :body {:sheet-id sheet-id
+          :body (execution-lease/stamp
+                 context root-node
+                 {:sheet-id sheet-id
                  :tick-id tick-id
                  :node-id root-id
                  ;; A re-tick reuses the durable tick identity, so iteration
@@ -2312,7 +2316,7 @@
                  ;; newly started tree.
                  :inputs (cond-> {}
                            (> (or (:iteration event) 1) 1)
-                           (assoc ::tick-iteration (:iteration event)))}})]}))))
+                           (assoc ::tick-iteration (:iteration event)))})})]}))))
 
 ;; =============================================================================
 ;; Node Execution Processor
@@ -2445,6 +2449,96 @@
     {}
     (or reads [])))
 
+(defn- provider-policy-options
+  "The execution-policy options handed to a provider invocation (model leaf or
+   model-backed condition): the execution deadline, the shared LLM-call budget
+   reservation, the tick, the correlation context and, for a checkpointed
+   campaign with a durable budget, the durable provider-attempt reservation."
+  [context tick-ctx sheet-id tick-id node-id exec-context]
+  (let [tick-options (:options tick-ctx)
+        checkpointed-campaign? (true? (:checkpointed-campaign? tick-options))
+        durable-budget? (and checkpointed-campaign?
+                             (integer? (:llm-call-budget tick-options))
+                             (pos? (:llm-call-budget tick-options)))
+        reservation-context
+        {:budget-sheet-id (:llm-budget-root-sheet-id tick-options)
+         :budget-tick-id (:llm-budget-root-tick-id tick-options)
+         :sheet-id sheet-id
+         :tick-id tick-id
+         :node-id node-id
+         :campaign-sheet-id (:researcher-campaign-sheet-id tick-options)
+         :campaign-tick-id (:researcher-campaign-tick-id tick-options)
+         :campaign-node-id (:researcher-campaign-node-id tick-options)
+         :iteration-index (:researcher-iteration-index tick-options)
+         :ownership-epoch (:researcher-ownership-epoch tick-options)
+         :budget (:llm-call-budget tick-options)}
+        reserve-provider-attempt!
+        (when durable-budget?
+          (fn [{:keys [logical-action-identity provider-attempt-ordinal]}]
+            (reserve-durable-provider-call-or-cancel!
+             context sheet-id tick-id
+             (assoc reservation-context
+                    :logical-action-identity logical-action-identity
+                    :provider-attempt-ordinal provider-attempt-ordinal))))]
+    (cond->
+     {:execution-deadline-ms (get-in tick-options [:execution-deadline-ms])
+      :reserve-llm-call! #(reserve-llm-call-or-cancel! context tick-ctx sheet-id tick-id)
+      :tick-id tick-id
+      :exec-context exec-context}
+      reserve-provider-attempt!
+      (assoc :reserve-provider-attempt! reserve-provider-attempt!
+             :provider-reservation-context reservation-context))))
+
+(defn- campaign-effect-capabilities
+  "The effect-claim capabilities and durable receipts a generated child leaf
+   needs to checkpoint its tool calls as effects of the checkpointed campaign
+   its tick belongs to (GeneratedChildToolCallsAreCheckpointed). The claims are
+   the campaign's own, under the campaign's identity and ownership epoch; the
+   claim records are read when the leaf starts, so a re-run sees every receipt
+   completed before it. Empty when the tick belongs to no checkpointed
+   campaign."
+  [context tick-options]
+  (let [epoch (:researcher-ownership-epoch tick-options)
+        campaign-sheet-id (:researcher-campaign-sheet-id tick-options)
+        campaign-tick-id (:researcher-campaign-tick-id tick-options)
+        campaign-node-id (:researcher-campaign-node-id tick-options)]
+    (when (and (integer? epoch) (pos? epoch)
+               campaign-sheet-id campaign-tick-id campaign-node-id)
+      (let [budget-root-tick-id (or (:llm-budget-root-tick-id tick-options)
+                                    campaign-tick-id)
+            command (fn [name fields]
+                      (cp/process-command
+                       (assoc context :command
+                              (merge {:command/id (random-uuid)
+                                      :command/timestamp (time/now)
+                                      :command/name name
+                                      :sheet-id campaign-sheet-id
+                                      :tick-id campaign-tick-id
+                                      :node-id campaign-node-id
+                                      :ownership-epoch epoch}
+                                     fields))))]
+        {:researcher-effect-claims
+         (rm/get-researcher-effect-claims context campaign-sheet-id
+                                          campaign-tick-id campaign-node-id)
+         :claim-researcher-effect!
+         (fn [{:keys [iteration-index logical-action-identity attempt-identity
+                      attempt-ordinal kind]}]
+           (command :sheet/claim-researcher-effect
+                    {:budget-root-tick-id budget-root-tick-id
+                     :iteration-index iteration-index
+                     :logical-action-identity logical-action-identity
+                     :attempt-identity attempt-identity
+                     :attempt-ordinal attempt-ordinal
+                     :kind kind
+                     :claimed-at (str (java.time.Instant/now))}))
+         :complete-researcher-effect!
+         (fn [{:keys [logical-action-identity attempt-identity result]}]
+           (command :sheet/complete-researcher-effect
+                    {:logical-action-identity logical-action-identity
+                     :attempt-identity attempt-identity
+                     :result result
+                     :resolved-at (str (java.time.Instant/now))}))}))))
+
 (defn execute-leaf-node
   "Execute a leaf node when node-execution-started is emitted.
    Supports multiple executor types:
@@ -2474,6 +2568,15 @@
                  ;; gives the pipeline a single context-prepend contract.
                  (apply-r05-classifier-context context))]
     (when (= :leaf (:type node))
+      ;; OwnedWorkIsNotAbandoned: the worker accepts the start, and so is
+      ;; running it for recovery's purposes, from the first moment of the
+      ;; handler. The lease ends in the work's own `finally`, or here if the
+      ;; work never launches.
+      (let [lease (execution-lease/begin!
+                   context {:sheet-id sheet-id :tick-id tick-id :node-id node-id
+                            :exec-context (extract-execution-context event-inputs)
+                            :start-event-id (:event/id event)})]
+      (try
       ;; Hydrate only what this leaf declared it reads. gather-inputs,
       ;; extract-read-inputs and compute-input-profile all restrict themselves
       ;; to (:reads node); read-sources needs only :source, which is
@@ -2497,17 +2600,27 @@
             ;; Works at any depth: composites resolve leaves through the same
             ;; per-tick context.
             tool-context (:tool-context tick-ctx)
+            ;; ToolGateSeesInvocationIdentity: a code leaf's consumer tool gate
+            ;; is built with the invocation's tick, node and effective deadline
+            ;; (the same deadline source provider-policy-options uses).
             leaf-context (cond-> (assoc (merge context
                                                 (runtime/ephemeral-context-for tick-id))
-                                        :tick-options (:options tick-ctx))
-                           tool-context (assoc :tool-context tool-context))
+                                        :tick-options (:options tick-ctx)
+                                        :tick-id tick-id
+                                        :node-id node-id
+                                        :execution-deadline-ms
+                                        (get-in tick-ctx [:options :execution-deadline-ms]))
+                           tool-context (assoc :tool-context tool-context)
+                           (#{:code :tool} (:executor node))
+                           (merge (campaign-effect-capabilities
+                                   context (:options tick-ctx))))
             ;; Use provider from context, fall back to default, or use mock if nil
             provider (or llm-provider *default-llm-provider*)
             executor-type (or (:executor node) :ai)
             ;; Extract execution context for correlation
             exec-context (extract-execution-context event-inputs)
             ;; Check LLM budget ONLY for AI executor types (not code)
-            is-llm-call? (and (#{:ai :repl-researcher} executor-type) provider)
+            is-llm-call? (and (#{:ai :decision :repl-researcher} executor-type) provider)
             ;; Stage 2 token streaming: only built when a live subscriber
             ;; opted into deltas for this tick. execute-ai falls back to
             ;; blocking predict when nil (or when ORC LLM lacks
@@ -2534,6 +2647,7 @@
                        :thread (.getName (Thread/currentThread)))))
             (execution-budget/register-work! tick-id node-id (future
             (try
+              (try
               (if (rm/is-tick-or-ancestor-cancelled? context tick-id)
                 ;; Cancellation guard: the tick was cancelled between event
                 ;; emission and this future starting (or while queued). Fail
@@ -2560,71 +2674,29 @@
                                  :instruction-preview instr-preview)))
                     raw-result (cond
                              ;; Code executor doesn't need provider
-                             (= :code executor-type)
+                             (#{:code :tool} executor-type)
                              (executor/execute-leaf node blackboard nil
                                                     :context leaf-context)
                              ;; AI executor with provider
                              provider
-                             (let [tick-options (:options tick-ctx)
-                                   checkpointed-campaign?
-                                   (true? (:checkpointed-campaign? tick-options))
-                                   durable-budget?
-                                   (and checkpointed-campaign?
-                                        (integer? (:llm-call-budget tick-options))
-                                        (pos? (:llm-call-budget tick-options)))
-                                   reservation-context
-                                   {:budget-sheet-id
-                                    (:llm-budget-root-sheet-id tick-options)
-                                    :budget-tick-id
-                                    (:llm-budget-root-tick-id tick-options)
-                                    :sheet-id sheet-id
-                                    :tick-id tick-id
-                                    :node-id node-id
-                                    :campaign-sheet-id
-                                    (:researcher-campaign-sheet-id tick-options)
-                                    :campaign-tick-id
-                                    (:researcher-campaign-tick-id tick-options)
-                                    :campaign-node-id
-                                    (:researcher-campaign-node-id tick-options)
-                                    :iteration-index
-                                    (:researcher-iteration-index tick-options)
-                                   :ownership-epoch
-                                    (:researcher-ownership-epoch tick-options)
-                                    :budget (:llm-call-budget tick-options)}
-                                   reserve-provider-attempt!
-                                   (when durable-budget?
-                                     (fn [{:keys [logical-action-identity
-                                                  provider-attempt-ordinal]}]
-                                       (reserve-durable-provider-call-or-cancel!
-                                        context sheet-id tick-id
-                                        (assoc reservation-context
-                                               :logical-action-identity
-                                               logical-action-identity
-                                               :provider-attempt-ordinal
-                                               provider-attempt-ordinal))))]
-                               (executor/execute-leaf
-                                node blackboard provider
-                                :context leaf-context
-                                :options (cond->
-                                          {:execution-deadline-ms
-                                           (get-in tick-options [:execution-deadline-ms])
-                                           :reserve-llm-call!
-                                           #(reserve-llm-call-or-cancel!
-                                             context tick-ctx sheet-id tick-id)
-                                           :tick-id tick-id
-                                           :exec-context exec-context}
-                                           reserve-provider-attempt!
-                                           (assoc :reserve-provider-attempt!
-                                                  reserve-provider-attempt!
-                                                  :provider-reservation-context
-                                                  reservation-context))
-                                :stream stream-cfg))
+                             (executor/execute-leaf
+                              node blackboard provider
+                              :context leaf-context
+                              :options (provider-policy-options
+                                        context tick-ctx sheet-id tick-id node-id
+                                        exec-context)
+                              :stream stream-cfg)
+                             ;; A decision has no meaningful mock answer
+                             (= :decision executor-type)
+                             {:status :failure
+                              :error "No llm-provider configured for model decision"}
                              ;; No provider - use mock
                              :else
                              (executor/execute-leaf-mock node blackboard))
                     result (executor/validate-leaf-outputs blackboard raw-result is-llm-call?)
                   {:keys [status outputs rejected-writes error duration-ms usage raw-response
-                          failure-kind provider-evidence block-payload]} result
+                          failure-kind provider-evidence block-payload decision]
+                   result-model :model} result
                   _ (when is-llm-call?
                       (u/log ::leaf-llm-subcall-completed
                              :node-id node-id
@@ -2684,7 +2756,13 @@
                                    (seq reads)
                                    (assoc :read-sources (read-sources (:reads node) blackboard exec-context)))))
                          (seq usage) (assoc :usage usage)
-                         (and is-llm-call? (:model node))
+                         decision (assoc :decision decision)
+                         ;; A decision records the model the provider actually
+                         ;; resolved; other leaves keep the node's configured one.
+                         (and is-llm-call? (= :decision executor-type)
+                              (or result-model (:model node)))
+                         (assoc :model (or result-model (:model node)))
+                         (and is-llm-call? (not= :decision executor-type) (:model node))
                          (assoc :model (:model node)))))
               ;; ALSO emit the RLM-specific learning-signal event when an LLM
               ;; call has usage. Carries a precomputed structured node-path
@@ -2744,9 +2822,13 @@
                           :node-id node-id
                           :error (.getMessage t)}))
 
-                :else (throw t)))))))
+                :else (throw t))))
+              (finally (execution-lease/end! lease))))))
         ;; Return nil - completion will be handled by the future via process-command
-        nil))))
+        nil)
+      (catch Throwable t
+        (execution-lease/end! lease)
+        (throw t)))))))
 
 ;; =============================================================================
 ;; REPL Researcher Node Execution Processor
@@ -2862,6 +2944,11 @@
                      :llm-call-budget (:budget budget-root)
                      :llm-budget-root-sheet-id (:sheet-id budget-root)
                      :llm-budget-root-tick-id (:tick-id budget-root)))]
+        (let [lease (execution-lease/begin!
+                     context {:sheet-id sheet-id :tick-id tick-id :node-id node-id
+                              :exec-context exec-context
+                              :start-event-id (:event/id event)})]
+        (try
         (execution-budget/registered-future
          checkpointed? tick-id node-id
          (let [researcher-monotonic-ms-fn
@@ -3471,7 +3558,7 @@
                            validated-result)
                   {:keys [status outputs rejected-writes error duration-ms
                           generated-tree-raw generated-tree-source
-                          iteration-reasonings usage iterations block-payload]} result
+                          iteration-reasonings usage own-usage iterations block-payload]} result
                   ;; Handle :tree-generated status - only propagate raw tree (canonical contains fns)
                   ;; The raw S-expr DSL is pure data and can be serialized to event store
                   effective-status (if (= :tree-generated status) :tree-generated status)
@@ -3630,6 +3717,11 @@
                          ;; Propagate :usage (including :by-node from Phase 2)
                          ;; so per-node detail bubbles up to the parent tick.
                          (seq usage) (assoc :usage usage)
+                         ;; :usage folds in generated child ticks, which record
+                         ;; the same tokens on their own completions; carry this
+                         ;; node's own share so the family total counts each
+                         ;; provider call once.
+                         (and (seq usage) (seq own-usage)) (assoc :own-usage own-usage)
                          (:model node) (assoc :model (:model node))))))))))
             (catch Exception e
               (let [researcher-terminal?
@@ -3732,6 +3824,7 @@
                   (execution-budget/stop-ownership-monitor!
                    researcher-lease-monitor))
                 (finally
+                  (execution-lease/end! lease)
                   (when-let [worker-finished!
                              (:researcher-worker-finished-fn context)]
                     ;; Lifecycle instrumentation must never change the worker's
@@ -3740,7 +3833,10 @@
                     (try
                       (worker-finished!)
                       (catch Throwable _
-                        nil))))))))))
+                        nil)))))))))
+        (catch Throwable t
+          (execution-lease/end! lease)
+          (throw t)))))
         nil)))
 
 ;; =============================================================================
@@ -3859,9 +3955,17 @@
             read-keys (:reads node)
             write-keys (:writes node)
             parent-tick-ctx (rm/get-tick-execution-context context tick-id)
+            ;; FamilyBudgetIsShared: every delegate child, whatever its target,
+            ;; draws on the family's durable budget root. Only checkpointed
+            ;; targets additionally take the durable-reservation path.
             inherited-budget-root
-            (when target-checkpointed-campaign?
-              (durable-budget-root context sheet-id tick-id parent-tick-ctx))
+            (durable-budget-root context sheet-id tick-id parent-tick-ctx)
+            ;; DelegateToolContextCrosses: the child executes with the
+            ;; parent's durable :tool-context and ephemeral tool capabilities.
+            child-exec-context
+            (cond-> (merge context (runtime/ephemeral-context-for tick-id))
+              (:tool-context parent-tick-ctx)
+              (assoc :tool-context (:tool-context parent-tick-ctx)))
             parent-deadline-ms (get-in parent-tick-ctx [:options :execution-deadline-ms])
             local-timeout-ms (or (:delegate-timeout-ms node) 300000)
             timeout-ms (if parent-deadline-ms
@@ -3930,6 +4034,11 @@
                 (release-delegate! child-tick-id)
 
                 :else
+                (let [lease (execution-lease/begin!
+                             context {:sheet-id sheet-id :tick-id tick-id
+                                      :node-id node-id :exec-context exec-context
+                                      :start-event-id (:event/id event)})]
+                (try
                 (future
           (try
             (let [start-time (System/currentTimeMillis)
@@ -3937,7 +4046,7 @@
                   ;; BEFORE dispatch so stream subscribers on the parent tick
                   ;; see the whole cascade.
                   _ (streaming/link-child! tick-id child-tick-id)
-                  child-result (runtime/execute context target-sheet-id
+                  child-result (runtime/execute child-exec-context target-sheet-id
                                            target-inputs
                                            :timeout-ms timeout-ms
                                            :max-ticks max-ticks
@@ -3952,7 +4061,7 @@
                                            :correlation-id correlation-id
                                            :input-sources target-input-sources
                                            :checkpointed-campaign?
-                                           (boolean inherited-budget-root)
+                                           target-checkpointed-campaign?
                                            :llm-call-budget
                                            (:budget inherited-budget-root)
                                            :llm-budget-root-sheet-id
@@ -3993,9 +4102,13 @@
                         :node-id node-id
                         :error (.getMessage e)})))
             (finally
-              (release-delegate! child-tick-id)))
+              (release-delegate! child-tick-id)
+              (execution-lease/end! lease)))
             ;; Return nil - completion handled async via process-command
-            nil)))))))))
+            nil)
+                (catch Throwable t
+                  (execution-lease/end! lease)
+                  (throw t))))))))))))
 
 ;; =============================================================================
 ;; Condition Node Execution Processor
@@ -4078,50 +4191,83 @@
                            :status status}
                     (seq exec-context) (assoc :inputs exec-context))})]})
 
-      ;; LLM condition - async execution via future
+      ;; LLM condition - a provider invocation under the same execution policy
+      ;; as a model leaf: registered work, cancelled-tick guard, deadline,
+      ;; shared LLM-call budget, usage accounting, durable evidence.
       (= :llm-condition node-type)
       ;; execute-llm-condition assembles its prompt from (:reads node) only.
-      (let [blackboard (resolve-blackboard-values context sheet-id tick-id
+      ;; A GEPA candidate's instruction for this node (the tick's instruction
+      ;; overrides) replaces the authored one, exactly as on the leaf path.
+      (let [tick-ctx (rm/get-tick-execution-context context tick-id)
+            node (apply-instruction-override node (:instruction-overrides tick-ctx))
+            blackboard (resolve-blackboard-values context sheet-id tick-id
                                                   (or (:reads node) []))
-            provider (:llm-provider context)]
-        (future
-          (try
-            (let [result (if provider
-                           (executor/execute-llm-condition node blackboard provider
-                                                          :context {:event-store event-store})
-                           ;; No provider - fail with error
-                           {:status :failure
-                            :error "No llm-provider configured for LLM condition"})
-                  {:keys [status result error duration-ms]} result
-                  ;; LLM condition: true = success, false = failure
-                  final-status (if (= :success status)
-                                 (if result :success :failure)
-                                 :failure)]
-              (cp/process-command
-               (assoc context :command
-                      (cond-> {:command/id (random-uuid)
-                               :command/timestamp (time/now)
-                               :command/name :sheet/complete-node-execution
-                               :sheet-id sheet-id
-                               :tick-id tick-id
-                               :node-id node-id
-                               :node-type (:type node)
-                               :status final-status
-                               :writes {}}
-                        duration-ms (assoc :duration-ms duration-ms)
-                        error (assoc :error error)
-                        (seq exec-context) (assoc :inputs exec-context)))))
-            (catch Exception e
-              (cp/process-command
-               (assoc context :command
-                      {:command/id (random-uuid)
-                       :command/timestamp (time/now)
-                       :command/name :sheet/fail-node-execution
-                       :sheet-id sheet-id
-                       :tick-id tick-id
-                       :node-id node-id
-                       :error (.getMessage e)})))))
-        ;; Return nil - completion handled by future
+            provider (:llm-provider context)
+            fail-command
+            (fn [message]
+              {:command/id (random-uuid)
+               :command/timestamp (time/now)
+               :command/name :sheet/fail-node-execution
+               :sheet-id sheet-id
+               :tick-id tick-id
+               :node-id node-id
+               :error message})]
+        (execution-budget/register-work!
+         tick-id node-id
+         (future
+           (try
+             (if (rm/is-tick-or-ancestor-cancelled? context tick-id)
+               (cp/process-command
+                (assoc context :command (fail-command "tick cancelled")))
+               (let [result (if provider
+                              (executor/execute-llm-condition
+                               node blackboard provider
+                               :options (provider-policy-options
+                                         context tick-ctx sheet-id tick-id node-id
+                                         exec-context))
+                              {:status :failure
+                               :error "No llm-provider configured for LLM condition"})
+                     {:keys [status error duration-ms usage model failure-kind
+                             provider-evidence]} result
+                     answer (:result result)
+                     ;; true = success; valid false = failure; anything else
+                     ;; is a provider outcome carried by the executor status.
+                     final-status (if (= :success status) :success status)
+                     final-status (if (#{:success :failure :timeout} final-status)
+                                    final-status
+                                    :failure)
+                     reads (extract-read-inputs (:reads node) blackboard)]
+                 (when usage (add-usage! tick-id usage))
+                 (cp/process-command
+                  (assoc context :command
+                         (cond-> {:command/id (random-uuid)
+                                  :command/timestamp (time/now)
+                                  :command/name :sheet/complete-node-execution
+                                  :sheet-id sheet-id
+                                  :tick-id tick-id
+                                  :node-id node-id
+                                  :node-type (:type node)
+                                  :status final-status
+                                  :writes {}}
+                           duration-ms (assoc :duration-ms duration-ms)
+                           error (assoc :error error)
+                           (boolean? answer) (assoc :condition-answer answer)
+                           (and (not= :success final-status) failure-kind)
+                           (assoc :failure-kind failure-kind)
+                           (and (not= :success final-status) provider-evidence)
+                           (assoc :provider-evidence provider-evidence)
+                           (or (seq exec-context) (seq reads))
+                           (assoc :inputs (merge exec-context reads))
+                           (seq reads)
+                           (assoc :read-sources (read-sources (:reads node) blackboard exec-context))
+                           (seq usage) (assoc :usage usage)
+                           model (assoc :model model))))))
+             (catch Throwable t
+               (if (instance? Exception t)
+                 (cp/process-command
+                  (assoc context :command (fail-command (.getMessage t))))
+                 (throw t))))))
+        ;; Return nil - completion handled by the future
         nil)
 
       ;; Not a condition node
@@ -4264,9 +4410,11 @@
              summary (conj summary)
              true (conj (->event {:type :sheet/node-execution-started
                                   :tags (node-execution-tags context sheet-id tick-id boundary)
-                                  :body {:sheet-id sheet-id :tick-id tick-id
-                                         :node-id boundary
-                                         :inputs (or iteration-context {})}})))}
+                                  :body (execution-lease/stamp
+                                         context (get nodes-by-id boundary)
+                                         {:sheet-id sheet-id :tick-id tick-id
+                                          :node-id boundary
+                                          :inputs (or iteration-context {})})})))}
 
           boundary nil
 
@@ -4325,10 +4473,12 @@
              [(->event
                {:type :sheet/node-execution-started
                 :tags (node-execution-tags context sheet-id tick-id first-child-id)
-                :body {:sheet-id sheet-id
-                       :tick-id tick-id
-                       :node-id first-child-id
-                       :inputs inputs}})]}))))))
+                :body (execution-lease/stamp
+                       context (get nodes-by-id first-child-id)
+                       {:sheet-id sheet-id
+                        :tick-id tick-id
+                        :node-id first-child-id
+                        :inputs inputs})})]}))))))
 
 ;; =============================================================================
 ;; Parallel Node Execution Processor
@@ -4370,10 +4520,12 @@
               (->event
                {:type :sheet/node-execution-started
                 :tags (node-execution-tags context sheet-id tick-id child-id)
-                :body {:sheet-id sheet-id
-                       :tick-id tick-id
-                       :node-id child-id
-                       :inputs exec-context}})))})))))
+                :body (execution-lease/stamp
+                       context (get nodes-by-id child-id)
+                       {:sheet-id sheet-id
+                        :tick-id tick-id
+                        :node-id child-id
+                        :inputs exec-context})})))})))))
 
 ;; =============================================================================
 ;; Child Completion Handler
@@ -4575,10 +4727,12 @@
                     (->event
                      {:type :sheet/node-execution-started
                       :tags (node-execution-tags context sheet-id tick-id next-child-id)
-                      :body {:sheet-id sheet-id
-                             :tick-id tick-id
-                             :node-id next-child-id
-                             :inputs inputs}})]}))
+                      :body (execution-lease/stamp
+                             context (get nodes-by-id next-child-id)
+                             {:sheet-id sheet-id
+                              :tick-id tick-id
+                              :node-id next-child-id
+                              :inputs inputs})})]}))
               ;; All children succeeded — sequence completes.
               ;; D-008 sticky :partial: if ANY prior sibling completed with :partial,
               ;; propagate :partial up so the at-a-glance status truthfully reflects
@@ -4714,10 +4868,12 @@
                  [(->event
                    {:type :sheet/node-execution-started
                     :tags (node-execution-tags context sheet-id tick-id next-child-id)
-                    :body {:sheet-id sheet-id
-                           :tick-id tick-id
-                           :node-id next-child-id
-                           :inputs inputs}})]})
+                    :body (execution-lease/stamp
+                           context (get nodes-by-id next-child-id)
+                           {:sheet-id sheet-id
+                            :tick-id tick-id
+                            :node-id next-child-id
+                            :inputs inputs})})]})
               ;; All children failed - fallback fails
               {:result/events
                [(->event
@@ -4945,7 +5101,8 @@
   (mapcat
    (fn [idx]
      (let [item (nth (:items state) idx)
-           child-id (:child-id state)]
+           child-id (:child-id state)
+           child-node (get (resolve-nodes-by-id context sheet-id tick-id) child-id)]
        [(make-bb-write-event context sheet-id tick-id (:item-key state) item
                              {:node-id child-id
                               :input-seed? true
@@ -4954,10 +5111,12 @@
         (->event
          {:type :sheet/node-execution-started
           :tags (node-execution-tags context sheet-id tick-id child-id)
-          :body {:sheet-id sheet-id :tick-id tick-id :node-id child-id
-                 :inputs {(:item-key state) item
-                          ::map-each-index idx
-                          ::map-each-parent parent-id}}})]))
+          :body (execution-lease/stamp
+                 context child-node
+                 {:sheet-id sheet-id :tick-id tick-id :node-id child-id
+                  :inputs {(:item-key state) item
+                           ::map-each-index idx
+                           ::map-each-parent parent-id}})})]))
    indices))
 
 (defn- declared-map-each-source
@@ -5513,28 +5672,7 @@
 ;; Execution Completion Delivery
 ;; =============================================================================
 
-(defn- tick-family-ids
-  "Return `tick-id` and every transitively nested child tick.
-
-   Child starts carry a [:parent-tick parent-id] tag, so this walk is bounded
-   by the execution tree. It never scans unrelated tenant history."
-  [event-store tenant-id tick-id]
-  (loop [seen #{tick-id}
-         frontier [tick-id]]
-    (if (empty? frontier)
-      seen
-      (let [children
-            (into #{}
-                  (mapcat (fn [parent-id]
-                            (into []
-                                  (comp (map :tick-id)
-                                        (remove seen))
-                                  (es/read event-store
-                                           (cond-> {:types #{:sheet/tree-tick-started}
-                                                    :tags #{[:parent-tick parent-id]}}
-                                             tenant-id (assoc :tenant-id tenant-id))))))
-                  frontier)]
-        (recur (into seen children) (vec children))))))
+(def ^:private tick-family-ids family-usage/tick-family-ids)
 
 (defn- build-node-trace
   "Build a per-node execution trace for a completed tick and its descendants.
@@ -5677,10 +5815,15 @@
         root-status (:root-status event)
         tick-ctx (rm/get-tick-execution-context context tick-id)
         executed-version (:version-number tick-ctx)
+        ;; A model decision's answer key is never null-filled: when the
+        ;; decision failed it wrote nothing, and a fabricated nil under the
+        ;; answer key is exactly what routing guards must never see.
         optional-write-keys (into #{}
-                                  (mapcat (fn [{:keys [writes options]}]
-                                            (filter (set writes)
-                                                    (:optional-writes options))))
+                                  (mapcat (fn [{:keys [writes options executor]}]
+                                            (if (= :decision executor)
+                                              writes
+                                              (filter (set writes)
+                                                      (:optional-writes options)))))
                                   (vals (:nodes-by-id tick-ctx)))
         ;; complete-tree-tick stores only the keys this tick wrote, so the
         ;; full blackboard is rehydrated here from the tick-execution-context
@@ -6444,7 +6587,12 @@
                                                                 :executor (:executor snapshot-node)}
                                                          (:model snapshot-node) (assoc :model (:model snapshot-node))
                                                          (:fn snapshot-node) (assoc :fn (:fn snapshot-node))
-                                                         (:tools snapshot-node) (assoc :tools (:tools snapshot-node)))}))
+                                                         (:tools snapshot-node) (assoc :tools (:tools snapshot-node))
+                                                         (and (= :decision (:executor snapshot-node)) (:options snapshot-node))
+                                                         (assoc :options (:options snapshot-node))
+                                                         (:options-from snapshot-node) (assoc :options-from (:options-from snapshot-node))
+                                                         (:min-confidence snapshot-node) (assoc :min-confidence (:min-confidence snapshot-node))
+                                                         (some? (:abstain snapshot-node)) (assoc :abstain (:abstain snapshot-node)))}))
                                              (when (:retry snapshot-node)
                                                (->event
                                                 {:type :sheet/node-retry-set

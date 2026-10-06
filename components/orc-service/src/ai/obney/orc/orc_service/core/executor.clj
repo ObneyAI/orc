@@ -7,7 +7,7 @@
    Supports multiple executor types:
    - :ai - ORC LLM AI execution with optional model selection
    - :code - Clojure function execution
-   - :tool - Direct tool invocation (future)
+   - :tool - Authored-tool invocation
    - :repl-researcher - Iterative LLM+SCI code execution
 
    Mapping:
@@ -30,9 +30,11 @@
             [ai.obney.orc.orc-service.core.observability :as obs]
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.block :as block]
+            [ai.obney.orc.orc-service.core.decision :as decision]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.iteration-evidence :as iteration-evidence]
             [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
+            [ai.obney.orc.orc-service.core.tool-invocation :as tool-invocation]
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
@@ -663,14 +665,29 @@
 ;; Usage Normalization
 ;; =============================================================================
 
+(defn- usage-cost
+  "The provider-reported :cost of a usage map when it is a number, else nil."
+  [usage]
+  (let [c (:cost usage)] (when (number? c) c)))
+
+(defn- add-cost
+  "Add `usage`'s :cost (when present) onto the accumulator's :cost."
+  [acc usage]
+  (if-let [c (usage-cost usage)]
+    (assoc acc :cost (+ (or (:cost acc) 0) c))
+    acc))
+
 (defn- normalize-usage
   "Normalize ORC LLM/litellm usage map to kebab-case.
    Handles both snake_case (raw API) and kebab-case (already normalized) inputs."
   [usage]
   (when usage
-    {:prompt-tokens (or (:prompt-tokens usage) (:prompt_tokens usage) 0)
-     :completion-tokens (or (:completion-tokens usage) (:completion_tokens usage) 0)
-     :total-tokens (or (:total-tokens usage) (:total_tokens usage) 0)}))
+    (cond-> {:prompt-tokens (or (:prompt-tokens usage) (:prompt_tokens usage) 0)
+             :completion-tokens (or (:completion-tokens usage) (:completion_tokens usage) 0)
+             :total-tokens (or (:total-tokens usage) (:total_tokens usage) 0)}
+      ;; A provider that reports what a call cost (e.g. OpenRouter decisions)
+      ;; keeps that figure; it is never synthesised.
+      (number? (:cost usage)) (assoc :cost (:cost usage)))))
 
 ;; =============================================================================
 ;; Schema Description Generation
@@ -1079,7 +1096,8 @@
 (defn- inject-tool-caller-fn
   "Phase 4B: Walk a canonical-DSL emit-tree! tree and inject the parent
    repl-researcher's `:tool-caller-fn` (gated tool-caller builder FQN) into
-   each (sheet/code ...) form that does not already declare one.
+   each (sheet/code ...) form, overriding any gate the model declared; the
+   researcher's contracts are merged over any model-declared ones.
 
    No-op when tool-caller-fn is nil (no parent gate) — backwards compatible,
    the child code nodes use the static (:call-tool-fn context) unchanged.
@@ -1090,18 +1108,34 @@
    BUILDER FQN onto the generated code nodes so the child tick rebuilds the
    gated caller from its own blackboard :tool-context (plain data, which
    does survive the boundary) — exactly how the parent node builds it."
-  [tree tool-caller-fn]
-  (if (nil? tool-caller-fn)
-    tree
-    (walk/postwalk
-      (fn [node]
-        (if (and (seq? node)
-                 (= 'sheet/code (first node))
-                 (let [opts (try (apply hash-map (rest node)) (catch Exception _ nil))]
-                   (and opts (not (contains? opts :tool-caller-fn)))))
-          (concat node [:tool-caller-fn tool-caller-fn])
-          node))
-      tree)))
+  ([tree tool-caller-fn]
+   (inject-tool-caller-fn tree tool-caller-fn nil))
+  ([tree tool-caller-fn tool-contracts]
+   (if (and (nil? tool-caller-fn) (empty? tool-contracts))
+     tree
+     (walk/postwalk
+       (fn [node]
+         (if (and (seq? node)
+                  (= 'sheet/code (first node)))
+           (let [opts (try (apply hash-map (rest node)) (catch Exception _ nil))]
+             (if opts
+               ;; The researcher's gate and contracts ALWAYS govern its
+               ;; generated subtree: a model-authored gate is ignored, and a
+               ;; model-authored contract may only ADD a tool the researcher
+               ;; did not declare (the researcher wins per tool).
+               (let [opts' (cond-> opts
+                             tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+                             (seq tool-contracts)
+                             (assoc :tool-contracts
+                                    (merge (when (map? (:tool-contracts opts))
+                                             (:tool-contracts opts))
+                                           tool-contracts)))]
+                 (if (= opts opts')
+                   node
+                   (apply list 'sheet/code (mapcat identity opts'))))
+               node))
+           node))
+       tree))))
 
 ;; =============================================================================
 ;; Code Executor
@@ -1189,6 +1223,179 @@
         caller))
     (:call-tool-fn context)))
 
+(declare tool-caller-target tool-caller-arity tool-caller-arity-error)
+
+(defn- dispatch-claimed-tool-effect!
+  "The one claim -> dispatch -> validate -> complete sequence for a
+   checkpoint-safe tool call (LeafExecutor/CheckpointedResearcherExecution
+   EffectsAreClaimedBeforeTheyHappen). Both the inline researcher wrapper and
+   the generated-child wrapper run through here.
+
+   The claim is taken (when a claim capability exists) BEFORE the tool is
+   called; a claim anomaly throws. The tool's result must honour its declared
+   result contract before it is recorded; the durable completion is then
+   written under the same attempt identity, and an anomaly on completion
+   (ownership lost) throws. `wrap-errors?` turns a tool exception into the
+   safe :tool-error outcome (the model-facing researcher behaviour); a code
+   leaf passes false and sees the tool's own exception.
+
+   Returns {:result r :durable-result encoded-r}."
+  [{:keys [claim! complete! codecs contracts tool-name args action-id attempt-id
+           attempt-ordinal iteration-index caller caller-arity tool-context
+           wrap-errors?]}]
+  (let [claim-result (when claim!
+                       (claim! {:iteration-index iteration-index
+                                :logical-action-identity action-id
+                                :attempt-identity attempt-id
+                                :attempt-ordinal attempt-ordinal
+                                :kind :tool}))
+        _ (when (:cognitect.anomalies/category claim-result)
+            (throw (ex-info "Researcher tool claim conflicted"
+                            {:claim-result claim-result
+                             :logical-action-identity action-id
+                             :attempt-identity attempt-id})))
+        result (case caller-arity
+                 3 (if wrap-errors?
+                     (try
+                       (caller tool-name args tool-context)
+                       (catch Exception e
+                         ;; The tool's own failure reaches the researcher as
+                         ;; the safe :tool-error outcome, never its raw message.
+                         (throw (tool-invocation/tool-error tool-name e))))
+                     (caller tool-name args tool-context))
+                 (throw
+                  (ex-info
+                   tool-caller-arity-error
+                   {:expected-arities [3]})))
+        ;; Declared result contract: a violating result is never
+        ;; completed/recorded as a successful value.
+        _ (tool-invocation/validate-result! contracts tool-name result)
+        durable-result (encode-checkpoint-value codecs result)]
+    (when complete!
+      (let [completion (complete! {:logical-action-identity action-id
+                                   :attempt-identity attempt-id
+                                   :result durable-result})]
+        (when (:cognitect.anomalies/category completion)
+          (throw (ex-info "Researcher tool outcome lost ownership"
+                          {:completion-result completion
+                           :logical-action-identity action-id
+                           :attempt-identity attempt-id})))))
+    {:result result :durable-result durable-result}))
+
+(defn- checkpointed-campaign-epoch
+  "The ownership epoch of the checkpointed researcher campaign this tick
+   belongs to, or nil when it belongs to none."
+  [context]
+  (let [epoch (get-in context [:tick-options :researcher-ownership-epoch])]
+    (when (and (integer? epoch) (pos? epoch)) epoch)))
+
+(defn- checkpoint-child-call-tool-fn
+  "Wrap a generated child leaf's tool caller so each call is a campaign effect
+   exactly like an inline researcher tool call
+   (GeneratedChildToolCallsAreCheckpointed): the tool must be declared
+   checkpoint-safe; the call has a stable logical identity under the CAMPAIGN's
+   tick, node and iteration that also names the child node; it is claimed under
+   the campaign's ownership epoch before it begins; it completes with a durable
+   receipt. A call whose receipt is already complete returns the recorded
+   result without calling the tool; a claim with no completed receipt is
+   treated as an inline call's unresolved claim is (the new claim conflicts and
+   the call fails).
+
+   Identity: the child's generated code hash is not available to the child
+   leaf, so the child node id stands in for it. Returns a caller with the same
+   [tool args] / [tool args tool-context] arities."
+  [node context caller]
+  (let [tick-options (:tick-options context)
+        epoch (checkpointed-campaign-epoch context)
+        campaign-tick-id (:researcher-campaign-tick-id tick-options)
+        campaign-node-id (:researcher-campaign-node-id tick-options)
+        iteration-index (:researcher-iteration-index tick-options)
+        codecs (vec (or (:researcher-checkpoint-codecs context) []))
+        claim! (:claim-researcher-effect! context)
+        complete! (:complete-researcher-effect! context)
+        target (tool-caller-target caller)
+        arity (tool-caller-arity target)
+        completed (atom (reduce (fn [acc claim]
+                                  (if (= :completed (:status claim))
+                                    (assoc acc (:logical-action-identity claim)
+                                           (update claim :result
+                                                   #(decode-checkpoint-value codecs %)))
+                                    acc))
+                                {}
+                                (or (:researcher-effect-claims context) [])))
+        call (fn [tool-name args supplied-context]
+               (when-not (true? (get-in (:tool-contracts node)
+                                        [tool-name :checkpoint-safe?]))
+                 (throw (ex-info
+                         (str "Tool " tool-name
+                              " is not declared :checkpoint-safe? for resumable execution")
+                         {:tool tool-name :checkpoint-safe? false})))
+               (when-not (and (ifn? claim!) (ifn? complete!))
+                 (throw (ex-info
+                         "Checkpointed campaign child has no effect claim capability"
+                         {:tool tool-name})))
+               (tool-invocation/validate-arguments! (:tool-contracts node) tool-name args)
+               (let [action-id (researcher-effects/logical-action-identity
+                                {:tick-id campaign-tick-id
+                                 :node-id campaign-node-id
+                                 :iteration-index iteration-index
+                                 :child-node-id (:id node)
+                                 :kind :tool
+                                 :target tool-name
+                                 :arguments (encode-checkpoint-value codecs args)})]
+                 (if-let [receipt (get @completed action-id)]
+                   (:result receipt)
+                   (let [attempt-ordinal 0
+                         attempt-id (researcher-effects/attempt-identity
+                                     action-id epoch attempt-ordinal)
+                         tool-context (merge supplied-context
+                                             (:tool-context context)
+                                             {:orc/idempotency-key action-id
+                                              :orc/researcher-iteration iteration-index})
+                         {:keys [result]}
+                         (dispatch-claimed-tool-effect!
+                          {:claim! claim!
+                           :complete! complete!
+                           :codecs codecs
+                           :contracts (:tool-contracts node)
+                           :tool-name tool-name
+                           :args args
+                           :action-id action-id
+                           :attempt-id attempt-id
+                           :attempt-ordinal attempt-ordinal
+                           :iteration-index iteration-index
+                           :caller target
+                           :caller-arity arity
+                           :tool-context tool-context
+                           :wrap-errors? false})]
+                     (swap! completed assoc action-id {:status :completed :result result})
+                     result))))]
+    (fn
+      ([tool-name args] (call tool-name args nil))
+      ([tool-name args tool-context] (call tool-name args tool-context)))))
+
+(defn- resolve-node-tool-caller
+  "The node's tool caller exactly as a code leaf uses it: the gate (when
+   declared) or the static caller, guarded by the node's declared contracts
+   (the consumer's own tool exceptions pass through unchanged), and, inside a
+   checkpointed campaign's generated child, checkpointed as a campaign effect.
+   Returns nil when no caller is available."
+  [node blackboard context]
+  (let [host-caller (node-call-tool-fn node blackboard context)
+        checkpointed? (and host-caller (checkpointed-campaign-epoch context))
+        ;; A checkpointed effect must hand the host its idempotency key, so the
+        ;; HOST caller (not the contract guard wrapped around it, which accepts
+        ;; both arities) must take (tool-name, args, tool-context). Checked
+        ;; before anything is claimed, with the inline path's message.
+        _ (when (and checkpointed?
+                     (not= 3 (tool-caller-arity (tool-caller-target host-caller))))
+            (throw (ex-info tool-caller-arity-error {:expected-arities [3]})))
+        call-tool-fn (tool-invocation/guarded-call-tool-fn host-caller (:tool-contracts node)
+                                                          :wrap-tool-errors? false)]
+    (if checkpointed?
+      (checkpoint-child-call-tool-fn node context call-tool-fn)
+      call-tool-fn)))
+
 (defn execute-code
   "Execute a Clojure function as a leaf node.
 
@@ -1237,8 +1444,15 @@
               ;; as :call-tool-fn. When absent, node-call-tool-fn returns the
               ;; static (:call-tool-fn context) unchanged — so existing code
               ;; nodes are byte-identical.
-              call-tool-fn (node-call-tool-fn node blackboard context)
-              code-context (assoc context :call-tool-fn call-tool-fn :node node)
+              ;; The gate is built with the invocation identity (node, node id,
+              ;; tick id, effective deadline), so :node is in the context the
+              ;; builder sees. A configured gate that cannot be resolved,
+              ;; throws or returns a non-function throws here and fails the
+              ;; node; the ungated caller is never used in its place.
+              gate-context (cond-> (assoc context :node node)
+                             (:id node) (assoc :node-id (:id node)))
+              call-tool-fn (resolve-node-tool-caller node blackboard gate-context)
+              code-context (assoc gate-context :call-tool-fn call-tool-fn)
               ;; Call the function with context
               result (f (assoc code-context :inputs inputs :execution-context code-context))
               duration-ms (- (System/currentTimeMillis) start-time)
@@ -1313,6 +1527,61 @@
             {:status :blocked
              :block-payload (block/block-payload t)
              :duration-ms (- (System/currentTimeMillis) start-time)}
+            (throw t)))))))
+
+(defn execute-tool
+  "Execute a tool leaf: call the ONE tool named when the workflow was authored
+   (`:tool`) through the node's tool caller (gate, declared contract and, in a
+   checkpointed campaign's child, effect receipts — exactly as a code leaf),
+   with arguments taken from the declared read keys, and write the result to
+   the single declared write key (LeafExecutor ToolLeafCallsOnlyAuthoredTools).
+   A tool name is never taken from the blackboard or from a model. No tool
+   caller available fails explicitly, naming the tool."
+  [node blackboard context]
+  (let [start-time (System/currentTimeMillis)
+        tool-name (:tool node)
+        elapsed #(- (System/currentTimeMillis) start-time)
+        failure (fn [message] {:status :failure :error message :duration-ms (elapsed)})]
+    (cond
+      (not (and (string? tool-name) (not (clojure.string/blank? tool-name))))
+      (failure "Tool executor requires an authored :tool name")
+
+      (not= 1 (count (:writes node)))
+      (failure (str "Tool executor for " tool-name " requires exactly one declared write"))
+
+      :else
+      (try
+        (let [args (reduce (fn [acc key-name]
+                             (let [value (:value (get blackboard key-name))]
+                               (if (nil? value) acc (assoc acc key-name value))))
+                           {}
+                           (:reads node))
+              gate-context (cond-> (assoc context :node node)
+                             (:id node) (assoc :node-id (:id node)))
+              call-tool-fn (resolve-node-tool-caller node blackboard gate-context)]
+          (if-not call-tool-fn
+            (failure (str "No tool caller available to call tool " tool-name))
+            (let [write-key (first (:writes node))
+                  raw (call-tool-fn tool-name args)
+                  ;; Same single-write reconciliation as a code leaf: a map
+                  ;; already keyed by the declared write supplies that value;
+                  ;; any other result is the value itself.
+                  result (if (and (map? raw) (contains? raw write-key))
+                           (get raw write-key)
+                           raw)]
+              (if (nil? result)
+                (failure (str "Tool " tool-name " returned nil for declared write "
+                              (pr-str write-key)))
+                {:status :success
+                 :outputs {write-key result}
+                 :duration-ms (elapsed)}))))
+        (catch Exception e
+          (failure (.getMessage e)))
+        (catch Throwable t
+          (if (block/blocking-condition? t)
+            {:status :blocked
+             :block-payload (block/block-payload t)
+             :duration-ms (elapsed)}
             (throw t)))))))
 
 ;; =============================================================================
@@ -1516,7 +1785,11 @@
                         ;; Verbatim completion text from ORC LLM (:with-metadata? true).
                         ;; Carried so a nil-parse failure can show WHAT the model
                         ;; actually returned instead of discarding it.
-                        :raw-response (:raw-response result)})))
+                        :raw-response (:raw-response result)
+                        ;; A native decision model reports per-question
+                        ;; evidence (distribution, confidence) beside its
+                        ;; outputs; carried so a decision can record it.
+                        :decisions (:decisions result)})))
 
         ;; Compute backoff delay for a given attempt
         backoff-for (fn [attempt]
@@ -1583,7 +1856,8 @@
     (loop [attempt 0
            accumulated-usage nil]
       (let [{:keys [options timeout-error]} (prepare-attempt attempt)
-            {:keys [outputs usage model error raw-response failure-kind provider-evidence]}
+            {:keys [outputs usage model error raw-response failure-kind provider-evidence
+                    decisions]}
             (if timeout-error
               {:error timeout-error :budget-timeout? true}
               (try
@@ -1733,7 +2007,8 @@
           (let [result (cond-> {:status :success :outputs (:outputs schema-result)
                                 :duration-ms (- (System/currentTimeMillis) start-time)
                                 :usage total-usage :model model}
-                         raw-response (assoc :raw-response raw-response))]
+                         raw-response (assoc :raw-response raw-response)
+                         (seq decisions) (assoc :decisions decisions))]
             (obs/log-ai-execution!
               {:node-id (:id node) :node-name (:name node) :model model
                :executor :ai :duration-ms (:duration-ms result)
@@ -1741,63 +2016,194 @@
             result))))))
 
 (defn execute-llm-condition
-  "Execute an LLM condition node - uses LLM to evaluate a yes/no question.
+  "Execute an LLM condition node - a provider invocation that answers a yes/no
+   question, under the SAME execution policy as a model leaf.
+
+   The condition is expressed as a leaf with one declared boolean write
+   (`:result`) and delegated to `execute-ai`, so provider retry, backoff,
+   deadline, LLM-call budget reservation, per-node model choice and
+   structured failure capture are shared rather than re-implemented.
 
    Args:
      node - The llm-condition node map with :instruction, :reads, :model
      blackboard - Map of key -> {:key, :schema, :value, :version}
      provider - ORC LLM provider keyword (e.g., :openrouter)
-     options - Optional ORC LLM options map
+     options - Optional ORC LLM options map (same policy options as execute-ai)
 
    Returns:
-     {:status :success/:failure
-      :result boolean?          - the LLM's yes/no answer
-      :error string?            - error message if failed
-      :duration-ms int          - execution time
-      :usage {:prompt-tokens N :completion-tokens N :total-tokens N} - token usage (when available)
-      :model string?}           - model used (when available)"
+     {:status :success/:failure/:timeout
+      :result boolean?          - the model's answer; present ONLY when a
+                                  valid boolean answer was obtained
+      :error string?            - error message if no valid answer
+      :failure-kind keyword?    - structured failure kind (never set for a
+                                  valid semantic negative)
+      :provider-evidence map?
+      :duration-ms int
+      :usage map?  :model string?}
+
+   A valid `true` is :status :success; a valid `false` is :status :failure with
+   :result false and no :failure-kind. A missing, nil or non-boolean answer is
+   a :failure with :failure-kind :schema-validation-failed and no :result."
   [node blackboard provider & {:keys [options] :or {options {}}}]
-  (let [start-time (System/currentTimeMillis)
-        ;; Build inputs from reads
-        inputs (mapv (fn [key-name]
-                       (if-let [entry (get blackboard key-name)]
-                         (build-field key-name entry)
-                         {:name key-name
-                          :original-key key-name
-                          :spec :string
-                          :description (str "Input: " key-name)}))
-                     (:reads node))
-        ;; Build module with fixed boolean output
-        module {:inputs inputs
-                :outputs [{:name :result
-                           :spec :boolean
-                           :description "True if the condition is met, false otherwise"}]
-                :instructions (:instruction node)}
-        ;; Gather input values
-        input-values (into {}
-                           (for [key-name (:reads node)
-                                 :let [entry (get blackboard key-name)]
-                                 :when entry]
-                             [key-name (:value entry)]))
-        ;; Request metadata for usage tracking
-        ;; Disable validation since inputs may be JSON serialized
-        ;; The node's :model rides through as a per-request override.
-        llm-options (cond-> (assoc options :validate? false)
-                         (:model node) (assoc :model (:model node)))]
-    (try
-      (let [response (llm/predict provider module input-values llm-options)
-            ;; Response now has {:outputs {...} :usage {...} :model "..."}
-            bool-result (get-in response [:outputs :result])
-            duration-ms (- (System/currentTimeMillis) start-time)]
-        {:status :success
-         :result (boolean bool-result)
-         :duration-ms duration-ms
-         :usage (normalize-usage (:usage response))
-         :model (:model response)})
-      (catch Exception e
-        {:status :failure
-         :error (.getMessage e)
-         :duration-ms (- (System/currentTimeMillis) start-time)}))))
+  (let [answer-key :result
+        ;; Reads without a declared schema fall back to a string field, as
+        ;; the condition has always tolerated undeclared reads.
+        condition-bb (reduce (fn [bb k]
+                               (if (get-in bb [k :schema])
+                                 bb
+                                 (assoc-in bb [k :schema] :string)))
+                             (assoc blackboard answer-key
+                                    {:key answer-key
+                                     :schema [:boolean
+                                              {:description "True if the condition is met, false otherwise"}]})
+                             (:reads node))
+        leaf (-> node
+                 (select-keys [:id :name :instruction :reads :model :options])
+                 (assoc :writes [answer-key]))
+        ;; A finite answer is requested as a structured (function-calling)
+        ;; response by default: in marker mode a bare "true" with no field
+        ;; marker is unparseable (the whole-text fallback covers only string
+        ;; outputs). An explicit caller/node option still wins.
+        result (execute-ai leaf condition-bb provider
+                           :options (merge {:use-function-calling? true} options))
+        answer (get-in result [:outputs answer-key])
+        valid? (and (= :success (:status result)) (boolean? answer))
+        base (dissoc result :outputs :rejected-writes)]
+    (cond
+      valid?
+      (if answer
+        (assoc base :status :success :result true)
+        (assoc base :status :failure :result false
+               :error "Condition evaluated to false"))
+
+      ;; The provider returned, but without a usable boolean answer: a
+      ;; structured provider failure, never a semantic negative.
+      (= :success (:status result))
+      (assoc base :status :failure
+             :failure-kind :schema-validation-failed
+             :error "Model-backed condition returned no valid boolean answer")
+
+      :else
+      (cond-> base
+        (and (= :failure (:status result)) (nil? (:failure-kind result)) (contains? result :outputs))
+        (assoc :failure-kind :schema-validation-failed)))))
+
+(defn execute-decision
+  "Execute a model decision: a leaf whose single declared write is a finite
+   answer (boolean, or one of an offered set of identified options), under the
+   SAME execution policy as a model leaf.
+
+   The decision is expressed as a synthetic leaf whose one write is the answer
+   key with a finite schema built from the options actually offered, then
+   delegated to `execute-ai`, so provider retry, backoff, deadline, LLM-call
+   budget reservation, per-node model choice and failure capture are shared.
+
+   Offered options: the answer key's static schema (`:boolean`, or an enum with
+   `:descriptions`), or, with :options-from, the run-time value of that read key
+   (`[{:id :description}]`). Every option id and description is rendered into
+   the provider-facing instruction.
+
+   Returns the `execute-ai` result shape plus :decision
+   `{:offered [...] :answer v :abstained? bool [:set-aside v]}`.
+   A valid answer is :status :success with :outputs {answer-key value}. A
+   missing, nil or out-of-set answer is :status :failure with
+   :failure-kind :schema-validation-failed and NO :outputs. No confidence is
+   synthesised: the floor is judged against a provider-reported :confidence
+   only (none is reported in this runtime yet), so a configured floor abstains."
+  [node blackboard provider & {:keys [options] :or {options {}}}]
+  (let [answer-key (first (:writes node))
+        fail (fn [error offered]
+               {:status :failure
+                :failure-kind :schema-validation-failed
+                :error error
+                :duration-ms 0
+                :decision {:offered (vec offered) :abstained? false}})
+        runtime? (some? (:options-from node))
+        runtime-opts (when runtime?
+                       (decision/runtime-options
+                        (get-in blackboard [(:options-from node) :value])))
+        static (when-not runtime?
+                 (decision/schema-options (get-in blackboard [answer-key :schema])))
+        kind (if runtime? :enum (:kind static))
+        option-list (cond
+                      runtime? runtime-opts
+                      (= :enum kind) (mapv (fn [id] {:id id
+                                                     :description (get (:descriptions static) id)})
+                                           (:ids static))
+                      :else nil)
+        offered (if (= :boolean kind) [true false] (mapv :id option-list))]
+    (cond
+      (nil? kind)
+      (fail (str "Decision '" (:name node) "' offers no valid options: answer key "
+                 (pr-str answer-key) " is not boolean or a finite enum"
+                 (when runtime? (str " and read key " (pr-str (:options-from node))
+                                     " holds no identified options")))
+            [])
+
+      (and runtime? (nil? runtime-opts))
+      (fail (str "Decision '" (:name node) "' read key " (pr-str (:options-from node))
+                 " holds no non-empty vector of {:id :description} options")
+            [])
+
+      (and (some? (:abstain node)) (not (some #(= (:abstain node) %) offered)))
+      (fail (str "Decision '" (:name node) "' abstention option " (pr-str (:abstain node))
+                 " is not one of the offered options " (pr-str offered))
+            offered)
+
+      :else
+      (let [offer-text (decision/render-options kind option-list)
+            answer-schema (if (= :boolean kind)
+                            [:boolean {:description (str "The decision's answer. " offer-text)}]
+                            (into [:enum {:description (str "The chosen option id. " offer-text)
+                                          :descriptions (into {}
+                                                              (keep (fn [{:keys [id description]}]
+                                                                      (when description [id description])))
+                                                              option-list)}]
+                                  offered))
+            decision-bb (reduce (fn [bb k]
+                                  (if (get-in bb [k :schema])
+                                    bb
+                                    (assoc-in bb [k :schema] :string)))
+                                (assoc blackboard answer-key
+                                       {:key answer-key :schema answer-schema})
+                                (:reads node))
+            leaf (-> node
+                     (select-keys [:id :name :reads :model :options])
+                     (assoc :instruction (str (:instruction node) "\n\n" offer-text)
+                            :writes [answer-key]))
+            ;; Structured (function-calling) response by default — found live:
+            ;; a chat model answering with the bare option id and no field
+            ;; marker is unparseable in marker mode, whose whole-text fallback
+            ;; covers only string outputs. An explicit node option still wins;
+            ;; a native decision provider ignores this flag.
+            result (execute-ai leaf decision-bb provider
+                               :options (merge {:use-function-calling? true} options))
+            answer (get-in result [:outputs answer-key])
+            ;; The decision has exactly one provider-facing output, so its
+            ;; evidence is the single entry the provider reported (if any).
+            reported (some-> (:decisions result) vals first)
+            reported-record (select-keys reported [:probabilities :confidence :probability])
+            base (dissoc result :outputs :rejected-writes :decisions)]
+        (if (= :success (:status result))
+          (let [{:keys [valid? value record]}
+                (decision/judge {:offered offered
+                                 :abstain (:abstain node)
+                                 :min-confidence (:min-confidence node)}
+                                answer
+                                (:confidence reported))
+                record (merge record reported-record)]
+            (if valid?
+              (assoc base :outputs {answer-key value} :decision record)
+              (assoc base :status :failure
+                     :failure-kind :schema-validation-failed
+                     :error (str "Model decision '" (:name node)
+                                 "' returned no answer among the offered options "
+                                 (pr-str offered))
+                     :decision record)))
+          (cond-> (assoc base :decision {:offered (vec offered) :abstained? false})
+            (and (= :failure (:status result)) (nil? (:failure-kind result))
+                 (contains? result :outputs))
+            (assoc :failure-kind :schema-validation-failed)))))))
 
 ;; =============================================================================
 ;; REPL Researcher Execution (RLM Pattern)
@@ -2154,9 +2560,10 @@
         ;; builder, else static (:call-tool-fn context)), then (WS-5b) wrap it
         ;; so inline Phase-1 tool calls forward the tick :tool-context as the
         ;; 3rd arg — gating an inline mutate exactly like Phase-2.
-        call-tool-fn (phase1-call-tool-fn
-                      (assoc context :call-tool-fn
-                             (node-call-tool-fn node blackboard context)))
+        call-tool-fn (-> (phase1-call-tool-fn
+                          (assoc context :call-tool-fn
+                                 (node-call-tool-fn node blackboard context)))
+                         (tool-invocation/guarded-call-tool-fn (:tool-contracts node)))
 
         ;; Build SCI context with MCP and browser tools injected
         sci-ctx (sci-sandbox/build-sci-context
@@ -3275,6 +3682,9 @@
                         (str "Tool " tool-name
                              " is not declared :checkpoint-safe? for resumable execution")
                         {:tool tool-name :checkpoint-safe? false})))
+              ;; Declared argument contract: enforced BEFORE any logical action
+              ;; identity, claim or dispatch, so an invalid call claims no effect.
+              (tool-invocation/validate-arguments! (:tool-contracts node) tool-name args)
               (let [ordinal (swap! action-ordinal inc)
                     attempt-ordinal (get iteration-attempts @current-iteration 0)
                     action-id
@@ -3320,35 +3730,22 @@
                               {:timeout-kind :iteration
                                :tool tool-name
                                :timeout-ms tool-timeout-ms})))
-                        claim-result
-                        (when-let [claim! (:claim-researcher-effect! context)]
-                          (claim! {:iteration-index @current-iteration
-                                   :logical-action-identity action-id
-                                   :attempt-identity attempt-id
-                                   :attempt-ordinal attempt-ordinal
-                                   :kind :tool}))
-                        _ (when (:cognitect.anomalies/category claim-result)
-                            (throw (ex-info "Researcher tool claim conflicted"
-                                            {:claim-result claim-result
-                                             :logical-action-identity action-id
-                                             :attempt-identity attempt-id})))
-                        result (case checkpoint-tool-caller-arity
-                                 3 (checkpoint-call-tool-fn tool-name args tool-context)
-                                 (throw
-                                  (ex-info
-                                   tool-caller-arity-error
-                                   {:expected-arities [3]})))]
-                    (let [durable-result (encode-checkpoint-value checkpoint-codecs result)]
-                    (when-let [complete! (:complete-researcher-effect! context)]
-                      (let [completion
-                            (complete! {:logical-action-identity action-id
-                                        :attempt-identity attempt-id
-                                        :result durable-result})]
-                        (when (:cognitect.anomalies/category completion)
-                          (throw (ex-info "Researcher tool outcome lost ownership"
-                                          {:completion-result completion
-                                           :logical-action-identity action-id
-                                           :attempt-identity attempt-id})))))
+                        {:keys [result durable-result]}
+                        (dispatch-claimed-tool-effect!
+                         {:claim! (:claim-researcher-effect! context)
+                          :complete! (:complete-researcher-effect! context)
+                          :codecs checkpoint-codecs
+                          :contracts (:tool-contracts node)
+                          :tool-name tool-name
+                          :args args
+                          :action-id action-id
+                          :attempt-id attempt-id
+                          :attempt-ordinal attempt-ordinal
+                          :iteration-index @current-iteration
+                          :caller checkpoint-call-tool-fn
+                          :caller-arity checkpoint-tool-caller-arity
+                          :tool-context tool-context
+                          :wrap-errors? true})]
                     (swap! completed-actions assoc action-id
                            {:status :completed :result result})
                     (when persist-action!
@@ -3356,8 +3753,9 @@
                                         :action-kind :tool
                                         :iteration @current-iteration
                                         :result durable-result}))
-                    result))))))
-          (phase1-call-tool-fn (assoc context :call-tool-fn raw-call-tool-fn)))
+                    result)))))
+          (-> (phase1-call-tool-fn (assoc context :call-tool-fn raw-call-tool-fn))
+              (tool-invocation/guarded-call-tool-fn (:tool-contracts node))))
         timeout-config (or (:timeouts rlm-config) {})
         pre-classification-timing (:researcher-campaign-timing context)
         campaign-timing
@@ -3394,6 +3792,24 @@
         ;; Track usage across iterations
         total-usage (atom (or (:usage checkpoint)
                               {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}))
+
+        ;; The share of `total-usage` that was spent by generated child ticks
+        ;; (Phase 2). Those ticks record the same tokens on their own node
+        ;; completions, so this node's completion reports its OWN share
+        ;; (total minus this) as :own-usage — each provider call is then
+        ;; counted exactly once by the family-usage query. Persisted in the
+        ;; checkpoint beside :usage so a resumed campaign keeps the split.
+        descendant-usage (atom (or (:descendant-usage checkpoint)
+                                   {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}))
+        add-descendant-usage!
+        (fn [u]
+          (swap! descendant-usage
+                 (fn [acc]
+                   (-> acc
+                       (update :prompt-tokens (fnil + 0) (or (:prompt-tokens u) 0))
+                       (update :completion-tokens (fnil + 0) (or (:completion-tokens u) 0))
+                       (update :total-tokens (fnil + 0) (or (:total-tokens u) 0))
+                       (add-cost u)))))
 
         ;; Persistent sandbox-vars across iterations (for store!/get-var)
         sandbox-vars (atom (or (:sandbox-vars checkpoint) {}))
@@ -3507,6 +3923,7 @@
                               :sandbox-vars @sandbox-vars
                               :var-creation-times @var-creation-times
                               :usage @total-usage
+                              :descendant-usage @descendant-usage
                               :cumulative-tree-ms @cumulative-tree-ms
                               :iteration-attempts (dissoc iteration-attempts (dec next-iteration))
                               :campaign-started-at-ms campaign-started-at-ms
@@ -3572,6 +3989,7 @@
                               :sandbox-vars (dissoc @sandbox-vars :generated-tree)
                               :var-creation-times @var-creation-times
                               :usage @total-usage
+                              :descendant-usage @descendant-usage
                               :cumulative-tree-ms @cumulative-tree-ms
                               :iteration-attempts (dissoc iteration-attempts iteration)
                               :campaign-started-at-ms campaign-started-at-ms
@@ -3652,7 +4070,7 @@
                          :max-iteration-attempts max-iteration-attempts}
                   durable-checkpoint (assoc :checkpoint durable-checkpoint))))))]
 
-    (try
+    (as-> (try
       (loop [iteration initial-iteration
              history (or (:history checkpoint) [])]
         (cond
@@ -4073,9 +4491,11 @@
                 _ (when-let [u (normalize-usage (:usage llm-result))]
                     (swap! total-usage
                            (fn [acc]
-                             {:prompt-tokens (+ (:prompt-tokens acc 0) (:prompt-tokens u))
-                              :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens u))
-                              :total-tokens (+ (:total-tokens acc 0) (:total-tokens u))})))]
+                             (-> {:prompt-tokens (+ (:prompt-tokens acc 0) (:prompt-tokens u))
+                                  :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens u))
+                                  :total-tokens (+ (:total-tokens acc 0) (:total-tokens u))}
+                                 (cond-> (:cost acc) (assoc :cost (:cost acc)))
+                                 (add-cost (:usage llm-result))))))]
 
             (cond
                 (str/blank? code)
@@ -4405,7 +4825,8 @@
                         ;; byte-identical) when the parent has no gate.
                         generated-tree (-> (:generated-tree @sandbox-vars)
                                            (inject-sub-model sub-model)
-                                           (inject-tool-caller-fn (:tool-caller-fn node)))
+                                           (inject-tool-caller-fn (:tool-caller-fn node)
+                                                                 (:tool-contracts node)))
                         generated-tree-raw (:generated-tree-raw @sandbox-vars)
                         generated-tree-source (:generated-tree-source @sandbox-vars)
                         ;; Debug: Print the generated tree
@@ -4759,6 +5180,7 @@
                             ;; accumulation.
                             p2-usage (:usage phase2-result)
                             _ (when (and p2-usage (pos? (:total-tokens p2-usage 0)))
+                                (add-descendant-usage! p2-usage)
                                 (swap! total-usage
                                        (fn [acc]
                                          (-> acc
@@ -4770,7 +5192,8 @@
                                                      (or (:completion-tokens p2-usage) 0))
                                              (update :total-tokens
                                                      (fnil + 0 0)
-                                                     (or (:total-tokens p2-usage) 0))))))
+                                                     (or (:total-tokens p2-usage) 0))
+                                             (add-cost p2-usage)))))
                             _ (dbg "\n[DEBUG RLM] Recursive recur — :tree-results entries:"
                                    (count (:tree-results @sandbox-vars))
                                    "summary status:" (:status summary))
@@ -4834,12 +5257,16 @@
                             ;; Preserve :by-node from Phase 2 (the per-node breakdown
                             ;; of sub-LLM calls inside the generated tree).
                             p2-by-node (:by-node p2-usage)
+                            _ (when p2-usage (add-descendant-usage! p2-usage))
                             combined-usage (cond-> {:prompt-tokens (+ (:prompt-tokens p1-usage 0)
                                                                      (:prompt-tokens p2-usage 0))
                                                     :completion-tokens (+ (:completion-tokens p1-usage 0)
                                                                           (:completion-tokens p2-usage 0))
                                                     :total-tokens (+ (:total-tokens p1-usage 0)
                                                                      (:total-tokens p2-usage 0))}
+                                             (or (usage-cost p1-usage) (usage-cost p2-usage))
+                                             (assoc :cost (+ (or (usage-cost p1-usage) 0)
+                                                             (or (usage-cost p2-usage) 0)))
                                              (seq p2-by-node) (assoc :by-node p2-by-node))]
                         {:status (:status phase2-result)
                          :outputs (:outputs phase2-result)
@@ -4892,7 +5319,22 @@
         {:status :failure
          :error (.getMessage e)
          :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
-         :usage @total-usage}))))
+         :usage @total-usage})) result
+      ;; Every return path reports :usage that may fold in generated child
+      ;; ticks; record this node's own share alongside it.
+      (if (:usage result)
+        (assoc result :own-usage
+               (let [d @descendant-usage
+                     tokens (into {}
+                                  (map (fn [k]
+                                         [k (max 0 (- (or (get (:usage result) k) 0)
+                                                      (or (get d k) 0)))]))
+                                  [:prompt-tokens :completion-tokens :total-tokens])]
+                 ;; Own cost = total cost minus descendant cost, when costs exist.
+                 (if-let [total-cost (usage-cost (:usage result))]
+                   (assoc tokens :cost (max 0 (- total-cost (or (usage-cost d) 0))))
+                   tokens)))
+        result))))
 
 ;; =============================================================================
 ;; Retry Logic
@@ -4942,7 +5384,7 @@
    Executor types:
    - :ai (default) - ORC LLM AI execution
    - :code - Clojure function execution
-   - :tool - Direct tool invocation (not yet implemented)
+   - :tool - Authored-tool invocation (one named tool, reads as arguments)
 
    Args:
      node - The leaf node map
@@ -4969,10 +5411,12 @@
                                                        :node-attempt current-node-attempt
                                                        :max-node-attempts max-node-attempts)
                                        :stream stream)
+                       :decision (execute-decision node blackboard provider
+                                                   :options (assoc execution-options
+                                                                   :node-attempt current-node-attempt
+                                                                   :max-node-attempts max-node-attempts))
                        :code (execute-code node blackboard context)
-                       :tool {:status :failure
-                              :error "Tool executor not yet implemented"
-                              :duration-ms 0}
+                       :tool (execute-tool node blackboard context)
                        ;; Default to AI
                        (execute-ai node blackboard provider
                                    :options (assoc execution-options

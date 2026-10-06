@@ -21,6 +21,12 @@
             [cognitect.anomalies :as anom]
             [malli.core :as m]))
 
+(defn- an-hour-later
+  "The recovering worker's view an hour after the crashed owner last renewed:
+   that lease has expired (ExecutionRecovery OwnedWorkIsNotAbandoned)."
+  [ctx]
+  (assoc ctx :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))
+
 (defn- with-checkpoint-effect-capabilities
   "Supply the durable-effect seam to direct executor tests.
 
@@ -85,6 +91,13 @@
       (throw (ex-info "researcher provider did not start" {}))))
   (throw (ex-info "parallel sibling ended the parent" {})))
 
+;; The campaign deadline is absolute. These fixtures stamp it when the test
+;; starts, but recovery runs only after processors stop and restart, which can
+;; take longer than 15 s inside a long full-suite JVM. That made the campaign
+;; time out before its first recovered model call. The headroom keeps the
+;; deadline out of what these recovery tests assert.
+(def ^:private recovery-headroom-ms 120000)
+
 (deftest det-e2e-235-automatic-recovery-recognises-a-researcher-frontier
   (testing "rebuilt runtimes resume a yielded campaign without execute or resume calls"
     ;; This tracer owns recovery ordering, not scheduler throughput. Dedicated
@@ -121,7 +134,7 @@
                           :cumulative-tree-ms 0
                           :iteration-attempts {}
                           :campaign-started-at-ms now-ms
-                          :campaign-deadline-ms (+ now-ms 15000)}
+                          :campaign-deadline-ms (+ now-ms recovery-headroom-ms)}
             iteration-record {:iteration-index 0
                               :attempt-ordinal 0
                               :status :success
@@ -313,7 +326,7 @@
                             :cumulative-tree-ms 0
                             :iteration-attempts {}
                             :campaign-started-at-ms now-ms
-                            :campaign-deadline-ms (+ now-ms 15000)}
+                            :campaign-deadline-ms (+ now-ms recovery-headroom-ms)}
               iteration-record {:iteration-index 0
                                 :attempt-ordinal 0
                                 :status :success
@@ -700,7 +713,7 @@
                               :lease-owned? (constantly true)}
                     :event-store-conn event-store-conn})]
               (reset! reopened-context reopened)
-              (let [scan (runtime/resume-in-progress! reopened)]
+              (let [scan (runtime/resume-in-progress! (an-hour-later reopened))]
                 (is (= 1 (count (filter :resumed? scan))) (pr-str scan)))
               (is (h/settle-until!
                    #(some? (runtime/durable-terminal-result reopened tick-id))
@@ -994,7 +1007,7 @@
                           :cumulative-tree-ms 0
                           :iteration-attempts {}
                           :campaign-started-at-ms now-ms
-                          :campaign-deadline-ms (+ now-ms 15000)}
+                          :campaign-deadline-ms (+ now-ms recovery-headroom-ms)}
             iteration-record {:iteration-index 0
                               :attempt-ordinal 0
                               :status :success
@@ -1092,7 +1105,10 @@
                              ctx sheet-id tick-id researcher-id)]
                 (is (= 3 (:researcher-ownership-epoch recovered-start)))
                 (is (= [1 2 3] frontier-epochs))
-                (is (= 1 @calls))
+                (is (= 1 @calls)
+                    (str "terminal: " (pr-str (runtime/durable-terminal-result ctx tick-id))
+                         " records: " (pr-str (mapv #(select-keys % [:iteration-index :status :error])
+                                                    records))))
                 (is (= [0 1] (mapv :iteration-index records)))
                 (is (= ::anom/conflict (::anom/category stale-result))
                     (pr-str stale-result)))))
@@ -1135,7 +1151,7 @@
                           :cumulative-tree-ms 0
                           :iteration-attempts {}
                           :campaign-started-at-ms now-ms
-                          :campaign-deadline-ms (+ now-ms 15000)}
+                          :campaign-deadline-ms (+ now-ms recovery-headroom-ms)}
             iteration-record {:iteration-index 0
                               :attempt-ordinal 0
                               :status :success
@@ -1226,7 +1242,8 @@
                     (pr-str scans))
                 (is (= 1 (count recovery-starts)))
                 (is (= [1] (mapv :ownership-epoch frontiers)))
-                (is (= 1 @calls))
+                (is (= 1 @calls)
+                    (str "terminal: " (pr-str (runtime/durable-terminal-result ctx tick-id))))
                 (is (= [0 1]
                        (mapv :iteration-index
                              (rm/get-researcher-iteration-records

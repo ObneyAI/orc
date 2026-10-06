@@ -132,6 +132,8 @@ Nodes are the building blocks of workflows. There are two categories:
 - `code` - Execute a Clojure function
 - `condition` - Check a boolean expression
 - `llm-condition` - Use LLM for yes/no decisions
+- `llm-decision` - Ask a model (chat or native decision model) a boolean or enum question and write the answer
+- `tool` - Call one authored tool with arguments from the blackboard
 
 ### Execution Model
 
@@ -339,6 +341,55 @@ Execute a Clojure function.
 - Multiple outputs can be written from a single function
 - Inputs and outputs use keyword keys
 
+**Calling tools from a code leaf.** The function also receives `:call-tool-fn`
+(`(call-tool-fn tool-name args)`). Two options govern it:
+
+```clojure
+(sheet/code "lookup-report"
+  :fn "my-app.reports/lookup"
+  :tool-caller-fn "my-app.gates/consumer-gate"   ; (builder blackboard context) -> call-tool-fn
+  :tool-contracts {"search" {:arguments [:map {:closed true} [:query :string]]
+                             :result    [:map [:hits [:vector :string]]]}}
+  :reads [:query] :writes [:report])
+```
+
+- `:tool-caller-fn` names a consumer tool gate. Every tool call the leaf makes goes through it; a
+  gate that cannot be resolved or built fails the node — it never falls back to the ungated caller.
+  The builder's context carries `:node`, `:node-id`, `:tick-id` and `:execution-deadline-ms`.
+- `:tool-contracts` are **enforced**, not just documented: arguments that violate the declared
+  `:arguments` schema never reach the tool, and a result that violates `:result` is never returned
+  as a value. A field supplied under two spellings (`:query` and `"query"`) is rejected. The tool
+  receives, and your code sees, the original values. A contract violation is thrown as an
+  `ex-info` carrying `:orc.tool/outcome` (`:invalid-arguments` / `:invalid-result`); your code may
+  catch it, otherwise the node fails. The tool's own exceptions reach your code unchanged.
+- Researchers (`repl-researcher`) take the same `:tool-contracts`, and they also govern the tool
+  calls of the researcher's generated child trees. A researcher receives every tool failure as data
+  — `{:error <safe message> :orc.tool/outcome <kind>}` — never the tool's raw exception text; a tool
+  host may share a message deliberately by putting `:orc.tool/message` in its `ex-data`.
+
+### tool
+
+Call one tool, named when the workflow is authored, and write its result.
+
+```clojure
+(sheet/tool "find-report"
+  :tool "search"                         ; required: the authored tool name
+  :reads [:query]                        ; arguments: {:query <value>}
+  :writes [:hits]                        ; exactly one write
+  :tool-caller-fn "my-app.gates/consumer-gate"            ; optional, as for code
+  :tool-contracts {"search" {:arguments [:map [:query :string]]}})  ; optional, enforced
+```
+
+- Arguments are the declared reads (keyword keys; absent reads omitted).
+- The result is written to the single write key; if the result is a map holding that key, the
+  value under it is written.
+- Gate and contracts behave exactly as for `code`. With no tool caller available the node fails
+  with an error naming the tool. A tool name chosen at run time (by a model or the blackboard) is
+  never executable.
+- Inside a checkpointed researcher's generated child tree, tool calls (from `code` or `tool`
+  leaves) are claimed and receipted like the researcher's own inline calls: after a crash, a call
+  whose effect already completed returns its recorded result instead of running again.
+
 ### condition
 
 Static boolean check on blackboard values.
@@ -389,9 +440,84 @@ Use LLM to evaluate a yes/no question.
 - `:reads` - Context to evaluate
 
 **Behavior:**
-- LLM responds with yes/no (or true/false, 1/0)
-- Returns SUCCESS if yes, FAILURE if no
-- Use with `fallback` for LLM-driven branching
+- Returns SUCCESS when the model's valid answer is true, FAILURE when it is false
+- A missing or non-boolean answer, or a provider failure, is also FAILURE but carries a
+  structured `:failure-kind` in `node-trace-detail`; a semantic "no" has none and records
+  `:condition-answer false`
+- Runs under the same execution policy as an `llm` leaf: per-node `:model`, default provider
+  retry, the shared LLM-call budget and the execution deadline
+- The completion records the values read, the answer, the resolved model and the usage
+- Use with `fallback` for LLM-driven branching; to route on more than yes/no, or to keep the
+  answer as data, use `llm-decision`
+
+### llm-decision
+
+Ask a bounded question and write the answer to the blackboard. Unlike `llm-condition`, a valid
+answer — including `false` or a "none of these" option — is SUCCESS; ordinary `condition` guards
+then route on the written key.
+
+```clojure
+(sheet/workflow "support-router"
+  (sheet/blackboard
+    {:request :string
+     :route [:enum {:descriptions {"lookup"   "Retrieve an existing figure from a stored report."
+                                   "research" "Investigate a question that needs new evidence."
+                                   "clarify"  "Too ambiguous to act on; ask the user."}}
+             "lookup" "research" "clarify"]})
+  (sheet/sequence "main"
+    (sheet/llm-decision "route"
+      :instruction "Choose the operation that addresses the user's request."
+      :reads [:request]
+      :writes [:route]                 ; exactly one key; its schema decides the question
+      :min-confidence 0.6              ; optional floor ...
+      :abstain "clarify")              ; ... writes this offered option when not met
+    (sheet/fallback "dispatch"
+      (sheet/sequence "lookup-route"
+        (sheet/condition "is-lookup" :check {:key :route :op :equals :value "lookup"})
+        ...)
+      ...)))
+```
+
+**The answer key's schema decides the question:**
+- `:boolean` → "does this proposition hold?"
+- `[:enum {:descriptions {id description}} id ...]` → "which one applies?"; every option is offered
+  to the model together with its description
+- `:options-from :catalog` (a declared read key holding `[{:id ... :description ...}]`) → options
+  discovered at run time; the answer key may then be `:string`. Ids are kept verbatim.
+- Anything else is rejected when the workflow is built.
+
+**Parameters:** `:instruction`, `:reads`, `:writes` (one key), `:options-from`, `:min-confidence`
+with `:abstain` (must be an offered option), `:model`, `:retry`, `:options`.
+
+**Behavior:**
+- A valid answer is SUCCESS and is written; an answer outside the offered set, a missing answer or
+  a provider failure is FAILURE with a structured `:failure-kind`, and nothing is written
+- The completion event and `node-trace-detail` carry a `:decision` record: the options offered,
+  the answer, whether it was set aside for abstention, and any distribution / confidence /
+  probability the provider reported (never synthesised)
+- With `:min-confidence`, an answer whose reported confidence is below the floor — or that reports
+  none, as conversational models do — writes the `:abstain` option and records the set-aside answer
+- On a conversational model the answer is requested as structured output (function calling) by
+  default; set `:options {:use-function-calling? false}` to opt out
+- Same execution policy as an `llm` leaf (model, retry, call budget, deadline)
+
+**Native decision models.** Register a provider with `:protocol :decision` and the same node runs
+on it — no other change:
+
+```clojure
+(llm/register-provider! :jev
+  {:provider :openrouter
+   :protocol :decision                 ; OpenRouter POST /api/alpha/decisions
+   :model "typesafe/jev-1.13"
+   :config {:api-key (System/getenv "OPENROUTER_API_KEY")}})
+```
+
+Booleans are asked as yes/no (noul) questions and enums as choice questions with each option's
+description as its criterion. Answers are validated, never repaired: distributions must cover the
+offered options and agree with the selected answer and reported confidence to within the
+provider's reported resolution (`:reported-resolution`, default 0.01 — OpenRouter rounds to two
+decimals). A decision model answers only boolean and enum outputs; any other output is refused
+before the call.
 
 ### delegate
 
@@ -419,6 +545,14 @@ Execute another workflow (sheet) with isolated blackboard. Useful for composing 
 - Maps target outputs back to parent `:writes` keys
 - Target failure causes delegate node to fail
 - Full execution tracing with lifecycle events
+- The child draws on the **family** LLM-call budget and remaining time: once the root
+  execution's `:llm-call-budget` is spent, no provider call starts anywhere in the family
+- The parent's tool context (and its tool caller / MCP session) reaches the child, so a gated
+  tool in the child sees the same consumer context
+- Inputs reach the child by key name; two parent reads that would supply the same child input
+  (e.g. `:left/id` and `:right/id` → `:id`) are rejected when the workflow is built
+- `(sheet/get-family-usage ctx trace-id)` returns the provider usage of an execution and all of
+  its descendants, each call counted once
 
 **Use cases:**
 - Decompose complex workflows into reusable components

@@ -160,6 +160,119 @@ that verifies the stated observable results.
   (`ai.obney.orc.llm.core-test`, the `OptionalOutputPresence` test group); this
   item is open because narrower component coverage does not establish the
   end-to-end workflow-level contract this checklist requires.
+- [x] **DET-E2E-297 — A model-backed condition preserves its answer and shares
+  leaf execution policy.** Through the public DSL, build and execute, with only
+  the provider seam injected (honouring its bare/metadata return shapes): a
+  valid true succeeds and runs the guarded action; a valid false fails with
+  `:condition-answer false` and no failure kind; a missing or non-boolean
+  answer fails with a structured failure kind and no answer; the per-node model
+  reaches the provider; the default provider retry applies; condition
+  invocations consume the shared LLM-call budget; no invocation begins after the
+  execution deadline; the completion event and `node-trace-detail` record the
+  read values, answer, resolved model and usage; an exhausted provider failure
+  records its failure kind. Contract `ModelBackedCondition`
+  (specs/orc-service.allium). Verified by
+  `model_backed_condition_test.clj` (10 tests); the budget and deadline tests
+  were proven non-vacuous by breaking the policy wiring and watching them fail.
+- [x] **DET-E2E-298 — REAL-LLM model-backed condition.** Under the
+  `ORC_OPENROUTER_E2E_TESTS` gate with the pinned OpenRouter model: a true claim
+  succeeds with a durable true answer, model and usage; a false claim fails as a
+  semantic negative with no failure kind; an unknown model id fails with a
+  structured failure kind and no recorded answer. Verified by
+  `real_llm_model_condition_e2e_test.clj`.
+- [x] **DET-E2E-299 — Native decision models through the ordinary prediction call.** A
+  provider registered with `:protocol :decision` answers `llm/predict` and `predict-stream-v2`
+  through the decision protocol (never a conversational completion): boolean outputs are asked
+  as noul and enum outputs as choice with every option's description; non-finite outputs are
+  refused before invocation; malformed answers (unknown option, wrong primitive, bad or
+  non-argmax distribution, inconsistent confidence, NaN/out-of-range/0.5 noul) fail as
+  schema-invalid; metadata keeps reported distribution/confidence/probability, model, usage and
+  cost and never synthesises them; transport failures are classified without leaking the
+  credential. Component boundary verified by `components/llm/.../decision_protocol_test.clj`
+  (17 tests), a local-HTTP transport probe, the workflow-level
+  `model_decision_protocol_test.clj`, and REAL Jev calls (`real_jev_decision_test.clj`,
+  `real_llm_decision_e2e_test.clj`). Real OpenRouter responses round probabilities and confidence
+  to 0.01; validation holds the definitions to within that reported resolution.
+- [x] **DET-E2E-300 — `llm-decision` is a blackboard-first data-producing decision leaf.**
+  Public DSL → build → execute with the provider seam injected: the answer key's schema decides
+  boolean vs enum; run-time options come from a declared read key and are kept verbatim; the
+  model is offered every option with its description; an out-of-set, missing or malformed answer
+  fails with a structured kind and writes nothing; false and a declared none option succeed;
+  non-finite answer keys and unoffered abstention options are rejected at build; a confidence
+  floor writes the abstention option and records the set-aside answer; per-node model, shared
+  call budget (proven non-vacuous) and structured output by default; the completion event and
+  `node-trace-detail` carry the decision record (offered, answer, abstained, reported
+  distribution/confidence/probability); a published version keeps its decision configuration.
+  Contract `ModelDecision`. Verified by `model_decision_test.clj` (15 tests),
+  `model_decision_protocol_test.clj` (5 tests) and the `dsl_roundtrip_test.clj` decision case.
+- [x] **DET-E2E-301 — REAL-model `llm-decision` workflows.** The same routing, run-time catalog
+  and boolean decision trees on real Jev (OpenRouter decisions) and on the pinned conversational
+  model: correct routes dispatch through ordinary guards, "hmm" ends in clarify, catalog ids stay
+  verbatim, true/false both succeed, Jev records distribution/confidence/probability, the chat
+  model records none and a floor on it abstains explicitly. Verified twice by
+  `real_llm_decision_e2e_test.clj` (2 tests / 23 assertions each run).
+- [x] **DET-E2E-302 — An authored code leaf keeps its tool gate.** `sheet/code :tool-caller-fn`
+  survives authoring, build, the stored definition and DSL round-trip (same sheet id); every tool
+  call uses the gate, never the ungated caller; an unresolvable gate or one that builds no caller
+  fails the node with no fallback; with no gate the ordinary caller is unchanged; the gate is built
+  with the node, node id, tick id and the execution's absolute deadline. LeafExecutor
+  `CodeLeafToolGateIsPreserved`, `ToolGateSeesInvocationIdentity`. Verified by
+  `code_leaf_tool_gate_test.clj` (7 tests).
+- [x] **DET-E2E-303 — Declared tool contracts are enforced through one seam.** Researcher (plain,
+  RLM sandbox, checkpointed) and code-leaf tool calls: invalid arguments never reach the tool and a
+  checkpointed researcher claims no effect; invalid results are never returned as success; a field
+  under two spellings is rejected; the tool receives and the caller sees original values; every
+  researcher-facing failure (typed or untyped, plain or checkpointed) is a stable kind with a safe
+  message — never raw exception text — plus any host-declared `:orc.tool/message`; a code leaf
+  gets contract outcomes and sees its own tool exceptions unchanged; `sheet/code :tool-contracts`
+  round-trips. LeafExecutor `DeclaredToolContractsAreEnforced`, `ToolArgumentIdentityIsExact`,
+  `ToolOutcomesAreStructured`. Verified by `tool_contract_enforcement_test.clj` (14 tests).
+- [x] **DET-E2E-304 — Recovery never replays healthy work; abandoned work stays recoverable.**
+  Every leaf/delegate start carries a durable lease (owner, expiry); the owner renews it while the
+  work runs; recovery (requested, periodic, or the actual registered scheduler) resumes a start
+  only once its latest lease has expired and the recovering worker is not running it — a healthy
+  gated leaf is invoked exactly once (the same test fails with two invocations on the pre-lease
+  code), a queued start under a live lease (own or foreign) is not resumed, an expired lease is
+  resumed exactly once with a fresh lease owned by the recoverer, and a resumed start whose resumer
+  also stopped is resumed again in turn. ExecutionRecovery `OwnedWorkIsNotAbandoned`,
+  `AbandonedWorkStaysRecoverable`. Verified by `execution_lease_recovery_test.clj` (9 tests);
+  in-process restart tests (DET-E2E-108, 152/153, 205, 274) now view recovery through an injected
+  clock an hour later, assertions unchanged. Open: the fresh-JVM SQLite restart probe.
+- [x] **DET-E2E-305 — Generated children honour contracts; MCP executors use the node's caller.**
+  A researcher's declared tool contracts govern its generated child's tool calls (invalid arguments
+  never reach the tool). Both the generic and the generated MCP executors resolve their tool through
+  the node's gated, contract-checked caller, else the execution's MCP session (a generated executor
+  now sees a live session inside a real workflow), else a marked stand-in only on an explicit
+  `:mcp/dry-run?`, else an explicit failure — never a fabricated success. orc-service
+  `DeclaredToolContractsAreEnforced` (generated subtree), mcp-sheet-builder
+  `ExecutorsUseTheNodesToolCaller`. Verified by `tool_seam_unification_test.clj` (7 tests).
+- [x] **DET-E2E-306 — Generated-child tool calls are checkpointed; tool leaves call only authored
+  tools.** A checkpointed campaign's generated child calls a checkpoint-safe tool and its worker
+  dies; after lease-expiry recovery the child re-runs and the tool's durable receipt is returned
+  instead of calling it again (one claim, one call). `sheet/tool` calls one authored tool with its
+  reads as arguments through the node's gate and contracts, writes its single write key, fails
+  explicitly without a caller, requires an authored tool name and round-trips. Verified by
+  `generated_child_receipts_test.clj` (2 tests) and `tool_leaf_test.clj` (6 tests).
+- [x] **DET-E2E-307 — Delegation boundary.** Every delegated child draws on the family LLM-call
+  budget (no invocation once it is spent); the parent's tool context reaches the child's gate; two
+  parent keys that would supply one child input are rejected at build; `sheet/get-family-usage`
+  returns family totals with each provider call counted once — including non-recursive, recursive
+  and checkpointed researchers whose own usage folds in their generated children (`:own-usage`).
+  Contract `DelegationBoundary`. Verified by `delegation_boundary_test.clj` (7 tests).
+- [x] **DET-E2E-308 — GEPA optimises every model instruction.** Decision instructions are extracted
+  as optimisable components, and a candidate instruction patched in for evaluation reaches the
+  decision's and the model-backed condition's provider call (it previously never reached a
+  condition). gepa `EveryModelInstructionIsAComponent`. Verified by
+  `components/gepa/.../decision_instructions_test.clj` (3 tests).
+- [x] **DET-E2E-309 — REAL-model end-to-end decision + tool runtime.** One workflow under the
+  `ORC_OPENROUTER_E2E_TESTS` gate: a native decision model (Jev, selected per node by `:model`)
+  routes; the lookup branch calls a contract-enforced tool leaf and delegates a summary to a
+  conversational child under the family budget (family usage includes it); the research branch
+  runs a real recursive checkpointed researcher whose contract-enforced, checkpoint-safe tool call
+  carries ORC's idempotency key to the host; an empty request ends in clarify with no tool effect.
+  Verified by `real_llm_arc_e2e_test.clj` (1 test / 15 assertions). Also verified out of band: a
+  two-JVM crash/restart probe on one SQLite file (an abruptly halted owner's leaf is left alone
+  under its live lease, then resumed exactly once by another worker after expiry, completing).
 
 ## P1 — Observability and streaming
 

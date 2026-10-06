@@ -1,0 +1,93 @@
+{:routes
+ {"billing" "Charges, invoices, refunds, payment methods, or a price the customer was already charged."
+  "technical" "Something in the product is broken, erroring, slow, or not working as documented."
+  "account" "Login, password, two-factor, email address, profile, or user permissions."
+  "cancel" "The customer wants to cancel, close, or downgrade their subscription or account."
+  "sales" "Questions from someone considering buying: plans, pricing before purchase, features, demos."
+  "clarify" "The message does not say enough to act on, or is not a support request at all."}
+
+ :routing
+ [;; clear
+  {:id "r01" :hard? false :label "billing" :text "I was charged twice for my March subscription, please refund one of them."}
+  {:id "r02" :hard? false :label "billing" :text "Can I get a copy of last month's invoice for our accounting team?"}
+  {:id "r03" :hard? false :label "billing" :text "My credit card expired, how do I update the payment method on file?"}
+  {:id "r04" :hard? false :label "billing" :text "Why is my bill $40 higher this month than usual?"}
+  {:id "r05" :hard? false :label "billing" :text "I need a VAT receipt for the annual plan I paid for yesterday."}
+  {:id "r06" :hard? false :label "billing" :text "The refund you promised two weeks ago still hasn't shown up on my statement."}
+  {:id "r07" :hard? false :label "technical" :text "The export button throws a 500 error every time I click it."}
+  {:id "r08" :hard? false :label "technical" :text "Dashboards take over a minute to load since this morning's update."}
+  {:id "r09" :hard? false :label "technical" :text "The mobile app crashes as soon as I open the reports tab."}
+  {:id "r10" :hard? false :label "technical" :text "Webhooks stopped firing for new orders around 3pm today."}
+  {:id "r11" :hard? false :label "technical" :text "CSV imports silently drop every row that has an accented character."}
+  {:id "r12" :hard? false :label "technical" :text "The API returns 429 even though we are well under our documented rate limit."}
+  {:id "r13" :hard? false :label "account" :text "I forgot my password and the reset email never arrives."}
+  {:id "r14" :hard? false :label "account" :text "How do I change the email address on my login?"}
+  {:id "r15" :hard? false :label "account" :text "I lost my phone and can't get past two-factor authentication."}
+  {:id "r16" :hard? false :label "account" :text "Please give my colleague admin rights on our workspace."}
+  {:id "r17" :hard? false :label "account" :text "My account says it's locked after too many login attempts."}
+  {:id "r18" :hard? false :label "account" :text "How do I remove a former employee's access to our team?"}
+  {:id "r19" :hard? false :label "cancel" :text "Please cancel my subscription at the end of this billing period."}
+  {:id "r20" :hard? false :label "cancel" :text "We're closing the business, how do I shut down our account completely?"}
+  {:id "r21" :hard? false :label "cancel" :text "I'd like to downgrade from the Pro plan to the free tier."}
+  {:id "r22" :hard? false :label "cancel" :text "Stop renewing my annual plan, I won't be using it next year."}
+  {:id "r23" :hard? false :label "cancel" :text "How do I delete my account and all my data?"}
+  {:id "r24" :hard? false :label "cancel" :text "Turn off auto-renew and end my membership please."}
+  {:id "r25" :hard? false :label "sales" :text "Do you offer a discount for nonprofits on the team plan?"}
+  {:id "r26" :hard? false :label "sales" :text "We're evaluating tools for 200 users, can we book a demo?"}
+  {:id "r27" :hard? false :label "sales" :text "Does the Enterprise plan include SSO and audit logs?"}
+  {:id "r28" :hard? false :label "sales" :text "What's the price difference between the monthly and annual plans before I sign up?"}
+  {:id "r29" :hard? false :label "sales" :text "Is there a free trial I can use before deciding to buy?"}
+  {:id "r30" :hard? false :label "sales" :text "Can your product integrate with Salesforce? We're thinking of switching to you."}
+  {:id "r31" :hard? false :label "clarify" :text "hi"}
+  {:id "r32" :hard? false :label "clarify" :text "It's not working."}
+  {:id "r33" :hard? false :label "clarify" :text "Can you help me with something?"}
+  {:id "r34" :hard? false :label "clarify" :text "What's the weather like in Paris tomorrow?"}
+  {:id "r35" :hard? false :label "clarify" :text "?"}
+  {:id "r36" :hard? false :label "clarify" :text "Write me a poem about autumn."}
+  ;; hard: indirect phrasing, mixed signals, sarcasm, history-free references
+  {:id "h01" :hard? true :label "billing" :text "So apparently paying you once a month isn't enough, you wanted it twice this time. Brilliant."}
+  {:id "h02" :hard? true :label "cancel" :text "Honestly not sure this is worth the money anymore, how do I stop paying for it?"}
+  {:id "h03" :hard? true :label "technical" :text "Everything was fine until the update and now nothing saves."}
+  {:id "h04" :hard? true :label "account" :text "My new colleague keeps getting 'access denied' on the shared projects."}
+  {:id "h05" :hard? true :label "sales" :text "Our current vendor's contract ends in June; what would moving 50 seats to you look like?"}
+  {:id "h06" :hard? true :label "billing" :text "The plan page said $10 but my card shows $12 — what's the extra two dollars?"}
+  {:id "h07" :hard? true :label "technical" :text "Login works but the page just spins forever after that."}
+  {:id "h08" :hard? true :label "clarify" :text "Same problem as last time."}
+  {:id "h09" :hard? true :label "cancel" :text "I've moved to a competitor, so I won't be needing this anymore."}
+  {:id "h10" :hard? true :label "account" :text "Can't get in. Code from the authenticator app is always wrong."}
+  {:id "h11" :hard? true :label "clarify" :text "Thanks!"}
+  {:id "h12" :hard? true :label "billing" :text "I cancelled last month but you still took money this month."}
+  {:id "h13" :hard? true :label "sales" :text "Is it possible to pay by invoice instead of card if we go with the enterprise tier?"}
+  {:id "h14" :hard? true :label "technical" :text "Your status page says all green, but I'm getting timeouts on every request."}
+  {:id "h15" :hard? true :label "clarify" :text "Do you guys do the thing with the stuff?"}
+  {:id "h16" :hard? true :label "account" :text "I got an email saying someone signed in from Brazil. I'm in Ohio."}
+  {:id "h17" :hard? true :label "cancel" :text "Keep the account but drop me to the cheapest plan, the extra features aren't worth it."}
+  {:id "h18" :hard? true :label "technical" :text "The numbers in the monthly report don't add up to the totals shown on the dashboard."}
+  {:id "h19" :hard? true :label "billing" :text "Can you switch our receipts to go to finance@ instead of me?"}
+  {:id "h20" :hard? true :label "clarify" :text "I want to talk to a human."}
+  {:id "h21" :hard? true :label "sales" :text "Before we commit: how many projects does the mid tier allow?"}
+  {:id "h22" :hard? true :label "account" :text "Our SSO login suddenly sends everyone to an error page saying the user is unknown."}
+  {:id "h23" :hard? true :label "technical" :text "Notifications show up hours late on Android but fine on iPhone."}
+  {:id "h24" :hard? true :label "clarify" :text "lol"}]
+
+ :propositions
+ [{:id "p01" :label true  :text "Water boils at 100 degrees Celsius at sea level."}
+  {:id "p02" :label false :text "The Pacific Ocean is smaller than the Arctic Ocean."}
+  {:id "p03" :label true  :text "A week has seven days."}
+  {:id "p04" :label false :text "Two plus two equals five."}
+  {:id "p05" :label true  :text "Paris is the capital of France."}
+  {:id "p06" :label false :text "The Moon is larger than the Earth."}
+  {:id "p07" :label true  :text "Humans have two lungs."}
+  {:id "p08" :label false :text "Spiders are insects with six legs."}
+  {:id "p09" :label true  :text "The chemical symbol for gold is Au."}
+  {:id "p10" :label false :text "Light travels slower than sound in air."}
+  {:id "p11" :label true  :text "A leap year has 366 days."}
+  {:id "p12" :label false :text "Mount Everest is located in South America."}
+  {:id "p13" :label true  :text "Ice is less dense than liquid water."}
+  {:id "p14" :label false :text "There are 50 minutes in an hour."}
+  {:id "p15" :label true  :text "Photosynthesis produces oxygen."}
+  {:id "p16" :label false :text "The Great Wall of China is in Japan."}
+  {:id "p17" :label true  :text "Seventeen is a prime number."}
+  {:id "p18" :label false :text "Twenty-one is a prime number."}
+  {:id "p19" :label true  :text "The square root of 144 is 12."}
+  {:id "p20" :label false :text "Venus is the closest planet to the Sun."}]}

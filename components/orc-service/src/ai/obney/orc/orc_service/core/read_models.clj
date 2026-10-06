@@ -355,10 +355,16 @@
       (assoc-in [(:node-id event) :executor] (:executor event))
       (assoc-in [(:node-id event) :model] (:model event))
       (assoc-in [(:node-id event) :fn] (:fn event))
+      (assoc-in [(:node-id event) :tool] (:tool event))
       (assoc-in [(:node-id event) :tools] (:tools event))
       (assoc-in [(:node-id event) :options] (:options event))
       ;; Phase 4B: opt-in gated tool-caller builder for :code nodes.
-      (assoc-in [(:node-id event) :tool-caller-fn] (:tool-caller-fn event))))
+      (assoc-in [(:node-id event) :tool-caller-fn] (:tool-caller-fn event))
+      (assoc-in [(:node-id event) :tool-contracts] (:tool-contracts event))
+      ;; :decision executor: run-time options key, confidence floor, abstention.
+      (assoc-in [(:node-id event) :options-from] (:options-from event))
+      (assoc-in [(:node-id event) :min-confidence] (:min-confidence event))
+      (assoc-in [(:node-id event) :abstain] (:abstain event))))
 
 (defmethod nodes* :sheet/node-retry-set
   [state event]

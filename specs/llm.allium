@@ -78,6 +78,53 @@ contract StructuredPrediction {
         -- unvalidated data is never relabelled as a successful result.
 }
 
+contract DecisionProtocolPrediction {
+    predict_decision: (provider: Any, specification: Any, inputs: Any, options: Any) -> Any
+
+    @invariant ProtocolFollowsRegisteredProvider
+        -- A registered provider declares whether it is a conversational model
+        -- or a native decision model. The same structured prediction call
+        -- reaches either one; a caller selects a decision model by choosing a
+        -- provider or model, not by calling a different operation. Choosing a
+        -- decision model's identity on a conversational provider does not
+        -- engage the decision protocol.
+
+    @invariant DecisionModelsAnswerOnlyFiniteQuestions
+        -- A decision model answers declared outputs that are booleans or
+        -- finite option sets. A specification with any other output is
+        -- refused before any provider invocation, with a failure naming the
+        -- outputs that cannot be decided.
+
+    @invariant DecisionRequestCarriesDeclaredMeaning
+        -- The declared inputs become the state the decision model assesses,
+        -- and each declared output becomes one question carrying the
+        -- specification's instruction, the output's description and every
+        -- allowed option with its description. Option identities are sent
+        -- and read back verbatim.
+
+    @invariant DecisionAnswersAreValidatedNotRepaired
+        -- Every declared question must be answered with the primitive it was
+        -- asked as and an allowed option. A reported distribution must cover
+        -- exactly the offered options with finite probabilities that sum to
+        -- one, and the selected answer must be its most probable option; a
+        -- reported confidence must lie in range and, when a distribution
+        -- accompanies it, agree with the primitive's documented definition.
+        -- Each of these holds to within the resolution at which the provider
+        -- reports its numbers, and no further (a confidence reported without a
+        -- distribution is kept as reported, since nothing can check it). A
+        -- yes/no probability of exactly one half decides nothing. Any
+        -- violation fails the prediction as schema-invalid; it is never
+        -- repaired or replaced. A streaming prediction reaches the same
+        -- protocol and ends with that one result or failure.
+
+    @invariant DecisionMetadataIsPreserved
+        -- A metadata-bearing decision result preserves the parsed answers,
+        -- per-question distribution and confidence exactly as reported (absent
+        -- when not reported, never synthesised), resolved model identity and
+        -- usage including cost when reported, with the same failure evidence
+        -- and kinds as a conversational prediction.
+}
+
 ------------------------------------------------------------
 -- Surfaces
 ------------------------------------------------------------
@@ -87,6 +134,7 @@ surface OrcLlmBoundary {
 
     contracts:
         fulfils StructuredPrediction
+        fulfils DecisionProtocolPrediction
 
     @guarantee OrcOwnedEventVocabulary
         -- Streaming events use ORC's event discriminator and expose no

@@ -101,6 +101,64 @@ contract LeafExecutor {
         -- back to an ungated caller. With no configured gate, the ordinary tool
         -- caller remains available for backwards compatibility.
 
+    @invariant CodeLeafToolGateIsPreserved
+        -- A code leaf authored by a consumer may name a consumer-supplied tool
+        -- gate, exactly as a generated code leaf may. The named gate survives
+        -- authoring, building, the stored workflow definition and its
+        -- round-trip, and every tool call that leaf makes uses that gate. A
+        -- configured gate that cannot be resolved or constructed fails the
+        -- node; it never falls back to an ungated caller.
+
+    @invariant ToolGateSeesInvocationIdentity
+        -- A code or tool leaf's tool gate is constructed with the identity of
+        -- the invocation it serves: the execution, the node and the effective
+        -- remaining deadline, alongside the execution's durable consumer
+        -- context.
+
+    @invariant DeclaredToolContractsAreEnforced
+        -- When a tool's argument or result contract is declared for the node
+        -- calling it, that contract is enforced at every call, not only shown
+        -- to the model. Arguments that violate it never reach the tool and a
+        -- checkpointed researcher claims no effect for them; a result that
+        -- violates it is never handed to the caller as a successful value.
+        -- A side with no declared contract stays untyped, as before. The tool
+        -- receives the caller's arguments exactly as given. A researcher's
+        -- declared contracts govern the tool calls of its generated subtree
+        -- exactly as they govern its own; generated code may add contracts
+        -- for tools the researcher did not declare but can never relax,
+        -- replace or remove the researcher's.
+
+    @invariant ToolArgumentIdentityIsExact
+        -- On a side with a declared contract, an argument or result field
+        -- supplied under two spellings of the same name is rejected as invalid
+        -- rather than collapsed into one, so normalisation can never silently
+        -- replace a supplied value.
+
+    @invariant ToolOutcomesAreStructured
+        -- Every tool call that fails its declared contract, or whose tool
+        -- itself fails, has one stable outcome kind: invalid arguments,
+        -- invalid result, or tool error. A message names the tool and where
+        -- the contract failed using only declared field names, never a
+        -- supplied value or a supplied undeclared name. A researcher receives
+        -- every one of them, for typed and untyped tools alike, as data it can
+        -- act on: the kind and a safe message that never echoes the rejected
+        -- values or the tool's own error text, except a message the tool's host
+        -- explicitly declares safe to share. A code leaf receives a contract
+        -- violation as a failure carrying its kind, which fails the node unless
+        -- the consumer code handles it; a tool's own failure reaches the
+        -- consumer code that owns that tool unchanged.
+
+    @invariant ToolLeafCallsOnlyAuthoredTools
+        -- A tool leaf names one tool when the workflow is authored and calls
+        -- it through the node's tool caller, with arguments taken from its
+        -- declared read keys, applying any gate and declared contract exactly
+        -- as a code leaf does, and writes the tool's result to its single
+        -- declared write key (when the result is a map holding that key, the
+        -- value under it, as for a single-write code leaf). A tool name
+        -- supplied at run time, by a model or
+        -- by the blackboard, is never an executable identity. A tool leaf with
+        -- no tool caller available fails explicitly.
+
     @invariant ResearcherSeesBoundToolContracts
         -- Before calling a bound tool, a researcher's Phase-1 model receives
         -- that tool's authoritative argument and result schemas. Nested,
@@ -206,6 +264,109 @@ contract LeafExecutor {
         -- schema-invalid decoded arguments have distinct stable failure kinds.
         -- Evidence retains available usage and finish reason even when no text
         -- exists, and excludes arbitrary provider payloads and tool arguments.
+}
+
+contract ModelBackedCondition {
+    assess: (configuration: NodeConfiguration, inputs: Any) -> Boolean
+
+    @invariant ModelConditionPreservesItsAnswer
+        -- A model-backed condition succeeds exactly when the model's valid
+        -- answer is true and fails exactly when it is false. A missing, null
+        -- or non-boolean answer is never read as false: it fails the node as
+        -- a structured provider failure whose kind differs from a semantic
+        -- negative, so a consumer can tell "the proposition is false" from
+        -- "no valid answer was obtained".
+
+    @invariant ModelConditionSharesLeafExecutionPolicy
+        -- A model-backed condition is a provider invocation under the same
+        -- execution policy as a model leaf: each invocation consumes the
+        -- shared LLM-call budget and remaining wall-clock budget, a per-node
+        -- model choice reaches the provider, the default provider retry
+        -- applies, and cancellation or timeout of the execution stops it
+        -- before any further invocation begins.
+
+    @invariant ModelConditionEvidenceIsDurable
+        -- A completed model-backed condition durably records the declared
+        -- blackboard values it read, the boolean answer it obtained, the
+        -- resolved model and the provider usage, retrievable through the same
+        -- trace-detail surfaces as a model leaf. A failed one records
+        -- structured provider failure evidence instead of only an error text.
+}
+
+contract ModelDecision {
+    decide: (configuration: NodeConfiguration, inputs: Any) -> Any
+
+    @invariant DecisionKindFollowsDeclaredWrite
+        -- A model decision writes its answer to exactly one declared
+        -- blackboard key, and that key's schema determines the decision: a
+        -- boolean schema asks whether a proposition holds; a finite enum
+        -- schema asks which one of its members applies. Options may instead be
+        -- supplied at run time by a declared read key holding identified,
+        -- described options. A decision whose answer key is neither boolean
+        -- nor finite is rejected when the workflow is built.
+
+    @invariant DecisionOffersEveryOptionWithItsMeaning
+        -- The model is offered every allowed option together with its
+        -- description, and the decision's instruction. An answer that is not
+        -- a member of the set actually offered is never written; it fails the
+        -- node as a structured provider failure. Option identities are kept
+        -- verbatim, including identities discovered at run time.
+
+    @invariant ValidAssessmentSucceeds
+        -- Obtaining a valid answer is success, whatever the answer is: false
+        -- and a declared none or other option are successful assessments that
+        -- write their value. A missing, malformed or unavailable answer fails
+        -- the node with a structured failure kind and writes nothing to the
+        -- answer key, so routing guards never see a fabricated answer.
+
+    @invariant ConfidenceFloorIsExplicit
+        -- With no configured confidence floor, a valid answer is written as
+        -- obtained. When a floor is configured, a choice whose reported
+        -- confidence is below it, or that reports none, writes the decision's
+        -- declared abstention option instead and records the answer that was
+        -- set aside. The abstention option must be one of the offered options.
+        -- A confidence value is the provider's own reported statistic for that
+        -- primitive; it is never synthesised from a bare answer.
+
+    @invariant DecisionSharesLeafExecutionPolicy
+        -- A model decision is a provider invocation under the same execution
+        -- policy as a model leaf: shared LLM-call and wall-clock budgets,
+        -- per-node model choice, default provider retry, and cancellation or
+        -- timeout stopping it before any further invocation begins.
+
+    @invariant DecisionRecordIsDurable
+        -- Each completed decision durably records the options offered, the
+        -- answer obtained, any distribution or confidence the provider
+        -- reported, whether the answer was set aside for abstention, the
+        -- resolved model and the provider usage, retrievable through the same
+        -- trace-detail surfaces as a model leaf.
+}
+
+contract DelegationBoundary {
+    delegate: (configuration: NodeConfiguration, inputs: Any) -> Any
+
+    @invariant FamilyBudgetIsShared
+        -- Every delegated child execution, whatever its target, draws on the
+        -- root execution's LLM-call budget and remaining wall-clock budget; no
+        -- provider invocation anywhere in the family begins once the family
+        -- budget is spent.
+
+    @invariant DelegateToolContextCrosses
+        -- The parent execution's durable consumer tool context reaches the
+        -- child execution, so a gated tool in the child sees the same consumer
+        -- context as the parent.
+
+    @invariant DelegateInputIdentityIsExact
+        -- Parent values reach the child's inputs by name. Two distinct parent
+        -- keys that would supply the same child input are rejected when the
+        -- workflow is built, never silently collapsed into one.
+
+    @invariant FamilyUsageIsQueryable
+        -- The total provider usage of an execution together with all of its
+        -- descendants is retrievable through the public interface, separately
+        -- from the execution's own usage, with every provider call counted
+        -- exactly once even where a node's own reported usage already folds in
+        -- the usage of executions it started.
 }
 
 contract WorkflowDefinitionConstruction {
@@ -333,6 +494,27 @@ contract ExecutionRecovery {
     @invariant IdempotentResume
         -- Repeated recovery requests converge on the same frontier and do not
         -- duplicate resumptions, completions, or externally visible effects.
+
+    @invariant OwnedWorkIsNotAbandoned
+        -- Every start of a leaf, delegate or researcher carries a durable
+        -- ownership lease
+        -- naming the worker that owns it, from the moment the start is
+        -- recorded, including while the work is queued. The owning worker
+        -- renews the lease while the work runs, however long it takes.
+        -- Recovery, whether automatic, periodic or requested, resumes a start
+        -- only once its latest lease has expired and the recovering worker is
+        -- not itself running it; a start recorded before leases existed counts
+        -- as expired. Work under a live lease, whether running or still queued
+        -- for its owner, is left to finish, so recovery never begins a second
+        -- invocation of healthy work, in one process or across many sharing
+        -- the same execution record.
+
+    @invariant AbandonedWorkStaysRecoverable
+        -- A start whose lease has expired without a completion, because its
+        -- owner stopped, is resumed under the same execution and node
+        -- identity. A resumed start is itself leased, so work whose resumer
+        -- also stops remains recoverable in turn; each start is resumed at
+        -- most once.
 }
 
 contract CheckpointedResearcherExecution {
@@ -395,6 +577,17 @@ contract CheckpointedResearcherExecution {
         -- Retries remain recognisably the same logical action while every spend
         -- stays attributable; a recorded result is never returned for a
         -- different call.
+
+    @invariant GeneratedChildToolCallsAreCheckpointed
+        -- A tool call made by a checkpointed campaign's generated child tree
+        -- is a campaign effect exactly like an inline tool call: it has a
+        -- stable logical action identity that also names the child node, it
+        -- is claimed under the campaign's ownership epoch before it begins,
+        -- it requires the tool to be declared checkpoint-safe, and it
+        -- completes with a durable receipt. When the child runs again after a
+        -- restart, a call whose receipt is complete returns the recorded
+        -- result without calling the tool; a claim without a completed
+        -- receipt is treated as an inline call's unresolved claim is.
 
     @invariant EffectsAreClaimedBeforeTheyHappen
         -- A campaign durably claims an effect, under its ownership epoch, before
@@ -599,7 +792,7 @@ contract CheckpointedResearcherExecution {
 enum ExecutionMode { draft | published }
 
 enum NodeKind {
-    llm | code | tool | condition | llm_condition | sequence | fallback |
+    llm | code | tool | condition | llm_condition | llm_decision | sequence | fallback |
     parallel | map_each | repl_researcher | delegate
 }
 
@@ -1814,6 +2007,9 @@ surface WorkflowExecutionAccess {
         fulfils ExecutionDurability
         fulfils ExecutionRecovery
         fulfils CheckpointedResearcherExecution
+        fulfils ModelBackedCondition
+        fulfils ModelDecision
+        fulfils DelegationBoundary
         demands LeafExecutor
 
     @guarantee IsolatedBlackboard

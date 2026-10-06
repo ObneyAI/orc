@@ -7,5 +7,7 @@
         {:git/url "https://github.com/ObneyAI/litellm-clj.git"
          :git/sha "0570e9459b8751d4a0c3dc1cd48595804426a84d"}
 
+        hato/hato {:mvn/version "0.9.0"}
+
         org.clojure/core.async {:mvn/version "1.6.681"}}
  :aliases {:test {:extra-paths ["test"]}}}

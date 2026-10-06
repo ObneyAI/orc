@@ -84,8 +84,7 @@
       (is (string? code))
       (is (.contains code "defn call-searchDocs"))
       (is (.contains code "inputs"))
-      (is (.contains code "context"))
-      (is (.contains code "mcp-session"))
+      (is (.contains code "executors/invoke-tool invocation"))
       (is (.contains code "search-result"))))
 
   (testing "Handles multiple parameters"
@@ -108,7 +107,7 @@
       (is (string? code))
       (is (.contains code "ns mcp.executors.dynamic"))
       (is (.contains code "require"))
-      (is (.contains code "mcp-client"))
+      (is (.contains code "mcp-sheet-builder.core.executors"))
       (is (.contains code "defn call-searchDocs"))))
 
   (testing "Namespace includes tool ID prefix"

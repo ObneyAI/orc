@@ -20,6 +20,7 @@
             [ai.obney.orc.orc-service.interface.stream-schemas :as stream-schemas]
             ;; DSL for workflow building
             [ai.obney.orc.orc-service.core.dsl :as dsl]
+            [ai.obney.orc.orc-service.core.family-usage :as family-usage]
             ;; Resolving blackboard values from the canonical write log
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             ;; WS-2a: the orc block-signal primitive (opaque payload)
@@ -81,6 +82,9 @@
 ;; Judge functions (Gap-1: per-event evaluator runtime reads these)
 (def get-judges rm/get-judges)
 (def get-judge rm/get-judge)
+
+;; Family usage: provider usage of an execution plus all its descendants.
+(def get-family-usage family-usage/get-family-usage)
 
 ;; Tick functions
 (def get-tick rm/get-tick)
@@ -223,8 +227,10 @@
 ;; Node builders
 (def llm dsl/llm)
 (def code dsl/code)
+(def tool dsl/tool)
 (def condition dsl/condition)
 (def llm-condition dsl/llm-condition)
+(def llm-decision dsl/llm-decision)
 (def sequence dsl/sequence)
 (def fallback dsl/fallback)
 (def parallel dsl/parallel)

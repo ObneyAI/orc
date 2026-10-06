@@ -7,6 +7,7 @@
    - Return cognitect anomaly on failure
    - Last write wins (no optimistic concurrency)"
   (:require [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
+            [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
             [ai.obney.orc.orc-service.core.read-models :as rm]
@@ -451,7 +452,8 @@
    - :ai executor uses ORC LLM with optional model selection
    - :code executor runs a Clojure function
    - :tool executor directly invokes a tool"
-  [{{:keys [sheet-id node-id executor model fn tools options tool-caller-fn]} :command
+  [{{:keys [sheet-id node-id executor model fn tool tools options tool-caller-fn tool-contracts
+                options-from min-confidence abstain]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)]
     (cond
@@ -467,6 +469,11 @@
       {::anom/category ::anom/incorrect
        ::anom/message "Code executor requires :fn (fully-qualified function symbol)"}
 
+      (and (= executor :tool)
+           (not (and (string? tool) (not (clojure.string/blank? tool)))))
+      {::anom/category ::anom/incorrect
+       ::anom/message "Tool executor requires :tool (the authored tool name)"}
+
       :else
       {:command-result/events
        [(->event
@@ -478,9 +485,14 @@
                          :executor executor}
                   model (assoc :model model)
                   fn (assoc :fn fn)
+                  tool (assoc :tool tool)
                   tools (assoc :tools (vec tools))
                   options (assoc :options options)
                   tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+                  tool-contracts (assoc :tool-contracts tool-contracts)
+                  options-from (assoc :options-from options-from)
+                  min-confidence (assoc :min-confidence min-confidence)
+                  (some? abstain) (assoc :abstain abstain)
                   (:executor node) (assoc :previous-executor (:executor node))
                   (:model node) (assoc :previous-model (:model node))
                   (:fn node) (assoc :previous-fn (:fn node))
@@ -1177,10 +1189,12 @@
             :tags #{[:sheet sheet-id]
                     [:node node-id]
                     [:tick new-tick-id]}
-            :body {:sheet-id sheet-id
-                   :tick-id new-tick-id
-                   :node-id node-id
-                   :inputs inputs-with-overrides}})]}))))
+            :body (execution-lease/stamp
+                   ctx node
+                   {:sheet-id sheet-id
+                    :tick-id new-tick-id
+                    :node-id node-id
+                    :inputs inputs-with-overrides})})]}))))
 
 (defcommand :sheet resume-node-execution
   {:authorized? authenticated?}
@@ -1233,6 +1247,18 @@
                          :node-id node-id
                          :inputs inputs
                          :resumed-from-event-id original-start-event-id}
+                  ;; AbandonedWorkStaysRecoverable: the resumed start is itself
+                  ;; leased by the recovering worker.
+                  (execution-lease/leased-node?
+                   (get-in (rm/get-tick-execution-context ctx tick-id)
+                           [:nodes-by-id node-id]))
+                  (as-> body
+                        (do (execution-lease/track-queued!
+                             ctx (get-in (rm/get-tick-execution-context ctx tick-id)
+                                         [:nodes-by-id node-id])
+                             {:sheet-id sheet-id :tick-id tick-id
+                              :node-id node-id :inputs inputs})
+                            (merge body (execution-lease/fields ctx))))
                   researcher-ownership-epoch
                   (assoc :researcher-ownership-epoch
                          researcher-ownership-epoch))})]
@@ -1260,6 +1286,23 @@
                                       (= original-start-event-id
                                          (:resumed-from-event-id %))))
                            later))))}})))
+
+(defcommand :sheet renew-node-execution-lease
+  {:authorized? authenticated?}
+  "Extend the durable ownership lease of one running leaf or delegate start."
+  [{{:keys [sheet-id tick-id node-id exec-context start-event-id
+            lease-owner lease-expires-at]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :sheet/node-execution-lease-renewed
+      :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+      :body (cond-> {:sheet-id sheet-id
+                     :tick-id tick-id
+                     :node-id node-id
+                     :start-event-id start-event-id
+                     :lease-owner lease-owner
+                     :lease-expires-at lease-expires-at}
+              (seq exec-context) (assoc :exec-context exec-context))})]})
 
 (defn- commit-researcher-iteration-v2
   [{{:keys [sheet-id tick-id node-id resume-state iteration-record inputs resume?
@@ -1703,9 +1746,9 @@
    Optional :usage carries per-node token counts from LLM calls."
   [{{:keys [sheet-id tick-id node-id completion-id researcher-ownership-epoch
             status writes rejected-writes write-sources write-references? duration-ms
-            observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage model
+            observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage own-usage model
             node-type completion-kind raw-response failure-kind provider-evidence
-            block-payload read-sources]} :command
+            condition-answer decision block-payload read-sources]} :command
     :as ctx}]
   (if (or (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
           (and completion-id
@@ -1843,6 +1886,8 @@
                                     ;; (node-output <node-id>) drill-down.
                                     raw-response (assoc :raw-response raw-response)
                                     failure-kind (assoc :failure-kind failure-kind)
+                                    (boolean? condition-answer) (assoc :condition-answer condition-answer)
+                                    decision (assoc :decision decision)
                                     provider-evidence (assoc :provider-evidence provider-evidence)
                                     ;; :inputs keeps ONLY the namespaced
                                     ;; execution-context keys. Those are not
@@ -1862,6 +1907,7 @@
                                     (seq read-sources)
                                     (assoc :read-sources read-sources)
                                     (seq usage) (assoc :usage usage)
+                                    (seq own-usage) (assoc :own-usage own-usage)
                                     model (assoc :model model)
                                     ;; C-2a-2: propagate :node-type so the
                                     ;; per-node-type aggregator can partition
@@ -2293,7 +2339,13 @@
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (seq (:writes node)) (assoc :writes (:writes node))
                    (:tools node) (assoc :tools (:tools node))
-                   (:retry node) (assoc :retry (:retry node))))
+                   (:retry node) (assoc :retry (:retry node))
+                   (= :decision (:executor node))
+                   (merge (cond-> {}
+                            (:options-from node) (assoc :options-from (:options-from node))
+                            (:min-confidence node) (assoc :min-confidence (:min-confidence node))
+                            (some? (:abstain node)) (assoc :abstain (:abstain node))
+                            (:options node) (assoc :options (:options node))))))
           ;; Condition-specific
           (= :condition (:type node))
           (merge (cond-> {}

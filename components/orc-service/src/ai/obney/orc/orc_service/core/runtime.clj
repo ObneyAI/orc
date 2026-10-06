@@ -13,6 +13,7 @@
             [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.core.trace-time :as trace-time]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
+            [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
@@ -147,6 +148,9 @@
                        :tools (:tools snapshot-node)
                        :options (:options snapshot-node)
                        :retry (:retry snapshot-node)
+                       :options-from (:options-from snapshot-node)
+                       :min-confidence (:min-confidence snapshot-node)
+                       :abstain (:abstain snapshot-node)
                        ;; Condition fields
                        :check (:check snapshot-node)
                        ;; Parallel fields
@@ -651,6 +655,11 @@
                   tick-events)
             open-starts
             (vals (apply dissoc open-starts-by-key completed-map-contexts))
+            renewals-by-start
+            (group-by :start-event-id
+                      (filter #(= :sheet/node-execution-lease-renewed
+                                  (:event/type %))
+                              tick-events))
             ;; Rebuild each active map coordinator before its in-flight direct
             ;; child is re-enqueued below. The resumed map start is consumed by
             ;; the same ordered execute-node processor, so its durable survivor
@@ -687,8 +696,26 @@
            (let [node-id (:node-id start)
                  node (get nodes-by-id node-id)
                  node-type (:type node)]
-             (when (and (contains? #{:leaf :delegate :repl-researcher} node-type)
-                        (nil? (:resumed-from-event-id start)))
+             ;; OwnedWorkIsNotAbandoned / AbandonedWorkStaysRecoverable: a leaf
+             ;; or delegate start (original or resumed) is resumed only when
+             ;; its owner is known not to be working on it. Researchers use the
+             ;; same lease decision for WHETHER to resume (checkpointed or
+             ;; not) and keep their epoch-based path for WHAT is resumed:
+             ;; only original starts are candidates.
+             (when (case node-type
+                     (:leaf :delegate)
+                     (execution-lease/abandoned?
+                      context start
+                      (get renewals-by-start (:event/id start))
+                      (value-log/exec-context (:inputs start)))
+                     :repl-researcher (and (nil? (:resumed-from-event-id start))
+                                           (execution-lease/abandoned?
+                                            context start
+                                            (get renewals-by-start (:event/id start))
+                                            (value-log/exec-context (:inputs start))
+                                            {:fenced? (boolean
+                                                       (researcher-mode/checkpointed? node))}))
+                     false)
                (let [researcher-ownership-epoch
                      (when (researcher-mode/checkpointed? node)
                        (inc (latest-researcher-frontier-epoch

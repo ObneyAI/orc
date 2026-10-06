@@ -6,6 +6,7 @@
   typed streaming channel contract."
   (:require [clojure.core.async :as async :refer [<! >! chan close! go-loop]]
             [clojure.string :as str]
+            [hato.client :as http]
             [litellm.router :as router]
             [litellm.streaming :as streaming]
             [malli.core :as m]
@@ -497,7 +498,268 @@
             :provider-evidence evidence}
            cause))
 
-(defn predict
+;; --------------------------------------------------------------------------- ;;
+;; Decision protocol (native decision models)
+;; --------------------------------------------------------------------------- ;;
+;; A provider registered with :protocol :decision (e.g. typesafe/jev via
+;; OpenRouter's /api/alpha/decisions) is reached through the ordinary `predict`
+;; call. Declared inputs become the assessed state; each declared output
+;; becomes one question (boolean -> noul, enum -> choice). Answers are
+;; validated against the offered question and are NEVER repaired or replaced.
+
+(def ^:private default-decisions-url "https://openrouter.ai/api/alpha/decisions")
+
+(def ^:private decision-tolerance 1e-6)
+
+;; The resolution at which a provider reports probabilities and confidence.
+;; Real OpenRouter Jev responses (captured 2026-10-05) round both to 0.01 while
+;; computing confidence from the unrounded distribution, so the documented
+;; definitions hold only to within that rounding. A provider config may declare
+;; :reported-resolution (0 = exact values).
+(def ^:private default-reported-resolution 0.01)
+
+(defn- registered-config [provider]
+  (when (keyword? provider)
+    (try (router/get-config provider) (catch Exception _ nil))))
+
+(defn- decision-provider? [config]
+  (= :decision (:protocol config)))
+
+(defn- decision-route
+  "The decision provider a call reaches, or nil for a conversational call.
+   A per-call :model that NAMES a registered decision provider selects it (so
+   one workflow can mix decision and conversational nodes); otherwise the
+   call's own provider decides. A decision model's identity used as :model on
+   a conversational provider is not a provider name and stays conversational.
+   Returns [provider-name config options] with options adjusted so the
+   selected provider's own model is requested."
+  [provider options]
+  (let [named (when (string? (:model options))
+                (let [k (keyword (:model options))
+                      c (registered-config k)]
+                  (when (decision-provider? c) [k c])))]
+    (cond
+      named (let [[k c] named] [k c (dissoc options :model)])
+      (decision-provider? (registered-config provider))
+      [provider (registered-config provider) options]
+      :else nil)))
+
+(defn- wire-id
+  "String identity of an option / key, verbatim (keywords by name, with their
+   namespace, so JSON-keywordized keys round-trip)."
+  [x]
+  (cond (keyword? x) (subs (str x) 1)
+        (string? x) x
+        :else (str x)))
+
+(defn- field
+  "Read `k` from a decoded JSON map whose keys may be strings or keywords."
+  [m k]
+  (when (map? m)
+    (let [n (name k)]
+      (cond (some? (get m n)) (get m n)
+            :else (get m (keyword n))))))
+
+(defn- output-kind
+  "Return {:kind :boolean} / {:kind :enum :members [..] :descriptions {..}} for
+   a finite output spec, or nil when the output cannot be decided."
+  [spec]
+  (try
+    (let [schema (m/schema spec)]
+      (case (m/type schema)
+        :boolean {:kind :boolean}
+        :enum {:kind :enum
+               :members (vec (m/children schema))
+               :descriptions (into {} (map (fn [[k v]] [(wire-id k) v]))
+                                   (:descriptions (m/properties schema)))}
+        nil))
+    (catch Exception _ nil)))
+
+(defn- decision-instructions [spec output]
+  (str/join "\n" (remove str/blank? [(:instructions spec) (:description output)])))
+
+(defn- decision-question [spec {:keys [description] :as output} {:keys [kind members descriptions]}]
+  (let [instructions (decision-instructions spec output)]
+    (if (= :boolean kind)
+      {:type "noul"
+       :instructions instructions
+       :criteria {"true" (str "The following holds: " (or description (name (:name output))))
+                  "false" (str "The following does not hold: " (or description (name (:name output))))}}
+      {:type "choice"
+       :instructions instructions
+       :criteria (into {} (map (fn [member]
+                                 (let [id (wire-id member)]
+                                   [id (or (get descriptions id) id)])))
+                       members)})))
+
+(defn- decision-request [model spec inputs kinds]
+  {:model model
+   :state (into {} (map (fn [{:keys [name]}] [name (get inputs name)])) (:inputs spec))
+   :questions (into {} (map (fn [output]
+                              [(name (:name output))
+                               (decision-question spec output (get kinds (:name output)))]))
+                    (:outputs spec))})
+
+(defn- default-decision-transport [config options]
+  (fn [request]
+    (let [response (http/post (or (:decisions-url config) default-decisions-url)
+                              (cond-> {:headers {"Authorization" (str "Bearer " (:api-key config))
+                                                 "Content-Type" "application/json"}
+                                       :content-type :json
+                                       :form-params request
+                                       :as :json-string-keys}
+                                (:timeout-ms options) (assoc :timeout (:timeout-ms options))))]
+      (:body response))))
+
+(defn- finite-prob? [x]
+  (and (number? x) (not (Double/isNaN (double x))) (not (Double/isInfinite (double x)))
+       (<= 0.0 (double x) 1.0)))
+
+(defn- invalid! [qname problem evidence]
+  (throw (structured-failure (str "Decision answer for " qname " is invalid: " problem)
+                             :schema-validation-failed evidence)))
+
+(defn- validate-choice
+  "Validate a choice answer; return {:value member :evidence {...}}.
+   `resolution` is the provider's reported rounding step: sums, maxima and the
+   confidence definition are held to within what that rounding can explain."
+  [qname answer {:keys [members]} evidence resolution]
+  (let [ids (into {} (map (fn [member] [(wire-id member) member])) members)
+        choice (field answer :choice)
+        probs-raw (field answer :probabilities)
+        conf (field answer :confidence)]
+    (when-not (and (string? choice) (contains? ids choice))
+      (invalid! qname "choice is not an offered option" evidence))
+    (let [probs (when (some? probs-raw)
+                  (when-not (map? probs-raw)
+                    (invalid! qname "probabilities is not a map" evidence))
+                  (into {} (map (fn [[k v]] [(wire-id k) v])) probs-raw))]
+      (when probs
+        (when-not (= (set (keys ids)) (set (keys probs)))
+          (invalid! qname "distribution does not cover exactly the offered options" evidence))
+        (when-not (every? finite-prob? (vals probs))
+          (invalid! qname "distribution holds a non-finite or out-of-range probability" evidence))
+        (when (> (Math/abs (- (reduce + 0.0 (map double (vals probs))) 1.0))
+                 (+ (* (count probs) (/ resolution 2.0)) decision-tolerance))
+          (invalid! qname "distribution does not sum to one" evidence))
+        (let [pmax (apply max (map double (vals probs)))]
+          ;; Rounding can tie or invert options closer than one step; any
+          ;; option within one step of the maximum may be the true argmax.
+          (when (< (double (get probs choice)) (- pmax resolution decision-tolerance))
+            (invalid! qname "selected option is not the most probable option" evidence))))
+      (when (some? conf)
+        (when-not (finite-prob? conf)
+          (invalid! qname "confidence is non-finite or out of range" evidence))
+        ;; Confidence is only checkable against the documented definition
+        ;; (pmax - 1/n) / (1 - 1/n) when a distribution accompanies it. A
+        ;; confidence reported WITHOUT probabilities is accepted as reported
+        ;; and recorded, because there is nothing to check it against.
+        (when probs
+          (let [n (count probs)
+                pmax (apply max (map double (vals probs)))
+                expected (if (= 1 n) 1.0 (/ (- pmax (/ 1.0 n)) (- 1.0 (/ 1.0 n))))]
+            (when (> (Math/abs (- (double conf) expected))
+                     (+ (if (= 1 n) 0.0 (/ (/ resolution 2.0) (- 1.0 (/ 1.0 n))))
+                        (/ resolution 2.0)
+                        decision-tolerance))
+              (invalid! qname "confidence disagrees with the reported distribution" evidence)))))
+      {:value (get ids choice)
+       :evidence (cond-> {:primitive :choice :answer answer}
+                   probs (assoc :probabilities probs)
+                   (some? conf) (assoc :confidence conf))})))
+
+(defn- validate-noul [qname answer evidence]
+  (let [p (field answer :noul)]
+    (when-not (finite-prob? p)
+      (invalid! qname "noul probability is non-finite or out of range" evidence))
+    (when (== 0.5 (double p))
+      (invalid! qname "noul probability 0.5 is undecided" evidence))
+    {:value (> (double p) 0.5)
+     :evidence {:primitive :noul :answer answer :probability p}}))
+
+(defn- validate-decision-answers [spec kinds answers evidence resolution]
+  (reduce
+   (fn [acc {oname :name}]
+     (let [qname (name oname)
+           answer (field answers oname)
+           {:keys [kind] :as k} (get kinds oname)
+           expected-type (if (= :boolean kind) "noul" "choice")]
+       (when-not (map? answer)
+         (invalid! qname "no answer was returned" evidence))
+       (when-not (= expected-type (some-> (field answer :type) wire-id))
+         (invalid! qname (str "answered with the wrong primitive; asked as " expected-type) evidence))
+       (let [{:keys [value] :as r}
+             (if (= :boolean kind)
+               (validate-noul qname answer evidence)
+               (validate-choice qname answer k evidence resolution))]
+         (-> acc
+             (assoc-in [:outputs oname] value)
+             (assoc-in [:decisions oname] (:evidence r))))))
+   {:outputs {} :decisions {}}
+   (:outputs spec)))
+
+(defn- decision-usage [usage]
+  (let [in (field usage :input_tokens)
+        out (field usage :output_tokens)
+        cost (field usage :cost)]
+    (cond-> {}
+      (some? in) (assoc :prompt_tokens in)
+      (some? out) (assoc :completion_tokens out)
+      (and (some? in) (some? out)) (assoc :total_tokens (+ in out))
+      (some? cost) (assoc :cost cost))))
+
+(defn- transport-summary [^Throwable e]
+  ;; Allowlisted: class name and an integer HTTP status only. The exception
+  ;; message and data are never copied (they may echo request headers).
+  (let [status (:status (ex-data e))]
+    (str "Decision transport failed (" (.getName (class e))
+         (when (integer? status) (str ", HTTP " status)) ")")))
+
+(defn- predict-decision [provider config spec inputs options]
+  (let [validate? (get options :validate? true)
+        inputs (if validate? (sio/validate-inputs (:inputs spec) inputs) inputs)
+        base-evidence {:provider (provider-name provider)}
+        kinds (into {} (map (fn [o] [(:name o) (output-kind (:spec o))])) (:outputs spec))
+        undecidable (->> (:outputs spec) (filter #(nil? (get kinds (:name %)))) (map :name))]
+    (when (seq undecidable)
+      (throw (structured-failure
+              (str "Decision models answer only boolean or finite-option outputs; cannot decide: "
+                   (str/join ", " (map name undecidable)))
+              :schema-validation-failed base-evidence)))
+    (let [transport (or (:decision-transport (:config config))
+                        (default-decision-transport (:config config) options))
+          ;; A per-request model (e.g. a node's model choice) overrides the
+          ;; provider's configured default, as on the conversational path.
+          request (decision-request (or (:model options) (:model config)) spec inputs kinds)
+          response (try (transport request)
+                        (catch Exception e
+                          (throw (structured-failure (transport-summary e)
+                                                     :transport-failure base-evidence))))
+          evidence (assoc base-evidence
+                          :model (diagnostic-string (field response :model))
+                          :response-id (diagnostic-string (field response :id))
+                          :usage (decision-usage (field response :usage)))
+          answers (field response :answers)
+          {:keys [outputs decisions]}
+          (validate-decision-answers spec kinds answers evidence
+                                     (double (get (:config config) :reported-resolution
+                                                  default-reported-resolution)))
+          outputs (if validate?
+                    (try (validate-outputs (:outputs spec) outputs)
+                         (catch Exception e
+                           (throw (structured-failure (.getMessage e)
+                                                      :schema-validation-failed evidence e))))
+                    outputs)]
+      (if (:with-metadata? options)
+        (cond-> {:outputs outputs
+                 :usage (decision-usage (field response :usage))
+                 :model (field response :model)
+                 :raw-response (pr-str answers)
+                 :decisions decisions}
+          (:with-provider-evidence? options) (assoc :provider-evidence evidence))
+        outputs))))
+
+(defn- predict-chat
   "Perform one structured provider invocation.
 
   Returns parsed outputs directly, or when :with-metadata? is true returns
@@ -585,6 +847,19 @@
         (assoc :provider-evidence evidence))
       outputs)))
 
+(defn predict
+  "Perform one structured provider invocation.
+
+  A provider registered with :protocol :decision is a native decision model and
+  is answered through the decision protocol; every other provider is
+  conversational. Returns parsed outputs directly, or when :with-metadata? is
+  true returns {:outputs :usage :model :raw-response} (decision providers also
+  return :decisions, the per-question evidence as reported)."
+  [provider spec inputs & [options]]
+  (if-let [[decision-provider config options] (decision-route provider (or options {}))]
+    (predict-decision decision-provider config spec inputs options)
+    (predict-chat provider spec inputs options)))
+
 (defn- accumulate-stream-usage [acc usage]
   (reduce-kv (fn [result key value]
                (if (some? value) (assoc result key value) result))
@@ -603,11 +878,46 @@
              :class (str (class error))}
             error)})
 
+(defn- predict-decision-stream
+  "A decision model answers in one response; it has no token stream. Emit its
+   single :final (or :error) terminal so a streaming caller reaches the same
+   decision protocol as a blocking one, never a conversational completion."
+  [provider config spec inputs options]
+  (let [output-ch (chan 1)]
+    (async/thread
+      (let [terminal
+            (try
+              (let [{:keys [outputs usage model raw-response decisions]}
+                    (predict-decision provider config spec inputs
+                                      (assoc options
+                                             :validate? (get options :validate? false)
+                                             :with-metadata? true))]
+                {:orc/event :final
+                 :outputs outputs
+                 :usage usage
+                 :model model
+                 :raw-response raw-response
+                 :decisions decisions})
+              (catch Throwable error
+                (error-event error)))]
+        (async/>!! output-ch terminal)
+        (close! output-ch)))
+    output-ch))
+
+(declare predict-chat-stream)
+
 (defn predict-stream-v2
   "Return a core.async channel of typed ORC events.
 
   The channel emits :delta and debounced :fields events, then exactly one
-  :final or :error terminal event before closing."
+  :final or :error terminal event before closing. A provider registered with
+  :protocol :decision emits only its single terminal event."
+  [provider spec inputs & [options]]
+  (if-let [[decision-provider config options] (decision-route provider (or options {}))]
+    (predict-decision-stream decision-provider config spec inputs options)
+    (predict-chat-stream provider spec inputs options)))
+
+(defn- predict-chat-stream
   [provider spec inputs & [options]]
   (let [options (or options {})
         validate? (get options :validate? false)

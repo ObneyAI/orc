@@ -119,15 +119,16 @@
    Walks the workflow tree and collects LLM node instructions.
    Returns map of {node-name -> instruction-text}.
 
-   Finds all LLM nodes (type :leaf with executor :llm or :llm-condition)
-   and extracts their instructions for optimization."
+   Finds every model-instructed node — leaves with an :ai/:llm executor,
+   model decisions (:decision executor) and :llm-condition nodes — and
+   extracts their instructions for optimization."
   [context sheet-id]
   (u/log ::extracting-instructions :sheet-id sheet-id)
   (let [nodes (sheet/get-nodes-for-sheet context sheet-id)
         ;; Filter for LLM nodes - type :leaf with :executor :llm, or :llm-condition
         llm-nodes (filter (fn [node]
                             (or (and (= :leaf (:type node))
-                                     (#{:ai :llm} (:executor node)))
+                                     (#{:ai :llm :decision} (:executor node)))
                                 (= :llm-condition (:type node))))
                           nodes)
         ;; Build instruction map: {node-name -> instruction}
