@@ -745,8 +745,11 @@
                                   opts (when (map? (first rest)) (first rest))
                                   field-schema (if opts (second rest) (first rest))
                                   optional? (:optional opts)]
+                              ;; Never mark optionality on the NAME (`name?:`): a function-calling
+                              ;; model copies the suffix into the key it returns, and the value is
+                              ;; then silently lost on decode. State it in words, outside the name.
                               (str (name field-key)
-                                   (when optional? "?")
+                                   (when optional? " (optional)")
                                    ": " (malli-schema->description field-schema))))]
           (str "object with {" (clojure.string/join ", " field-descs) "}"))
 
