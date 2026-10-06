@@ -26,7 +26,7 @@
    well-formed. `node` is the workflow-DSL leaf map; `schema-of` maps a
    blackboard key to its (effective) schema."
   [node schema-of]
-  (let [{:keys [name writes reads options-from min-confidence abstain instruction]} node
+  (let [{:keys [name writes reads options-from bands-from min-confidence abstain instruction]} node
         problem (fn [msg] (str "Decision '" name "' " msg))]
     (cond
       (not (and (string? instruction) (not (str/blank? instruction))))
@@ -34,6 +34,26 @@
 
       (not= 1 (count writes))
       (problem (str "must write exactly one answer key, got " (pr-str writes)))
+
+      (and bands-from options-from)
+      (problem ":bands-from and :options-from are mutually exclusive: a decision offers either unordered options or ordered bands")
+
+      (and bands-from (not (some #{bands-from} reads)))
+      (problem (str ":bands-from " (pr-str bands-from) " must also be declared in :reads"))
+
+      ;; A low-confidence grade is a later assessment concern, not an
+      ;; abstention value: a band is always an ordered grade, never a stand-in.
+      (and bands-from (or (some? min-confidence) (some? abstain)))
+      (problem ":min-confidence and :abstain are not supported on a banded decision (:bands-from)")
+
+      (and bands-from (let [answer (schema-of (first writes))]
+                        (not (and answer
+                                  (= :int (some-> (try (m/schema answer) (catch Exception _ nil))
+                                                  m/type))))))
+      (problem (str "answer key " (pr-str (first writes))
+                    " must be an integer schema when :bands-from supplies the bands"))
+
+      bands-from nil
 
       (and options-from (not (some #{options-from} reads)))
       (problem (str ":options-from " (pr-str options-from) " must also be declared in :reads"))
@@ -84,6 +104,60 @@
                    (for [{:keys [id description]} options]
                      (str "- " id (when-not (str/blank? description)
                                     (str ": " description))))))))
+
+(defn rubric
+  "Validate a run-time rubric value for a banded decision. A rubric is a map
+   `{:bands {1 \"description\" 2 \"description\" ...} :criterion str? :stance str?}`
+   whose bands are integer-keyed, contiguous, at least two levels, every
+   description a non-blank string. Never guesses: returns
+   {:rubric {:bands [[level description] ...] :criterion c :stance s}} when
+   valid, or {:error message}."
+  [value]
+  (let [bands (when (map? value) (:bands value))
+        levels (when (map? bands) (sort (keys bands)))]
+    (cond
+      (not (map? value))
+      {:error (str "rubric must be a map with :bands, got " (pr-str value))}
+
+      (not (and (map? bands) (seq bands)))
+      {:error "rubric :bands must be a non-empty map of integer level to description"}
+
+      (not (every? integer? levels))
+      {:error (str "rubric band levels must be integers, got " (pr-str levels))}
+
+      (< (count levels) 2)
+      {:error "rubric must offer at least two bands"}
+
+      (not= levels (range (first levels) (+ (first levels) (count levels))))
+      {:error (str "rubric band levels must be contiguous, got " (pr-str levels))}
+
+      (some #(not (and (string? (get bands %)) (not (str/blank? (get bands %))))) levels)
+      {:error (str "every rubric band needs a non-blank description; missing or blank for levels "
+                   (pr-str (filterv #(not (and (string? (get bands %)) (not (str/blank? (get bands %)))))
+                                    levels)))}
+
+      (and (some? (:criterion value)) (not (string? (:criterion value))))
+      {:error "rubric :criterion must be a string"}
+
+      (and (some? (:stance value)) (not (string? (:stance value))))
+      {:error "rubric :stance must be a string"}
+
+      :else
+      {:rubric (cond-> {:bands (mapv (fn [l] [l (get bands l)]) levels)}
+                 (not (str/blank? (:criterion value))) (assoc :criterion (:criterion value))
+                 (not (str/blank? (:stance value))) (assoc :stance (:stance value)))})))
+
+(defn render-bands
+  "Provider-facing text offering the rubric: criterion, stance, then every band
+   as \"n: description\" in order."
+  [{:keys [bands criterion stance]}]
+  (str/join "\n"
+            (concat
+             (when criterion [(str "Criterion: " criterion)])
+             (when stance [(str "Stance: " stance)])
+             ["Choose exactly the one band that applies and answer with its number verbatim:"]
+             (for [[level description] bands]
+               (str level ": " description)))))
 
 (defn judge
   "Judge a provider answer against the set actually offered, applying the

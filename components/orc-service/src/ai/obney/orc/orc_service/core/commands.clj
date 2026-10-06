@@ -453,7 +453,7 @@
    - :code executor runs a Clojure function
    - :tool executor directly invokes a tool"
   [{{:keys [sheet-id node-id executor model fn tool tools options tool-caller-fn tool-contracts
-                options-from min-confidence abstain]} :command
+                options-from bands-from min-confidence abstain]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)]
     (cond
@@ -491,6 +491,7 @@
                   tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
                   tool-contracts (assoc :tool-contracts tool-contracts)
                   options-from (assoc :options-from options-from)
+                  bands-from (assoc :bands-from bands-from)
                   min-confidence (assoc :min-confidence min-confidence)
                   (some? abstain) (assoc :abstain abstain)
                   (:executor node) (assoc :previous-executor (:executor node))
@@ -2343,6 +2344,7 @@
                    (= :decision (:executor node))
                    (merge (cond-> {}
                             (:options-from node) (assoc :options-from (:options-from node))
+                            (:bands-from node) (assoc :bands-from (:bands-from node))
                             (:min-confidence node) (assoc :min-confidence (:min-confidence node))
                             (some? (:abstain node)) (assoc :abstain (:abstain node))
                             (:options node) (assoc :options (:options node))))))

@@ -363,6 +363,7 @@
       (assoc-in [(:node-id event) :tool-contracts] (:tool-contracts event))
       ;; :decision executor: run-time options key, confidence floor, abstention.
       (assoc-in [(:node-id event) :options-from] (:options-from event))
+      (assoc-in [(:node-id event) :bands-from] (:bands-from event))
       (assoc-in [(:node-id event) :min-confidence] (:min-confidence event))
       (assoc-in [(:node-id event) :abstain] (:abstain event))))
 

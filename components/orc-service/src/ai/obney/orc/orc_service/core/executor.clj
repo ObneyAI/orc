@@ -1894,7 +1894,9 @@
            :usage total-usage}
 
           ;; Exception — retry with backoff (handles rate limits, transient errors)
-          (and error (< attempt max-retries))
+          ;; An :undecided tie is the provider's answer, not a transient failure:
+          ;; retrying would only spend another paid call fishing for a different grade.
+          (and error (not= :undecided failure-kind) (< attempt max-retries))
           (let [backoff (backoff-for attempt)
                 remaining (execution-budget/remaining-ms deadline-ms)]
             (if (and remaining (<= remaining backoff))
@@ -2103,6 +2105,13 @@
    (`[{:id :description}]`). Every option id and description is rendered into
    the provider-facing instruction.
 
+   Banded (:bands-from): the run-time rubric on that read key is validated
+   (an invalid rubric fails the node, writes nothing), rendered into the
+   instruction, and offered as an ORDERED string enum of band numbers; the
+   chosen band is written as an integer. A native decision model reports its
+   distribution, kept in :decision :band-distribution; an exact tie for most
+   probable band fails with :failure-kind :undecided.
+
    Returns the `execute-ai` result shape plus :decision
    `{:offered [...] :answer v :abstained? bool [:set-aside v]}`.
    A valid answer is :status :success with :outputs {answer-key value}. A
@@ -2118,14 +2127,20 @@
                 :error error
                 :duration-ms 0
                 :decision {:offered (vec offered) :abstained? false}})
+        banded? (some? (:bands-from node))
+        banded (when banded?
+                 (decision/rubric (get-in blackboard [(:bands-from node) :value])))
+        band-levels (mapv (comp str first) (get-in banded [:rubric :bands]))
         runtime? (some? (:options-from node))
         runtime-opts (when runtime?
                        (decision/runtime-options
                         (get-in blackboard [(:options-from node) :value])))
-        static (when-not runtime?
+        static (when-not (or runtime? banded?)
                  (decision/schema-options (get-in blackboard [answer-key :schema])))
-        kind (if runtime? :enum (:kind static))
+        kind (cond banded? :band runtime? :enum :else (:kind static))
         option-list (cond
+                      banded? (mapv (fn [[level description]] {:id (str level) :description description})
+                                    (get-in banded [:rubric :bands]))
                       runtime? runtime-opts
                       (= :enum kind) (mapv (fn [id] {:id id
                                                      :description (get (:descriptions static) id)})
@@ -2133,6 +2148,11 @@
                       :else nil)
         offered (if (= :boolean kind) [true false] (mapv :id option-list))]
     (cond
+      (and banded? (:error banded))
+      (fail (str "Decision '" (:name node) "' read key " (pr-str (:bands-from node))
+                 " holds an invalid rubric: " (:error banded))
+            [])
+
       (nil? kind)
       (fail (str "Decision '" (:name node) "' offers no valid options: answer key "
                  (pr-str answer-key) " is not boolean or a finite enum"
@@ -2151,9 +2171,26 @@
             offered)
 
       :else
-      (let [offer-text (decision/render-options kind option-list)
-            answer-schema (if (= :boolean kind)
+      (let [offer-text (if banded?
+                         (decision/render-bands (:rubric banded))
+                         (decision/render-options kind option-list))
+            ;; Bands travel as STRINGS on the wire (one route returned empty
+            ;; tool arguments for an integer enum); the chosen band string is
+            ;; converted to its integer after the answer returns.
+            answer-schema (cond
+                            (= :boolean kind)
                             [:boolean {:description (str "The decision's answer. " offer-text)}]
+
+                            banded?
+                            (into [:enum {:ordered-bands true
+                                          :description (str "The chosen band number. " offer-text)
+                                          :descriptions (into {}
+                                                              (map (fn [{:keys [id description]}]
+                                                                     [id description]))
+                                                              option-list)}]
+                                  offered)
+
+                            :else
                             (into [:enum {:description (str "The chosen option id. " offer-text)
                                           :descriptions (into {}
                                                               (keep (fn [{:keys [id description]}]
@@ -2169,6 +2206,9 @@
                                 (:reads node))
             leaf (-> node
                      (select-keys [:id :name :reads :model :options])
+                     ;; The rubric is rendered into the instruction (and is the
+                     ;; decision model's criteria); it is not also evidence.
+                     (update :reads #(if banded? (vec (remove #{(:bands-from node)} %)) %))
                      (assoc :instruction (str (:instruction node) "\n\n" offer-text)
                             :writes [answer-key]))
             ;; Structured (function-calling) response by default — found live:
@@ -2182,7 +2222,16 @@
             ;; The decision has exactly one provider-facing output, so its
             ;; evidence is the single entry the provider reported (if any).
             reported (some-> (:decisions result) vals first)
-            reported-record (select-keys reported [:probabilities :confidence :probability])
+            reported-record (if banded?
+                              {}
+                              (select-keys reported [:probabilities :confidence :probability]))
+            band-record (fn [{:keys [probabilities expected-position confidence]}]
+                          (when (and probabilities (some? expected-position))
+                            {:band-distribution
+                             (cond-> {:probabilities probabilities
+                                      :expected-position expected-position}
+                               (some? confidence) (assoc :confidence confidence))}))
+            ->level (fn [x] (if (and banded? (string? x)) (Long/parseLong x) x))
             base (dissoc result :outputs :rejected-writes :decisions)]
         (if (= :success (:status result))
           (let [{:keys [valid? value record]}
@@ -2191,16 +2240,27 @@
                                  :min-confidence (:min-confidence node)}
                                 answer
                                 (:confidence reported))
-                record (merge record reported-record)]
+                record (merge record reported-record
+                              (when banded? (band-record reported)))
+                record (if banded?
+                         (cond-> (update record :offered #(mapv ->level %))
+                           (contains? record :answer) (update :answer ->level))
+                         record)]
             (if valid?
-              (assoc base :outputs {answer-key value} :decision record)
+              (assoc base :outputs {answer-key (->level value)} :decision record)
               (assoc base :status :failure
                      :failure-kind :schema-validation-failed
                      :error (str "Model decision '" (:name node)
                                  "' returned no answer among the offered options "
                                  (pr-str offered))
                      :decision record)))
-          (cond-> (assoc base :decision {:offered (vec offered) :abstained? false})
+          (cond-> (assoc base :decision
+                         (merge {:offered (mapv ->level offered) :abstained? false}
+                                ;; An exact tie keeps the distribution the
+                                ;; provider reported, so the undecided node is
+                                ;; auditable from its own record.
+                                (when banded?
+                                  (band-record (get-in result [:provider-evidence :band-distribution])))))
             (and (= :failure (:status result)) (nil? (:failure-kind result))
                  (contains? result :outputs))
             (assoc :failure-kind :schema-validation-failed)))))))

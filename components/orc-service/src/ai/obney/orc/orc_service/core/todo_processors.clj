@@ -6591,6 +6591,7 @@
                                                          (and (= :decision (:executor snapshot-node)) (:options snapshot-node))
                                                          (assoc :options (:options snapshot-node))
                                                          (:options-from snapshot-node) (assoc :options-from (:options-from snapshot-node))
+                                                         (:bands-from snapshot-node) (assoc :bands-from (:bands-from snapshot-node))
                                                          (:min-confidence snapshot-node) (assoc :min-confidence (:min-confidence snapshot-node))
                                                          (some? (:abstain snapshot-node)) (assoc :abstain (:abstain snapshot-node)))}))
                                              (when (:retry snapshot-node)

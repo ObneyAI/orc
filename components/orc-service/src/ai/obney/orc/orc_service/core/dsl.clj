@@ -280,13 +280,18 @@
      :reads - Evidence keys (like every node); must include :options-from's key
      :writes - Exactly one answer key
      :options-from - Optional read key holding run-time `[{:id :description}]`
+     :bands-from - Optional read key holding a run-time rubric
+                   `{:bands {1 \"desc\" 2 \"desc\" ...} :criterion \"..\" :stance \"..\"}`;
+                   the model selects ONE ordered band and the integer band number is
+                   written to the (integer) answer key. Exclusive with :options-from;
+                   rejects :min-confidence/:abstain.
      :min-confidence - Optional confidence floor; requires :abstain
      :abstain - Option written instead when confidence is below the floor or
                 none is reported; must be one of the offered options
      :model - Optional per-node model
      :retry - {:max-attempts n :backoff-ms [100 500]}
      :options - Executor options passed through to ORC LLM for this node"
-  [name & {:keys [model instruction reads writes options-from min-confidence abstain retry options]}]
+  [name & {:keys [model instruction reads writes options-from bands-from min-confidence abstain retry options]}]
   (cond-> {:node-type :leaf
            :name name
            :executor :decision
@@ -295,6 +300,7 @@
            :reads (vec reads)
            :writes (vec writes)}
     options-from (assoc :options-from options-from)
+    bands-from (assoc :bands-from bands-from)
     min-confidence (assoc :min-confidence (double min-confidence))
     (some? abstain) (assoc :abstain abstain)
     retry (assoc :retry retry)
@@ -710,6 +716,7 @@
             :tool-contracts (when (#{:code :tool} (:executor node)) (:tool-contracts node))
             :options (:options node)
             :options-from (:options-from node)
+            :bands-from (:bands-from node)
             :min-confidence (:min-confidence node)
             :abstain (:abstain node)))
         ;; Set instruction if AI node
@@ -1037,6 +1044,7 @@
                    (= :decision (:executor node))
                    (merge (cond-> {}
                             (:options-from node) (assoc :options-from (:options-from node))
+                            (:bands-from node) (assoc :bands-from (:bands-from node))
                             (:min-confidence node) (assoc :min-confidence (:min-confidence node))
                             (some? (:abstain node)) (assoc :abstain (:abstain node))
                             (:options node) (assoc :options (:options node))))))
@@ -1143,6 +1151,7 @@
               :tool-contracts (when (#{:code :tool} (:executor node)) (:tool-contracts node))
               :options (:options node)
               :options-from (:options-from node)
+              :bands-from (:bands-from node)
               :min-confidence (:min-confidence node)
               :abstain (:abstain node))))
         ;; Set instruction if AI node
@@ -1397,6 +1406,7 @@
                               :reads (:reads node)
                               :writes (:writes node)
                               :options-from (:options-from node)
+                              :bands-from (:bands-from node)
                               :min-confidence (:min-confidence node)
                               :abstain (:abstain node)
                               :retry (:retry node)

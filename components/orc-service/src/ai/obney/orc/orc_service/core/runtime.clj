@@ -149,6 +149,7 @@
                        :options (:options snapshot-node)
                        :retry (:retry snapshot-node)
                        :options-from (:options-from snapshot-node)
+                       :bands-from (:bands-from snapshot-node)
                        :min-confidence (:min-confidence snapshot-node)
                        :abstain (:abstain snapshot-node)
                        ;; Condition fields
