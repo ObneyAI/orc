@@ -58,6 +58,7 @@
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.anomalies.interface :as anomalies]
             [malli.core :as m]
+            [malli.registry :as mr]
             [clojure.java.io :as io]
             [clojure.pprint :as pprint]
             [clojure.string])
@@ -120,13 +121,88 @@
 ;; Content Hashing
 ;; =============================================================================
 
+(defn- unresolved-refs
+  "The `:ref` schemas still present in a dereferenced schema. Malli's
+   deref-recursive does not walk over refs, so these are exactly the recursive
+   references that cannot be inlined."
+  [schema]
+  (let [acc (volatile! [])]
+    (m/walk schema
+            (fn [s _ _ _]
+              (when (= :ref (m/type s)) (vswap! acc conj s))
+              s))
+    @acc))
+
+(defn- fresh-ref-id
+  "A ref id of the same kind as `id` that is not in `taken`."
+  [id taken]
+  (let [candidate (fn [n]
+                    (cond
+                      (keyword? id) (keyword (or (namespace id) "snapshot")
+                                             (str (name id) "-" n))
+                      (string? id) (str id "-" n)
+                      :else (str (pr-str id) "-" n)))]
+    (first (remove taken (map candidate (iterate inc 2))))))
+
+(defn- ref-placeholder
+  "A `:ref` schema to `id`, carrying the properties of `ref-schema`. Resolves
+   to `:any`; it exists so the form can be read back as `[:ref id]`."
+  [ref-schema id]
+  (let [props (not-empty (m/properties ref-schema))
+        registry (mr/composite-registry m/default-registry {id :any})]
+    (m/schema (if props [:ref props id] [:ref id]) {:registry registry})))
+
 (defn- effective-schema-form
   "Resolve every registry reference reachable from a Malli schema and return
    the resulting data form. The form is both hashed and persisted, making a
-   built workflow a snapshot of the schema registry state it depends on."
+   built workflow a snapshot of the schema registry state it depends on.
+
+   Non-recursive references are inlined. A recursive reference cannot be
+   inlined, and deref-recursive leaves it as a bare `[:ref id]` whose defining
+   registry is lost, so the form would no longer be a valid schema. Each
+   recursive reference's definition is therefore carried in a registry on a
+   wrapping `:schema`, closed over every definition reachable from it.
+
+   A reference is identified by its id AND the registry it resolves in, so two
+   local registries that define the same id differently stay distinct: the
+   first keeps its id and later ones are renamed (`::n` -> `::n-2`) in every
+   reference that resolves to them. Registry entries are ordered by printed id
+   (ids may be keywords or strings) so the form, and the content hash derived
+   from it, is deterministic."
   [schema]
   (try
-    (-> schema m/schema m/deref-recursive m/form)
+    (let [top (m/deref-recursive (m/schema schema))]
+      (if (empty? (unresolved-refs top))
+        (m/form top)
+        (let [scopes (atom {})       ; [id scope-identity] -> snapshot id
+              taken (atom #{})
+              queue (atom [])        ; [snapshot-id ref-schema] to define
+              canon! (fn [r]
+                       (let [id (m/-ref r)
+                             k [id (:registry (m/options r))]]
+                         (or (get @scopes k)
+                             (let [sid (if (contains? @taken id)
+                                         (fresh-ref-id id @taken)
+                                         id)]
+                               (swap! scopes assoc k sid)
+                               (swap! taken conj sid)
+                               (swap! queue conj [sid r])
+                               sid))))
+              rewrite (fn [sch]
+                        (m/form
+                         (m/walk sch
+                                 (fn [s _ children _]
+                                   (if (= :ref (m/type s))
+                                     (ref-placeholder s (canon! s))
+                                     (m/-set-children s children))))))
+              top-form (rewrite top)
+              registry (loop [registry (sorted-map-by #(compare (pr-str %1) (pr-str %2)))]
+                         (if-let [[sid r] (first @queue)]
+                           (do (swap! queue subvec 1)
+                               (recur (assoc registry sid
+                                             (rewrite (m/deref-recursive (m/deref r))))))
+                           registry))]
+          [:schema {:registry registry} top-form])))
     (catch Exception e
       (throw (ex-info (str "Unable to resolve blackboard schema " (pr-str schema))
                       {:schema schema}
