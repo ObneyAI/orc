@@ -851,6 +851,9 @@
          {:name (keyword field-name)
           :original-key key-name
           :nested-key field-name
+          ;; A key the contract declares as a string stays a string on
+          ;; reassembly; keyword keys are read as keywords (llm.allium).
+          :string-key? (string? field-key)
           :spec field-spec
           :optional (true? (:optional opts))
           :description description})))
@@ -906,7 +909,9 @@
 
            nested-key
            ;; Nested field - assoc into nested map
-           (update acc original-key assoc (keyword nested-key) output-value)
+           (update acc original-key assoc
+                   (if (:string-key? mapping) nested-key (keyword nested-key))
+                   output-value)
 
            :else
            ;; Non-nested field - use directly
@@ -1022,6 +1027,7 @@
                                     [(:name o)
                                      {:original-key (:original-key o)
                                       :nested-key (:nested-key o)
+                                      :string-key? (:string-key? o)
                                       :optional (:optional o)
                                       :spec (:spec o)}])
                                   outputs))]
@@ -1588,6 +1594,37 @@
 ;; AI Execution
 ;; =============================================================================
 
+;; A map key the contract declares as a string stays a string; keys the contract
+;; leaves to convention are read as keywords (llm.allium). Malli's stock
+;; `key-transformer` keywordizes every key, which made `[:map ["0" :double]]`
+;; unsatisfiable for code leaves. Mirrors the provider path in llm core.
+(def ^:private declared-string-key-transformer
+  (mt/transformer
+   {:decoders
+    {:map
+     {:compile
+      (fn [schema _]
+        (let [string-keys (into #{} (filter string?) (map first (m/children schema)))]
+          (fn [x]
+            (if (map? x)
+              (reduce-kv (fn [m k v]
+                           (assoc m
+                                  (cond
+                                    (and (string? k) (not (contains? string-keys k)))
+                                    (keyword k)
+                                    ;; A declared string key may arrive as the same
+                                    ;; un-namespaced keyword (SIO parses provider JSON
+                                    ;; with :key-fn keyword). Namespaced keywords and
+                                    ;; undeclared names never map.
+                                    (and (keyword? k) (nil? (namespace k))
+                                         (contains? string-keys (name k)))
+                                    (name k)
+                                    :else k)
+                                  v))
+                         {}
+                         x)
+              x))))}}}))
+
 (defn validate-leaf-outputs
   "Decode provider JSON values and normalize object keys according to each
    declared Malli schema, then reject an invalid successful leaf result before
@@ -1599,7 +1636,7 @@
   ([blackboard result provider-output?]
    (if (not= :success (:status result))
      result
-     (let [key-transformer (mt/key-transformer {:decode keyword :encode name})
+     (let [key-transformer declared-string-key-transformer
            rejected-writes (:outputs result)
            normalized (reduce-kv
                        (fn [outputs key value]
