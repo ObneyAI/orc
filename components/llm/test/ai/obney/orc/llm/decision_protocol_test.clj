@@ -367,3 +367,25 @@
             yes-no-spec]]]
     (testing label
       (is (= :schema-validation-failed (failure-kind-for answers spec))))))
+
+;; ---------------------------------------------------------------------------
+;; ProtocolFollowsRegisteredProvider — selecting by model: a per-call :model
+;; that NAMES a registered decision provider engages it, so one workflow can
+;; mix a native decision node with conversational nodes.
+;; ---------------------------------------------------------------------------
+
+(deftest model-naming-a-registered-decision-provider-engages-it
+  (let [requests (atom [])
+        completions (atom 0)]
+    (register-decision-provider! :decision-test-by-model (response valid-choice) requests)
+    (llm/register-provider! :decision-test-chat-host
+                            {:provider :openrouter :model "google/gemini-x"
+                             :config {:api-key dummy-key}})
+    (with-redefs [router/completion (fn [& _] (swap! completions inc) nil)]
+      (is (= {:route "lookup"}
+             (llm/predict :decision-test-chat-host route-spec {:request "x"}
+                          {:model "decision-test-by-model"}))))
+    (is (= 1 (count @requests)) "the named decision provider answered")
+    (is (zero? @completions) "no conversational completion")
+    (is (= "typesafe/jev-1.13" (:model (first @requests)))
+        "the decision provider's own model is used, not the provider name")))

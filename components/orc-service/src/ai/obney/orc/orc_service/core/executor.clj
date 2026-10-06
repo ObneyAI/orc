@@ -1358,10 +1358,18 @@
    checkpointed campaign's generated child, checkpointed as a campaign effect.
    Returns nil when no caller is available."
   [node blackboard context]
-  (let [call-tool-fn (-> (node-call-tool-fn node blackboard context)
-                         (tool-invocation/guarded-call-tool-fn (:tool-contracts node)
-                                                             :wrap-tool-errors? false))]
-    (if (and call-tool-fn (checkpointed-campaign-epoch context))
+  (let [host-caller (node-call-tool-fn node blackboard context)
+        checkpointed? (and host-caller (checkpointed-campaign-epoch context))
+        ;; A checkpointed effect must hand the host its idempotency key, so the
+        ;; HOST caller (not the contract guard wrapped around it, which accepts
+        ;; both arities) must take (tool-name, args, tool-context). Checked
+        ;; before anything is claimed, with the inline path's message.
+        _ (when (and checkpointed?
+                     (not= 3 (tool-caller-arity (tool-caller-target host-caller))))
+            (throw (ex-info tool-caller-arity-error {:expected-arities [3]})))
+        call-tool-fn (tool-invocation/guarded-call-tool-fn host-caller (:tool-contracts node)
+                                                          :wrap-tool-errors? false)]
+    (if checkpointed?
       (checkpoint-child-call-tool-fn node context call-tool-fn)
       call-tool-fn)))
 

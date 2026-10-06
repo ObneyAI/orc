@@ -102,3 +102,41 @@
         (let [result (sheet/execute ctx sheet-id {:question "q"} :timeout-ms 30000)]
           (is (zero? @tool-calls) "a tool not declared checkpoint-safe is never called from the child")
           (is (not= :success (:status result))))))))
+
+(defn two-arity-gate
+  "A legacy gate whose caller only accepts (tool args)."
+  [_blackboard _context]
+  (fn [tool args] (charge-tool tool args)))
+
+(defn plain-child-leaf [{:keys [call-tool-fn]}]
+  {:out (:charged (call-tool-fn "charge" {"amount" 5}))})
+
+(deftest checkpointed-child-requires-the-context-aware-caller-contract
+  (testing "a 2-argument host caller is rejected with the same actionable message as inline calls"
+    (reset! tool-calls 0)
+    (h/with-async-test-context [ctx {:context {:llm-provider :test :call-tool-fn charge-tool}}]
+      (let [definition
+            (sheet/workflow "receipts-two-arity-gate"
+              (sheet/blackboard {:question :string :out :string})
+              (sheet/repl-researcher "researcher"
+                :instruction "Charge via a generated child."
+                :reads [:question] :writes [:out]
+                :tool-contracts {"charge" {:checkpoint-safe? true}}
+                :rlm {:checkpointed? true :recursive? false
+                      :timeouts {:provider-ms 5000 :iteration-ms 20000 :campaign-ms 60000}}
+                :max-iterations 1))
+            sheet-id (sheet/build-workflow! ctx definition)
+            tree (str "(emit-tree! [:sequence "
+                      "[:code {:fn \"ai.obney.orc.orc-service.generated-child-receipts-test/plain-child-leaf\" "
+                      ":tool-caller-fn \"ai.obney.orc.orc-service.generated-child-receipts-test/two-arity-gate\" "
+                      ":reads [] :writes [:out]}] "
+                      "[:final {:keys [:out]}]])")]
+        (with-redefs [llm/predict (fn [& _] {:outputs {:code tree}
+                                             :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})]
+          (let [result (sheet/execute ctx sheet-id {:question "q"} :timeout-ms 30000)
+                errors (->> (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx)}))
+                            (keep :error) (map str))]
+            (is (not= :success (:status result)))
+            (is (zero? @tool-calls) "the tool is never called")
+            (is (some #(clojure.string/includes? % "3-argument contract") errors)
+                (pr-str (take 5 errors)))))))))

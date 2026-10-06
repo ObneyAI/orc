@@ -525,6 +525,25 @@
 (defn- decision-provider? [config]
   (= :decision (:protocol config)))
 
+(defn- decision-route
+  "The decision provider a call reaches, or nil for a conversational call.
+   A per-call :model that NAMES a registered decision provider selects it (so
+   one workflow can mix decision and conversational nodes); otherwise the
+   call's own provider decides. A decision model's identity used as :model on
+   a conversational provider is not a provider name and stays conversational.
+   Returns [provider-name config options] with options adjusted so the
+   selected provider's own model is requested."
+  [provider options]
+  (let [named (when (string? (:model options))
+                (let [k (keyword (:model options))
+                      c (registered-config k)]
+                  (when (decision-provider? c) [k c])))]
+    (cond
+      named (let [[k c] named] [k c (dissoc options :model)])
+      (decision-provider? (registered-config provider))
+      [provider (registered-config provider) options]
+      :else nil)))
+
 (defn- wire-id
   "String identity of an option / key, verbatim (keywords by name, with their
    namespace, so JSON-keywordized keys round-trip)."
@@ -837,10 +856,9 @@
   true returns {:outputs :usage :model :raw-response} (decision providers also
   return :decisions, the per-question evidence as reported)."
   [provider spec inputs & [options]]
-  (let [config (registered-config provider)]
-    (if (decision-provider? config)
-      (predict-decision provider config spec inputs (or options {}))
-      (predict-chat provider spec inputs options))))
+  (if-let [[decision-provider config options] (decision-route provider (or options {}))]
+    (predict-decision decision-provider config spec inputs options)
+    (predict-chat provider spec inputs options)))
 
 (defn- accumulate-stream-usage [acc usage]
   (reduce-kv (fn [result key value]
@@ -895,10 +913,9 @@
   :final or :error terminal event before closing. A provider registered with
   :protocol :decision emits only its single terminal event."
   [provider spec inputs & [options]]
-  (let [config (registered-config provider)]
-    (if (decision-provider? config)
-      (predict-decision-stream provider config spec inputs (or options {}))
-      (predict-chat-stream provider spec inputs options))))
+  (if-let [[decision-provider config options] (decision-route provider (or options {}))]
+    (predict-decision-stream decision-provider config spec inputs options)
+    (predict-chat-stream provider spec inputs options)))
 
 (defn- predict-chat-stream
   [provider spec inputs & [options]]
