@@ -1740,7 +1740,7 @@
    Optional :usage carries per-node token counts from LLM calls."
   [{{:keys [sheet-id tick-id node-id completion-id researcher-ownership-epoch
             status writes rejected-writes write-sources write-references? duration-ms
-            observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage model
+            observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage own-usage model
             node-type completion-kind raw-response failure-kind provider-evidence
             condition-answer decision block-payload read-sources]} :command
     :as ctx}]
@@ -1901,6 +1901,7 @@
                                     (seq read-sources)
                                     (assoc :read-sources read-sources)
                                     (seq usage) (assoc :usage usage)
+                                    (seq own-usage) (assoc :own-usage own-usage)
                                     model (assoc :model model)
                                     ;; C-2a-2: propagate :node-type so the
                                     ;; per-node-type aggregator can partition

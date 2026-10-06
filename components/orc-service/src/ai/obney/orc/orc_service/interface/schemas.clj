@@ -1061,6 +1061,14 @@
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
       [:total-tokens {:optional true} :int]]]
+    ;; The part of :usage this node spent itself. Present only when :usage
+    ;; also folds in generated child ticks (a repl-researcher's Phase-2
+    ;; tree), which record the same tokens on their own completions.
+    [:own-usage {:optional true}
+     [:map
+      [:prompt-tokens {:optional true} :int]
+      [:completion-tokens {:optional true} :int]
+      [:total-tokens {:optional true} :int]]]
     ;; Resolved provider model for durable LLM-call provenance. Present on
     ;; every model-backed leaf completion; absent on deterministic leaves.
     [:model {:optional true} :string]
@@ -1697,6 +1705,13 @@
     [:provider-evidence {:optional true} provider-failure-evidence]
     ;; Optional per-node token usage when the node was an LLM call.
     [:usage {:optional true}
+     [:map
+      [:prompt-tokens {:optional true} :int]
+      [:completion-tokens {:optional true} :int]
+      [:total-tokens {:optional true} :int]]]
+    ;; See :sheet/complete-node-execution :own-usage. Family-usage sums
+    ;; (or :own-usage :usage) so descendants are never counted twice.
+    [:own-usage {:optional true}
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]

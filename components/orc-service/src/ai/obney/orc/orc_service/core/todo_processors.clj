@@ -14,6 +14,7 @@
             [ai.obney.orc.orc-service.core.researcher-mode :as researcher-mode]
             [ai.obney.orc.orc-service.core.block :as block]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
+            [ai.obney.orc.orc-service.core.family-usage :as family-usage]
             [ai.obney.orc.orc-service.core.streaming :as streaming]
             [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.core.profile :as profile]
@@ -3552,7 +3553,7 @@
                            validated-result)
                   {:keys [status outputs rejected-writes error duration-ms
                           generated-tree-raw generated-tree-source
-                          iteration-reasonings usage iterations block-payload]} result
+                          iteration-reasonings usage own-usage iterations block-payload]} result
                   ;; Handle :tree-generated status - only propagate raw tree (canonical contains fns)
                   ;; The raw S-expr DSL is pure data and can be serialized to event store
                   effective-status (if (= :tree-generated status) :tree-generated status)
@@ -3711,6 +3712,11 @@
                          ;; Propagate :usage (including :by-node from Phase 2)
                          ;; so per-node detail bubbles up to the parent tick.
                          (seq usage) (assoc :usage usage)
+                         ;; :usage folds in generated child ticks, which record
+                         ;; the same tokens on their own completions; carry this
+                         ;; node's own share so the family total counts each
+                         ;; provider call once.
+                         (and (seq usage) (seq own-usage)) (assoc :own-usage own-usage)
                          (:model node) (assoc :model (:model node))))))))))
             (catch Exception e
               (let [researcher-terminal?
@@ -3940,9 +3946,17 @@
             read-keys (:reads node)
             write-keys (:writes node)
             parent-tick-ctx (rm/get-tick-execution-context context tick-id)
+            ;; FamilyBudgetIsShared: every delegate child, whatever its target,
+            ;; draws on the family's durable budget root. Only checkpointed
+            ;; targets additionally take the durable-reservation path.
             inherited-budget-root
-            (when target-checkpointed-campaign?
-              (durable-budget-root context sheet-id tick-id parent-tick-ctx))
+            (durable-budget-root context sheet-id tick-id parent-tick-ctx)
+            ;; DelegateToolContextCrosses: the child executes with the
+            ;; parent's durable :tool-context and ephemeral tool capabilities.
+            child-exec-context
+            (cond-> (merge context (runtime/ephemeral-context-for tick-id))
+              (:tool-context parent-tick-ctx)
+              (assoc :tool-context (:tool-context parent-tick-ctx)))
             parent-deadline-ms (get-in parent-tick-ctx [:options :execution-deadline-ms])
             local-timeout-ms (or (:delegate-timeout-ms node) 300000)
             timeout-ms (if parent-deadline-ms
@@ -4023,7 +4037,7 @@
                   ;; BEFORE dispatch so stream subscribers on the parent tick
                   ;; see the whole cascade.
                   _ (streaming/link-child! tick-id child-tick-id)
-                  child-result (runtime/execute context target-sheet-id
+                  child-result (runtime/execute child-exec-context target-sheet-id
                                            target-inputs
                                            :timeout-ms timeout-ms
                                            :max-ticks max-ticks
@@ -4038,7 +4052,7 @@
                                            :correlation-id correlation-id
                                            :input-sources target-input-sources
                                            :checkpointed-campaign?
-                                           (boolean inherited-budget-root)
+                                           target-checkpointed-campaign?
                                            :llm-call-budget
                                            (:budget inherited-budget-root)
                                            :llm-budget-root-sheet-id
@@ -5646,28 +5660,7 @@
 ;; Execution Completion Delivery
 ;; =============================================================================
 
-(defn- tick-family-ids
-  "Return `tick-id` and every transitively nested child tick.
-
-   Child starts carry a [:parent-tick parent-id] tag, so this walk is bounded
-   by the execution tree. It never scans unrelated tenant history."
-  [event-store tenant-id tick-id]
-  (loop [seen #{tick-id}
-         frontier [tick-id]]
-    (if (empty? frontier)
-      seen
-      (let [children
-            (into #{}
-                  (mapcat (fn [parent-id]
-                            (into []
-                                  (comp (map :tick-id)
-                                        (remove seen))
-                                  (es/read event-store
-                                           (cond-> {:types #{:sheet/tree-tick-started}
-                                                    :tags #{[:parent-tick parent-id]}}
-                                             tenant-id (assoc :tenant-id tenant-id))))))
-                  frontier)]
-        (recur (into seen children) (vec children))))))
+(def ^:private tick-family-ids family-usage/tick-family-ids)
 
 (defn- build-node-trace
   "Build a per-node execution trace for a completed tick and its descendants.

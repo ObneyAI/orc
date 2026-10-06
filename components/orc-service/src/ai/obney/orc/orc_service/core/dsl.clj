@@ -796,6 +796,20 @@
             :let [error (decision/declaration-error node blackboard-schema)]
             :when error]
       (throw (ex-info error {:node (:name node) :decision-declaration-error true})))
+    ;; DelegateInputIdentityIsExact: parent keys reach the child by name, so
+    ;; two distinct parent keys with the same name would silently collapse.
+    (doseq [node nodes
+            :when (= :delegate (or (:node-type node) (:type node)))
+            :let [by-child-input (group-by name (distinct (:reads node)))
+                  collision (first (filter #(> (count (val %)) 1) by-child-input))]
+            :when collision]
+      (throw (ex-info (str "Delegate " (pr-str (:name node))
+                           " reads distinct parent keys " (pr-str (vec (val collision)))
+                           " that would all supply the child input "
+                           (pr-str (key collision)))
+                      {:node (:name node)
+                       :child-input (key collision)
+                       :colliding-keys (vec (val collision))})))
     (doseq [node nodes
             key (concat (:reads node) (:writes node)
                         (when-let [k (get-in node [:check :key])] [k])

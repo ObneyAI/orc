@@ -3762,6 +3762,23 @@
         total-usage (atom (or (:usage checkpoint)
                               {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}))
 
+        ;; The share of `total-usage` that was spent by generated child ticks
+        ;; (Phase 2). Those ticks record the same tokens on their own node
+        ;; completions, so this node's completion reports its OWN share
+        ;; (total minus this) as :own-usage — each provider call is then
+        ;; counted exactly once by the family-usage query. Persisted in the
+        ;; checkpoint beside :usage so a resumed campaign keeps the split.
+        descendant-usage (atom (or (:descendant-usage checkpoint)
+                                   {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}))
+        add-descendant-usage!
+        (fn [u]
+          (swap! descendant-usage
+                 (fn [acc]
+                   (-> acc
+                       (update :prompt-tokens (fnil + 0) (or (:prompt-tokens u) 0))
+                       (update :completion-tokens (fnil + 0) (or (:completion-tokens u) 0))
+                       (update :total-tokens (fnil + 0) (or (:total-tokens u) 0))))))
+
         ;; Persistent sandbox-vars across iterations (for store!/get-var)
         sandbox-vars (atom (or (:sandbox-vars checkpoint) {}))
 
@@ -3874,6 +3891,7 @@
                               :sandbox-vars @sandbox-vars
                               :var-creation-times @var-creation-times
                               :usage @total-usage
+                              :descendant-usage @descendant-usage
                               :cumulative-tree-ms @cumulative-tree-ms
                               :iteration-attempts (dissoc iteration-attempts (dec next-iteration))
                               :campaign-started-at-ms campaign-started-at-ms
@@ -3939,6 +3957,7 @@
                               :sandbox-vars (dissoc @sandbox-vars :generated-tree)
                               :var-creation-times @var-creation-times
                               :usage @total-usage
+                              :descendant-usage @descendant-usage
                               :cumulative-tree-ms @cumulative-tree-ms
                               :iteration-attempts (dissoc iteration-attempts iteration)
                               :campaign-started-at-ms campaign-started-at-ms
@@ -4019,7 +4038,7 @@
                          :max-iteration-attempts max-iteration-attempts}
                   durable-checkpoint (assoc :checkpoint durable-checkpoint))))))]
 
-    (try
+    (as-> (try
       (loop [iteration initial-iteration
              history (or (:history checkpoint) [])]
         (cond
@@ -5127,6 +5146,7 @@
                             ;; accumulation.
                             p2-usage (:usage phase2-result)
                             _ (when (and p2-usage (pos? (:total-tokens p2-usage 0)))
+                                (add-descendant-usage! p2-usage)
                                 (swap! total-usage
                                        (fn [acc]
                                          (-> acc
@@ -5202,6 +5222,7 @@
                             ;; Preserve :by-node from Phase 2 (the per-node breakdown
                             ;; of sub-LLM calls inside the generated tree).
                             p2-by-node (:by-node p2-usage)
+                            _ (when p2-usage (add-descendant-usage! p2-usage))
                             combined-usage (cond-> {:prompt-tokens (+ (:prompt-tokens p1-usage 0)
                                                                      (:prompt-tokens p2-usage 0))
                                                     :completion-tokens (+ (:completion-tokens p1-usage 0)
@@ -5260,7 +5281,18 @@
         {:status :failure
          :error (.getMessage e)
          :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
-         :usage @total-usage}))))
+         :usage @total-usage})) result
+      ;; Every return path reports :usage that may fold in generated child
+      ;; ticks; record this node's own share alongside it.
+      (if (:usage result)
+        (assoc result :own-usage
+               (let [d @descendant-usage]
+                 (into {}
+                       (map (fn [k]
+                              [k (max 0 (- (or (get (:usage result) k) 0)
+                                           (or (get d k) 0)))]))
+                       [:prompt-tokens :completion-tokens :total-tokens])))
+        result))))
 
 ;; =============================================================================
 ;; Retry Logic

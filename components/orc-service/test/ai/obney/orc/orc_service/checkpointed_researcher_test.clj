@@ -1092,7 +1092,10 @@
                              ctx sheet-id tick-id researcher-id)]
                 (is (= 3 (:researcher-ownership-epoch recovered-start)))
                 (is (= [1 2 3] frontier-epochs))
-                (is (= 1 @calls))
+                (is (= 1 @calls)
+                    (str "terminal: " (pr-str (runtime/durable-terminal-result ctx tick-id))
+                         " records: " (pr-str (mapv #(select-keys % [:iteration-index :status :error])
+                                                    records))))
                 (is (= [0 1] (mapv :iteration-index records)))
                 (is (= ::anom/conflict (::anom/category stale-result))
                     (pr-str stale-result)))))
@@ -1226,7 +1229,8 @@
                     (pr-str scans))
                 (is (= 1 (count recovery-starts)))
                 (is (= [1] (mapv :ownership-epoch frontiers)))
-                (is (= 1 @calls))
+                (is (= 1 @calls)
+                    (str "terminal: " (pr-str (runtime/durable-terminal-result ctx tick-id))))
                 (is (= [0 1]
                        (mapv :iteration-index
                              (rm/get-researcher-iteration-records

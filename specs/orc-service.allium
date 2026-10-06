@@ -356,8 +356,10 @@ contract DelegationBoundary {
 
     @invariant FamilyUsageIsQueryable
         -- The total provider usage of an execution together with all of its
-        -- descendants is retrievable through a public query, separately from
-        -- the execution's own usage.
+        -- descendants is retrievable through the public interface, separately
+        -- from the execution's own usage, with every provider call counted
+        -- exactly once even where a node's own reported usage already folds in
+        -- the usage of executions it started.
 }
 
 contract WorkflowDefinitionConstruction {
