@@ -18,6 +18,34 @@
   "Behavior tree node types"
   [:enum :leaf :sequence :fallback :condition :llm-condition :parallel :map-each :repl-researcher :delegate])
 
+(def judge-rubric-schema
+  "A judge's declared rubric: what it grades (criterion, optional stance), the
+   integer-keyed level descriptions (contiguous, >= 2, validated by
+   `judge-definition`), and whether grading must carry written feedback."
+  [:map
+   [:criterion :string]
+   [:stance {:optional true} :string]
+   [:bands [:map-of :int :string]]
+   [:feedback [:enum :required :none]]])
+
+(def judge-config-schema
+  "A judge definition. Models resolve like any ORC model node: a declared model
+   id or a registered provider name, else the runtime provider."
+  [:map
+   [:type :keyword] ;; :grounding, :completeness, :instruction-following, :reasoning, :custom
+   [:criteria {:optional true} :string]
+   ;; Weight for aggregation. The Gap-8 composite-score normalizer accepts ANY
+   ;; non-negative number (integer or double) -- values are re-scaled per the
+   ;; share-remaining-mass policy. Negative weights are rejected because they
+   ;; are nonsensical for a probability mass.
+   [:weight {:optional true} [:and number? [:>= 0.0]]]
+   [:provider {:optional true} :keyword]
+   [:model {:optional true} :string]
+   [:timeout-ms {:optional true} :int]
+   [:rubric {:optional true} judge-rubric-schema]
+   [:purposes {:optional true} [:set [:enum :monitoring :learning]]]
+   [:sheet-id {:optional true} :uuid]]) ;; For :custom type - reference to judge sheet
+
 (def executor-type
   "Executor types for leaf nodes"
   [:enum :ai :code :tool :decision])
@@ -835,18 +863,15 @@
    [:map
     [:sheet-id :uuid]
     [:judge-name :string]
-    [:judge-config [:map
-                    [:type :keyword]  ;; :grounding, :completeness, :instruction-following, :reasoning, :custom
-                    [:criteria {:optional true} :string]  ;; Custom criteria description
-                    ;; Weight for aggregation. The Gap-8 composite-score
-                    ;; normalizer accepts ANY non-negative number (integer
-                    ;; or double) — values are re-scaled per the share-
-                    ;; remaining-mass policy. Negative weights are rejected
-                    ;; because they're nonsensical for a probability mass.
-                    [:weight {:optional true} [:and number? [:>= 0.0]]]
-                    [:provider {:optional true} :keyword]
-                    [:model {:optional true} :string]
-                    [:sheet-id {:optional true} :uuid]]]] ;; For :custom type - reference to judge sheet
+    [:judge-config judge-config-schema]]
+
+   :sheet/revise-judge
+   [:map
+    [:sheet-id :uuid]
+    [:judge-name :string]
+    ;; The complete new definition (not a patch). Identical to the current
+    ;; definition is a conflict: it is not a new revision.
+    [:judge-config judge-config-schema]]
 
    :sheet/set-node-judges
    [:map
@@ -1588,15 +1613,17 @@
    [:map
     [:sheet-id :uuid]
     [:judge-name :string]
-    [:judge-config [:map
-                    [:type :keyword]
-                    [:criteria {:optional true} :string]
-                    ;; Mirror of :sheet/declare-judge :weight constraint.
-                    [:weight {:optional true} [:and number? [:>= 0.0]]]
-                    [:provider {:optional true} :keyword]
-                    [:model {:optional true} :string]
-                    [:sheet-id {:optional true} :uuid]]]
+    [:judge-config judge-config-schema]
+    ;; Always present on the new commands' events; absent on legacy events.
+    [:revision-number {:optional true} :int]
     [:criteria-version {:optional true} :int]]
+
+   :sheet/judge-revised
+   [:map
+    [:sheet-id :uuid]
+    [:judge-name :string]
+    [:judge-config judge-config-schema]
+    [:revision-number :int]]
 
    :sheet/node-judges-set
    [:map

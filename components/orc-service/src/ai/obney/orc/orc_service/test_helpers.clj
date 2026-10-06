@@ -885,6 +885,17 @@
    :judge-name judge-name
    :judge-config judge-config})
 
+(defn make-revise-judge-command
+  "Create a revise-judge command. `judge-config` is the COMPLETE new definition
+   (rubric, purposes, model, ...), not a patch."
+  [sheet-id judge-name judge-config]
+  {:command/name :sheet/revise-judge
+   :command/id (random-uuid)
+   :command/timestamp (time/now)
+   :sheet-id sheet-id
+   :judge-name judge-name
+   :judge-config judge-config})
+
 (defn make-set-node-judges-command
   "Create a set-node-judges command."
   [sheet-id node-id judges]

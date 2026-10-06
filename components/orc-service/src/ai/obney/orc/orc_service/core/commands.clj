@@ -8,6 +8,7 @@
    - Last write wins (no optimistic concurrency)"
   (:require [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
+            [ai.obney.orc.orc-service.core.judge-definition :as judge-definition]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
             [ai.obney.orc.orc-service.core.read-models :as rm]
@@ -946,10 +947,9 @@
       {::anom/category ::anom/conflict
        ::anom/message (str "Judge '" judge-name "' already declared")}
 
-      (and (= :custom (:type judge-config))
-           (not (:sheet-id judge-config)))
+      (judge-definition/config-error judge-config)
       {::anom/category ::anom/incorrect
-       ::anom/message "Custom judge type requires :sheet-id"}
+       ::anom/message (judge-definition/config-error judge-config)}
 
       :else
       {:command-result/events
@@ -959,7 +959,47 @@
           :body {:sheet-id sheet-id
                  :judge-name judge-name
                  :judge-config judge-config
+                 :revision-number 1
                  :criteria-version 1}})]})))
+
+(defcommand :sheet revise-judge
+  {:authorized? authenticated?}
+  "Revise a declared judge's definition (rubric, purposes, model, type, ...).
+   The config is the COMPLETE new definition. The judge keeps its name and its
+   revision number increases, so results graded by the old and new definitions
+   never blend. Revising to an identical definition is a conflict: it is not a
+   new revision."
+  [{{:keys [sheet-id judge-name judge-config]} :command
+    :as ctx}]
+  (let [sheet (rm/get-sheet ctx sheet-id)
+        judge (rm/get-judge ctx sheet-id judge-name)]
+    (cond
+      (not sheet)
+      {::anom/category ::anom/not-found
+       ::anom/message "Sheet not found"}
+
+      (not judge)
+      {::anom/category ::anom/not-found
+       ::anom/message (str "Judge '" judge-name "' not declared; declare it first")}
+
+      (judge-definition/config-error judge-config)
+      {::anom/category ::anom/incorrect
+       ::anom/message (judge-definition/config-error judge-config)}
+
+      (= judge-config (:judge-config (peek (:revisions judge))))
+      {::anom/category ::anom/conflict
+       ::anom/message (str "Judge '" judge-name "' unchanged: revising to the same "
+                           "definition is not a new revision")}
+
+      :else
+      {:command-result/events
+       [(->event
+         {:type :sheet/judge-revised
+          :tags #{[:sheet sheet-id]}
+          :body {:sheet-id sheet-id
+                 :judge-name judge-name
+                 :judge-config judge-config
+                 :revision-number (inc (:revision-number judge))}})]})))
 
 (defcommand :sheet set-node-judges
   {:authorized? authenticated?}
