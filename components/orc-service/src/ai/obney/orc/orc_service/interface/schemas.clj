@@ -1060,7 +1060,8 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     ;; The part of :usage this node spent itself. Present only when :usage
     ;; also folds in generated child ticks (a repl-researcher's Phase-2
     ;; tree), which record the same tokens on their own completions.
@@ -1068,7 +1069,8 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     ;; Resolved provider model for durable LLM-call provenance. Present on
     ;; every model-backed leaf completion; absent on deterministic leaves.
     [:model {:optional true} :string]
@@ -1106,7 +1108,8 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     ;; Optional :input-profile keyed by node :reads — describes input
     ;; characteristics so future judges/pattern-matchers can correlate
     ;; outcomes to input shape.
@@ -1708,14 +1711,16 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     ;; See :sheet/complete-node-execution :own-usage. Family-usage sums
     ;; (or :own-usage :usage) so descendants are never counted twice.
     [:own-usage {:optional true}
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     [:model {:optional true} :string]
     ;; D-008: present on map-each completion events when status is :partial or :failure.
     [:partial-summary {:optional true} partial-summary]
@@ -1750,7 +1755,8 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     ;; :input-profile keyed by :reads keys. Each value is
     ;; {:length N :word-count N :line-count N}. Captures input shape
     ;; so future judges can correlate quality outcomes to inputs.

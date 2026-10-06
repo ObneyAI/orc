@@ -682,9 +682,12 @@
    Handles both snake_case (raw API) and kebab-case (already normalized) inputs."
   [usage]
   (when usage
-    {:prompt-tokens (or (:prompt-tokens usage) (:prompt_tokens usage) 0)
-     :completion-tokens (or (:completion-tokens usage) (:completion_tokens usage) 0)
-     :total-tokens (or (:total-tokens usage) (:total_tokens usage) 0)}))
+    (cond-> {:prompt-tokens (or (:prompt-tokens usage) (:prompt_tokens usage) 0)
+             :completion-tokens (or (:completion-tokens usage) (:completion_tokens usage) 0)
+             :total-tokens (or (:total-tokens usage) (:total_tokens usage) 0)}
+      ;; A provider that reports what a call cost (e.g. OpenRouter decisions)
+      ;; keeps that figure; it is never synthesised.
+      (number? (:cost usage)) (assoc :cost (:cost usage)))))
 
 ;; =============================================================================
 ;; Schema Description Generation

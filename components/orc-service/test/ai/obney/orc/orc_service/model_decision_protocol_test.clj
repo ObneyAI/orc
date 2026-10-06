@@ -152,3 +152,14 @@
             "the published :options-from still supplies the run-time options")
         (is (clojure.string/includes? (:instructions question) "Version one")
             "the published instruction, not the draft's")))))
+
+(deftest decision-model-cost-is-recorded
+  (testing "a provider-reported cost reaches the completion's usage and the family total"
+    (h/with-async-test-context [ctx {:context {:llm-provider :wf-jev}}]
+      (register-jev! :wf-jev (choice-response "lookup" probabilities 0.96) (atom []))
+      (let [result (run! ctx :wf-jev (workflow "wf-jev-cost"))
+            completion (first (filter #(and (= :sheet/node-execution-completed (:event/type %))
+                                            (some? (:decision %)))
+                                      (h/read-tick-events ctx (:trace-id result))))]
+        (is (= 0.00002 (get-in completion [:usage :cost])))
+        (is (= 0.00002 (:cost (sheet/get-family-usage ctx (:trace-id result)))))))))
