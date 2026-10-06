@@ -238,6 +238,41 @@ that verifies the stated observable results.
   `AbandonedWorkStaysRecoverable`. Verified by `execution_lease_recovery_test.clj` (9 tests);
   in-process restart tests (DET-E2E-108, 152/153, 205, 274) now view recovery through an injected
   clock an hour later, assertions unchanged. Open: the fresh-JVM SQLite restart probe.
+- [x] **DET-E2E-305 — Generated children honour contracts; MCP executors use the node's caller.**
+  A researcher's declared tool contracts govern its generated child's tool calls (invalid arguments
+  never reach the tool). Both the generic and the generated MCP executors resolve their tool through
+  the node's gated, contract-checked caller, else the execution's MCP session (a generated executor
+  now sees a live session inside a real workflow), else a marked stand-in only on an explicit
+  `:mcp/dry-run?`, else an explicit failure — never a fabricated success. orc-service
+  `DeclaredToolContractsAreEnforced` (generated subtree), mcp-sheet-builder
+  `ExecutorsUseTheNodesToolCaller`. Verified by `tool_seam_unification_test.clj` (7 tests).
+- [x] **DET-E2E-306 — Generated-child tool calls are checkpointed; tool leaves call only authored
+  tools.** A checkpointed campaign's generated child calls a checkpoint-safe tool and its worker
+  dies; after lease-expiry recovery the child re-runs and the tool's durable receipt is returned
+  instead of calling it again (one claim, one call). `sheet/tool` calls one authored tool with its
+  reads as arguments through the node's gate and contracts, writes its single write key, fails
+  explicitly without a caller, requires an authored tool name and round-trips. Verified by
+  `generated_child_receipts_test.clj` (2 tests) and `tool_leaf_test.clj` (6 tests).
+- [x] **DET-E2E-307 — Delegation boundary.** Every delegated child draws on the family LLM-call
+  budget (no invocation once it is spent); the parent's tool context reaches the child's gate; two
+  parent keys that would supply one child input are rejected at build; `sheet/get-family-usage`
+  returns family totals with each provider call counted once — including non-recursive, recursive
+  and checkpointed researchers whose own usage folds in their generated children (`:own-usage`).
+  Contract `DelegationBoundary`. Verified by `delegation_boundary_test.clj` (7 tests).
+- [x] **DET-E2E-308 — GEPA optimises every model instruction.** Decision instructions are extracted
+  as optimisable components, and a candidate instruction patched in for evaluation reaches the
+  decision's and the model-backed condition's provider call (it previously never reached a
+  condition). gepa `EveryModelInstructionIsAComponent`. Verified by
+  `components/gepa/.../decision_instructions_test.clj` (3 tests).
+- [x] **DET-E2E-309 — REAL-model end-to-end decision + tool runtime.** One workflow under the
+  `ORC_OPENROUTER_E2E_TESTS` gate: a native decision model (Jev, selected per node by `:model`)
+  routes; the lookup branch calls a contract-enforced tool leaf and delegates a summary to a
+  conversational child under the family budget (family usage includes it); the research branch
+  runs a real recursive checkpointed researcher whose contract-enforced, checkpoint-safe tool call
+  carries ORC's idempotency key to the host; an empty request ends in clarify with no tool effect.
+  Verified by `real_llm_arc_e2e_test.clj` (1 test / 15 assertions). Also verified out of band: a
+  two-JVM crash/restart probe on one SQLite file (an abruptly halted owner's leaf is left alone
+  under its live lease, then resumed exactly once by another worker after expiry, completing).
 
 ## P1 — Observability and streaming
 

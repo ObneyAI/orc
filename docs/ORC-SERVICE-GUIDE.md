@@ -581,6 +581,26 @@ re-enqueues a completed node, and each recovery start references the abandoned
 start event. Repeated calls are idempotent. Recovery preserves the existing
 tick/node identities rather than creating a replacement execution.
 
+**Recovery only resumes abandoned work.** Every leaf and delegate start carries a
+durable ownership lease (`:lease-owner`, `:lease-expires-at`), from the moment it is
+recorded — including while it is still queued. The worker running it renews the
+lease (`:sheet/node-execution-lease-renewed`) for as long as the work runs. Recovery —
+your call, the automatic startup scan, or the 30-second periodic scan — resumes a start
+only once its latest lease has expired and the recovering worker is not itself running
+it. A healthy long-running leaf is therefore never invoked a second time, whether one
+process or several share the event store. A resumed start is leased in turn, so work
+whose resumer also dies stays recoverable; each start is resumed at most once.
+
+Configure through the context (both have production defaults):
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `:orc/instance-id` | one random UUID per process | this worker's identity |
+| `:orc/execution-lease-ms` | `90000` | lease length; renewed every third |
+
+After a crash, recovery resumes the dead worker's work once its lease lapses (at most
+one lease length later). Starts recorded before leases existed count as expired.
+
 This is distinct from reconnecting to `execute-stream`: streams are ephemeral,
 while `resume-in-progress!` resumes durable execution work.
 

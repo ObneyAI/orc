@@ -179,7 +179,7 @@ Start the system and pull out the context:
 (require '[ai.obney.orc.orc-service.interface :as orc])
 
 (def sys (start))
-(def ctx (::context sys))
+(def ctx (:ctx sys))
 ;; ctx flows into every ORC call — no global state, no singleton.
 ```
 

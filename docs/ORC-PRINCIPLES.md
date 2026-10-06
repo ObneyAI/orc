@@ -363,19 +363,23 @@ letting an unavailable observability destination stall useful work.
 
 ## 14. A parallel `:map-each` leaf must be a primitive with explicit `:writes`
 
-A `:map-each` collects each iteration's result from the leaf's **explicit declared `:writes`,
-isolated per iteration** — that isolation is exactly what makes `:parallel` safe. A **composite**
-leaf (`:fallback`/`:sequence`) completes with *empty* parent `:writes`, so the engine falls back to
-reading **all non-special keys off the per-iteration blackboard**. That composite-read path is
-**not** parallel-safe (results scramble across concurrent iterations) and **bleeds stale keys** (a
-key the taken branch didn't write keeps a prior iteration's value).
+A `:map-each` reconstructs each iteration's result in three tiers (`map-each-item-result`):
+1. the **explicit writes** recorded on that iteration's completion — isolated per iteration, which
+   is exactly what makes `:parallel` safe;
+2. else the **canonical value writes tagged with that iteration** (its `map-each-index` and parent)
+   — still isolated, so a composite leaf whose primitive children wrote under the iteration's
+   execution context is collected correctly;
+3. else, **only when both are empty**, the tick's seeds plus its **latest values** — a tick-wide
+   view that is **not** iteration-isolated.
 
-**Why it matters.** Wrapping a `:map-each` leaf in a `:fallback` — the natural reach for per-item
-recovery — silently switches collection from the isolated explicit-writes path to the racy
-composite-read path. Under `:parallel` the per-item results get **misattributed across items**; even
-sequentially, a key written by only one branch **bleeds forward** to later items. Shape/structural
-tests pass blind to this (the tree is well-formed) — only a **live, multi-iteration** run with a real
-per-item failure exposes it: the Principle-12 ceiling, not the floor.
+**Why it matters.** Tier 3 is the hazard. It is reached when an iteration completes successfully
+while nothing it wrote is attributable to it — typically a composite leaf (`:fallback`/`:sequence`)
+whose taken branch wrote nothing, or wrote outside the iteration's context. Then the result can carry
+**another iteration's value** (misattribution under `:parallel`) or a **stale key from an earlier
+item** (bleed, even sequentially). Shape/structural tests pass blind to this (the tree is well-formed)
+— only a **live, multi-iteration** run with a real per-item failure exposes it: the Principle-12
+ceiling, not the floor. (Earlier versions of this principle said every composite leaf always races;
+the source is narrower — but tier 3 is reachable, so the guidance below stands.)
 
 **How.** Keep every parallel `:map-each` leaf a **primitive** (`:llm`/`:code`) that declares its
 `:writes` explicitly; don't wrap the leaf in a composite whose writes you then depend on. For per-item
