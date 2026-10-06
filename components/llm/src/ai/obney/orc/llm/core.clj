@@ -567,13 +567,16 @@
 
 (defn- output-kind
   "Return {:kind :boolean} / {:kind :enum :members [..] :descriptions {..}} for
-   a finite output spec, or nil when the output cannot be decided."
+   a finite output spec, or nil when the output cannot be decided. An enum
+   whose properties carry `:ordered-bands true` is an ORDERED band question
+   (`:kind :band`): its members, in declaration order, are the described levels
+   of a rubric and are asked as a score."
   [spec]
   (try
     (let [schema (m/schema spec)]
       (case (m/type schema)
         :boolean {:kind :boolean}
-        :enum {:kind :enum
+        :enum {:kind (if (true? (:ordered-bands (m/properties schema))) :band :enum)
                :members (vec (m/children schema))
                :descriptions (into {} (map (fn [[k v]] [(wire-id k) v]))
                                    (:descriptions (m/properties schema)))}
@@ -585,11 +588,20 @@
 
 (defn- decision-question [spec {:keys [description] :as output} {:keys [kind members descriptions]}]
   (let [instructions (decision-instructions spec output)]
-    (if (= :boolean kind)
+    (case kind
+      :boolean
       {:type "noul"
        :instructions instructions
        :criteria {"true" (str "The following holds: " (or description (name (:name output))))
                   "false" (str "The following does not hold: " (or description (name (:name output))))}}
+      ;; Score levels are an ORDERED array; a level's index is its position.
+      :band
+      {:type "score"
+       :instructions instructions
+       :criteria (mapv (fn [member]
+                         (let [id (wire-id member)]
+                           (or (get descriptions id) id)))
+                       members)}
       {:type "choice"
        :instructions instructions
        :criteria (into {} (map (fn [member]
@@ -673,6 +685,66 @@
                    probs (assoc :probabilities probs)
                    (some? conf) (assoc :confidence conf))})))
 
+(defn- validate-score
+  "Validate a score answer over an ordered band set; return
+   {:value member :evidence {...}}. Level i of the submitted criteria is the
+   i-th member (0-indexed). The selected band is the UNIQUELY most probable
+   level; an exact tie for the maximum selects no band and fails with the
+   stable kind :undecided, carrying the distribution. The reported expected
+   position (`score`) and confidence are kept exactly as reported: nothing is
+   renormalised and the position is never rounded into a band."
+  [qname answer {:keys [members descriptions]} evidence resolution]
+  (let [n (count members)
+        index-keys (mapv str (range n))
+        score (field answer :score)
+        probs-raw (field answer :probabilities)
+        legend (field answer :legend)
+        conf (field answer :confidence)]
+    (when-not (map? probs-raw)
+      (invalid! qname "no per-level probabilities were reported" evidence))
+    (let [probs (into {} (map (fn [[k v]] [(wire-id k) v])) probs-raw)]
+      (when-not (= (set index-keys) (set (keys probs)))
+        (invalid! qname "distribution does not cover exactly the offered levels" evidence))
+      (when-not (every? finite-prob? (vals probs))
+        (invalid! qname "distribution holds a non-finite or out-of-range probability" evidence))
+      (when (> (Math/abs (- (reduce + 0.0 (map double (vals probs))) 1.0))
+               (+ (* n (/ resolution 2.0)) decision-tolerance))
+        (invalid! qname "distribution does not sum to one" evidence))
+      (when-not (and (number? score)
+                     (not (Double/isNaN (double score)))
+                     (not (Double/isInfinite (double score)))
+                     (<= (- decision-tolerance) (double score) (+ (dec n) decision-tolerance)))
+        (invalid! qname "expected position is non-finite or outside the offered levels" evidence))
+      (when (some? conf)
+        (when-not (finite-prob? conf)
+          (invalid! qname "confidence is non-finite or out of range" evidence)))
+      (when (some? legend)
+        (let [legend (when (map? legend) (into {} (map (fn [[k v]] [(wire-id k) v])) legend))
+              submitted (into {} (map-indexed
+                                  (fn [i member]
+                                    (let [id (wire-id member)]
+                                      [(str i) (or (get descriptions id) id)])))
+                              members)]
+          (when-not (= submitted legend)
+            (invalid! qname "returned legend does not match the submitted level descriptions"
+                      evidence))))
+      (let [pmax (apply max (map double (vals probs)))
+            top (filterv #(== pmax (double (get probs %))) index-keys)
+            distribution (cond-> {:probabilities probs :expected-position score}
+                           (some? conf) (assoc :confidence conf))]
+        (when (> (count top) 1)
+          (throw (structured-failure
+                  (str "Decision answer for " qname " is undecided: levels "
+                       (str/join ", " top) " tie for most probable")
+                  :undecided
+                  (assoc evidence :band-distribution distribution))))
+        {:value (nth members (Long/parseLong (first top)))
+         :evidence (cond-> {:primitive :score
+                            :probabilities probs
+                            :expected-position score
+                            :answer answer}
+                     (some? conf) (assoc :confidence conf))}))))
+
 (defn- validate-noul [qname answer evidence]
   (let [p (field answer :noul)]
     (when-not (finite-prob? p)
@@ -688,14 +760,15 @@
      (let [qname (name oname)
            answer (field answers oname)
            {:keys [kind] :as k} (get kinds oname)
-           expected-type (if (= :boolean kind) "noul" "choice")]
+           expected-type (case kind :boolean "noul" :band "score" "choice")]
        (when-not (map? answer)
          (invalid! qname "no answer was returned" evidence))
        (when-not (= expected-type (some-> (field answer :type) wire-id))
          (invalid! qname (str "answered with the wrong primitive; asked as " expected-type) evidence))
        (let [{:keys [value] :as r}
-             (if (= :boolean kind)
-               (validate-noul qname answer evidence)
+             (case kind
+               :boolean (validate-noul qname answer evidence)
+               :band (validate-score qname answer k evidence resolution)
                (validate-choice qname answer k evidence resolution))]
          (-> acc
              (assoc-in [:outputs oname] value)

@@ -56,6 +56,7 @@
                   (= :decision (:executor tree-node))
                   (merge (cond-> {}
                            (:options-from tree-node) (assoc :options-from (:options-from tree-node))
+                           (:bands-from tree-node) (assoc :bands-from (:bands-from tree-node))
                            (:min-confidence tree-node) (assoc :min-confidence (:min-confidence tree-node))
                            (some? (:abstain tree-node)) (assoc :abstain (:abstain tree-node))
                            (:options tree-node) (assoc :options (:options tree-node))))
@@ -204,6 +205,7 @@
                    (= :decision (:executor node))
                    (merge (cond-> {}
                             (:options-from node) (assoc :options-from (:options-from node))
+                            (:bands-from node) (assoc :bands-from (:bands-from node))
                             (:min-confidence node) (assoc :min-confidence (:min-confidence node))
                             (some? (:abstain node)) (assoc :abstain (:abstain node))
                             (:options node) (assoc :options (:options node))))))
@@ -588,7 +590,7 @@
   "Compare two nodes and return a list of changes."
   [from-node to-node]
   (let [fields-to-compare [:type :name :executor :model :instruction :fn
-                           :options-from :min-confidence :abstain
+                           :options-from :bands-from :min-confidence :abstain
                            :reads :writes :check :on-fail
                            :success-policy :failure-policy
                            :source-key :item-key :output-key :max-concurrency

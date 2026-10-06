@@ -49,7 +49,13 @@
     number?]
    [:probability {:optional true
                   :description "Provider-reported probability that a yes/no proposition holds"}
-    number?]])
+    number?]
+   [:band-distribution {:optional true
+                        :description "A banded decision's reported distribution, exactly as reported: probabilities keyed by 0-indexed level position, the expected position, and confidence when reported"}
+    [:map {:closed true}
+     [:probabilities [:map-of :string number?]]
+     [:expected-position number?]
+     [:confidence {:optional true} number?]]]])
 
 (def node-status
   "Node execution status.
@@ -80,7 +86,10 @@
 (def structured-failure-kind
   [:enum :transport-failure :missing-forced-tool-call
    :tool-call-parsing-failed :schema-validation-failed
-   :empty-provider-response])
+   :empty-provider-response
+   ;; A banded decision whose most probable level is an exact tie: no band is
+   ;; selected (distinct from a malformed answer).
+   :undecided])
 
 (def provider-failure-evidence
   [:map
@@ -330,6 +339,7 @@
     ;; :decision executor only: read key holding run-time options, confidence
     ;; floor and the abstention option written when the floor is not met.
     [:options-from {:optional true} :keyword]
+    [:bands-from {:optional true} :keyword]
     [:min-confidence {:optional true} :double]
     [:abstain {:optional true} :any]
     [:fn {:optional true} :string]                 ;; Fully-qualified fn symbol for :code executor
@@ -708,6 +718,7 @@
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
     [:options-from {:optional true} :keyword]
+    [:bands-from {:optional true} :keyword]
     [:min-confidence {:optional true} :double]
     [:abstain {:optional true} :any]
     ;; Phase 4B: opt-in gated tool-caller builder FQN for :code nodes inside
@@ -1431,6 +1442,7 @@
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
     [:options-from {:optional true} :keyword]
+    [:bands-from {:optional true} :keyword]
     [:min-confidence {:optional true} :double]
     [:abstain {:optional true} :any]
     ;; Phase 4B: opt-in gated tool-caller builder FQN (see set-node-executor).
