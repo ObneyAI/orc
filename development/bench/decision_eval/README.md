@@ -13,10 +13,8 @@ conversational model (`google/gemini-3.6-flash`), through the real ORC execution
   accuracy-vs-coverage effect of a confidence floor for the decision model.
 
 ```sh
-ORC_OPENROUTER_E2E_TESTS=true clojure -J-Deval.dir=development/bench/decision-eval \
-  -M:dev:test development/bench/decision-eval/run.clj
-clojure -J-Deval.dir=development/bench/decision-eval -M -e \
-  '(load-file "development/bench/decision-eval/analyse.clj")'
+ORC_OPENROUTER_E2E_TESTS=true clojure -M:dev:test -m decision-eval.run
+clojure -M:dev:test -m decision-eval.analyse
 ```
 
 ## Results (2026-10-06, two runs, identical outcomes)
