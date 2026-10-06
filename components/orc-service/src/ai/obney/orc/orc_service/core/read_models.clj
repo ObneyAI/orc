@@ -6,7 +6,8 @@
    - Multimethod projections for sheets, nodes, blackboard, and ticks
    - defreadmodel registrations for L1/L2 caching
    - Helper functions for common queries (via rmp/project)"
-  (:require [ai.obney.grain.event-store-v3.interface :as es]
+  (:require [ai.obney.orc.orc-service.core.judge-definition :as judge-definition]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
             [ai.obney.orc.orc-service.core.researcher-resume-state :as researcher-resume-state]
             [ai.obney.orc.orc-service.core.trace-time :as trace-time]
@@ -66,7 +67,8 @@
 
 (def judge-events
   "Events that affect judge read model"
-  #{:sheet/judge-declared})
+  #{:sheet/judge-declared
+    :sheet/judge-revised})
 
 (def tick-events
   "Events that affect tick/execution read model"
@@ -108,7 +110,8 @@
     :sheet/key-declared
     :sheet/key-schema-updated
     :sheet/key-deleted
-    :sheet/judge-declared})
+    :sheet/judge-declared
+    :sheet/judge-revised})
 
 (def sheet-events
   "Events that affect sheet read model (includes draft-dirty tracking and versioning)"
@@ -511,23 +514,47 @@
   "Apply event to judges read model"
   (fn [_state event] (:event/type event)))
 
-(defmethod judges* :sheet/judge-declared
-  [state event]
-  ;; Gap-4: judge-config may carry `:sheet-id` referring to the
-  ;; CONSUMER'S eval sheet (for `:type :custom`). The merge below
-  ;; sets `:sheet-id` to the host sheet (the framework needs
-  ;; `:sheet-id` in the judge map for partitioning + cache). To
-  ;; preserve the eval-sheet reference, we lift it to
-  ;; `:eval-sheet-id` BEFORE the merge — custom-judge sub-execution
-  ;; reads from there.
+(defn- judge-definition-entry
+  "The current-definition view of a declared judge config at a revision. The
+   declared config is kept as the host of the entry (existing readers use its
+   keys directly) and enriched with the DEFAULTED purposes."
+  [event]
   (let [jc (:judge-config event)
+        ;; Gap-4: judge-config may carry `:sheet-id` referring to the
+        ;; CONSUMER'S eval sheet (for `:type :custom`). The merge below sets
+        ;; `:sheet-id` to the host sheet (the framework needs `:sheet-id` in the
+        ;; judge map for partitioning + cache). To preserve the eval-sheet
+        ;; reference, we lift it to `:eval-sheet-id` BEFORE the merge --
+        ;; custom-judge sub-execution reads from there.
         jc+eval (cond-> jc
                   (:sheet-id jc) (assoc :eval-sheet-id (:sheet-id jc)))]
+    (merge jc+eval
+           {:sheet-id (:sheet-id event)
+            :judge-name (:judge-name event)
+            :purposes (judge-definition/effective-purposes jc)})))
+
+(defmethod judges* :sheet/judge-declared
+  [state event]
+  (let [revision (or (:revision-number event) 1)]
     (assoc state (judge-entity-id event)
-           (merge jc+eval
-                  {:sheet-id (:sheet-id event)
-                   :judge-name (:judge-name event)
-                   :criteria-version (or (:criteria-version event) 1)}))))
+           (merge (judge-definition-entry event)
+                  {:criteria-version (or (:criteria-version event) 1)
+                   :revision-number revision
+                   :revisions [{:revision-number revision
+                                :judge-config (:judge-config event)}]}))))
+
+(defmethod judges* :sheet/judge-revised
+  [state event]
+  (let [k (judge-entity-id event)
+        previous (get state k)
+        revision (:revision-number event)]
+    (assoc state k
+           (merge (judge-definition-entry event)
+                  {:criteria-version (or (:criteria-version previous) 1)
+                   :revision-number revision
+                   :revisions (conj (vec (:revisions previous))
+                                    {:revision-number revision
+                                     :judge-config (:judge-config event)})}))))
 
 (defmethod judges* :default [state _] state)
 
@@ -537,7 +564,7 @@
   (reduce judges* (or initial-state {}) events))
 
 (defreadmodel :sheet judges
-  {:events judge-events :version 3
+  {:events judge-events :version 4
    :partition-fn :sheet-id
    :entity-id-fn judge-entity-id}
   [state event] (judges* state event))

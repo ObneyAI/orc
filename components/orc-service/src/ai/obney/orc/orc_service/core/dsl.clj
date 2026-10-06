@@ -606,6 +606,18 @@
        :weight 0.2}})
    ```
 
+   Optional fields on any judge:
+     :rubric     - {:criterion str :stance str :bands {1 \"...\" 2 \"...\"}
+                    :feedback :required|:none} the judge grades by
+     :purposes   - subset of #{:monitoring :learning}; default both, or
+                   #{:monitoring} when the rubric's feedback is :none. A
+                   :learning judge must require feedback.
+     :model      - model id or registered provider name; absent resolves like
+                   any ORC model node (declared model, else runtime provider)
+     :timeout-ms - positive integer
+   Rebuilding a workflow whose judge definition changed REVISES the judge
+   (its revision number increases); an unchanged judge is left alone.
+
    Judge types:
      :grounding - Hallucination detection
      :completeness - Coverage of requirements
@@ -849,10 +861,19 @@
     (run-build-command! ctx
       (h/make-declare-key-command sheet-id key-name schema)))
 
-  ;; Declare judges
-  (doseq [[judge-name judge-config] judges-schema]
-    (run-build-command! ctx
-      (h/make-declare-judge-command sheet-id (name judge-name) judge-config)))
+  ;; Declare judges. Judges are not cleared with the rest of a rebuilt sheet:
+  ;; a judge that already exists keeps its name and is REVISED when its
+  ;; declared definition changed (revision number up), or left alone when it
+  ;; did not. Never re-declared.
+  (doseq [[judge-name judge-config] judges-schema
+          :let [judge-name (name judge-name)
+                existing (rm/get-judge ctx sheet-id judge-name)]]
+    (cond
+      (nil? existing)
+      (run-build-command! ctx (h/make-declare-judge-command sheet-id judge-name judge-config))
+
+      (not= judge-config (:judge-config (peek (:revisions existing))))
+      (run-build-command! ctx (h/make-revise-judge-command sheet-id judge-name judge-config))))
 
   ;; Build the tree
   (when root-node
@@ -1119,6 +1140,12 @@
      :blackboard-schema (into {}
                               (map (fn [bb] [(:key bb) (:schema bb)])
                                    blackboard))
+     ;; Judges as DECLARED (the definition in force), keyed like sheet/judges.
+     :judges-schema (into {}
+                          (map (fn [[judge-name judge]]
+                                 [(keyword judge-name)
+                                  (:judge-config (peek (:revisions judge)))]))
+                          (rm/get-judges ctx sheet-id))
      :nodes (build-node-tree nodes (:root-node-id sheet))}))
 
 (defn- import-node!
@@ -1258,6 +1285,11 @@
     (doseq [[key-name schema] blackboard-schema]
       (h/run-and-apply! ctx
         (h/make-declare-key-command sheet-id key-name schema)))
+
+    ;; Declare judges (exports from before judges were exported have none)
+    (doseq [[judge-name judge-config] (:judges-schema exported)]
+      (h/run-and-apply! ctx
+        (h/make-declare-judge-command sheet-id (name judge-name) judge-config)))
 
     ;; Build the node tree
     (when root-node
@@ -1538,14 +1570,21 @@
   (when (and schema-map (seq schema-map))
     (list (dsl-sym 'blackboard) (into (sorted-map) schema-map))))
 
+(defn- judges->form
+  "Convert declared judges to a `judges` DSL form."
+  [judges-schema]
+  (list (dsl-sym 'judges) (into (sorted-map) judges-schema)))
+
 (defn- workflow->form
   "Convert an exported sheet to a complete workflow DSL form."
   [exported]
   (let [name (get-in exported [:sheet :name])
         bb-schema (:blackboard-schema exported)
+        judges-schema (:judges-schema exported)
         root-node (:nodes exported)
         parts (cond-> []
                 (seq bb-schema) (conj (blackboard->form bb-schema))
+                (seq judges-schema) (conj (judges->form judges-schema))
                 root-node (conj (node->dsl-form root-node)))]
     (apply list (dsl-sym 'workflow) name parts)))
 
@@ -1674,11 +1713,15 @@
   "Pretty print a complete workflow form."
   [form]
   (let [[fn-sym wf-name & parts] form
-        bb-form (first (filter #(and (list? %) (= "blackboard" (name (first %)))) parts))
-        root-form (first (filter #(and (list? %) (not= "blackboard" (name (first %)))) parts))]
+        part-name (fn [p] (name (first p)))
+        bb-form (first (filter #(and (list? %) (= "blackboard" (part-name %))) parts))
+        judges-form (first (filter #(and (list? %) (= "judges" (part-name %))) parts))
+        root-form (first (filter #(and (list? %) (not (#{"blackboard" "judges"} (part-name %)))) parts))]
     (str "(" fn-sym " \"" (escape-string wf-name) "\"\n"
          (when bb-form
            (str "  " (blackboard-form->pretty-string bb-form 1) "\n\n"))
+         (when judges-form
+           (str "  " (blackboard-form->pretty-string judges-form 1) "\n\n"))
          (when root-form
            (str "  " (form->pretty-string root-form 1)))
          ")")))
