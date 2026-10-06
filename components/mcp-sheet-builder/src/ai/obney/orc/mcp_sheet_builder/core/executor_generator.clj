@@ -51,13 +51,15 @@
   "Extract parameter names from JSON Schema properties.
    Returns vector of parameter name strings."
   [input-schema]
-  (when-let [props (get input-schema "properties")]
-    (vec (keys props))))
+  ;; A schema discovered through the MCP client arrives with keyword keys; a
+  ;; hand-written one may use strings. Both name the same parameters.
+  (when-let [props (or (get input-schema "properties") (get input-schema :properties))]
+    (mapv name (keys props))))
 
 (defn- required-params
   "Get required parameter names from input schema."
   [input-schema]
-  (set (get input-schema "required" [])))
+  (set (map name (or (get input-schema "required") (get input-schema :required) []))))
 
 ;; ============================================================================
 ;; Executor Code Generation

@@ -90,7 +90,14 @@ contract McpToolTransport {
 
     @invariant SchemaFaithfulness
         -- Tool input and output schemas, required fields, defaults, nested
-        -- objects, arrays, and descriptions survive discovery and conversion.
+        -- objects, arrays, and descriptions survive discovery and conversion,
+        -- including into the arguments an executor generated from a
+        -- discovered tool sends.
+
+    @invariant ToolErrorsFailTheCall
+        -- A tool result the server marks as an error is a failed call, never a
+        -- value. The failure carries the server's error text as the message
+        -- the tool shares with its caller.
 }
 
 contract GeneratedExecutorRuntime {
