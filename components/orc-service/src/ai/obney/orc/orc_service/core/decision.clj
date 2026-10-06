@@ -62,7 +62,7 @@
                         " must have a :boolean or finite [:enum ...] schema (or supply options "
                         "with :options-from); got " (pr-str answer)))
 
-          (and (some? abstain) (not (some #{abstain} (:ids offered))))
+          (and (some? abstain) (not (some #(= abstain %) (:ids offered))))
           (problem (str ":abstain " (pr-str abstain) " must be one of the offered options "
                         (pr-str (:ids offered)))))))))
 
