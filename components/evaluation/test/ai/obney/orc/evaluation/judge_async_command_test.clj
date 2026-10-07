@@ -40,6 +40,7 @@
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
+            [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.time.interface :as time]))
@@ -63,27 +64,13 @@
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   ::cache-dir cache-dir}
-        processors (reduce-kv
-                     (fn [acc proc-name {:keys [handler-fn topics]}]
-                       (assoc acc proc-name
-                              ;; Only the evaluation judge processors take a
-                              ;; :processor-name (they use the effect path,
-                              ;; which checkpoints per-event — a distinct name
-                              ;; keeps their replay-guard watermarks separate).
-                              ;; Naming the pure-path processors would switch
-                              ;; them into the checkpointed branch, whose
-                              ;; monotonic replay-guard false-positives under
-                              ;; the concurrent sub-ticks custom-judge
-                              ;; orc/execute fans out.
-                              (tp/start (cond-> {:event-pubsub ps :topics topics
-                                                 :handler-fn handler-fn :context base-ctx}
-                                          (= "evaluation" (namespace proc-name))
-                                          (assoc :processor-name proc-name)))))
-                     {} @tp/processor-registry*)]
+        ;; The same delivery production uses: checkpointed (evaluation/*) processors
+        ;; are polled one event at a time, the rest ride pubsub unnamed.
+        processors (h/start-test-processors base-ctx)]
     (assoc base-ctx :processors processors)))
 
 (defn- stop-context [ctx]
-  (doseq [[_ p] (:processors ctx)] (tp/stop p))
+  (h/stop-test-processors! ctx)
   (when-let [ps (:event-pubsub ctx)] (pubsub/stop ps))
   (when-let [c (:cache ctx)] (kv/stop c))
   (when-let [es (:event-store ctx)] (es/stop es))
