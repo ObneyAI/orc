@@ -973,10 +973,17 @@
    The request is recorded on the PURE path (events + handler CAS): no effect and
    no checkpoint watermark can skip it. Judging itself is the job of
    `on-assessment-requested`, which only ever starts from a durable request.
-   Returns nil when there is nothing (new) to request."
+
+   Grain appends a handler-CAS outcome without a checkpoint, so the same
+   completion is delivered again; its CAS is only a no-op if every delivery
+   computes the same requests. Judges can be revised or attached between
+   deliveries, so the request set is decided ONCE: a completion that already
+   has any request is not requested again, and the CAS admits the append only
+   while the completion has none. Returns nil when there is nothing to request."
   [{:keys [event] :as context}]
   (when-let [subject (:event/id event)]
     (when-not (orc/assessment-origin context (:tick-id event))
+    (when (empty? (requested-assessment-ids context subject))
     (let [node-id (judged-node-id context event)
           effective (get-effective-judges-for-node context (:sheet-id event) node-id
                                                    (:completion-kind event))
@@ -988,9 +995,7 @@
                                          judge]))
                                  (distinct-by-first))
                            effective)
-          already (requested-assessment-ids context subject)
-          fresh (into [] (remove (comp already first)) candidates)
-          fresh-ids (into #{} (map first) fresh)
+          fresh candidates
           ;; Only a judge that declares :child-assessments waits on the family
           ;; (PayForWhatYouUse): the family is read for no other judge.
           dependencies (delay (family-dependency-ids context event))]
@@ -1007,9 +1012,7 @@
                                 fresh))
          :result/cas {:types #{assessments/request-event-type}
                       :tags #{[:subject subject]}
-                      :predicate-fn (fn [existing]
-                                      (not-any? #(contains? fresh-ids (:assessment-id %))
-                                                (into [] existing)))}})))))
+                      :predicate-fn (fn [existing] (empty? (into [] existing)))}}))))))
 
 ;; =============================================================================
 ;; Judging a requested assessment

@@ -616,6 +616,25 @@
           (is (every? #{:scored} (map :status [first-a second-a])))))
       )))
 
+(deftest a-completion-delivered-again-after-a-revision-requests-nothing
+  (testing "a handler-CAS outcome is appended without a checkpoint, so Grain delivers the completion again; a revision in between must not add a second request for it"
+    (with-test-ctx [ctx]
+      (let [{:keys [sheet-id node-id]} (sheet-with-attached-judge!
+                                        ctx "structure" {:type :heuristic-structural})
+            tick (random-uuid)]
+        (complete-node! ctx sheet-id tick node-id)
+        (is (wait-until 30000 #(= 1 (count (scored ctx)))))
+        (let [completion (first (filter #(= tick (:tick-id %))
+                                        (events-of ctx #{:sheet/node-execution-completed})))]
+          (is (nil? (:cognitect.anomalies/category
+                     (revise-judge! ctx sheet-id "structure"
+                                    {:type :heuristic-structural :criteria "revision two"}))))
+          (is (nil? (jr/on-node-execution-completed (assoc ctx :event completion)))
+              "the completion's request set was decided when it was first processed")
+          (is (= [1] (mapv :judge-revision-number
+                           (filter #(= tick (:tick-id %)) (requested ctx))))
+              "one request, under the revision in force when it was first processed"))))))
+
 (deftest a-request-is-judged-by-the-definition-of-its-revision
   (testing "a pending revision-1 request, judged after the judge was revised, runs revision 1's workflow"
     ;; Every processor runs (the judge's own workflow executes on them) except the
