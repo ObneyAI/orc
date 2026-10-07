@@ -70,10 +70,10 @@ contract StructuredPrediction {
 
     @invariant StructuredFailureClassification
         -- A forced tool response with no tool call, malformed tool arguments,
-        -- schema-invalid decoded arguments, an empty provider response, a
+        -- schema-invalid decoded arguments, an empty function-calling response, a
         -- response the provider itself finished with an error, a provider that
-        -- is not configured, and a transport failure remain distinguishable by
-        -- stable failure kinds. A provider
+        -- is not configured, an exact tie between ordered bands, and a transport
+        -- failure remain distinguishable by stable failure kinds. A provider
         -- finish error is a failure even when validation is not requested and
         -- no tool was forced; its evidence includes the provider's own finish
         -- detail. Existing successful result shapes and values remain unchanged.

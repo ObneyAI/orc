@@ -348,6 +348,9 @@ entity Assessment {
 }
 
 entity JudgeScore {
+    -- The assessment a score belongs to; absent on scores recorded before
+    -- assessments existed and on the legacy tree-shape path.
+    assessment: Assessment?
     sheet_identifier: String
     node_identifier: String
     tick_identifier: String
@@ -360,6 +363,8 @@ entity JudgeScore {
 }
 
 entity CompositeScore {
+    -- The completion a composite summarises; absent on legacy composites.
+    subject_completion: String?
     sheet_identifier: String
     node_identifier: String
     tick_identifier: String
@@ -569,22 +574,37 @@ invariant LearningJudgesRequireFeedback {
         (learning in j.purposes and j.rubric != null) implies j.rubric.feedback = required
 }
 
+invariant OneJudgeScorePerAssessment {
+    for a in JudgeScores:
+        for b in JudgeScores:
+            a != b implies not (a.assessment != null and a.assessment = b.assessment)
+}
+
 invariant OneJudgeScorePerCompletion {
     for a in JudgeScores:
         for b in JudgeScores:
             a != b implies not (
-                a.sheet_identifier = b.sheet_identifier
+                a.assessment = null and b.assessment = null
+                and a.sheet_identifier = b.sheet_identifier
                 and a.node_identifier = b.node_identifier
                 and a.tick_identifier = b.tick_identifier
                 and a.judge = b.judge
             )
 }
 
+invariant OneCompositePerSubject {
+    for a in CompositeScores:
+        for b in CompositeScores:
+            a != b implies not (a.subject_completion != null
+                                and a.subject_completion = b.subject_completion)
+}
+
 invariant OneCompositePerCompletion {
     for a in CompositeScores:
         for b in CompositeScores:
             a != b implies not (
-                a.sheet_identifier = b.sheet_identifier
+                a.subject_completion = null and b.subject_completion = null
+                and a.sheet_identifier = b.sheet_identifier
                 and a.node_identifier = b.node_identifier
                 and a.tick_identifier = b.tick_identifier
             )
@@ -619,9 +639,8 @@ surface EvaluationAccess {
         -- score commands.
 
     @guarantee ActionableFeedback
-        -- Every successful score from a learning judge carries dimension-specific
-        -- feedback suitable for human diagnosis and downstream instruction
-        -- optimization. Score-only monitoring results never reach the learning
+        -- Every successful score from a learning judge carries written feedback
+        -- suitable for human diagnosis and downstream instruction optimization. Score-only monitoring results never reach the learning
         -- loops.
 
     @guarantee HonestComposite
