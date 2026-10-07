@@ -60,7 +60,7 @@
                         (select-keys event [:assessment-id :sheet-id :node-id :tick-id
                                             :subject-completion-id :judge-name
                                             :judge-revision-number :judge-type :purposes
-                                            :requested-at :exec-context :node-version
+                                            :requested-at :exec-context :node-version :run-node-id :version-number
                                             :depends-on])))))
 
 (defn- settle
@@ -87,7 +87,7 @@
                                    :model-provenance :judge-tick-id]))
 
 (defreadmodel :evaluation assessments
-  {:events lifecycle-event-types :version 1}
+  {:events lifecycle-event-types :version 2}
   [state event] (assessments* state event))
 
 (defn get-assessments

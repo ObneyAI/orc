@@ -769,13 +769,25 @@
     purposes
     assessments/default-purposes))
 
+(defn- judged-node-id
+  "The node a completion is judged and measured as. A run of a published version
+   has nodes of its own, each recording the draft node it was published from
+   (read from the run's durable tick execution context): that draft node is the
+   one whose judges monitor it. Any other completion is the node it names."
+  [ctx {:keys [tick-id node-id]}]
+  (or (some-> (orc/get-tick-execution-context ctx tick-id)
+              (get-in [:nodes-by-id node-id :source-node-id]))
+      node-id))
+
 (defn- ->assessment-requested-event
   "Pure builder of the `:evaluation/assessment-requested` event for `judge` (an
-   effective-judges entry) assessing the completion `completion`."
-  [completion assessment-id {:keys [judge-name judge-config]} node-version]
+   effective-judges entry) assessing the completion `completion`. `node-id` is
+   the node judged (the source node of a published run's node);
+   `version-number` the published sheet version the run executed, nil for a draft."
+  [completion assessment-id {:keys [judge-name judge-config]} node-version node-id version-number]
   (let [subject (:event/id completion)
         sheet-id (:sheet-id completion)
-        node-id (:node-id completion)
+        run-node-id (:node-id completion)
         tick-id (:tick-id completion)
         ;; Which execution of the node this is (a map-each iteration): the
         ;; completion carries it as :exec-context, or in its :inputs.
@@ -795,7 +807,9 @@
                      :purposes (judge-purposes judge-config)
                      :requested-at (str (time/now))}
               (seq exec-context) (assoc :exec-context exec-context)
-              node-version (assoc :node-version node-version))})))
+              (not= node-id run-node-id) (assoc :run-node-id run-node-id)
+              node-version (assoc :node-version node-version)
+              version-number (assoc :version-number version-number))})))
 
 (defn- requested-assessment-ids
   "The ids of the assessments already requested for the completion `subject`."
@@ -825,7 +839,8 @@
   [{:keys [event] :as context}]
   (when-let [subject (:event/id event)]
     (when-not (orc/assessment-origin context (:tick-id event))
-    (let [effective (get-effective-judges-for-node context (:sheet-id event) (:node-id event)
+    (let [node-id (judged-node-id context event)
+          effective (get-effective-judges-for-node context (:sheet-id event) node-id
                                                    (:completion-kind event))
           candidates (into []
                            (comp (map (fn [judge]
@@ -839,9 +854,11 @@
           fresh (into [] (remove (comp already first)) candidates)
           fresh-ids (into #{} (map first) fresh)]
       (when (seq fresh)
-        {:result/events (let [version (node-version/node-version context event)]
+        {:result/events (let [version (node-version/node-version context event)
+                              version-number (:version-number
+                                              (orc/get-tick-execution-context context (:tick-id event)))]
                           (mapv (fn [[id judge]]
-                                  (->assessment-requested-event event id judge version))
+                                  (->assessment-requested-event event id judge version node-id version-number))
                                 fresh))
          :result/cas {:types #{assessments/request-event-type}
                       :tags #{[:subject subject]}

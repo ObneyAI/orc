@@ -84,7 +84,12 @@
    [:map
     [:assessment-id :uuid]
     [:sheet-id :uuid]
+    ;; The node judged and measured. For a run of a published version this is the
+    ;; draft node the run's node was published from.
     [:node-id :uuid]
+    ;; The node the run itself executed, when it differs from :node-id (a
+    ;; published run's own node): where the completion's evidence lives.
+    [:run-node-id {:optional true} :uuid]
     [:tick-id :uuid]
     [:subject-completion-id :uuid]
     [:exec-context {:optional true} :map]
@@ -96,6 +101,8 @@
     ;; The node's effective definition when the completion ran (a hash; see
     ;; core/node_version.clj). Absent on requests recorded before it existed.
     [:node-version {:optional true} :string]
+    ;; The published sheet version the run executed; absent for a draft run.
+    [:version-number {:optional true} :int]
     ;; Room for later slices (composite dependencies).
     [:depends-on {:optional true} [:vector :uuid]]]
 
