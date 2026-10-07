@@ -295,7 +295,7 @@ that verifies the stated observable results.
 
 - [x] **DET-E2E-073 — Command → event → projection.** A real code-only build and execution verifies that every scoped mutation event has a registered passing Malli schema and reconstructs sheet, nodes, blackboard, and durable trace through public queries.
 - [x] **DET-E2E-074 — Projection replay.** Clean reductions of the complete event stream through the production sheet, node, blackboard, and trace reducers exactly match their live public query results.
-- [x] **DET-E2E-075 — Judge opt-in disabled.** An attached heuristic structural judge produces no score event while Living Description evaluation remains disabled.
+- [x] **DET-E2E-075 — Attached judge assesses with evaluation disabled.** An explicitly attached heuristic structural judge produces exactly one score while Living Description evaluation remains disabled; only the default researcher judges are opt-in.
 - [x] **DET-E2E-076 — Deterministic structural judge.** A known sequence → map-each → final tree emits the exact 0.5 structural score, two perfect dimensions, and the same projected judge-score entry.
 - [x] **DET-E2E-077 — Multiple deterministic judges.** A throwing custom code judge is isolated while its sibling heuristic judge emits the sole valid score and the host execution remains successful.
 - [x] **DET-E2E-078 — Judge score idempotency.** Re-appending the real leaf completion retains exactly one score for the sheet/node/tick/judge identity tuple.
