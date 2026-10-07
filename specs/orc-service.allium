@@ -100,6 +100,16 @@ contract LeafExecutor {
         -- stands in for the other, and a failed call does not invent a
         -- resolved model.
 
+    @invariant RejectedCompletionFailsTheNode
+        -- A completion the engine cannot record fails the node visibly, naming
+        -- what was rejected and keeping the attempted outcome as detail; a node
+        -- never waits for its run's deadline because its completion was refused.
+
+    @invariant JudgedCompositesAreDurable
+        -- A run whose composite nodes carry judges records those composites'
+        -- completions durably so they can be assessed; a run with no judged
+        -- composite keeps its ephemeral evaluation.
+
     @invariant ProviderMetadataIsNeverOutput
         -- Prediction metadata (usage, model identity, response text, provider
         -- evidence) is never written to the blackboard as though it were a

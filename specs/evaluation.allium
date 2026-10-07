@@ -184,7 +184,8 @@ contract TraceJudge {
         -- Every judge, built-in or custom, is an ORC workflow executed against
         -- the assessment's evidence, so judge model calls are budgeted,
         -- accounted, retried and selectable exactly like any other node's.
-        -- Heuristic structural judging is a deterministic code workflow.
+        -- Heuristic structural judging is a deterministic judgment that calls no
+        -- model.
 
     @invariant JudgeModelResolvesLikeAnyNode
         -- A judge's model comes from its declaration, else from the runtime's
@@ -209,7 +210,9 @@ contract AssessmentRecording {
         -- An assessment is identified by the completion it assesses, the judge
         -- and the judge revision. Delivering the same completion again requests
         -- nothing new and performs no judging; distinct executions of one node
-        -- in one run are distinct subjects.
+        -- in one run are distinct subjects. The assessments requested for a
+        -- completion are decided when it is first processed: a judge attached or
+        -- revised afterwards assesses later completions, never that one again.
 
     @invariant NothingInvented
         -- A missing band, an incomplete supporting dimension, blank feedback a
@@ -225,7 +228,7 @@ contract AssessmentRecording {
     @invariant ExactTieIsUngradable
         -- When a decision model returns an exact tie for the most probable band,
         -- the assessment is ungradable; the expected position is never rounded
-        -- into a band.
+        -- into a band, and the tie is not retried in search of a different one.
 
     @invariant HistoryIsAdditive
         -- Assessment and score records are never rewritten. Records made before
@@ -248,8 +251,9 @@ contract PerformanceMonitoring {
     @invariant ThresholdWatchingIsOptIn
         -- Only a declared alert watches a trailing window. A crossing is
         -- signalled once and re-arms on recovery; a window whose coverage is too
-        -- low signals degraded coverage instead of poor performance. A signal
-        -- never starts training by itself.
+        -- low signals degraded coverage instead of poor performance, and its
+        -- recovery is signalled once too. A window speaks only once it is full.
+        -- A signal never starts training by itself.
 }
 
 contract EvaluationAttachmentResolver {
@@ -268,6 +272,12 @@ contract EvaluationAttachmentResolver {
         -- node it is attached to, whether or not Living Descriptions are
         -- enabled. Any node may carry judges: leaves, researchers, composites,
         -- delegates and the root.
+
+    @invariant PublishedRunsAreJudgedAsTheirSourceNode
+        -- A run of a published workflow version is judged by the attachments of
+        -- the draft node each of its nodes was published from, so attaching a
+        -- judge monitors every version's runs; its assessments and performance
+        -- belong to that source node, separated by node version.
 
     @invariant CompletionKindFiltering
         -- A judge declaring completion kinds runs only for matching non-null
@@ -615,10 +625,11 @@ surface EvaluationAccess {
         -- loops.
 
     @guarantee HonestComposite
-        -- A composite is formed once per subject after every attached judge's
-        -- assessment has settled, carries coverage, is marked partial when any
-        -- judge did not score, and never mixes monitoring-only and learning
-        -- results.
+        -- A composite is formed once per subject, over its learning judges, after
+        -- every one of their assessments has settled, when at least two were
+        -- expected. It carries coverage and is marked partial when any judge did
+        -- not score; when none scored it carries coverage and no score. It never
+        -- mixes monitoring-only and learning results.
 
     @guarantee PayForWhatYouUse
         -- Execution-family evidence, waits on child assessments, composites,
