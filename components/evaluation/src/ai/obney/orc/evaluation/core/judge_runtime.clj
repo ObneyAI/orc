@@ -768,6 +768,11 @@
    resolve+run loop lives in the effect's background future)."
   60000)
 
+(defn- judge-purposes [judge-config]
+  (if-let [purposes (not-empty (set (:purposes judge-config)))]
+    purposes
+    assessments/default-purposes))
+
 (defn- run-judges-and-dispatch!
   "Run the resolved `effective` judges against `trace-data` in PARALLEL
    (one future per judge + per-judge timeout), then dispatch one
@@ -824,11 +829,21 @@
         ;; One record-judge-score command per judge with a result. The
         ;; command emits :judge/score-emitted (idempotent on
         ;; [sheet node tick judge-name]).
+        ;; Only a judge whose purposes include :learning feeds the legacy
+        ;; score (the learning loops' record): a monitoring-only judge's
+        ;; result never reaches them.
         (doseq [{:keys [judge-name judge-config result]} scored]
-          (cp/process-command
-            (assoc context :command
-                   (->record-judge-score-command source judge-name
-                                                 judge-config result))))
+          (if (contains? (judge-purposes judge-config) :learning)
+            (cp/process-command
+              (assoc context :command
+                     (->record-judge-score-command source judge-name
+                                                   judge-config result)))
+            (u/log ::monitoring-only-judge-score-not-recorded
+                   :sheet-id (:sheet-id source)
+                   :node-id (:node-id source)
+                   :tick-id (:tick-id source)
+                   :judge-name judge-name
+                   :purposes (judge-purposes judge-config))))
         ;; After all per-judge scores: one record-composite-score command
         ;; (idempotent on [sheet node tick]) when ≥2 judges scored.
         (when-let [composite-cmd (->record-composite-score-command source judge-results)]
@@ -866,11 +881,6 @@
    built-in defaults are never declared, so they have a single definition)."
   [judge-config]
   (or (:revision-number judge-config) 1))
-
-(defn- judge-purposes [judge-config]
-  (if-let [purposes (not-empty (set (:purposes judge-config)))]
-    purposes
-    assessments/default-purposes))
 
 (defn- judged-node-id
   "The node a completion is judged and measured as. A run of a published version

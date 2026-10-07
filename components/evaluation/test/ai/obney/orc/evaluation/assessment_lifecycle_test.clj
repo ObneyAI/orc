@@ -747,3 +747,120 @@
           (is (= #{:monitoring} (:purposes a))))
         (is (empty? (legacy-scores ctx))
             "only a LEARNING judge's scored outcome becomes the learning loops' record")))))
+
+;; =============================================================================
+;; S13w - FeedbackIsOptional: a rubric-less custom judge that writes no feedback
+;; is a score-only result: no feedback key at all, never an empty string
+;; =============================================================================
+
+(defn score-only
+  "Custom judge body: scores 0.5 and writes no feedback."
+  [_]
+  {:score 0.5})
+
+(defn blank-feedback
+  "Custom judge body: scores 0.5 and writes whitespace-only feedback."
+  [_]
+  {:score 0.5 :feedback "   "})
+
+(defn- scoring-judge-workflow [fn-symbol writes-feedback?]
+  (orc/workflow (str "s13w-judge-" (random-uuid))
+    (orc/blackboard (cond-> {:host-inputs any-map
+                             :host-outputs any-map
+                             :host-instruction [:string {:description "Host instruction"}]
+                             :host-trace [:vector [:map [:node-id {:optional true} :uuid]]]
+                             :score :double}
+                      writes-feedback? (assoc :feedback [:string {:description "Feedback"}])))
+    (orc/code "score" :fn fn-symbol
+      :reads [:host-inputs :host-outputs :host-instruction :host-trace]
+      :writes (cond-> [:score] writes-feedback? (conj :feedback)))))
+
+(deftest a-rubric-less-judge-without-feedback-records-a-score-only-result
+  (doseq [[label fn-symbol writes-feedback?]
+          [["absent" "ai.obney.orc.evaluation.assessment-lifecycle-test/score-only" false]
+           ["blank" "ai.obney.orc.evaluation.assessment-lifecycle-test/blank-feedback" true]]]
+    (testing (str label " feedback: a scored assessment with no :feedback key and no legacy record (legacy requires feedback)")
+      (with-test-ctx [ctx]
+        (let [judge-sheet (orc/build-workflow! ctx (scoring-judge-workflow fn-symbol writes-feedback?))
+              {:keys [sheet-id node-id]} (sheet-with-attached-judge!
+                                          ctx "plain" {:type :custom :sheet-id judge-sheet})]
+          (complete-node! ctx sheet-id (random-uuid) node-id :writes {:item 1})
+          (is (wait-until 30000 #(= 1 (count (scored ctx)))) "the assessment is scored")
+          (let [terminal (first (scored ctx))]
+            (is (= 0.5 (:score terminal)))
+            (is (not (contains? terminal :feedback))
+                (str "a score-only result carries no feedback, got " (pr-str (:feedback terminal)))))
+          (Thread/sleep 300)
+          (is (empty? (legacy-scores ctx))
+              "no feedback, so nothing for the learning loops"))))))
+
+(deftest a-rubric-less-judge-with-feedback-is-unchanged
+  (testing "non-blank feedback rides the scored assessment and the legacy learning record"
+    (with-test-ctx [ctx]
+      (reset! judge-calls [])
+      (let [{:keys [sheet-id node-id]} (sheet-with-recording-judge! ctx)]
+        (complete-node! ctx sheet-id (random-uuid) node-id :writes {:item 1})
+        (is (wait-until 30000 #(= 1 (count (scored ctx)))))
+        (is (= "recorded" (:feedback (first (scored ctx)))))
+        (is (wait-until 15000 #(= 1 (count (legacy-scores ctx)))))
+        (is (= "recorded" (:feedback (first (legacy-scores ctx)))))))))
+
+;; =============================================================================
+;; S13w - the outcome command enforces what it records; it does not trust its caller
+;; =============================================================================
+
+(defn- terminal-count [ctx id]
+  (count (events-for ctx #{:evaluation/assessment-scored} id)))
+
+(deftest a-scored-outcome-outside-the-score-range-is-rejected
+  (testing "a scored outcome's score must lie in [0,1]: nothing is recorded otherwise; the bounds themselves are accepted"
+    (let [ctx (create-processorless-context)]
+      (try
+        (let [{:keys [sheet-id node-id]} (sheet-with-attached-judge!
+                                          ctx "structure" {:type :heuristic-structural})]
+          (doseq [bad [1.5 -0.1 2 -1]]
+            (let [id (request-assessment! ctx sheet-id node-id)
+                  r (command! ctx (assoc (outcome-command id) :score bad))]
+              (is (= :cognitect.anomalies/incorrect (:cognitect.anomalies/category r))
+                  (str "score " bad " is rejected: " (pr-str r)))
+              (is (zero? (terminal-count ctx id)) (str "score " bad " recorded nothing"))))
+          (doseq [ok [0 0.0 1 1.0]]
+            (let [id (request-assessment! ctx sheet-id node-id)
+                  r (command! ctx (assoc (outcome-command id) :score ok))]
+              (is (nil? (:cognitect.anomalies/category r)) (str "score " ok " accepted: " (pr-str r)))
+              (is (= 1 (terminal-count ctx id))))))
+        (finally (stop-context ctx))))))
+
+(def ^:private feedback-required-config
+  {:type :custom
+   :rubric {:bands {1 {:description "poor" :score 0.0} 2 {:description "good" :score 1.0}}
+            :feedback :required}})
+
+(deftest a-scored-outcome-of-a-feedback-requiring-rubric-must-carry-feedback
+  (testing "a rubric that requires feedback: absent or blank feedback is rejected and records nothing; non-blank is accepted"
+    (let [ctx (create-processorless-context)]
+      (try
+        (let [{:keys [sheet-id node-id]} (sheet-with-attached-judge!
+                                          ctx "structure" {:type :heuristic-structural})
+              outcome (fn [id] (assoc (outcome-command id) :judge-config feedback-required-config))]
+          (doseq [[label change] [["absent" #(dissoc % :feedback)]
+                                  ["empty" #(assoc % :feedback "")]
+                                  ["blank" #(assoc % :feedback "  \n ")]]]
+            (let [id (request-assessment! ctx sheet-id node-id)
+                  r (command! ctx (change (outcome id)))]
+              (is (= :cognitect.anomalies/incorrect (:cognitect.anomalies/category r))
+                  (str label " feedback is rejected: " (pr-str r)))
+              (is (zero? (terminal-count ctx id)) (str label " feedback recorded nothing"))))
+          (let [id (request-assessment! ctx sheet-id node-id)
+                r (command! ctx (outcome id))]
+            (is (nil? (:cognitect.anomalies/category r)) (pr-str r))
+            (is (= 1 (terminal-count ctx id))))
+          (testing "a rubric that does not require feedback still records a score-only outcome"
+            (let [id (request-assessment! ctx sheet-id node-id)
+                  r (command! ctx (-> (outcome-command id)
+                                      (dissoc :feedback)
+                                      (assoc :judge-config (assoc-in feedback-required-config
+                                                                     [:rubric :feedback] :none))))]
+              (is (nil? (:cognitect.anomalies/category r)) (pr-str r))
+              (is (= 1 (terminal-count ctx id))))))
+        (finally (stop-context ctx))))))
