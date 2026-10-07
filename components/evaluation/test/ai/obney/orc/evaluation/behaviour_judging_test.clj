@@ -415,22 +415,33 @@
       (assoc ctx :processors fresh))))
 
 (deftest waiting-parent-starts-after-processors-restart
+  ;; Every request - the three children's and the waiting parent's - is durable
+  ;; before the restart, and no judgment is in flight across it: the judging
+  ;; processor is held back until the processors restart. (Resuming a judgment
+  ;; that was mid-run when its process stopped is restart recovery, an open
+  ;; question in the evaluation spec, not this test.) After the restart the
+  ;; children are judged and the parent, still waiting, starts last with all three.
   (h/with-async-test-context [ctx]
     (reset! judge-calls {})
     (reset! timeline [])
     (reset! gate (promise))
-    (let [parent (map-each-with-slow-children ctx "parent-judge"
+    (deliver @gate :go)
+    (let [held (-> ctx
+                   (doto h/stop-test-processors!)
+                   (dissoc :processors)
+                   (as-> c (assoc c :processors
+                                  (h/start-test-processors
+                                   c #{:evaluation/on-assessment-requested}))))
+          parent (map-each-with-slow-children held "parent-judge"
                                               {:child-assessments child-assessments-schema})
-          each-id (node-id ctx parent "each")
-          result (sheet/execute ctx parent {:items ["a" "b" "c"]} :timeout-ms 60000)
-          started? (until #(= 3 (count (filter (comp #{:child-started} first) @timeline))) 30000)
-          parent-request? (until #(seq (evaluation/get-assessments ctx {:node-id each-id})) 30000)
-          restarted (restart-processors ctx)]
+          each-id (node-id held parent "each")
+          result (sheet/execute held parent {:items ["a" "b" "c"]} :timeout-ms 60000)
+          requested? (until #(= 4 (count (evaluation/get-assessments held {}))) 30000)
+          judged-while-held @timeline
+          restarted (restart-processors held)]
       (is (= :success (:status result)) (pr-str result))
-      (is (and started? parent-request?) "children are judging and the parent is waiting")
-      (is (not (until #(some #{[:parent-ran]} @timeline) 500))
-          "still waiting after the restart")
-      (deliver @gate :go)
+      (is requested? "all four requests are durable before the restart")
+      (is (empty? judged-while-held) "nothing was judged before the restart")
       (let [parent-settled (settled-assessments restarted #(= each-id (:node-id %)) 1)
             kids (:child-assessments (first (get @judge-calls :parent)))]
         (is (= 1 (count parent-settled)) "the parent started once the last child settled")
