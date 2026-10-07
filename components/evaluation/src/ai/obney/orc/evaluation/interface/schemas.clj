@@ -26,6 +26,25 @@
    [:score :double]
    [:feedback {:optional true} :string]])
 
+(def PerformanceSignal
+  "The body of every opt-in performance signal: where it happened (the node
+   version under a judge revision), the assessment whose outcome tipped it, and
+   the window it judged: the last `window` outcomes, `scored` of which were
+   scored, `trailing-score` their mean, `coverage-ratio` scored over outcomes."
+  [:map
+   [:sheet-id :uuid]
+   [:node-id :uuid]
+   [:node-version {:optional true} :string]
+   [:judge-name :string]
+   [:judge-revision-number :int]
+   [:assessment-id :uuid]
+   [:alert :map]
+   [:window :int]
+   [:scored :int]
+   [:trailing-score {:optional true} number?]
+   [:coverage-ratio number?]
+   [:signalled-at :string]])
+
 ;; =============================================================================
 ;; Events
 ;; =============================================================================
@@ -74,13 +93,23 @@
     [:judge-type :keyword]
     [:purposes [:set :keyword]]
     [:requested-at :string]
-    ;; Room for later slices (node version pinning, composite dependencies).
-    [:node-version {:optional true} :int]
+    ;; The node's effective definition when the completion ran (a hash; see
+    ;; core/node_version.clj). Absent on requests recorded before it existed.
+    [:node-version {:optional true} :string]
+    ;; Room for later slices (composite dependencies).
     [:depends-on {:optional true} [:vector :uuid]]]
 
    :evaluation/assessment-scored
    [:map
     [:assessment-id :uuid]
+    ;; Where the outcome belongs (copied from the request) and the judge's
+    ;; declared alert, if any: lets the alert stage act without reading the request.
+    [:sheet-id {:optional true} :uuid]
+    [:node-id {:optional true} :uuid]
+    [:node-version {:optional true} :string]
+    [:judge-name {:optional true} :string]
+    [:judge-revision-number {:optional true} :int]
+    [:alert {:optional true} :map]
     [:band {:optional true} :int]
     [:score [:and number? [:>= 0.0] [:<= 1.0]]]
     [:feedback {:optional true} :string]
@@ -92,6 +121,14 @@
    :evaluation/assessment-failed
    [:map
     [:assessment-id :uuid]
+    ;; Where the outcome belongs (copied from the request) and the judge's
+    ;; declared alert, if any: lets the alert stage act without reading the request.
+    [:sheet-id {:optional true} :uuid]
+    [:node-id {:optional true} :uuid]
+    [:node-version {:optional true} :string]
+    [:judge-name {:optional true} :string]
+    [:judge-revision-number {:optional true} :int]
+    [:alert {:optional true} :map]
     [:reason :keyword]
     [:message :string]
     [:model-provenance {:optional true} [:vector :map]]
@@ -100,11 +137,26 @@
    :evaluation/assessment-ungradable
    [:map
     [:assessment-id :uuid]
+    ;; Where the outcome belongs (copied from the request) and the judge's
+    ;; declared alert, if any: lets the alert stage act without reading the request.
+    [:sheet-id {:optional true} :uuid]
+    [:node-id {:optional true} :uuid]
+    [:node-version {:optional true} :string]
+    [:judge-name {:optional true} :string]
+    [:judge-revision-number {:optional true} :int]
+    [:alert {:optional true} :map]
     [:reason :keyword]
     [:message :string]
     [:band-distribution {:optional true} :map]
     [:model-provenance {:optional true} [:vector :map]]
     [:judge-tick-id {:optional true} :uuid]]
+
+   ;; S11: opt-in performance signals. Only a judge declaring an alert produces
+   ;; them; each is recorded once per episode and none starts training.
+   :evaluation/performance-threshold-crossed PerformanceSignal
+   :evaluation/performance-threshold-recovered PerformanceSignal
+   :evaluation/performance-coverage-degraded PerformanceSignal
+   :evaluation/performance-coverage-restored PerformanceSignal
 
    ;; Gap-8: weighted composite score across all judges that fired
    ;; for a single (sheet, node, tick) tuple. Emitted in the same
@@ -180,42 +232,13 @@
     [:emitted-at {:optional true} :string]]})
 
 ;; =============================================================================
-;; Read Models
+;; Read models and queries
 ;; =============================================================================
-
-(defschemas read-models
-  {:evaluation/results-by-node
-   [:map
-    [:node-id :uuid]
-    [:evaluations [:vector
-                   [:map
-                    [:trace-id :uuid]
-                    [:aggregate-score :double]
-                    [:evaluated-at :string]]]]]})
-
-;; =============================================================================
-;; Queries
-;; =============================================================================
-
-(defschemas queries
-  {:evaluation/get-scores
-   [:map
-    [:sheet-id :uuid]
-    [:node-id {:optional true} :uuid]
-    [:since {:optional true} :string]
-    [:min-score {:optional true} :double]
-    [:max-score {:optional true} :double]
-    [:limit {:optional true} :int]]
-
-   :evaluation/get-low-scoring
-   [:map
-    [:sheet-id :uuid]
-    [:node-id {:optional true} :uuid]
-    [:threshold {:optional true} :double]
-    [:limit {:optional true} :int]]
-
-   :evaluation/get-trends
-   [:map
-    [:sheet-id :uuid]
-    [:node-id :uuid]
-    [:time-bucket {:optional true} [:enum :hour :day :week]]]})
+;;
+;; None are registered here. The earlier `:evaluation/results-by-node` read-model
+;; schema and the `:evaluation/get-scores`, `:evaluation/get-low-scoring` and
+;; `:evaluation/get-trends` query schemas never had a handler. They are removed
+;; rather than re-pointed: performance reporting is the plain functions of the
+;; evaluation interface (`get-node-performance`, `get-low-performing`,
+;; `get-performance-trend`, `get-assessment-report`), whose inputs are not those
+;; shapes (they report per node VERSION, judge and revision with coverage).

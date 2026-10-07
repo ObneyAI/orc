@@ -44,6 +44,13 @@
    [:timeout-ms {:optional true} :int]
    [:rubric {:optional true} judge-rubric-schema]
    [:purposes {:optional true} [:set [:enum :monitoring :learning]]]
+   ;; Opt-in threshold watching (`judge-definition/alert-error` validates the
+   ;; values): only a judge declaring an alert has its node versions' trailing
+   ;; window watched.
+   [:alert {:optional true} [:map
+                             [:below number?]
+                             [:window :int]
+                             [:min-coverage number?]]]
    [:sheet-id {:optional true} :uuid]]) ;; For :custom type - reference to judge sheet
 
 (def executor-type

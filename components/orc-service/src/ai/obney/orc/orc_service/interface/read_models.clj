@@ -17,6 +17,12 @@
   [ctx tick-id]
   (core/assessment-origin ctx tick-id))
 
+(defn get-tick-execution-context
+  "The execution context a snapshot-based tick runs under, or nil for a
+   snapshot-less tick."
+  [ctx tick-id]
+  (core/get-tick-execution-context ctx tick-id))
+
 (defn get-sheets-all
   "Get all sheets"
   [ctx]
