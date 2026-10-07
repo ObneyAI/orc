@@ -315,6 +315,52 @@ A judge may declare an `:alert {:below :window :min-coverage}`. Over a full trai
 
 A chat model is asked to choose among the bands as described string choices and the answer is checked against the offered bands. A native decision model (a Jev Score) is asked for a score; an exact tie yields no band and the node ends `:undecided`.
 
+## Failed executions are recorded, not graded
+
+A completion with status `:failure`, `:timeout` or `:blocked` still gets its assessments requested, but each ends `:ungradable` with reason `:subject-failed` and a message carrying the node's status, failure kind and error. No judge workflow runs and no model is called. `:success` and `:partial` are judged normally. Declare `:assess-failures? true` on a judge to grade failed completions anyway. Performance counts these outcomes apart (`:subject-failed`) and keeps them out of every mean and band distribution; a window of them signals coverage degraded, not a threshold crossing.
+
+## Judges in the way: an inline gate
+
+To reject a draft and make the producer try again, compose it by hand: a `fallback` of attempts, each a `sequence` of the producer (attempt 2 and later read `:answer` and `:gate-feedback`), a delegated judge workflow that writes `:band` and `:gate-feedback`, and a `condition` on the band. (For a score-only gate an `llm-decision` with `:bands-from :rubric` can write the band.)
+
+```clojure
+;; docs-example: inline-gate
+(def gate-judge
+  (sheet/workflow "docs-gate-judge"
+    (sheet/blackboard {:request :string :answer :string
+                       :band :int :gate-feedback :string})
+    (sheet/llm "review"
+      :instruction "Grade the answer to the request from 1 (reject) to 4 (excellent). If the band is below 3, say what must change."
+      :reads [:request :answer]
+      :writes [:band :gate-feedback])))
+
+(defn gated [gate-id]
+  (sheet/workflow "docs-inline-gate"
+    (sheet/blackboard {:request :string :answer :string
+                       :band :int :gate-feedback :string})
+    (sheet/fallback "attempts"
+      (sheet/sequence "attempt-1"
+        (sheet/llm "draft-1"
+          :instruction "Answer the request."
+          :reads [:request]
+          :writes [:answer])
+        (sheet/delegate "gate-1" :target-sheet-id gate-id
+          :reads [:request :answer]
+          :writes [:band :gate-feedback])
+        (sheet/condition "accept-1" :check {:key :band :op :gte :value 3}))
+      (sheet/sequence "attempt-2"
+        (sheet/llm "draft-2"
+          :instruction "Revise the answer so that it addresses the gate feedback."
+          :reads [:request :answer :gate-feedback]
+          :writes [:answer])
+        (sheet/delegate "gate-2" :target-sheet-id gate-id
+          :reads [:request :answer]
+          :writes [:band :gate-feedback])
+        (sheet/condition "accept-2" :check {:key :band :op :gte :value 3})))))
+```
+
+Limits: the attempts are fixed by unrolling; the gate's verdicts are ordinary node executions, not assessments, unless a monitoring judge is also attached; if every attempt is rejected the `fallback` fails. A first-class gate construct is planned.
+
 ## Provider compatibility note
 
 One OpenRouter Gemini route returned empty tool arguments for an integer enum output schema. Banded decisions therefore send bands as described string choices and validate membership locally, and the llm node used by feedback judges declares its band field as a bounded integer (`[:int {:min 1}]`). This is the only route known to need it.

@@ -207,3 +207,30 @@
       (is (= config (get-in exported [:judges-schema :grounding-judge])))
       (is (= config (get-in regenerated [:judges-schema :grounding-judge])))
       (is (= config (:judge-config (peek (:revisions (rm/get-judge ctx imported-id "grounding-judge")))))))))
+
+(deftest assess-failures-is-a-declared-boolean-defaulting-to-false
+  (h/with-test-context [ctx]
+    (let [sheet-id (new-sheet! ctx)
+          rejected? (fn [config]
+                      (let [r (declare! ctx sheet-id (str (random-uuid)) config)]
+                        (and (h/is-anomaly? r)
+                             (= :cognitect.anomalies/incorrect (:cognitect.anomalies/category r)))))]
+      (declare! ctx sheet-id "opt-in" {:type :grounding :criteria "c" :assess-failures? true})
+      (declare! ctx sheet-id "default" {:type :grounding :criteria "c"})
+      (is (true? (:assess-failures? (rm/get-judge ctx sheet-id "opt-in"))))
+      (is (not (:assess-failures? (rm/get-judge ctx sheet-id "default"))) "default false")
+      (is (rejected? {:type :grounding :assess-failures? "yes"}) "a non-boolean is rejected")
+      (is (rejected? {:type :grounding :assess-failures? nil}) "nil is not a boolean"))))
+
+(deftest assess-failures-survives-the-dsl-and-export-round-trips
+  (h/with-test-context [ctx]
+    (let [config {:type :grounding :criteria "c" :assess-failures? true}
+          source-id (dsl/build-workflow! ctx (workflow-with-judge config))
+          exported (dsl/export-sheet ctx source-id)
+          regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
+                        (eval (read-string (dsl/export-to-dsl exported))))
+          imported-id (dsl/import-sheet ctx (assoc-in exported [:sheet :name] "s14-imported"))]
+      (is (true? (:assess-failures? (rm/get-judge ctx source-id "grounding-judge"))))
+      (is (= config (get-in exported [:judges-schema :grounding-judge])))
+      (is (= config (get-in regenerated [:judges-schema :grounding-judge])))
+      (is (= config (:judge-config (peek (:revisions (rm/get-judge ctx imported-id "grounding-judge")))))))))
