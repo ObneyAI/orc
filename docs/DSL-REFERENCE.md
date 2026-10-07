@@ -487,8 +487,42 @@ then route on the written key.
   discovered at run time; the answer key may then be `:string`. Ids are kept verbatim.
 - Anything else is rejected when the workflow is built.
 
-**Parameters:** `:instruction`, `:reads`, `:writes` (one key), `:options-from`, `:min-confidence`
-with `:abstain` (must be an offered option), `:model`, `:retry`, `:options`.
+**Banded decisions.** `:bands-from :rubric` (a declared read key holding a run-time rubric
+`{:bands {1 "..." 2 "..."} :criterion "..." :stance "..."}`) makes the model choose ONE ordered band;
+the integer band is written to the answer key, which must be an integer schema. The bands must be
+integer-keyed, contiguous, at least two, each with a non-blank description. `:bands-from` must also
+be in `:reads`, excludes `:options-from`, and rejects `:min-confidence` and `:abstain`. A chat model
+is offered the bands as described string choices and its answer is checked against them locally. A
+native decision model is asked for a score; the band is the uniquely most probable level, and an
+exact tie selects no band (the node ends `:undecided`, and the tie is not retried). This is the node
+that score-only judges run, and it works in any workflow:
+
+```clojure
+;; docs-example: banded-decision
+(def support-bands
+  {:criterion "How well are the claims supported by the evidence?"
+   :stance "Be strict."
+   :bands {1 "Unsupported facts" 2 "Partly supported facts" 3 "All facts supported"}})
+
+(def banded
+  (sheet/workflow "docs-banded-decision"
+    (sheet/blackboard
+     {:evidence :string
+      :rubric [:map {:description "A grading rubric: ordered, described bands"}
+               [:bands [:map-of :int [:maybe :string]]]
+               [:criterion {:optional true} :string]
+               [:stance {:optional true} :string]]
+      :band :int})
+    (sheet/llm-decision "grade"
+      :instruction "Grade the evidence against the rubric."
+      :reads [:evidence :rubric]
+      :bands-from :rubric
+      :writes [:band])))
+```
+
+**Parameters:** `:instruction`, `:reads`, `:writes` (one key), `:options-from`, `:bands-from`,
+`:min-confidence` with `:abstain` (must be an offered option), `:model`, `:retry`, `:judges`,
+`:options`.
 
 **Behavior:**
 - A valid answer is SUCCESS and is written; an answer outside the offered set, a missing answer or
@@ -517,7 +551,7 @@ Booleans are asked as yes/no (noul) questions and enums as choice questions with
 description as its criterion. Answers are validated, never repaired: distributions must cover the
 offered options and agree with the selected answer and reported confidence to within the
 provider's reported resolution (`:reported-resolution`, default 0.01 — OpenRouter rounds to two
-decimals). A decision model answers only boolean and enum outputs; any other output is refused
+decimals). A decision model answers boolean, enum and banded outputs; any other output is refused
 before the call.
 
 ### delegate
@@ -1024,170 +1058,129 @@ Configure retries for unreliable operations:
 
 ### Evaluation Judges
 
-Define evaluation criteria at the workflow level and reference them from LLM nodes. This enables retrospective evaluation of LLM outputs for quality assurance.
+A judge grades what a node did. You declare judges at the workflow level with `sheet/judges`, parallel to `sheet/blackboard`, and attach them to nodes by name with `:judges`. Attaching a judge enables it. Full reference: [EVALUATION-COMPONENT.md](EVALUATION-COMPONENT.md). Every code block marked `;; docs-example: <id>` in this section is run by `components/evaluation/test/ai/obney/orc/evaluation/docs_examples_test.clj`.
 
-#### Defining Judges
+#### `:judges` on every node
 
-Use `sheet/judges` parallel to `sheet/blackboard`:
-
-```clojure
-(sheet/workflow "lead-qualification"
-  (sheet/blackboard
-    {:lead-data :string
-     :analysis [:map
-                [:score :double]
-                [:reasoning :string]
-                [:keyFactors [:vector :string]]]})
-
-  ;; Define evaluation criteria at workflow level
-  (sheet/judges
-    {:analysis-completeness
-     {:type :completeness
-      :criteria "Must include: score (0.0-1.0), reasoning (2+ sentences), and at least 3 key factors"
-      :weight 0.35}
-
-     :analysis-grounding
-     {:type :grounding
-      :criteria "All key factors must cite specific data from lead-data. Score must be justified by stated reasoning."
-      :weight 0.35}
-
-     :analysis-reasoning
-     {:type :reasoning
-      :criteria "Reasoning must connect lead characteristics to scoring decision. Logic must be clear and non-contradictory."
-      :weight 0.30}})
-
-  (sheet/llm "analyze-lead"
-    :model "google/gemini-2.5-flash"
-    :instruction "Analyze this lead for sales qualification..."
-    :reads [:lead-data]
-    :writes [:analysis]
-    :judges ["analysis-completeness" "analysis-grounding" "analysis-reasoning"]))
-```
-
-#### Judge Types
-
-**Grounding (35% default weight)**
-
-Detects hallucinations by checking if claims are supported by input context.
-
-| Score | Meaning |
-|-------|---------|
-| 1.0 | Every claim traceable, no hallucinations |
-| 0.8 | Almost all claims grounded, minor extrapolation |
-| 0.6 | Some claims ungrounded but no serious hallucinations |
-| 0.4 | Multiple ungrounded claims |
-| 0.2 | Majority of claims not supported by context |
+Every node constructor accepts `:judges`, a vector of declared judge names: `llm`, `llm-decision`, `code`, `tool`, `repl-researcher`, `condition`, `llm-condition`, `sequence`, `fallback`, `parallel`, `map-each` and `delegate`. A judge on a composite or delegate grades its forwarded outputs, and a judged composite makes its tree run durably. The judge names a workflow declares are strings once stored, so `{:grounded ...}` is attached as `:judges ["grounded"]`.
 
 ```clojure
-{:type :grounding
- :criteria "All claims about budget must trace to explicit budget fields.
-            Do not infer company size from name alone.
-            Timeline claims must reference stated deadlines."}
+;; docs-example: built-in-judge
+(def triage
+  (sheet/workflow "docs-ticket-triage"
+    (sheet/blackboard {:ticket-message :string :category :string})
+    (sheet/judges {:grounded {:type :grounding
+                              :purposes #{:monitoring :learning}}})
+    (sheet/llm "classify"
+      :instruction "Classify the ticket into one category."
+      :reads [:ticket-message]
+      :writes [:category]
+      :judges ["grounded"])))
+
+(defn run-triage [ctx]
+  (let [sheet-id (sheet/build-workflow! ctx triage)]
+    (sheet/execute ctx sheet-id {:ticket-message "URGENT: billing error on my account."})
+    sheet-id))
+
+(defn scored-assessments [ctx sheet-id]
+  (evaluation/get-assessments ctx {:sheet-id sheet-id :status :scored}))
 ```
 
-**Instruction Following (25% default weight)**
+#### Judge config fields
 
-Evaluates whether the LLM followed its given instruction.
+| Field | Meaning |
+|---|---|
+| `:type` | `:grounding`, `:instruction-following`, `:reasoning`, `:completeness`, or `:custom` |
+| `:sheet-id` | for `:custom`: the id of the workflow that grades |
+| `:rubric` | `{:criterion :stance :bands {1 "..." 2 "..."} :feedback :required\|:none}`. Absent, a built-in judge uses its type's default rubric |
+| `:criteria` | on a built-in judge without a `:rubric`: replaces the default criterion |
+| `:purposes` | a non-empty subset of `#{:monitoring :learning}`. Default: both, or only `:monitoring` when the rubric's feedback is `:none`. A learning judge must require feedback |
+| `:model` | a model id or a registered provider name. Absent, the judge runs on the runtime provider |
+| `:timeout-ms` | a positive integer; default 60000 |
+| `:weight` | the judge's relative weight in the composite of a node's learning judges |
+| `:alert` | `{:below :window :min-coverage}`: opt-in performance alert |
 
-| Score | Meaning |
-|-------|---------|
-| 1.0 | All requirements met, format correct |
-| 0.8 | Most requirements met, minor format issues |
-| 0.6 | Core requirements met, some missed |
-| 0.4 | Several requirements missed |
-| 0.2 | Instruction largely ignored |
+A declaration with an invalid rubric, purposes or alert is rejected. Rebuilding a workflow whose judge definition changed revises the judge (its revision number goes up). A judge's `:provider` field is ignored.
+
+#### Rubric and score-only judges
 
 ```clojure
-{:type :instruction-following
- :criteria "Response must be valid JSON.
-            All requested fields must be present.
-            Score must be numeric, not text."}
+;; docs-example: monitoring-judge
+(def category-rubric
+  {:criterion "Is the category the one a support agent would choose?"
+   :stance "Be strict: a plausible but wrong category is a failure."
+   :bands {1 "Wrong category."
+           2 "Defensible, but not the best category."
+           3 "The category a support agent would choose."}
+   :feedback :none})
+
+(def monitored-triage
+  (sheet/workflow "docs-monitored-triage"
+    (sheet/blackboard {:ticket-message :string :category :string})
+    (sheet/judges {:category-check {:type :instruction-following
+                                    :rubric category-rubric
+                                    :purposes #{:monitoring}}})
+    (sheet/llm "classify"
+      :instruction "Classify the ticket into one category."
+      :reads [:ticket-message]
+      :writes [:category]
+      :judges ["category-check"])))
 ```
 
-**Reasoning Quality (20% default weight)**
+The model chooses a band; the score is `(band - lowest) / (highest - lowest)`.
 
-Evaluates coherence and logical flow of reasoning.
+#### Custom judge type
 
-| Score | Meaning |
-|-------|---------|
-| 1.0 | Clear logical flow, well-structured argument |
-| 0.8 | Sound reasoning with minor gaps |
-| 0.6 | Generally logical but some unclear steps |
-| 0.4 | Weak reasoning, logical gaps |
-| 0.2 | Incoherent or contradictory reasoning |
+A `:custom` judge is a workflow. It reads `:host-inputs`, `:host-outputs`, `:host-instruction` (and `:rubric`, `:original-task`, and the opt-in `:host-family` and `:child-assessments`) from its declared blackboard keys, and writes a `:band` with a rubric or a `:score` without one:
 
 ```clojure
-{:type :reasoning
- :criteria "Each conclusion must cite supporting evidence.
-            Conflicting factors must be addressed.
-            Final score must follow from stated reasoning."}
+;; docs-example: custom-judge
+(defn label-judge
+  "Grades the assessed node's `category` output by its length."
+  [{:keys [inputs]}]
+  (let [category (str (get-in inputs [:host-outputs :category]))]
+    (if (<= (count category) 12)
+      {:band 3 :feedback "A short label, as asked."}
+      {:band 1 :feedback "The category is a sentence, not a label."})))
+
+(def label-judge-workflow
+  (sheet/workflow "docs-label-judge"
+    (sheet/blackboard
+     {:host-inputs [:map-of :keyword [:any {:description "Values the assessed node read"}]]
+      :host-outputs [:map-of :keyword [:any {:description "Values the assessed node wrote"}]]
+      :host-instruction [:string {:description "The assessed node's instruction"}]
+      :rubric [:map [:bands [:map-of :int :string]]
+               [:criterion {:optional true} :string]
+               [:stance {:optional true} :string]]
+      :band [:int {:description "The band chosen from the rubric"}]
+      :feedback [:string {:description "Why this band"}]})
+    (sheet/code "check"
+      :fn "ai.obney.orc.evaluation.docs-examples-test/label-judge"
+      :reads [:host-inputs :host-outputs :host-instruction :rubric]
+      :writes [:band :feedback])))
+
+(def label-rubric
+  {:criterion "The category is a short label."
+   :stance "Be strict."
+   :bands {1 "Not a label." 2 "A long label." 3 "A short label."}
+   :feedback :required})
+
+(defn label-judged-workflow [judge-sheet-id]
+  (sheet/workflow "docs-label-judged"
+    (sheet/blackboard {:ticket-message :string :category :string})
+    (sheet/judges {:label {:type :custom
+                           :sheet-id judge-sheet-id
+                           :rubric label-rubric}})
+    (sheet/code "classify"
+      :fn "ai.obney.orc.evaluation.docs-examples-test/classify"
+      :reads [:ticket-message]
+      :writes [:category]
+      :judges ["label"])))
 ```
 
-**Completeness (20% default weight)**
+#### Judges run after the node, durably
 
-Evaluates whether all aspects of the task were addressed.
-
-| Score | Meaning |
-|-------|---------|
-| 1.0 | All aspects thoroughly covered |
-| 0.8 | Most aspects covered, minor omissions |
-| 0.6 | Core aspects covered, some gaps |
-| 0.4 | Multiple aspects missing |
-| 0.2 | Majority of required aspects missing |
-
-```clojure
-{:type :completeness
- :criteria "Must address: company profile, pain points, budget signals,
-            decision makers, urgency indicators.
-            Each aspect needs at least one specific data point."}
-```
-
-#### Sharing Judges Across Nodes
-
-Multiple nodes can reference the same judge definition:
-
-```clojure
-(sheet/workflow "multi-step-analysis"
-  (sheet/judges
-    {:common-grounding
-     {:type :grounding
-      :criteria "All claims must cite specific input data"}})
-
-  (sheet/sequence "main"
-    (sheet/llm "step-1"
-      :reads [:input-1]
-      :writes [:output-1]
-      :judges ["common-grounding"])
-    (sheet/llm "step-2"
-      :reads [:output-1]
-      :writes [:output-2]
-      :judges ["common-grounding"])))
-```
-
-#### Custom Judge Type
-
-Reference a custom evaluation sheet for domain-specific validation:
-
-```clojure
-{:type :custom
- :sheet-id #uuid "abc123..."  ;; ID of custom judge workflow
- :weight 0.25}
-```
-
-#### Evaluation is Retrospective
-
-Judges are evaluated **after** execution, not during. This keeps production latency low while enabling comprehensive batch evaluation:
-
-```clojure
-;; After workflow executions...
-(eval/evaluate-node-traces event-store
-  {:sheet-id sheet-id
-   :node-id "analyze-lead"
-   :limit 50})
-;; => Evaluates historical traces using defined judge criteria
-```
-
-For inline validation during execution, use `condition` or `llm-condition` nodes instead.
+A judge does not change how the tree runs. When the node completes, an assessment is requested durably and the judge runs afterwards, as a workflow. It is read with `evaluation/get-assessments`; every judgment ends scored, failed or ungradable. Performance per node version is available from `evaluation/get-node-performance`. For inline validation during execution, use `condition` or `llm-condition` nodes instead.
 
 ---
 
