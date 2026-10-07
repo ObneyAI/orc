@@ -105,6 +105,11 @@
        "field. The field set is fixed by the workflow's typed blackboard, not chosen by "
        "the producer. Judge the values, not the object shape."))
 
+(def ^:private original-task-description
+  (str "The original task of the whole run: the inputs the run was started with. "
+       "Context only, separate from the assessed node's own instruction; it shows "
+       "what the run as a whole was asked to do."))
+
 (def ^:private host-iterations-description
   "Bounded durable evidence for the research attempts that produced the outcome.")
 
@@ -135,6 +140,7 @@
   (cond-> {:host-instruction [:string {:description host-instruction-description}]
            :host-inputs (host-values host-inputs-description)
            :host-outputs (host-values host-outputs-description)
+           :original-task (host-values original-task-description)
            :rubric rubric-schema
            :band (band-schema)}
     iterations? (assoc :host-iterations [:string {:description host-iterations-description}])
@@ -196,6 +202,8 @@
           "`host-outputs` (the values the producer wrote), and `host-inputs` (the "
           "context and material the producer had). Evaluate the host outputs against "
           "the host instruction, and against the host inputs where relevant."))
+   " `original-task` is the task the whole run was started with: context only, "
+   "separate from the host instruction."
    " Judge the values, not the object shape."
    (when iterations?
      (str " You are also given `host-iterations`, a bounded durable record of the "
@@ -240,7 +248,7 @@
   [judge-type form {:keys [model iterations?]}]
   {:pre [(contains? builtin-types judge-type) (#{:feedback :score-only} form)]}
   (let [model (when (non-blank-string? model) model)
-        reads (cond-> [:host-instruction :host-inputs :host-outputs :rubric]
+        reads (cond-> [:host-instruction :host-inputs :host-outputs :original-task :rubric]
                 iterations? (conj :host-iterations))
         node-name "grade"
         wf-name (workflow-name judge-type form iterations? model)]
