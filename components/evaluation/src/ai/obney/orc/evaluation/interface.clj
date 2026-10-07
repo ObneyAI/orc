@@ -34,6 +34,7 @@
             [ai.obney.orc.evaluation.core.sheets :as sheets]
             ;; Gap-1: per-event evaluator runtime + judge-scores read-model
             [ai.obney.orc.evaluation.core.judge-runtime :as judge-runtime]
+            [ai.obney.orc.evaluation.core.assessments :as assessments]
             ;; Load the score-recording command handlers so they register
             ;; in the global command registry (the judge runtime dispatches
             ;; them via cp/process-command from its background future).
@@ -141,6 +142,14 @@
    :feedback :dimensions :emitted-at. Consolidator (Gap-3) consumes this
    read-model to enrich its LLM reflection input."
   judge-runtime/get-judge-scores)
+
+(def get-assessments
+  "S7: the tenant's assessments, oldest request first, optionally narrowed by
+   `{:sheet-id :node-id :tick-id :judge-name :status}`. An assessment is the
+   durable unit of judging: identified by the completion it assesses, the judge
+   and the judge's revision, and ending :scored, :failed or :ungradable (:pending
+   until then). See ADR 0008."
+  assessments/get-assessments)
 
 (def get-effective-judges-for-node
   "Gap-5: return the effective judge list for a node — a vec of

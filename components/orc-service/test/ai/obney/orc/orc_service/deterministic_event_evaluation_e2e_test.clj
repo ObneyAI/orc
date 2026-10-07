@@ -187,19 +187,23 @@
                  replayed-trace))
           (is (= "projected" (get-in result [:outputs :output]))))))))
 
-(deftest det-e2e-075-judge-opt-in-disabled
-  (testing "an attached deterministic judge emits no score while evaluation is disabled"
+(deftest det-e2e-075-attached-judge-assesses-with-evaluation-disabled
+  ;; S7 (ADR 0008, AttachmentIsMonitoring): attaching a judge is what enables it.
+  ;; This test used to assert the opposite - that an attached judge stayed silent
+  ;; while the Living Description flag was off - which is the defect J01 records.
+  ;; The flag now gates only the opt-in DEFAULT judges.
+  (testing "an attached deterministic judge scores its node while Living Description evaluation is disabled"
     (h/with-async-test-context [ctx]
       (is (false? (ontology/get-living-description-enabled? ctx)))
       (let [sheet-id (structural-host! ctx "det-e2e-075-disabled"
                                        {:structure {:type :heuristic-structural}}
                                        ["structure"])
-            result (sheet/execute ctx sheet-id {})]
+            result (sheet/execute ctx sheet-id {})
+            scores (wait-events ctx :judge/score-emitted (:trace-id result) 1)]
         (is (= :success (:status result)))
-        (is (h/settle-until! #(h/trace-stored? ctx (:trace-id result))))
-        (Thread/sleep 250)
-        (is (empty? (filter #(= (:trace-id result) (:tick-id %))
-                            (events-of-type ctx :judge/score-emitted))))))))
+        (is (= 1 (count scores))
+            "the attachment alone enables the judge")
+        (is (= "structure" (:judge-name (first scores))))))))
 
 (deftest det-e2e-076-deterministic-structural-judge
   (testing "known tree shape emits the exact heuristic score, dimensions, and projected result"

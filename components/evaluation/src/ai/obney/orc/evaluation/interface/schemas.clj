@@ -17,6 +17,15 @@
    [:score :double]
    [:feedback :string]])
 
+(def AssessmentDimension
+  "A dimension of a scored assessment. Feedback is optional: a score-only rubric
+   (feedback :none) has none, and none is ever invented."
+  [:map
+   [:name :string]
+   [:weight :double]
+   [:score :double]
+   [:feedback {:optional true} :string]])
+
 ;; =============================================================================
 ;; Events
 ;; =============================================================================
@@ -39,7 +48,63 @@
     [:feedback :string]
     [:dimensions [:vector DimensionScore]]
     [:model-provenance {:optional true} [:maybe :map]]
-    [:emitted-at :string]]
+    [:emitted-at :string]
+    ;; S7 (HistoryIsAdditive): the assessment this score records, the rubric
+    ;; band chosen, and the judge revision that graded. Absent on every record
+    ;; written before assessments existed.
+    [:assessment-id {:optional true} :uuid]
+    [:band {:optional true} :int]
+    [:revision-number {:optional true} :int]]
+
+   ;; S7: a judgment is a durable ASSESSMENT. It is REQUESTED (durably, before any
+   ;; judging) by the completion it assesses, then ends in exactly one of
+   ;; scored / failed / ungradable. Identity = (subject completion, judge, judge
+   ;; revision); the id is a name-based UUID of that triple, so replay yields the
+   ;; same id.
+   :evaluation/assessment-requested
+   [:map
+    [:assessment-id :uuid]
+    [:sheet-id :uuid]
+    [:node-id :uuid]
+    [:tick-id :uuid]
+    [:subject-completion-id :uuid]
+    [:exec-context {:optional true} :map]
+    [:judge-name :string]
+    [:judge-revision-number :int]
+    [:judge-type :keyword]
+    [:purposes [:set :keyword]]
+    [:requested-at :string]
+    ;; Room for later slices (node version pinning, composite dependencies).
+    [:node-version {:optional true} :int]
+    [:depends-on {:optional true} [:vector :uuid]]]
+
+   :evaluation/assessment-scored
+   [:map
+    [:assessment-id :uuid]
+    [:band {:optional true} :int]
+    [:score [:and number? [:>= 0.0] [:<= 1.0]]]
+    [:feedback {:optional true} :string]
+    [:dimensions [:vector AssessmentDimension]]
+    [:band-distribution {:optional true} :map]
+    [:model-provenance {:optional true} [:vector :map]]
+    [:judge-tick-id {:optional true} :uuid]]
+
+   :evaluation/assessment-failed
+   [:map
+    [:assessment-id :uuid]
+    [:reason :keyword]
+    [:message :string]
+    [:model-provenance {:optional true} [:vector :map]]
+    [:judge-tick-id {:optional true} :uuid]]
+
+   :evaluation/assessment-ungradable
+   [:map
+    [:assessment-id :uuid]
+    [:reason :keyword]
+    [:message :string]
+    [:band-distribution {:optional true} :map]
+    [:model-provenance {:optional true} [:vector :map]]
+    [:judge-tick-id {:optional true} :uuid]]
 
    ;; Gap-8: weighted composite score across all judges that fired
    ;; for a single (sheet, node, tick) tuple. Emitted in the same
@@ -81,6 +146,26 @@
     [:dimensions [:vector DimensionScore]]
     [:model-provenance {:optional true} [:maybe :map]]
     [:emitted-at {:optional true} :string]]
+
+   ;; S7: the only writer of an assessment's terminal event (and, for a scored
+   ;; outcome of a learning judge with feedback, of the legacy score event).
+   ;; Fields mirror the judge-run OUTCOME.
+   :evaluation/record-assessment-outcome
+   [:map
+    [:assessment-id :uuid]
+    [:status [:enum :scored :failed :ungradable]]
+    [:band {:optional true} :int]
+    [:score {:optional true} [:and number? [:>= 0.0] [:<= 1.0]]]
+    [:feedback {:optional true} :string]
+    [:dimensions {:optional true} [:vector AssessmentDimension]]
+    [:band-distribution {:optional true} :map]
+    [:reason {:optional true} :keyword]
+    [:message {:optional true} :string]
+    [:model-provenance {:optional true} [:vector :map]]
+    [:judge-tick-id {:optional true} :uuid]
+    ;; The definition in force for the assessed revision; carried onto the
+    ;; legacy score event.
+    [:judge-config {:optional true} :map]]
 
    :evaluation/record-composite-score
    [:map

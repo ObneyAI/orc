@@ -1,27 +1,34 @@
 (ns ai.obney.orc.evaluation.core.judge-runtime
-  "Gap-1 — per-event evaluator runtime.
+  "Per-event evaluator runtime: judges as durable assessments (ADR 0008).
 
-   Subscribes to :sheet/node-execution-completed events. For each event,
-   looks up the host node's attached :judges and executes them, emitting
-   one :judge/score-emitted event per successful judge invocation.
+   Two processors:
 
-   Gated by the system-level Living Description opt-in flag
-   (`:ontology/set-living-description-enabled`). When the flag is off
-   (default), the processor returns immediately without any work — no
-   reads, no dispatches, no events. This preserves the zero-cost
-   guarantee for consumers who haven't opted in.
+   1. `on-node-execution-completed` subscribes to :sheet/node-execution-completed.
+      For each judge effective on the completed node it REQUESTS an assessment
+      (`:evaluation/assessment-requested`, identified by the completion, the judge
+      and the judge's revision) on the pure path with a CAS, so replaying a
+      completion requests nothing new. It judges nothing.
+   2. `on-assessment-requested` subscribes to those requests. For a request with
+      no outcome yet it starts one background future that runs the judge and
+      records the outcome (scored, failed or ungradable) through
+      `:evaluation/record-assessment-outcome`. A scored outcome of a LEARNING
+      judge that carries feedback also becomes the legacy
+      `:judge/score-emitted` record the learning loops read.
 
-   Per the unification PRD, every per-event evaluator (LLM-judges,
-   heuristic-structural, future custom judges) emits the same
-   `:judge/score-emitted` shape. The consolidator (under Gap-3) will
-   consume these events alongside raw execution evidence to update
-   Living Description bodies."
+   Attaching a judge is what enables it: an explicitly attached judge assesses
+   with or without the Living Description flag. The flag (set with
+   `:ontology/set-living-description-enabled`) gates only the five DEFAULT
+   judges, which apply to a :repl-researcher with no explicit attachment.
+
+   `:rlm/tree-generated` (Gap-7b) still grades the campaign's last tree through
+   the earlier direct path (`run-judges-and-dispatch!`)."
   (:require [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.interface :as orc]
+            [ai.obney.orc.evaluation.core.assessments :as assessments]
             [ai.obney.orc.evaluation.core.judge-run :as judge-run]
             [ai.obney.orc.evaluation.core.heuristic-structural :as heuristic-structural]
             [com.brunobonacci.mulog :as u]))
@@ -37,10 +44,11 @@
    `requiring-resolve` so the evaluation component does NOT hard-depend on
    ontology: judges run as a standalone capability (Layer 1) with no DJL,
    no ColBERT, no Python on the classpath. When ontology is not present,
-   the flag is simply false — judges still fire on terminal execution and
-   emit `:judge/score-emitted`; only the self-improving write-side (which
-   needs ontology anyway) stays dormant. When ontology IS present this is
-   identical to calling `ontology/get-living-description-enabled?`."
+   the flag is simply false: an EXPLICITLY attached judge still assesses (the
+   flag does not gate attachments), while the opt-in default judges do not
+   apply and the self-improving write-side (which needs ontology anyway)
+   stays dormant. When ontology IS present this is identical to calling
+   `ontology/get-living-description-enabled?`."
   [ctx]
   (boolean
    (when-let [f (try (requiring-resolve
@@ -577,7 +585,8 @@
    1. Node has explicit :judges field present (consumer called
       :sheet/set-node-judges, even with []): look up each judge name's
       config from the sheet's :judges read-model. Returns the union.
-   2. Else if node type is :repl-researcher AND opt-in flag is on:
+   2. Else if node type is :repl-researcher AND the Living Description opt-in
+      flag is on (the flag gates ONLY these defaults, never an attachment):
       return the default-judges set.
    3. Else: empty vector.
 
@@ -735,52 +744,272 @@
                                                      [:outputs :generated-tree-raw]))
              :writes-keys (vec (keys (or (:outputs trace-data) {})))))))
 
-(defn on-node-execution-completed
-  "Handler for :sheet/node-execution-completed. Gated on the Living
-   Description opt-in flag. When on, resolves the effective judge list
-   for the node (explicit attachment OR Gap-5 defaults for
-   :repl-researcher) and returns a non-blocking `:result/effect` that
-   spawns a background future to run the judges and dispatch the
-   score-recording commands.
+(defn- distinct-by-first
+  "Transducer: drop entries whose first element was already seen."
+  []
+  (fn [rf]
+    (let [seen (volatile! #{})]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc [k :as entry]]
+         (if (contains? @seen k)
+           acc
+           (do (vswap! seen conj k) (rf acc entry))))))))
 
-   The handler NEVER derefs a judge future and NEVER returns
-   `:result/events` — that was the blocking design that stalled grain's
-   coalesced poller under LLM latency. Resolution lives in
-   `get-effective-judges-for-node` — same flag gate applies inside the
-   resolver, so the outer check here is a short-circuit before any node
-   lookup."
+(defn- judge-revision-number
+  "The revision of the definition in force: the judges read model's, else 1 (the
+   built-in defaults are never declared, so they have a single definition)."
+  [judge-config]
+  (or (:revision-number judge-config) 1))
+
+(defn- judge-purposes [judge-config]
+  (if-let [purposes (not-empty (set (:purposes judge-config)))]
+    purposes
+    assessments/default-purposes))
+
+(defn- ->assessment-requested-event
+  "Pure builder of the `:evaluation/assessment-requested` event for `judge` (an
+   effective-judges entry) assessing the completion `completion`."
+  [completion assessment-id {:keys [judge-name judge-config]}]
+  (let [subject (:event/id completion)
+        sheet-id (:sheet-id completion)
+        node-id (:node-id completion)
+        tick-id (:tick-id completion)
+        ;; Which execution of the node this is (a map-each iteration): the
+        ;; completion carries it as :exec-context, or in its :inputs.
+        exec-context (second (orc/value-log-execution-key completion))]
+    (es/->event
+     {:type :evaluation/assessment-requested
+      :tags #{[:sheet sheet-id] [:node node-id] [:tick tick-id]
+              [:assessment assessment-id] [:subject subject]}
+      :body (cond-> {:assessment-id assessment-id
+                     :sheet-id sheet-id
+                     :node-id node-id
+                     :tick-id tick-id
+                     :subject-completion-id subject
+                     :judge-name judge-name
+                     :judge-revision-number (judge-revision-number judge-config)
+                     :judge-type (:type judge-config)
+                     :purposes (judge-purposes judge-config)
+                     :requested-at (str (time/now))}
+              (seq exec-context) (assoc :exec-context exec-context))})))
+
+(defn- requested-assessment-ids
+  "The ids of the assessments already requested for the completion `subject`."
+  [{:keys [event-store tenant-id]} subject]
+  (into #{}
+        (map :assessment-id)
+        (es/read event-store {:types #{assessments/request-event-type}
+                              :tags #{[:subject subject]}
+                              :tenant-id tenant-id})))
+
+(defn on-node-execution-completed
+  "Handler for :sheet/node-execution-completed: REQUEST the assessments, judge
+   nothing.
+
+   Resolves the node's effective judges (`get-effective-judges-for-node`: an
+   explicit attachment always assesses; the five defaults only for a
+   :repl-researcher with the Living Description flag on) and returns one
+   `:evaluation/assessment-requested` event per judge as `:result/events`,
+   fenced by a `:result/cas` that rejects the append when any of those
+   assessments has been requested already - so delivering the same completion
+   again requests nothing new.
+
+   The request is recorded on the PURE path (events + handler CAS): no effect and
+   no checkpoint watermark can skip it. Judging itself is the job of
+   `on-assessment-requested`, which only ever starts from a durable request.
+   Returns nil when there is nothing (new) to request."
   [{:keys [event] :as context}]
-  (when (living-description-enabled? context)
-    (let [sheet-id (:sheet-id event)
-          node-id (:node-id event)
-          ;; Gap-7: pass the event's :completion-kind into the resolver
-          ;; so it can filter judges whose :applies-to-completion-kinds
-          ;; doesn't match. Backwards-compat: events without the field
-          ;; pass nil → resolver returns all candidates.
-          completion-kind (:completion-kind event)
-          effective (get-effective-judges-for-node context sheet-id node-id completion-kind)]
-      (when (seq effective)
-        ;; Snapshot trace-data on the handler thread (cheap: reads the
-        ;; event + at most one event-store lookup), but run the slow
-        ;; judges + command dispatch in the effect's background future so
-        ;; the pubsub thread returns immediately. NO deref here.
-        (let [trace-data (build-trace-data context event)
-              source {:sheet-id sheet-id
-                      :node-id node-id
-                      :tick-id (:tick-id event)}]
-          {:result/checkpoint :after
-           :result/effect
-           (fn []
-             (future
-               (try
-                 (run-judges-and-dispatch! context source effective trace-data)
-                 (catch Throwable t
-                   (u/log ::judge-runtime-future-failed
-                          :sheet-id sheet-id
-                          :node-id node-id
-                          :tick-id (:tick-id event)
-                          :error (.getMessage t)
-                          :exception-class (.getName (class t)))))))})))))
+  (when-let [subject (:event/id event)]
+    (let [effective (get-effective-judges-for-node context (:sheet-id event) (:node-id event)
+                                                   (:completion-kind event))
+          candidates (into []
+                           (comp (map (fn [judge]
+                                        [(assessments/assessment-id
+                                          subject (:judge-name judge)
+                                          (judge-revision-number (:judge-config judge)))
+                                         judge]))
+                                 (distinct-by-first))
+                           effective)
+          already (requested-assessment-ids context subject)
+          fresh (into [] (remove (comp already first)) candidates)
+          fresh-ids (into #{} (map first) fresh)]
+      (when (seq fresh)
+        {:result/events (mapv (fn [[id judge]] (->assessment-requested-event event id judge)) fresh)
+         :result/cas {:types #{assessments/request-event-type}
+                      :tags #{[:subject subject]}
+                      :predicate-fn (fn [existing]
+                                      (not-any? #(contains? fresh-ids (:assessment-id %))
+                                                (into [] existing)))}}))))
+
+;; =============================================================================
+;; Judging a requested assessment
+;; =============================================================================
+
+(defn- assessment-events
+  "Every lifecycle event (requested, terminal) matching `tags` for the tenant."
+  [{:keys [event-store tenant-id]} tags]
+  (into [] (es/read event-store {:types assessments/lifecycle-event-types
+                                 :tags tags
+                                 :tenant-id tenant-id})))
+
+(defn- terminal-event? [event]
+  (contains? assessments/terminal-event-types (:event/type event)))
+
+(defn- assessment-settled?
+  "True when the assessment already has its terminal outcome."
+  [context assessment-id]
+  (boolean (some terminal-event? (assessment-events context #{[:assessment assessment-id]}))))
+
+(defn- subject-completion
+  "The durable `:sheet/node-execution-completed` event a request assesses."
+  [{:keys [event-store tenant-id]} {:keys [tick-id subject-completion-id]}]
+  (first (filter #(= subject-completion-id (:event/id %))
+                 (into [] (es/read event-store {:types #{:sheet/node-execution-completed}
+                                                :tags #{[:tick tick-id]}
+                                                :tenant-id tenant-id})))))
+
+(defn- resolve-judge-config
+  "The definition in force for the revision a request names: the judges read
+   model's current entry when it is that revision, else the entry rebuilt from
+   that revision's recorded config. A built-in default (never declared) has its
+   one definition. nil when the judge or revision is unknown."
+  [context {:keys [sheet-id judge-name judge-revision-number purposes]}]
+  (if-let [declared (get (orc/get-judges context sheet-id) judge-name)]
+    (if (= judge-revision-number (:revision-number declared))
+      declared
+      (when-let [revision (some #(when (= judge-revision-number (:revision-number %)) %)
+                                (:revisions declared))]
+        (let [config (:judge-config revision)]
+          (merge (cond-> config
+                   (:sheet-id config) (assoc :eval-sheet-id (:sheet-id config)))
+                 {:sheet-id sheet-id
+                  :judge-name judge-name
+                  :revision-number judge-revision-number
+                  :purposes purposes}))))
+    (some #(when (= judge-name (:judge-name %)) (:judge-config %)) default-judges)))
+
+(defn- failed-outcome [reason message]
+  {:status :failed :reason reason :message message})
+
+(defn- heuristic-outcome
+  "The deterministic structural judge as an outcome: it grades the tree the node
+   emitted, and a node that emitted none is ungradable - never scored."
+  [trace-data]
+  (if-let [result (invoke-heuristic-structural trace-data)]
+    (merge {:status :scored} (select-keys result [:score :feedback :dimensions]))
+    {:status :ungradable
+     :reason :no-tree-emitted
+     :message (str "The assessed node wrote no :generated-tree-raw, so there is no "
+                   "tree structure to grade.")}))
+
+(defn- assess
+  "Run the judge of `request` against its subject completion and return
+   `{:outcome ... :judge-config ...}`. Every way this can fail is an outcome with
+   its reason; nothing here throws."
+  [context request]
+  (let [judge-config (resolve-judge-config context request)
+        completion (subject-completion context request)]
+    (cond
+      (nil? completion)
+      {:outcome (failed-outcome :subject-completion-missing
+                                (str "The completion " (:subject-completion-id request)
+                                     " this assessment judges is not in the event store."))}
+
+      (nil? judge-config)
+      {:outcome (failed-outcome :judge-definition-missing
+                                (str "Judge " (pr-str (:judge-name request)) " revision "
+                                     (:judge-revision-number request)
+                                     " is not declared on the sheet."))}
+
+      :else
+      {:judge-config judge-config
+       :outcome
+       (try
+         (let [trace-data (build-trace-data context completion)]
+           (if (= :heuristic-structural (:type judge-config))
+             (heuristic-outcome trace-data)
+             (judge-run/run-judge context judge-config trace-data)))
+         (catch Throwable t
+           (u/log ::assessment-judging-threw
+                  :assessment-id (:assessment-id request)
+                  :error (ex-message t)
+                  :exception-class (.getName (class t)))
+           (failed-outcome :judge-execution-failed
+                           (or (ex-message t) (.getName (class t))))))})))
+
+(defn- ->record-assessment-outcome-command
+  [request {:keys [outcome judge-config]}]
+  (merge {:command/id (random-uuid)
+          :command/timestamp (time/now)
+          :command/name :evaluation/record-assessment-outcome
+          :assessment-id (:assessment-id request)}
+         (into {} (remove (comp nil? val))
+               (assoc (select-keys outcome [:status :band :score :feedback :dimensions
+                                            :band-distribution :reason :message
+                                            :model-provenance :judge-tick-id])
+                      :judge-config judge-config))))
+
+(defn- record-composite-when-settled!
+  "Gap-8, computed from ASSESSMENTS: once every assessment requested for the
+   completion has its outcome, the weighted composite of the scored ones (two or
+   more) is recorded for its (sheet, node, tick). Idempotent, like before."
+  [context request]
+  (let [events (assessment-events context #{[:subject (:subject-completion-id request)]})
+        requests (filterv #(= assessments/request-event-type (:event/type %)) events)
+        terminal-by-id (into {} (comp (filter terminal-event?) (map (juxt :assessment-id identity))) events)]
+    (when (every? (comp terminal-by-id :assessment-id) requests)
+      (let [results (into []
+                          (keep (fn [r]
+                                  (let [t (terminal-by-id (:assessment-id r))]
+                                    (when (= :evaluation/assessment-scored (:event/type t))
+                                      {:judge-name (:judge-name r)
+                                       :judge-config (resolve-judge-config context r)
+                                       :result {:score (:score t)}}))))
+                          requests)]
+        (when-let [command (->record-composite-score-command
+                            {:sheet-id (:sheet-id request)
+                             :node-id (:node-id request)
+                             :tick-id (:tick-id request)}
+                            results)]
+          (cp/process-command (assoc context :command command)))))))
+
+(defn- judge-assessment!
+  "Judge one requested assessment and record its outcome. Runs on the effect's
+   background future, so no handler thread ever waits on a judge."
+  [context request]
+  (let [result (assess context request)
+        recorded (cp/process-command
+                  (assoc context :command (->record-assessment-outcome-command request result)))]
+    (when (:cognitect.anomalies/category recorded)
+      (u/log ::assessment-outcome-not-recorded
+             :assessment-id (:assessment-id request)
+             :anomaly recorded))
+    (record-composite-when-settled! context request)))
+
+(defn on-assessment-requested
+  "Handler for :evaluation/assessment-requested: judge it.
+
+   A request that already has its terminal outcome (a replay) does nothing.
+   Otherwise the handler returns a non-blocking `:result/effect` that starts one
+   background future for the judgment; the future runs the judge and records the
+   outcome through `:evaluation/record-assessment-outcome`. The request is
+   durable before this ever runs, so an effect the processor skips leaves the
+   assessment visibly PENDING - never silently gone."
+  [{:keys [event] :as context}]
+  (when-not (assessment-settled? context (:assessment-id event))
+    {:result/checkpoint :after
+     :result/effect
+     (fn []
+       (future
+         (try
+           (judge-assessment! context event)
+           (catch Throwable t
+             (u/log ::assessment-judging-future-failed
+                    :assessment-id (:assessment-id event)
+                    :error (ex-message t)
+                    :exception-class (.getName (class t)))))))}))
 
 ;; =============================================================================
 ;; Gap-7b — tree-shape grading on the campaign's :rlm/tree-generated event
@@ -885,10 +1114,13 @@
 ;; Read-model — judge scores history per (sheet, tick, node)
 ;; =============================================================================
 ;;
-;; Accumulates :judge/score-emitted events into a map keyed by
-;; [sheet-id tick-id node-id]; value is the vector of event bodies in
-;; emission order. Consolidator (under Gap-3) will read these by
-;; sheet+tick to enrich its LLM reflection input.
+;; Accumulates :judge/score-emitted events (the learning loops' record: a
+;; scored assessment of a LEARNING judge that carries feedback) into a map keyed
+;; by [sheet-id tick-id node-id]; value is the vector of entries in emission
+;; order. One tick can hold several entries per judge: distinct executions of a
+;; node (map-each iterations) are distinct assessments. Consolidator (under
+;; Gap-3) will read these by sheet+tick to enrich its LLM reflection input.
+;; For every assessment, scored or not, see `:evaluation/assessments`.
 
 (defmulti judge-scores*
   (fn [_state event] (:event/type event)))
@@ -900,7 +1132,10 @@
   (let [key [(:sheet-id event) (:tick-id event) (:node-id event)]
         entry (select-keys event [:sheet-id :tick-id :node-id
                                   :judge-name :judge-config
-                                  :score :feedback :dimensions :emitted-at])]
+                                  :score :feedback :dimensions :emitted-at
+                                  ;; J08: the judge's model call, which the
+                                  ;; record carries and the history dropped.
+                                  :model-provenance])]
     (update state key (fnil conj []) entry)))
 
 (defn judge-scores
@@ -913,9 +1148,12 @@
   [state event] (judge-scores* state event))
 
 (defn get-judge-scores
-  "Return the vector of judge result entries for the given
-   (sheet-id, node-id, tick-id) tuple, in emission order. Empty vector
-   if no judges fired for that tick."
+  "Return the vector of judge score entries (the learning loops' record) for the
+   given (sheet-id, node-id, tick-id) tuple, in emission order. Empty vector if
+   no learning judge scored for that tick. Entries carry the score, feedback,
+   dimensions and :model-provenance (absent for a judge that makes no model
+   call). The band, revision and assessment of a score are on its
+   `:judge/score-emitted` event and in `:evaluation/assessments`."
   [ctx sheet-id node-id tick-id]
   (or (get (rmp/project ctx :evaluation/judge-scores)
            [sheet-id tick-id node-id])
@@ -927,10 +1165,10 @@
 
 (defprocessor :evaluation on-node-execution-completed
   {:topics #{:sheet/node-execution-completed}}
-  "Gap-1: per-event evaluator runtime. Looks up attached judges on the
-   completing node and executes them. Gated on the Living Description
-   opt-in flag — no work happens unless a consumer has explicitly
-   enabled the loop."
+  "Per-event evaluator runtime. Resolves the judges effective on the completing
+   node (an explicit attachment always; the defaults only with the Living
+   Description flag on) and REQUESTS one assessment per judge. Judging is the
+   job of `on-assessment-requested`."
   [context]
   (on-node-execution-completed context))
 
@@ -947,3 +1185,10 @@
    where final outputs are available."
   [context]
   (on-rlm-tree-generated context))
+
+(defprocessor :evaluation on-assessment-requested
+  {:topics #{:evaluation/assessment-requested}}
+  "S7: judge a requested assessment and record its outcome (scored, failed or
+   ungradable). Starts from the durable request, never from a completion."
+  [context]
+  (on-assessment-requested context))

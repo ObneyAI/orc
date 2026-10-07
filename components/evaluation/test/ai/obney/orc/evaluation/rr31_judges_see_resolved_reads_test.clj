@@ -22,6 +22,7 @@
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.evaluation.interface]
             [ai.obney.orc.evaluation.core.judge-runtime :as jr]
+            [ai.obney.orc.evaluation.core.judge-run :as judge-run]
             [ai.obney.orc.evaluation.core.judges :as judges]
             [ai.obney.orc.evaluation.core.rubrics :as rubrics]
             [ai.obney.orc.ontology.interface]
@@ -71,11 +72,13 @@
             stub-predict (fn [_provider _module _inputs _options]
                            {:outputs {:category "billing"}
                             :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})
+            ;; S7: a judge is run from its durable assessment request through
+            ;; `judge-run/run-judge` (the one run path); the probe stands in there.
             capture (fn [_ctx _judge-config trace-data]
                       (swap! captured conj trace-data)
-                      {:score 0.5 :feedback "probe" :dimensions []})]
+                      {:status :scored :score 0.5 :feedback "probe" :dimensions []})]
         (with-redefs-fn {#'llm/predict stub-predict
-                         #'jr/invoke-judge capture}
+                         #'judge-run/run-judge capture}
           (fn []
             (let [result (sheet/execute ctx sheet-id
                                         {:ticket-message "URGENT: billing error on my account."}

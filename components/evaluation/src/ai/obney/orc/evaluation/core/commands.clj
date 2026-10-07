@@ -19,7 +19,9 @@
    the :evaluation/judge-scores read-model, and the quality-report all
    read these and must not change."
   (:require [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
-            [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]))
+            [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
+            [ai.obney.orc.evaluation.core.assessments :as assessments]
+            [cognitect.anomalies :as anom]))
 
 ;; =============================================================================
 ;; Auth
@@ -170,3 +172,114 @@
                 :composite-score composite-score
                 :contributing-judges contributing-judges
                 :emitted-at (or emitted-at (str (java.time.Instant/now)))}})]}))
+
+;; =============================================================================
+;; Assessment outcome
+;; =============================================================================
+
+(defn- assessment-history
+  "Every lifecycle event (requested, terminal) recorded for `assessment-id`."
+  [{:keys [event-store tenant-id]} assessment-id]
+  (into [] (es/read event-store {:types assessments/lifecycle-event-types
+                                 :tags #{[:assessment assessment-id]}
+                                 :tenant-id tenant-id})))
+
+(defn- open-assessment?
+  "True when `history` holds the request and no terminal outcome yet."
+  [history]
+  (and (some #(= assessments/request-event-type (:event/type %)) history)
+       (not-any? #(contains? assessments/terminal-event-types (:event/type %)) history)))
+
+(defn- outcome-error
+  "nil when the command body is a well-formed outcome, else a message. A scored
+   outcome has a score; a failed or ungradable one has its reason and message -
+   nothing is recorded without them."
+  [{:keys [status score reason message]}]
+  (case status
+    :scored (when-not (number? score) "a scored outcome needs a :score")
+    (:failed :ungradable) (when-not (and reason message)
+                            (str "a " (name status) " outcome needs a :reason and a :message"))
+    nil))
+
+(defn- terminal-event
+  [request-body {:keys [assessment-id status band score feedback dimensions band-distribution
+                        reason message model-provenance judge-tick-id]}]
+  (->event
+   {:type (assessments/status->terminal-event-type status)
+    :tags #{[:sheet (:sheet-id request-body)] [:node (:node-id request-body)]
+            [:tick (:tick-id request-body)] [:assessment assessment-id]
+            [:subject (:subject-completion-id request-body)]}
+    :body (cond-> {:assessment-id assessment-id}
+            (= :scored status) (assoc :score score :dimensions (vec dimensions))
+            (and (= :scored status) (some? band)) (assoc :band band)
+            (and (= :scored status) (some? feedback)) (assoc :feedback feedback)
+            (not= :scored status) (assoc :reason reason :message message)
+            (and (= :ungradable status) band-distribution) (assoc :band-distribution band-distribution)
+            (and (= :scored status) band-distribution) (assoc :band-distribution band-distribution)
+            (seq model-provenance) (assoc :model-provenance (vec model-provenance))
+            judge-tick-id (assoc :judge-tick-id judge-tick-id))}))
+
+(defn- legacy-score-event
+  "The `:judge/score-emitted` record of a scored outcome of a LEARNING judge that
+   has feedback - the one record the learning loops read. Carries the assessment
+   it records, so distinct executions of one node keep distinct scores."
+  [request-body {:keys [assessment-id band score feedback dimensions model-provenance judge-config]}]
+  (->event
+   {:type :judge/score-emitted
+    :tags #{[:sheet (:sheet-id request-body)] [:node (:node-id request-body)]
+            [:tick (:tick-id request-body)] [:assessment assessment-id]}
+    :body (cond-> {:sheet-id (:sheet-id request-body)
+                   :tick-id (:tick-id request-body)
+                   :node-id (:node-id request-body)
+                   :judge-name (:judge-name request-body)
+                   :judge-config (or judge-config {:type (:judge-type request-body)})
+                   :score score
+                   :feedback feedback
+                   :dimensions (vec dimensions)
+                   :emitted-at (str (java.time.Instant/now))
+                   :assessment-id assessment-id
+                   :revision-number (:judge-revision-number request-body)}
+            (some? band) (assoc :band band)
+            (seq model-provenance)
+            (assoc :model-provenance (select-keys (first model-provenance)
+                                                  [:provider :model :usage])))}))
+
+(defcommand :evaluation record-assessment-outcome
+  {:authorized? within-process?}
+  "Record the outcome of a requested assessment: exactly one terminal event
+   (scored, failed or ungradable), however many times, however concurrently, the
+   outcome is delivered. A scored outcome of a judge whose purposes include
+   :learning, and that carries feedback, ALSO records the legacy
+   `:judge/score-emitted` in the same append; a monitoring-only judge's, or a
+   score-only outcome, never does.
+
+   The append is fenced by a CAS on the assessment's own history (requested, no
+   terminal yet), so two writers that both read before either appends cannot
+   both record. A second outcome for the same assessment is a no-op."
+  [{:keys [command] :as ctx}]
+  (let [{:keys [assessment-id]} command
+        history (assessment-history ctx assessment-id)
+        request (first (filter #(= assessments/request-event-type (:event/type %)) history))]
+    (cond
+      (nil? request)
+      {::anom/category ::anom/not-found
+       ::anom/message (str "Assessment " assessment-id " was never requested")}
+
+      (outcome-error command)
+      {::anom/category ::anom/incorrect
+       ::anom/message (outcome-error command)}
+
+      (not (open-assessment? history))
+      {:command-result/events []}
+
+      :else
+      {:command-result/cas
+       {:types assessments/lifecycle-event-types
+        :tags #{[:assessment assessment-id]}
+        :predicate-fn (fn [existing] (open-assessment? (into [] existing)))}
+       :command-result/events
+       (cond-> [(terminal-event request command)]
+         (and (= :scored (:status command))
+              (contains? (:purposes request) :learning)
+              (some? (:feedback command)))
+         (conj (legacy-score-event request command)))})))
