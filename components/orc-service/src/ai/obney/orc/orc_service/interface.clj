@@ -93,6 +93,10 @@
 
 ;; Tick functions
 (def get-tick rm/get-tick)
+(def assessment-origin
+  "The durable assessment origin ({:assessment-id uuid}) of a tick, or nil when
+   the tick is not work done for an assessment. Inherited by every child run."
+  rm/assessment-origin)
 (def get-researcher-campaign rm/get-researcher-campaign)
 (def get-researcher-iteration-records rm/get-researcher-iteration-records)
 (def get-researcher-effect-claims rm/get-researcher-effect-claims)

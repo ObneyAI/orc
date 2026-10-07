@@ -4131,6 +4131,12 @@
                                            (:sheet-id inherited-budget-root)
                                            :llm-budget-root-tick-id
                                            (:tick-id inherited-budget-root)
+                                           ;; AssessmentWorkIsMarked: a delegate
+                                           ;; child of assessment work is itself
+                                           ;; assessment work.
+                                           :assessment-origin
+                                           (get-in parent-tick-ctx
+                                                   [:options :assessment-origin])
                                            :return-references? true)
                   child-started-after? (seq (into [] (es/read event-store
                                                              {:tenant-id (:tenant-id context)

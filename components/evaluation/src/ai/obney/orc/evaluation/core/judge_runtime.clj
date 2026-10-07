@@ -269,9 +269,9 @@
    judge produced no valid result; every failure is logged loudly with its
    reason - silent skipping is the failure mode the unification arc fought.
 
-   Recursion safeguard (Gap-4 RED#5): when the host event is itself produced by
-   a custom-judge sub-execution, the runtime increments :judge-depth in
-   context. If depth exceeds max-depth (default 1), no sub-execution happens."
+   Confinement is durable, not a depth counter: the judge's run is marked as
+   assessment work (see `judge-run/run-judge`), so nothing inside it is ever
+   auto-assessed."
   [ctx judge-config trace-data]
   (outcome->legacy :custom (judge-run/run-judge ctx judge-config trace-data)))
 
@@ -822,6 +822,7 @@
    Returns nil when there is nothing (new) to request."
   [{:keys [event] :as context}]
   (when-let [subject (:event/id event)]
+    (when-not (orc/assessment-origin context (:tick-id event))
     (let [effective (get-effective-judges-for-node context (:sheet-id event) (:node-id event)
                                                    (:completion-kind event))
           candidates (into []
@@ -841,7 +842,7 @@
                       :tags #{[:subject subject]}
                       :predicate-fn (fn [existing]
                                       (not-any? #(contains? fresh-ids (:assessment-id %))
-                                                (into [] existing)))}}))))
+                                                (into [] existing)))}})))))
 
 ;; =============================================================================
 ;; Judging a requested assessment
@@ -930,7 +931,10 @@
          (let [trace-data (build-trace-data context completion)]
            (if (= :heuristic-structural (:type judge-config))
              (heuristic-outcome trace-data)
-             (judge-run/run-judge context judge-config trace-data)))
+             ;; the assessment id rides in the evidence: the judge's run is
+             ;; durably marked with it (judge-run/run-judge)
+             (judge-run/run-judge context judge-config
+                                  (assoc trace-data :assessment-id (:assessment-id request)))))
          (catch Throwable t
            (u/log ::assessment-judging-threw
                   :assessment-id (:assessment-id request)
@@ -1061,7 +1065,10 @@
    async discipline as on-node-execution-completed. NO deref in the
    handler, NO :result/events."
   [{:keys [event] :as context}]
-  (when (living-description-enabled? context)
+  ;; AssessmentWorkIsMarked: a tree generated inside an assessment's run is
+  ;; never auto-assessed, like any other completion there.
+  (when (and (living-description-enabled? context)
+             (not (orc/assessment-origin context (:execution-id event))))
     (let [tick-id (:execution-id event)
           raw-dsl (:raw-dsl event)
           direct-sheet-id (:sheet-id event)

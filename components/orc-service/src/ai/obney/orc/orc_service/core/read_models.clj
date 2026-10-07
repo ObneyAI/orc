@@ -1142,6 +1142,14 @@
   (get (rmp/project ctx :sheet/tick-execution-contexts {:tags #{[:tick tick-id]}})
        tick-id))
 
+(defn assessment-origin
+  "The durable assessment origin (`{:assessment-id uuid}`) of a tick, or nil when
+   the tick is not work done for an assessment. Read from the tick's start event
+   (the origin is copied onto every child run), never from in-memory context."
+  [ctx tick-id]
+  (when tick-id
+    (get-in (get-tick-execution-context ctx tick-id) [:options :assessment-origin])))
+
 (defn get-tick-blackboard
   "Get the blackboard for a tick-scoped execution.
    Returns nil if this tick has no snapshot."
