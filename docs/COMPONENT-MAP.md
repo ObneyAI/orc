@@ -144,19 +144,15 @@ boundaries until the feature branch merges.
 
 ---
 
-### Pluggable judge scales — built-in judges sealed
+### Judge rubrics are data
 
-**Source:** `components/evaluation/src/ai/obney/orc/evaluation/core/scale.clj:30-60`
+**Source:** `components/evaluation/src/ai/obney/orc/evaluation/core/judge_behaviours.clj`
 
-All four built-in LLM judges (grounding, reasoning, completeness, instruction-following)
-use hard-coded discrete 1–5 bands defined as `discrete-scale` calls inside the evaluation
-component. The `scale.clj` `discrete-scale` constructor is decoupled from the criteria
-(per ADR 0011, PA-3) but built-in judge functions do not accept a caller-supplied scale at
-invocation time. Changing the scoring bands requires writing a `:custom` judge (a consumer-
-owned ORC workflow sub-executed via `judge_runtime.clj:invoke-custom-judge`).
-
-**Coming soon:** plug your own band definitions into the existing built-in judges without
-writing a full custom judge sheet.
+Every judge, built-in or custom, is a workflow that grades against a **rubric** value on its
+blackboard: a criterion, a reviewer stance, a description for every band, and whether feedback
+is required. A built-in judge declared without a rubric uses its default; declare `:rubric` on
+the judge to change its bands, and `:sheet/revise-judge` to change them later. Revising a rubric
+creates a new judge revision and never changes a workflow. See `docs/EVALUATION-COMPONENT.md`.
 
 ---
 

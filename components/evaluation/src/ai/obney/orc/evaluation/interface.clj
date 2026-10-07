@@ -1,38 +1,33 @@
 (ns ai.obney.orc.evaluation.interface
   "Public interface for the evaluation component.
 
-   This component provides LLM-as-judge evaluation capabilities for
-   ORC sheet service executions, with GEPA-compatible feedback generation.
+   This component grades what ORC nodes did and records every judgment durably.
 
    ## Key Concepts
 
-   - **ScoreWithFeedback**: A score (0.0-1.0) paired with actionable feedback
-   - **MetricDimension**: A weighted evaluation dimension (e.g., grounding, completeness)
-   - **Judge**: A function that evaluates trace data and returns scores with feedback
-   - **Rubric**: A prompt template that defines evaluation criteria
+   - **Judge**: a behaviour (an ordinary workflow, built-in or custom) that grades
+     one assessment subject, a completed node execution, against a rubric.
+     Declared with `sheet/judges` and attached to any node with `:judges`;
+     attaching it enables it.
+   - **Rubric**: the criterion, the reviewer's stance, a described band per level
+     and whether feedback is required. The model picks a band; the score is
+     derived from it.
+   - **Assessment**: one judge's judgment of one subject under one judge revision.
+     It ends scored, failed or ungradable (`get-assessments`).
+   - **Purposes**: a monitoring judge feeds performance only; a learning judge
+     (which must require feedback) also feeds Living Descriptions and harvest.
+   - **Performance**: per node version, always collected (`get-node-performance`,
+     `get-low-performing`, `get-performance-trend`, `get-assessment-report`).
+   - **ScoreWithFeedback / MetricDimension**: value types used by the retained
+     synchronous judge functions and by GEPA's judge metric.
 
-   ## Usage
-
-   ```clojure
-   ;; Create a score with feedback
-   (require '[ai.obney.orc.evaluation.interface :as eval])
-
-   (eval/->score-with-feedback 0.75 \"Good but missing key entity\")
-
-   ;; Combine dimension scores
-   (eval/combine-dimension-scores
-     [{:name \"Grounding\" :weight 0.6 :score 0.9 :feedback \"Well grounded\"}
-      {:name \"Completeness\" :weight 0.4 :score 0.5 :feedback \"Missing aspects\"}])
-
-   ;; Get a judge executor for use in sheets
-   (eval/get-judge :grounding)
-   ```"
+   See docs/EVALUATION-COMPONENT.md for the reference and runnable examples."
   (:require [ai.obney.orc.evaluation.core.feedback :as feedback]
             [ai.obney.orc.evaluation.core.judges :as judges]
             [ai.obney.orc.evaluation.core.rubrics :as rubrics]
             [ai.obney.orc.evaluation.core.trace-extraction :as traces]
             [ai.obney.orc.evaluation.core.sheets :as sheets]
-            ;; Gap-1: per-event evaluator runtime + judge-scores read-model
+            ;; per-event evaluator runtime + judge-scores read-model
             [ai.obney.orc.evaluation.core.judge-runtime :as judge-runtime]
             [ai.obney.orc.evaluation.core.assessments :as assessments]
             [ai.obney.orc.evaluation.core.performance :as performance]
@@ -82,7 +77,7 @@
 ;; =============================================================================
 
 (def get-judge
-  "Get a judge executor by key.
+  "Get a retained synchronous judge function by key (not an assessment).
    Available keys: :grounding, :instruction-following, :reasoning, :completeness, :aggregate"
   judges/get-judge)
 
@@ -121,7 +116,8 @@
 ;; =============================================================================
 
 (def get-rubric
-  "Get a rubric by key.
+  "Get a legacy single-string rubric by key (retained for legacy paths; judges
+   attached to nodes declare their own rubric).
    Available keys: :grounding, :instruction-following, :reasoning, :completeness"
   rubrics/get-rubric)
 
@@ -134,15 +130,17 @@
   rubrics/DEFAULT_RUBRICS)
 
 ;; =============================================================================
-;; Re-exports: Per-event evaluator runtime (Gap-1)
+;; Re-exports: Per-event evaluator runtime and assessments
 ;; =============================================================================
 
 (def get-judge-scores
-  "Gap-1: return the vector of judge result entries emitted for the given
-   (sheet-id, node-id, tick-id) tuple. Empty vector when no judges fired
-   for that tick. Each entry has :judge-name :judge-config :score
-   :feedback :dimensions :emitted-at. Consolidator (Gap-3) consumes this
-   read-model to enrich its LLM reflection input."
+  "Return the score entries the learning loops read for the given
+   (sheet-id, node-id, tick-id) tuple: one per scored outcome of a learning judge
+   that carried feedback. Empty vector otherwise (monitoring judges, failed or
+   ungradable assessments leave no entry). Each entry has :judge-name
+   :judge-config :score :feedback :dimensions :emitted-at. The consolidator reads
+   this read-model to enrich its LLM reflection input. For every assessment
+   outcome use `get-assessments`."
   judge-runtime/get-judge-scores)
 
 (def get-assessments
@@ -175,14 +173,14 @@
   performance/get-assessment-report)
 
 (def get-effective-judges-for-node
-  "Gap-5: return the effective judge list for a node — a vec of
+  "Return the effective judge list for a node — a vec of
    {:judge-name :judge-config} entries. Resolution order:
-     1. Explicit consumer attachment (even empty) wins
-     2. Default attachment for :repl-researcher nodes (5 judges) when
-        the Living Description opt-in is on
+     1. An explicit attachment (even empty) wins; attaching a judge enables it
+     2. The 5 default judges for :repl-researcher nodes, only when the Living
+        Description flag is on (the flag gates only these defaults)
      3. Empty otherwise
-   Used by judge-runtime at dispatch time; also useful for operators
-   to introspect what's wired."
+   Used by the judge runtime when a node completes; also useful for operators
+   to introspect what is wired."
   judge-runtime/get-effective-judges-for-node)
 
 ;; =============================================================================
