@@ -277,9 +277,12 @@
 ;; =============================================================================
 
 (defn- execute-workflow
-  [ctx sheet-id inputs timeout-ms]
+  "Run a judge's workflow marked as assessment work (`origin`): the mark is
+   recorded durably on the run and inherited by everything it delegates to, so
+   nothing inside a judge's tree is ever auto-assessed."
+  [ctx sheet-id inputs timeout-ms origin]
   (try
-    (orc/execute ctx sheet-id inputs :timeout-ms timeout-ms)
+    (orc/execute ctx sheet-id inputs :timeout-ms timeout-ms :assessment-origin origin)
     (catch Throwable t
       (u/log ::judge-execution-threw
              :sheet-id sheet-id
@@ -297,7 +300,7 @@
     (orc/build-workflow! ctx (behaviours/behaviour judge-type form opts))))
 
 (defn- run-builtin
-  [ctx judge-config evidence]
+  [ctx judge-config evidence origin]
   (let [judge-type (:type judge-config)
         rubric (behaviours/effective-rubric judge-config)
         form (behaviours/grading-form rubric)
@@ -314,37 +317,23 @@
                  iterations? (assoc :host-iterations (judges/coerce-source-string iterations)))
         sheet-id (build-behaviour! ctx judge-type form {:model (:model judge-config)
                                                         :iterations? iterations?})
-        result (execute-workflow ctx sheet-id inputs timeout-ms)]
+        result (execute-workflow ctx sheet-id inputs timeout-ms origin)]
     (finish ctx result {:judge-type judge-type :rubric rubric
                         :timeout-ms timeout-ms :provider provider})))
 
-(def ^:private depth-key
-  "The recursion counter shared with the judge runtime."
-  :ai.obney.orc.evaluation.core.judge-runtime/judge-depth)
-
-(def ^:private max-depth-key
-  :ai.obney.orc.evaluation.core.judge-runtime/max-judge-depth)
-
 (defn- run-custom
-  [ctx judge-config evidence]
+  [ctx judge-config evidence origin]
   (let [;; The judges read model lifts a custom judge's :sheet-id to
         ;; :eval-sheet-id so it is not overwritten by the host sheet id;
         ;; legacy callers that pass the raw config carry :sheet-id directly.
         eval-sheet-id (or (:eval-sheet-id judge-config) (:sheet-id judge-config))
-        timeout-ms (or (:timeout-ms judge-config) default-timeout-ms)
-        depth (or (depth-key ctx) 0)
-        max-depth (or (max-depth-key ctx) 1)]
+        timeout-ms (or (:timeout-ms judge-config) default-timeout-ms)]
     (cond
       (nil? eval-sheet-id)
       (failed :missing-sheet-id "A custom judge needs the id of the workflow that grades.")
 
-      (>= depth max-depth)
-      (failed :recursion-skipped
-              "A judge run from inside a judge is skipped to bound recursion.")
-
       :else
-      (let [sub-ctx (assoc ctx depth-key (inc depth))
-            declared (orc/get-blackboard-by-key ctx eval-sheet-id)
+      (let [declared (orc/get-blackboard-by-key ctx eval-sheet-id)
             host-trace-schema (:schema (get declared :host-trace))
             trace-entry (cond-> {} (:node-id evidence) (assoc :node-id (:node-id evidence)))
             ;; Custom evaluator workflows own their blackboard contract:
@@ -357,9 +346,9 @@
                             :host-instruction (or (:instruction evidence) "")
                             :host-trace host-trace}
                      rubric (assoc :rubric (behaviours/rubric-value rubric)))
-            result (execute-workflow sub-ctx eval-sheet-id inputs timeout-ms)]
-        (finish sub-ctx result {:judge-type :custom :rubric rubric
-                                :timeout-ms timeout-ms :provider (:llm-provider sub-ctx)})))))
+            result (execute-workflow ctx eval-sheet-id inputs timeout-ms origin)]
+        (finish ctx result {:judge-type :custom :rubric rubric
+                            :timeout-ms timeout-ms :provider (:llm-provider ctx)})))))
 
 (defn run-judge
   "Run one judge against the assessed node's `evidence`
@@ -369,10 +358,16 @@
    `judge-config` is the judge's read-model entry: its :type, and optionally
    :rubric, :model, :provider, :criteria, :timeout-ms (a custom judge's
    workflow is :eval-sheet-id). Never throws: every way a judge can fail is a
-   :failed or :ungradable outcome with its reason."
+   :failed or :ungradable outcome with its reason.
+
+   The evidence may carry the :assessment-id the judging serves: the judge's run
+   is marked with it as its durable assessment origin. A judge run with no
+   durable assessment (the legacy tree-shape path) is marked with a fresh id -
+   it is assessment work all the same."
   [ctx judge-config evidence]
   (try
-    (let [judge-type (:type judge-config)]
+    (let [judge-type (:type judge-config)
+          origin {:assessment-id (or (:assessment-id evidence) (random-uuid))}]
       ;; A judge's model resolves like any node's: its declared :model, else the
       ;; runtime's configured provider. The runtime's provider belongs to the
       ;; processors that execute every leaf, so a per-judge :provider cannot
@@ -382,8 +377,8 @@
                :judge-type judge-type
                :provider (:provider judge-config)))
       (cond
-        (= :custom judge-type) (run-custom ctx judge-config evidence)
-        (contains? behaviours/builtin-types judge-type) (run-builtin ctx judge-config evidence)
+        (= :custom judge-type) (run-custom ctx judge-config evidence origin)
+        (contains? behaviours/builtin-types judge-type) (run-builtin ctx judge-config evidence origin)
         :else (failed :unsupported-judge-type
                       (str "No judge behaviour exists for type " (pr-str judge-type) "."))))
     (catch Throwable t

@@ -2170,59 +2170,44 @@
                 "The score event is from the valid judge, not the bogus one")))))))
 
 ;; =============================================================================
-;; Gap-4 RED#5 — recursion safeguard (depth-1 max)
+;; Gap-4 RED#5 — a judge's run is durably marked as assessment work (S8)
 ;; =============================================================================
 ;;
-;; A maliciously-configured custom judge sheet could attach its OWN
-;; :custom judges to its internal nodes, potentially spawning a
-;; runaway chain of sub-ticks. The runtime tracks :judge-depth in
-;; context; default max-depth = 1 (a judge sheet's internal nodes'
-;; judges are SKIPPED).
+;; A maliciously-configured custom judge sheet could attach judges to its own
+;; internal nodes, spawning a runaway chain of sub-ticks. The old guard was a
+;; private in-memory depth that the async Grain hop lost (J15). The rule is now
+;; durable: the judge's run carries an assessment origin that every child run
+;; inherits, and completions under an origin request no assessment
+;; (assessment-origin-test proves the behavior end to end).
 ;;
-;; This test exercises invoke-custom-judge directly to verify the
-;; depth-1 guard fires before sub-executing. Verifies the safeguard's
-;; CONTRACT: at depth = max, invoke-custom-judge returns nil without
-;; calling orc/execute.
+;; This test pins the seam on the judge side: invoke-custom-judge executes the
+;; judge's workflow marked with an assessment origin, and the judge still runs
+;; normally.
 
-(deftest gap4-recursion-safeguard-skips-at-max-depth
-  (testing "Gap-4 RED#5: when ctx ::judge-depth is already at max-depth, invoke-custom-judge returns nil WITHOUT calling orc/execute (preventing infinite recursion)"
+(deftest gap4-judge-runs-are-marked-as-assessment-work
+  (testing "Gap-4 RED#5 (S8): invoke-custom-judge runs the judge workflow marked with an assessment origin, with no in-memory depth guard"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
       (let [invoke-custom-judge @#'ai.obney.orc.evaluation.core.judge-runtime/invoke-custom-judge
-            ;; Build any eval sheet — recursion guard fires BEFORE
-            ;; orc/execute would be called.
             eval-sheet-id (build-eval-workflow!
                             ctx
                             (str "gap4-recursion-" (random-uuid))
                             "ai.obney.orc.evaluation.judge-runtime-test/custom-judge-by-output-length")
             judge-config {:type :custom :eval-sheet-id eval-sheet-id}
             trace-data {:inputs {} :outputs {:answer "x"} :instruction ""}
-            ;; Track whether orc/execute would have been called by
-            ;; replacing the var temporarily.
-            execute-called? (atom false)]
-        (with-redefs [orc/execute (fn [& _]
-                                     (reset! execute-called? true)
+            execute-opts (atom nil)]
+        (with-redefs [orc/execute (fn [_ctx _sheet-id _inputs & opts]
+                                     (reset! execute-opts (apply hash-map opts))
                                      {:status :success
                                       :outputs {:score 1.0 :feedback ""}})]
-          ;; depth = max-depth (1 by default) → recursion guard fires
           (let [result (invoke-custom-judge
+                         ;; a stale in-memory depth no longer suppresses the judge
                          (assoc ctx
                                 :ai.obney.orc.evaluation.core.judge-runtime/judge-depth 1)
                          judge-config trace-data)]
-            (is (nil? result)
-                "Recursion guard returns nil at max-depth")
-            (is (false? @execute-called?)
-                "orc/execute is NOT called when depth >= max-depth"))
-          ;; depth < max-depth → normal execution
-          (reset! execute-called? false)
-          (let [result (invoke-custom-judge
-                         (assoc ctx
-                                :ai.obney.orc.evaluation.core.judge-runtime/judge-depth 0)
-                         judge-config trace-data)]
-            (is (some? result)
-                "At depth < max-depth, judge runs normally")
-            (is (true? @execute-called?)
-                "orc/execute IS called when depth < max-depth")))))))
+            (is (some? result) "the judge runs; nothing in memory can skip it")
+            (is (uuid? (get-in @execute-opts [:assessment-origin :assessment-id]))
+                "its workflow is executed marked as assessment work")))))))
 
 ;; =============================================================================
 ;; Gap-4 RED#6 — custom-judge scores flow into get-judge-scores

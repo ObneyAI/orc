@@ -11,6 +11,12 @@
   [ctx sheet-id]
   (core/get-sheet ctx sheet-id))
 
+(defn assessment-origin
+  "The durable assessment origin ({:assessment-id uuid}) of a tick, or nil when
+   the tick is not work done for an assessment."
+  [ctx tick-id]
+  (core/assessment-origin ctx tick-id))
+
 (defn get-sheets-all
   "Get all sheets"
   [ctx]

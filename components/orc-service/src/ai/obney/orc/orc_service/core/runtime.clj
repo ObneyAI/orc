@@ -783,6 +783,11 @@
                       already durable elsewhere are referenced, not copied
      :return-references? - Internal flag to include :output-sources for delegates
      :llm-call-budget - Max LLM calls before failing (opt-in only, NO default)
+     :assessment-origin - {:assessment-id uuid}: marks this run as work done for
+                          an assessment. Recorded durably on the run's start
+                          event and inherited by every child run, so no
+                          completion under it is ever auto-assessed (read it
+                          back with `assessment-origin`).
      :durability-mode - Internal comparison mode; :legacy restores per-node
                         routing lifecycle events (default uses summarized routing)
 
@@ -802,7 +807,8 @@
                                       delegate-parent-read-sources
                                       correlation-id input-sources return-references?
                                       durability-mode checkpointed-campaign?
-                                      llm-budget-root-sheet-id llm-budget-root-tick-id]
+                                      llm-budget-root-sheet-id llm-budget-root-tick-id
+                                      assessment-origin]
                                :or {timeout-ms 300000
                                     result-grace-ms default-result-grace-ms
                                     store-trace? true}}]
@@ -852,6 +858,8 @@
                                                  llm-budget-root-tick-id
                                                  (assoc :llm-budget-root-tick-id
                                                         llm-budget-root-tick-id)
+                                                 assessment-origin
+                                                 (assoc :assessment-origin assessment-origin)
                                                  durability-mode (assoc :durability-mode durability-mode))}
                               parent-tick-id (assoc :parent-tick-id parent-tick-id)
                               correlation-id (assoc :correlation-id correlation-id)
