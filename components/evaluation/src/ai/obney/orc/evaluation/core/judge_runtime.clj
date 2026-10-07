@@ -30,6 +30,7 @@
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.evaluation.core.assessments :as assessments]
             [ai.obney.orc.evaluation.core.judge-run :as judge-run]
+            [ai.obney.orc.evaluation.core.node-version :as node-version]
             [ai.obney.orc.evaluation.core.heuristic-structural :as heuristic-structural]
             [com.brunobonacci.mulog :as u]))
 
@@ -771,7 +772,7 @@
 (defn- ->assessment-requested-event
   "Pure builder of the `:evaluation/assessment-requested` event for `judge` (an
    effective-judges entry) assessing the completion `completion`."
-  [completion assessment-id {:keys [judge-name judge-config]}]
+  [completion assessment-id {:keys [judge-name judge-config]} node-version]
   (let [subject (:event/id completion)
         sheet-id (:sheet-id completion)
         node-id (:node-id completion)
@@ -793,7 +794,8 @@
                      :judge-type (:type judge-config)
                      :purposes (judge-purposes judge-config)
                      :requested-at (str (time/now))}
-              (seq exec-context) (assoc :exec-context exec-context))})))
+              (seq exec-context) (assoc :exec-context exec-context)
+              node-version (assoc :node-version node-version))})))
 
 (defn- requested-assessment-ids
   "The ids of the assessments already requested for the completion `subject`."
@@ -837,7 +839,10 @@
           fresh (into [] (remove (comp already first)) candidates)
           fresh-ids (into #{} (map first) fresh)]
       (when (seq fresh)
-        {:result/events (mapv (fn [[id judge]] (->assessment-requested-event event id judge)) fresh)
+        {:result/events (let [version (node-version/node-version context event)]
+                          (mapv (fn [[id judge]]
+                                  (->assessment-requested-event event id judge version))
+                                fresh))
          :result/cas {:types #{assessments/request-event-type}
                       :tags #{[:subject subject]}
                       :predicate-fn (fn [existing]

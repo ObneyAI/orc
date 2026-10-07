@@ -203,13 +203,19 @@
 
 (defn- terminal-event
   [request-body {:keys [assessment-id status band score feedback dimensions band-distribution
-                        reason message model-provenance judge-tick-id]}]
+                        reason message model-provenance judge-tick-id judge-config]}]
   (->event
    {:type (assessments/status->terminal-event-type status)
     :tags #{[:sheet (:sheet-id request-body)] [:node (:node-id request-body)]
             [:tick (:tick-id request-body)] [:assessment assessment-id]
             [:subject (:subject-completion-id request-body)]}
-    :body (cond-> {:assessment-id assessment-id}
+    ;; The cell this outcome belongs to (which node version, judge and revision),
+    ;; so a stage that reacts to outcomes needs no read of the request to know it;
+    ;; and the judge's declared alert, present only for a watched judge.
+    :body (cond-> (merge {:assessment-id assessment-id}
+                         (select-keys request-body [:sheet-id :node-id :node-version
+                                                    :judge-name :judge-revision-number]))
+            (:alert judge-config) (assoc :alert (:alert judge-config))
             (= :scored status) (assoc :score score :dimensions (vec dimensions))
             (and (= :scored status) (some? band)) (assoc :band band)
             (and (= :scored status) (some? feedback)) (assoc :feedback feedback)

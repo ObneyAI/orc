@@ -28,7 +28,13 @@
             [ai.obney.orc.orc-service.core.block :as block]
             ;; Shape, not values — the profile lifecycle events record instead
             ;; of a blackboard value
-            [ai.obney.orc.orc-service.core.profile :as profile]))
+            [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.judge-definition :as judge-definition]))
+
+(def max-alert-window
+  "The largest trailing window a judge alert may watch (the outcomes a node
+   version's performance keeps in order)."
+  judge-definition/max-alert-window)
 
 ;; =============================================================================
 ;; Read Models
@@ -97,6 +103,10 @@
   "The durable assessment origin ({:assessment-id uuid}) of a tick, or nil when
    the tick is not work done for an assessment. Inherited by every child run."
   rm/assessment-origin)
+(def get-tick-execution-context
+  "The execution context a snapshot-based tick runs under ({:nodes-by-id
+   :version-number :instruction-overrides ...}), or nil for a snapshot-less tick."
+  rm/get-tick-execution-context)
 (def get-researcher-campaign rm/get-researcher-campaign)
 (def get-researcher-iteration-records rm/get-researcher-iteration-records)
 (def get-researcher-effect-claims rm/get-researcher-effect-claims)

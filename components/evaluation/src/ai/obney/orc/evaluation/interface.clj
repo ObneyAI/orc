@@ -35,6 +35,8 @@
             ;; Gap-1: per-event evaluator runtime + judge-scores read-model
             [ai.obney.orc.evaluation.core.judge-runtime :as judge-runtime]
             [ai.obney.orc.evaluation.core.assessments :as assessments]
+            [ai.obney.orc.evaluation.core.performance :as performance]
+            [ai.obney.orc.evaluation.core.alerts]
             ;; Load the score-recording command handlers so they register
             ;; in the global command registry (the judge runtime dispatches
             ;; them via cp/process-command from its background future).
@@ -150,6 +152,27 @@
    and the judge's revision, and ending :scored, :failed or :ungradable (:pending
    until then). See ADR 0008."
   assessments/get-assessments)
+
+(def get-node-performance
+  "S11: performance of a node, version by version (never blended), with a rollup
+   across versions. `{:sheet-id :node-id [:node-version] [:judge-name] [:window]}`.
+   Every outcome of every assessment contributes, always; see core/performance.clj."
+  performance/get-node-performance)
+
+(def get-low-performing
+  "S11: the node versions whose trailing mean is below `:below`, worst first.
+   `{:below x [:sheet-id] [:min-coverage] [:window]}`."
+  performance/get-low-performing)
+
+(def get-performance-trend
+  "S11: a node judge's most recent outcomes in order.
+   `{:sheet-id :node-id :judge-name [:node-version] [:window]}`."
+  performance/get-performance-trend)
+
+(def get-assessment-report
+  "S11: coverage and grades over an explicit set of assessments, by judge and
+   revision. `{:assessment-ids [...]}` or `{:subject-ids [...]}`."
+  performance/get-assessment-report)
 
 (def get-effective-judges-for-node
   "Gap-5: return the effective judge list for a node — a vec of
