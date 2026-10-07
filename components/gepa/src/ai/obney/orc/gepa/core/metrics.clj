@@ -99,16 +99,24 @@
    WEAKEST dimensions first (so the proposer attacks the biggest problems
    first). `dimension-results` is a seq of {:dim :score :feedback :reasoning}.
 
-   Each line: 'dimension (0.NN): <feedback> [reasoning: <reasoning>]'."
+   Each line: 'dimension (0.NN): <feedback> [reasoning: <reasoning>]'.
+
+   When EVERY dimension's feedback is blank (a score-only judge, or a judge
+   that wrote none) there is no feedback to give: the result is \"\", never a
+   placeholder, so GEPA's own Expected-output fallback
+   (`reflective-feedback-for-instance`) fires instead of being masked."
   [dimension-results]
-  (->> dimension-results
-       (sort-by :score)
-       (map (fn [{:keys [dim score feedback reasoning]}]
-              (let [fb (or (not-empty (some-> feedback string/trim)) "(no feedback)")
-                    rs (not-empty (some-> reasoning string/trim))]
-                (str (name dim) " (" (format "%.2f" (double score)) "): " fb
-                     (when rs (str " [reasoning: " rs "]"))))))
-       (string/join "\n")))
+  (let [blank? #(string/blank? %)]
+    (if (every? (comp blank? :feedback) dimension-results)
+      ""
+      (->> dimension-results
+           (sort-by :score)
+           (map (fn [{:keys [dim score feedback reasoning]}]
+                  (let [fb (or (not-empty (some-> feedback string/trim)) "(no feedback)")
+                        rs (not-empty (some-> reasoning string/trim))]
+                    (str (name dim) " (" (format "%.2f" (double score)) "): " fb
+                         (when rs (str " [reasoning: " rs "]"))))))
+           (string/join "\n")))))
 
 (defn- run-judge-dimension
   "Run a single tier-1 judge on the trace-data and extract its score + feedback.

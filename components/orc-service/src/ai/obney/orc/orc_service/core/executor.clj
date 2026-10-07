@@ -793,12 +793,17 @@
      [:string {:description \"The question to answer\"}]
      [:map {:description \"A map of...\"} [:field :type]]
 
+   A recursive schema is persisted as `[:schema {:registry ..} <root>]`; the
+   registry wrapper carries no description of its own, so the root's
+   description is the key's description.
+
    Returns the description string or nil if not present."
   [schema]
-  (when (and (vector? schema)
-             (> (count schema) 1)
-             (map? (second schema)))
-    (:description (second schema))))
+  (when (vector? schema)
+    (or (when (and (> (count schema) 1) (map? (second schema)))
+          (:description (second schema)))
+        (when (and (= :schema (first schema)) (> (count schema) 2))
+          (extract-schema-description (last schema))))))
 
 ;; =============================================================================
 ;; Output Flattening (Python DSPy Alignment)
@@ -1710,6 +1715,12 @@
   (when (or acc usage)
     (merge-with + (or acc {}) (or usage {}))))
 
+(def ^:private non-retryable-failure-kinds
+  "Failures that are the provider's or the configuration's deterministic answer:
+   an exact decision tie, and a provider that was never configured. Another
+   invocation cannot change them, only spend budget."
+  #{:undecided :provider-not-configured})
+
 (defn execute-ai
   "Execute a leaf node using ORC LLM AI.
 
@@ -1754,7 +1765,8 @@
                                :reserve-provider-attempt! :provider-reservation-context
                                :tick-id :node-attempt :max-node-attempts
                                :exec-context
-                               :max-retries :retry-delay-ms :validate?}
+                               :max-retries :retry-delay-ms :validate?
+                               :unparseable-is-schema-error?}
         llm-options (merge {:validate? false
                                :with-metadata? true
                                :with-provider-evidence? true
@@ -1764,6 +1776,12 @@
         ;; Retry config - defaults to 1 retry with 500ms delay
         max-retries (get options :max-retries 1)
         retry-delay-ms (get options :retry-delay-ms 500)
+        ;; Opt-in (node `:options`): an output the provider omitted (nil) is
+        ;; validated against its declared schema like any other answer, so it is
+        ;; retried under the same budget and, once exhausted, fails with
+        ;; :schema-validation-failed naming the rejected write - instead of the
+        ;; un-retried "unparseable" failure. Default off: other nodes unchanged.
+        unparseable-is-schema-error? (boolean (:unparseable-is-schema-error? options))
 
         ;; Token streaming (Stage 2). Active when a subscriber asked for
         ;; deltas on this tick and the node is not using function calling
@@ -1950,9 +1968,15 @@
             ;; Drop nil best-effort writes so an omitted evidence array is the
             ;; node's declared-optional absence, not a nil-gate failure.
             outputs (strip-nil-optional-writes outputs optional-writes)
+            ;; Opt-in: a declared write the provider left out entirely is as
+            ;; unparseable as one it answered with nil; both are validated.
+            outputs (if (and unparseable-is-schema-error? (not error) (not budget-timeout?))
+                      (merge (zipmap (:writes node) (repeat nil)) outputs)
+                      outputs)
             total-usage (merge-usage accumulated-usage usage)
             schema-result (when (and (not error)
-                                     (not (outputs-have-nil? outputs)))
+                                     (or unparseable-is-schema-error?
+                                         (not (outputs-have-nil? outputs))))
                             (validate-leaf-outputs
                              blackboard
                              (cond-> {:status :success :outputs outputs}
@@ -1970,7 +1994,7 @@
           ;; Exception — retry with backoff (handles rate limits, transient errors)
           ;; An :undecided tie is the provider's answer, not a transient failure:
           ;; retrying would only spend another paid call fishing for a different grade.
-          (and error (not= :undecided failure-kind) (< attempt max-retries))
+          (and error (not (contains? non-retryable-failure-kinds failure-kind)) (< attempt max-retries))
           (let [backoff (backoff-for attempt)
                 remaining (execution-budget/remaining-ms deadline-ms)]
             (if (and remaining (<= remaining backoff))
@@ -2011,7 +2035,7 @@
           ;; outputs that fail their declared schemas. A node-level :retry can
           ;; still retry this parse failure. The verbatim raw response is
           ;; carried on the result and logged in full so it is diagnosable.
-          (outputs-have-nil? outputs)
+          (and (outputs-have-nil? outputs) (not unparseable-is-schema-error?))
           (let [nil-keys (vec (for [[k v] outputs
                                     :when (or (nil? v)
                                               (and (map? v) (every? nil? (vals v))))]

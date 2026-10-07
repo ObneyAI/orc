@@ -115,6 +115,9 @@
   [:enum :transport-failure :missing-forced-tool-call
    :tool-call-parsing-failed :schema-validation-failed
    :empty-provider-response :provider-finish-error
+   ;; The call named a provider that was never configured: nothing was sent, so
+   ;; this is distinct from a transport failure and says what to fix.
+   :provider-not-configured
    ;; A banded decision whose most probable level is an exact tie: no band is
    ;; selected (distinct from a malformed answer).
    :undecided])
