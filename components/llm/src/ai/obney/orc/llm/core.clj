@@ -549,6 +549,27 @@
             :provider-evidence evidence}
            cause))
 
+(defn- provider-not-configured?
+  "True when the router refused the call because no configuration is registered
+   under the provider's name. The router reports it structurally: the thrown
+   ex-info carries the missing :config-name beside the :available ones."
+  [^Exception e]
+  (let [data (ex-data e)]
+    (and (contains? data :config-name) (contains? data :available))))
+
+(defn- call-failure
+  "The failure of one provider invocation. A provider that was never configured
+   is its own kind, so a caller can say how to configure one; every other
+   failure of the call is a transport failure."
+  [provider ^Exception e]
+  (let [evidence {:provider (provider-name provider)}]
+    (if (provider-not-configured? e)
+      (structured-failure (str "LLM provider " (pr-str provider) " is not configured; "
+                               "register it, or declare a model the runtime can reach"
+                               " (available: " (pr-str (vec (:available (ex-data e)))) ")")
+                          :provider-not-configured evidence e)
+      (structured-failure (.getMessage e) :transport-failure evidence e))))
+
 ;; --------------------------------------------------------------------------- ;;
 ;; Decision protocol (native decision models)
 ;; --------------------------------------------------------------------------- ;;
@@ -906,10 +927,7 @@
                       (function-request spec inputs options)
                       (marker-request spec inputs options)))
                    (catch Exception e
-                     (throw (structured-failure (.getMessage e)
-                                                :transport-failure
-                                                {:provider (provider-name provider)}
-                                                e))))
+                     (throw (call-failure provider e))))
         evidence (provider-evidence provider response)
         ;; SIO consumes Clojure's kebab-case response vocabulary. Some provider
         ;; adapters expose the wire spelling instead; normalize only this known

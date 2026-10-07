@@ -12,6 +12,7 @@
             ;; :judge/composite-score-computed).
             [ai.obney.orc.evaluation.core.commands]
             [ai.obney.orc.evaluation.core.judges :as judges]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
@@ -152,6 +153,28 @@
 (defmacro with-test-ctx [[sym] & body]
   `(let [~sym (create-context)]
      (try ~@body (finally (stop-context ~sym)))))
+
+;; S6b: the built-in judges are ORC workflows whose model call goes through the
+;; same provider seam as every other node's (`llm/predict`), so a test of the
+;; processor path stands in for the MODEL, not for a judge function. (The
+;; legacy `judges/*use-mock-llm*` flag only mocks the direct judge functions.)
+(defn- fake-judge-model
+  "A stand-in provider answering any built-in judge's grading call with band 4
+   and neutral values of each declared output's shape."
+  [_provider module _inputs _options]
+  {:outputs (into {}
+                  (map (fn [{:keys [name spec]}]
+                         [name (cond
+                                 (= :band name) 4
+                                 (= :feedback name) "Mock evaluation of the host node."
+                                 (and (vector? spec) (= :vector (first spec))) []
+                                 :else "Mock reasoning.")]))
+                  (:outputs module))
+   :usage {:total-tokens 1}
+   :model "fake-judge-model"})
+
+(defn- grounding-call? [module]
+  (boolean (some #(= :grounded-claims (:name %)) (:outputs module))))
 
 (defn- count-score-emitted-events [ctx]
   (count (into [] (es/read (:event-store ctx)
@@ -372,7 +395,7 @@
 ;; emit exactly one :judge/score-emitted event with judge-name "grounding"
 ;; and a structured score/feedback.
 ;;
-;; Uses evaluation/judges/*use-mock-llm* dynamic var to skip real LLM —
+;; Uses a stub provider (`llm/predict`, see fake-judge-model) to skip the real LLM —
 ;; the judge function returns the mock score map.
 
 (defn- setup-sheet-with-judges!
@@ -455,10 +478,10 @@
   (testing "Opt-in ON + node with [:grounding] attached + mock LLM mode → exactly one :judge/score-emitted event lands"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      ;; *use-mock-llm* is a dynamic var; `binding` doesn't propagate across
+      ;; llm/predict is stubbed with with-redefs (not `binding`): a binding doesn't propagate across
       ;; the processor's async/thread boundary. with-redefs mutates the var's
       ;; root value globally for the body's lifetime, which DOES propagate.
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [{:keys [sheet-id node-id]} (setup-sheet-with-judges!
                                             ctx "my-grounding"
                                             {:type :grounding})
@@ -492,7 +515,7 @@
   (testing "All 4 LLM judge types attached → 4 :judge/score-emitted events with correct judge-names"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [{:keys [sheet-id node-id]}
               (setup-sheet-with-multiple-judges!
                 ctx
@@ -525,10 +548,12 @@
   (testing "Two judges attached, one throws → exactly one event lands (the surviving judge)"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true
-                    ;; Force grounding-judge to throw; reasoning-judge passes through
-                    judges/grounding-judge (fn [_ctx]
-                                             (throw (ex-info "synthetic grounding failure" {})))]
+      (with-redefs [;; Force the grounding judge's model call to throw; the
+                    ;; reasoning judge's passes through
+                    llm/predict (fn [provider module inputs options]
+                                  (if (grounding-call? module)
+                                    (throw (ex-info "synthetic grounding failure" {}))
+                                    (fake-judge-model provider module inputs options)))]
         (let [{:keys [sheet-id node-id]}
               (setup-sheet-with-multiple-judges!
                 ctx
@@ -584,7 +609,7 @@
   (testing ":custom judge type: no event emitted, no crash, sibling judges still fire"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         ;; Attach a :custom judge alongside an LLM judge. The custom one
         ;; should silently no-op; the LLM one should emit normally.
         (let [{:keys [sheet-id node-id]}
@@ -614,7 +639,7 @@
   (testing "After 2 judges fire on a node, get-judge-scores returns both"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [{:keys [sheet-id node-id]}
               (setup-sheet-with-multiple-judges!
                 ctx
@@ -742,7 +767,7 @@
   (testing "repl-researcher node + opt-in ON + no explicit judges → all 5 defaults fire"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [sheet-id (create-bare-sheet! ctx)
               node-id (create-repl-researcher-node! ctx sheet-id)
               tick-id (random-uuid)
@@ -786,7 +811,7 @@
   (testing ":leaf node (not :repl-researcher) + opt-in ON + no explicit judges → zero events"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [sheet-id (create-bare-sheet! ctx)
               node-result (cp/process-command
                             (assoc ctx :command
@@ -811,7 +836,7 @@
   (testing "repl-researcher node + opt-in OFF + no explicit judges → zero events"
     (with-test-ctx [ctx]
       ;; Flag default OFF — no explicit set call
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [sheet-id (create-bare-sheet! ctx)
               node-id (create-repl-researcher-node! ctx sheet-id)
               tick-id (random-uuid)
@@ -917,7 +942,7 @@
   (testing "Mixed judges (2 LLM + heuristic-structural) attached → all emit + queryable"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [{:keys [sheet-id node-id]}
               (setup-sheet-with-multiple-judges!
                 ctx
@@ -2417,7 +2442,7 @@
   (testing "Gap-8 RED#5: when 2 judges fire on a tick, the processor emits exactly 1 :judge/composite-score-computed event tagged with the same (sheet, node, tick) and a composite score derived from the judges' scores"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [{:keys [sheet-id node-id]}
               (setup-sheet-with-multiple-judges!
                 ctx

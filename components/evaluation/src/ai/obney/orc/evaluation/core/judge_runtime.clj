@@ -16,14 +16,13 @@
    `:judge/score-emitted` shape. The consolidator (under Gap-3) will
    consume these events alongside raw execution evidence to update
    Living Description bodies."
-  (:require [clojure.string :as str]
-            [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
+  (:require [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.interface :as orc]
-            [ai.obney.orc.evaluation.core.judges :as judges]
+            [ai.obney.orc.evaluation.core.judge-run :as judge-run]
             [ai.obney.orc.evaluation.core.heuristic-structural :as heuristic-structural]
             [com.brunobonacci.mulog :as u]))
 
@@ -197,98 +196,48 @@
 ;; Judge dispatch
 ;; =============================================================================
 
-(defn- summarize-evidence
-  "Render one dimension's feedback from a pair of evidence lists (cited vs
-   omitted), in the judge's own vocabulary. Empty lists still yield a
-   dimension — the feedback says nothing was cited/omitted rather than
-   silently dropping the dimension (RR-30 acceptance criterion)."
-  [cited-label cited-items omitted-label omitted-items]
-  (str cited-label ": "
-       (if (seq cited-items) (str/join "; " cited-items) "nothing cited")
-       ". " omitted-label ": "
-       (if (seq omitted-items) (str/join "; " omitted-items) "none")
-       "."))
-
 (defn- project-dimensions
-  "RR-30: project a default LLM judge's own evidence lists (already present
-   on `inner`, its result map) into named DimensionScore entries. One
-   dimension per evidence pair — a single-dimension judge — carrying the
-   judge's own :score and a weight of 1.0, named with the judge's rubric
-   name from `judges/default-judge-dimension-names` (the ontology
-   classifier's dictionary is case-sensitive; a name it does not know
-   yields a failure with no URI). Pure: no new model call, no
-   change to score/feedback/model-provenance. Judge types not yet projected
-   fall through to []."
+  "RR-30: a default LLM judge's own evidence lists projected into its one named
+   DimensionScore. The projection lives with the judge run path
+   (`judge-run/project-dimensions`); kept here under its original name."
   [judge-type inner score]
-  (case judge-type
-    :grounding
-    [{:name (judges/default-judge-dimension-names :grounding)
-      :weight 1.0
-      :score score
-      :feedback (summarize-evidence "Grounded claims" (:grounded-claims inner)
-                                    "Ungrounded claims" (:ungrounded-claims inner))}]
-    :reasoning
-    [{:name (judges/default-judge-dimension-names :reasoning)
-      :weight 1.0
-      :score score
-      :feedback (summarize-evidence "Strengths" (:reasoning-strengths inner)
-                                    "Weaknesses" (:reasoning-weaknesses inner))}]
-    :completeness
-    [{:name (judges/default-judge-dimension-names :completeness)
-      :weight 1.0
-      :score score
-      :feedback (summarize-evidence "Aspects covered" (:aspects-covered inner)
-                                    "Aspects missing" (:aspects-missing inner))}]
-    :instruction-following
-    [{:name (judges/default-judge-dimension-names :instruction-following)
-      :weight 1.0
-      :score score
-      :feedback (summarize-evidence "Requirements met" (:requirements-met inner)
-                                    "Requirements missed" (:requirements-missed inner))}]
-    []))
+  (judge-run/project-dimensions judge-type inner score))
 
-(defn- invoke-llm-judge
-  "Dispatch on judge-type to the matching public judge function. Returns
-   the canonical {:score :feedback :dimensions} shape if the judge
-   produced a score, otherwise nil. Each judge function resolves its
-   var on every call so with-redefs / mock bindings take effect."
-  [judge-type judge-config trace-data]
-  (let [criteria (:criteria judge-config)
-        executor-ctx {:inputs (cond-> {:trace-data trace-data}
-                                (and (string? criteria) (not (str/blank? criteria)))
-                                (assoc :criteria criteria))}
-        [judge-output result-key]
-        (binding [judges/*judge-provider* (or (:provider judge-config)
-                                              judges/*judge-provider*)
-                  judges/*judge-model* (or (:model judge-config)
-                                           judges/*judge-model*)]
-          (case judge-type
-            :grounding             [(judges/grounding-judge executor-ctx)             :grounding-result]
-            :reasoning             [(judges/reasoning-judge executor-ctx)             :reasoning-result]
-            :completeness          [(judges/completeness-judge executor-ctx)          :completeness-result]
-            :instruction-following [(judges/instruction-following-judge executor-ctx) :instruction-result]
-            [nil nil]))
-        inner (when (and judge-output result-key)
-                (get judge-output result-key))]
-    (when (and inner (:score inner))
-      (let [score (double (:score inner))
-            dimensions (project-dimensions judge-type inner score)
-            model-feedback (:feedback inner)]
-        {:score score
-         ;; ActionableFeedback: a successful score never carries blank
-         ;; feedback. A live model can return "" beside a valid banded
-         ;; verdict (seen on CI with Gemini 2.5 Flash); the judge's own
-         ;; projected dimension feedback then stands in — the same
-         ;; evidence, never an invented sentence.
-         :feedback (if (and (string? model-feedback) (not (str/blank? model-feedback)))
-                     model-feedback
-                     (or (some->> dimensions (map :feedback) (remove str/blank?) seq (str/join " "))
-                         ""))
-         :dimensions dimensions
-         :model-provenance (:model-provenance inner)}))))
+(defn- outcome->legacy
+  "Map a judge OUTCOME (`judge-run/run-judge`) to the canonical
+   `{:score :feedback :dimensions :model-provenance}` shape the
+   `:evaluation/record-judge-score` command records, or nil.
+
+   Only a :scored outcome carrying feedback is recorded: the legacy score event
+   requires feedback, and a score-only outcome (rubric :feedback :none) has
+   none and must not be given invented text - it is logged and skipped until
+   assessments are recorded durably. A :failed or :ungradable outcome never
+   becomes a score; it is logged with its reason."
+  [judge-type outcome]
+  (case (:status outcome)
+    :scored
+    (if (contains? outcome :feedback)
+      {:score (:score outcome)
+       :feedback (:feedback outcome)
+       :dimensions (:dimensions outcome)
+       ;; The legacy event carries one provenance map: the judge's model call.
+       :model-provenance (some-> (first (:model-provenance outcome))
+                                 (select-keys [:provider :model :usage]))}
+      (do (u/log ::score-only-result-not-recorded
+                 :judge-type judge-type
+                 :score (:score outcome)
+                 :band (:band outcome))
+          nil))
+
+    (do (u/log ::judge-not-scored
+               :judge-type judge-type
+               :status (:status outcome)
+               :reason (:reason outcome)
+               :message (:message outcome))
+        nil)))
 
 (def ^:private llm-judge-types
-  "Set of judge types that route to evaluation/core/judges functions."
+  "The built-in judge types: each runs as a shipped behaviour (judge-behaviours)."
   #{:grounding :reasoning :completeness :instruction-following})
 
 (defn- invoke-heuristic-structural
@@ -300,131 +249,36 @@
   (when-let [tree (get-in trace-data [:outputs :generated-tree-raw])]
     (heuristic-structural/evaluate-tree-structure tree)))
 
-(def ^:private default-custom-judge-timeout-ms
-  "How long a custom judge's sub-execution is allowed to run. Spec
-   default is 60s; consumers may override per-judge via
-   :judge-config.:timeout-ms."
-  60000)
-
 (defn- invoke-custom-judge
-  "Gap-4: sub-execute a consumer-defined eval sheet against the host
-   node's trace-data and harvest a score.
+  "Gap-4: run a consumer-defined judge workflow against the host node's
+   trace-data and harvest a score. A custom judge is run exactly like every
+   other judge (`judge-run/run-judge`): its workflow reads `:host-inputs`,
+   `:host-outputs`, `:host-instruction`, `:host-trace` (and `:rubric` when the
+   judge declares one) and writes either a numeric `:score` + `:feedback`
+   (+ optional `:dimensions`) or, with a rubric, a `:band`.
 
-   The consumer's judge sheet must be a previously-built ORC workflow
-   whose blackboard reads `:host-inputs`, `:host-outputs`,
-   `:host-instruction`, `:host-trace` and writes `:score` (numeric 0-1)
-   + `:feedback` (string) + optional `:dimensions` (vector).
+   Returns the canonical {:score :feedback :dimensions} shape, or nil when the
+   judge produced no valid result; every failure is logged loudly with its
+   reason - silent skipping is the failure mode the unification arc fought.
 
-   Returns the canonical {:score :feedback :dimensions} shape, or nil
-   on any failure: missing sheet-id, sheet not found, sheet execution
-   failure, missing :score in outputs. All failures are mulog'd loudly
-   — silent skipping is the failure mode the unification arc fought
-   the whole way through.
-
-   Recursion safeguard (Gap-4 RED#5): when the host event is itself
-   produced by a custom-judge sub-execution, the runtime increments
-   :judge-depth in context. If depth exceeds max-depth (default 1),
-   this fn returns nil before sub-executing. Without this, a
-   maliciously-configured custom judge can spawn unbounded sub-ticks."
+   Recursion safeguard (Gap-4 RED#5): when the host event is itself produced by
+   a custom-judge sub-execution, the runtime increments :judge-depth in
+   context. If depth exceeds max-depth (default 1), no sub-execution happens."
   [ctx judge-config trace-data]
-  (let [;; Gap-4: read :eval-sheet-id (the consumer's eval workflow).
-        ;; The judges read-model lifts judge-config's :sheet-id to
-        ;; :eval-sheet-id so it isn't overwritten by the host sheet's
-        ;; id during merge. Fall back to :sheet-id for legacy callers
-        ;; that bypass the read-model and pass the raw judge-config
-        ;; with :sheet-id directly.
-        eval-sheet-id (or (:eval-sheet-id judge-config)
-                          (:sheet-id judge-config))
-        timeout-ms (or (:timeout-ms judge-config) default-custom-judge-timeout-ms)
-        depth (or (::judge-depth ctx) 0)
-        max-depth (or (::max-judge-depth ctx) 1)]
-    (cond
-      (nil? eval-sheet-id)
-      (do (u/log ::custom-judge-missing-sheet-id
-                 :judge-config (select-keys judge-config [:type :timeout-ms]))
-          nil)
-
-      (>= depth max-depth)
-      (do (u/log ::custom-judge-recursion-skipped
-                 :depth depth
-                 :max-depth max-depth
-                 :sheet-id eval-sheet-id)
-          nil)
-
-      :else
-      (let [sub-ctx (assoc ctx ::judge-depth (inc depth))
-            host-trace-schema (:schema (get (orc/get-blackboard-by-key
-                                             ctx eval-sheet-id)
-                                            :host-trace))
-            trace-entry (cond-> {}
-                          (:node-id trace-data)
-                          (assoc :node-id (:node-id trace-data)))
-            ;; Custom evaluator workflows own their blackboard contract.
-            ;; Preserve compatibility with the established vector-of-events
-            ;; shape while also supporting a consumer that declares a single
-            ;; trace-summary map.
-            host-trace (if (= :vector (first host-trace-schema))
-                         [trace-entry]
-                         trace-entry)
-            result (try
-                     (orc/execute sub-ctx eval-sheet-id
-                                  {:host-inputs (or (:inputs trace-data) {})
-                                   :host-outputs (or (:outputs trace-data) {})
-                                   :host-instruction (or (:instruction trace-data) "")
-                                   :host-trace host-trace}
-                                  :timeout-ms timeout-ms)
-                     (catch Throwable t
-                       (u/log ::custom-judge-execution-threw
-                              :sheet-id eval-sheet-id
-                              :error (.getMessage t)
-                              :exception-class (.getName (class t)))
-                       nil))
-            outputs (:outputs result)
-            score (:score outputs)]
-        (cond
-          (not= :success (:status result))
-          (do (u/log ::custom-judge-execution-not-success
-                     :sheet-id eval-sheet-id
-                     :status (:status result)
-                     :error (:error result))
-              nil)
-
-          (not (number? score))
-          (do (u/log ::custom-judge-output-missing-score
-                     :sheet-id eval-sheet-id
-                     :outputs-keys (vec (keys (or outputs {}))))
-              nil)
-
-          :else
-          (let [;; Normalize dimensions to the DimensionScore schema:
-                ;; consumers may produce {:name :score :feedback}
-                ;; without :weight (the LLM grading rubric won't always
-                ;; emit weights). Default :weight to 1.0 so the event
-                ;; passes Malli validation.
-                raw-dims (or (:dimensions outputs) [])
-                norm-dims (mapv (fn [d]
-                                  (cond-> (or d {})
-                                    (nil? (:weight d)) (assoc :weight 1.0)
-                                    (nil? (:score d)) (assoc :score 0.0)
-                                    (nil? (:name d)) (assoc :name "")
-                                    (nil? (:feedback d)) (assoc :feedback "")
-                                    true (update :weight double)
-                                    true (update :score double)))
-                                raw-dims)]
-            {:score (double score)
-             :feedback (or (:feedback outputs) "")
-             :dimensions norm-dims}))))))
+  (outcome->legacy :custom (judge-run/run-judge ctx judge-config trace-data)))
 
 (defn- invoke-judge
   "Invoke a single attached judge against the host node's trace-data.
    Returns the {:score :feedback :dimensions} canonical shape, or nil
-   when the judge produced no valid result. The ctx arg is required
-   for `:custom` judges, which sub-execute via `orc/execute`."
+   when the judge produced no valid result. Every LLM or custom judge is an
+   ORC workflow run through `judge-run/run-judge`; heuristic-structural stays
+   a deterministic code path (it is pure tree-shape arithmetic with no model
+   call, so there is nothing for a workflow to budget, retry or account)."
   [ctx judge-config trace-data]
   (let [judge-type (:type judge-config)]
     (cond
       (contains? llm-judge-types judge-type)
-      (invoke-llm-judge judge-type judge-config trace-data)
+      (outcome->legacy judge-type (judge-run/run-judge ctx judge-config trace-data))
 
       (= :heuristic-structural judge-type)
       (invoke-heuristic-structural trace-data)

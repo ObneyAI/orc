@@ -109,11 +109,13 @@
           (>= (System/currentTimeMillis) deadline) nil
           :else (do (Thread/sleep 50) (recur)))))))
 
-(defn- run-judge-capturing-instruction!
+(defn- run-judge-capturing-rubric!
   "Drive one default LLM judge through the live processor path with the
    given `judge-config` (carrying :type and, optionally, :criteria).
-   Returns the :instructions string of the ORC LLM module handed to the
-   stubbed `llm/predict`, or nil if the judge never called it."
+   Returns the `:rubric` input (the grading contract the model is given,
+   serialised) of the stubbed `llm/predict` call, or nil if the judge never
+   called it. S6b: the criteria a judge is declared with is data on the judge's
+   blackboard (the rubric's criterion), not text baked into an instruction."
   [ctx {:keys [judge-config fake-llm-outputs host-writes]}]
   (set-living-description-enabled! ctx)
   (let [judge-type (:type judge-config)
@@ -146,8 +148,8 @@
                  :judges ["the-judge"]})
         tick-id (random-uuid)
         captured-instruction (atom nil)
-        stub-predict (fn [_provider module _inputs _options]
-                      (reset! captured-instruction (:instructions module))
+        stub-predict (fn [_provider _module inputs _options]
+                      (reset! captured-instruction (:rubric inputs))
                       {:outputs fake-llm-outputs :usage {:total-tokens 1}})]
     (Thread/sleep 150)
     (with-redefs [llm/predict stub-predict]
@@ -165,7 +167,7 @@
     @captured-instruction))
 
 (def ^:private grounding-fake-outputs
-  {:level 4
+  {:band 4
    :reasoning "Adversarial review: claims trace to the source."
    :grounded-claims ["cited"]
    :ungrounded-claims []
@@ -176,16 +178,16 @@
 ;; -----------------------------------------------------------------------------
 
 (deftest rr31-grounding-judge-instruction-carries-declared-criteria
-  (testing "a grounding judge declared with :criteria is invoked with an instruction containing that criteria verbatim after WHAT TO EVALUATE:"
+  (testing "a grounding judge declared with :criteria is invoked with a grading rubric (an input of the call) containing that criteria verbatim"
     (h/with-async-test-context [ctx]
       (let [criteria "Every routing claim must cite the ticket"
-            instruction (run-judge-capturing-instruction!
+            instruction (run-judge-capturing-rubric!
                           ctx {:judge-config {:type :grounding :criteria criteria}
                                :fake-llm-outputs grounding-fake-outputs
                                :host-writes {:answer "The ticket says billing."}})]
         (is (some? instruction) "the judge must call llm/predict")
-        (is (str/includes? instruction (str "WHAT TO EVALUATE:\n" criteria))
-            (str "instruction must contain the declared criteria verbatim after WHAT TO EVALUATE:. Got: "
+        (is (str/includes? instruction (str "\"criterion\":\"" criteria "\""))
+            (str "the rubric the model is given must carry the declared criteria verbatim as its criterion. Got: "
                  (pr-str instruction)))))))
 
 ;; -----------------------------------------------------------------------------
@@ -193,23 +195,23 @@
 ;; -----------------------------------------------------------------------------
 
 (def ^:private instruction-following-fake-outputs
-  {:level 4
+  {:band 4
    :reasoning "Adversarial compliance audit: directives satisfied."
    :requirements-met ["followed the format"]
    :requirements-missed []
    :feedback "Compliant."})
 
 (deftest rr31-instruction-following-judge-instruction-carries-declared-criteria
-  (testing "an instruction-following judge declared with :criteria is invoked with an instruction containing that criteria verbatim after WHAT TO EVALUATE:"
+  (testing "an instruction-following judge declared with :criteria is invoked with a grading rubric (an input of the call) containing that criteria verbatim"
     (h/with-async-test-context [ctx]
       (let [criteria "Must follow triage protocol accurately"
-            instruction (run-judge-capturing-instruction!
+            instruction (run-judge-capturing-rubric!
                           ctx {:judge-config {:type :instruction-following :criteria criteria}
                                :fake-llm-outputs instruction-following-fake-outputs
                                :host-writes {:answer "Part 1... Part 2..."}})]
         (is (some? instruction) "the judge must call llm/predict")
-        (is (str/includes? instruction (str "WHAT TO EVALUATE:\n" criteria))
-            (str "instruction must contain the declared criteria verbatim after WHAT TO EVALUATE:. Got: "
+        (is (str/includes? instruction (str "\"criterion\":\"" criteria "\""))
+            (str "the rubric the model is given must carry the declared criteria verbatim as its criterion. Got: "
                  (pr-str instruction)))))))
 
 ;; -----------------------------------------------------------------------------
@@ -217,23 +219,23 @@
 ;; -----------------------------------------------------------------------------
 
 (def ^:private reasoning-fake-outputs
-  {:level 4
+  {:band 4
    :reasoning "Adversarial logic review: chain holds."
    :reasoning-strengths ["sound chain"]
    :reasoning-weaknesses []
    :feedback "Sound reasoning."})
 
 (deftest rr31-reasoning-judge-instruction-carries-declared-criteria
-  (testing "a reasoning judge declared with :criteria is invoked with an instruction containing that criteria verbatim after WHAT TO EVALUATE:"
+  (testing "a reasoning judge declared with :criteria is invoked with a grading rubric (an input of the call) containing that criteria verbatim"
     (h/with-async-test-context [ctx]
       (let [criteria "Every inference must trace to a stated premise"
-            instruction (run-judge-capturing-instruction!
+            instruction (run-judge-capturing-rubric!
                           ctx {:judge-config {:type :reasoning :criteria criteria}
                                :fake-llm-outputs reasoning-fake-outputs
                                :host-writes {:answer "Because X, therefore Y."}})]
         (is (some? instruction) "the judge must call llm/predict")
-        (is (str/includes? instruction (str "WHAT TO EVALUATE:\n" criteria))
-            (str "instruction must contain the declared criteria verbatim after WHAT TO EVALUATE:. Got: "
+        (is (str/includes? instruction (str "\"criterion\":\"" criteria "\""))
+            (str "the rubric the model is given must carry the declared criteria verbatim as its criterion. Got: "
                  (pr-str instruction)))))))
 
 ;; -----------------------------------------------------------------------------
@@ -273,21 +275,21 @@
 ;; -----------------------------------------------------------------------------
 
 (def ^:private completeness-fake-outputs
-  {:level 4
+  {:band 4
    :reasoning "Adversarial coverage audit: nearly complete."
    :aspects-covered ["scope covered"]
    :aspects-missing []
    :feedback "Comprehensive."})
 
 (deftest rr31-completeness-judge-instruction-carries-declared-criteria
-  (testing "a completeness judge declared with :criteria is invoked with an instruction containing that criteria verbatim after WHAT TO EVALUATE:"
+  (testing "a completeness judge declared with :criteria is invoked with a grading rubric (an input of the call) containing that criteria verbatim"
     (h/with-async-test-context [ctx]
       (let [criteria "Must produce urgency, sentiment, category, and routing decision"
-            instruction (run-judge-capturing-instruction!
+            instruction (run-judge-capturing-rubric!
                           ctx {:judge-config {:type :completeness :criteria criteria}
                                :fake-llm-outputs completeness-fake-outputs
                                :host-writes {:answer "Report covers scope, budget, timeline."}})]
         (is (some? instruction) "the judge must call llm/predict")
-        (is (str/includes? instruction (str "WHAT TO EVALUATE:\n" criteria))
-            (str "instruction must contain the declared criteria verbatim after WHAT TO EVALUATE:. Got: "
+        (is (str/includes? instruction (str "\"criterion\":\"" criteria "\""))
+            (str "the rubric the model is given must carry the declared criteria verbatim as its criterion. Got: "
                  (pr-str instruction)))))))

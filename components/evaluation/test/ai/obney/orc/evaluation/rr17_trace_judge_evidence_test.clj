@@ -130,7 +130,7 @@
                (fn [_provider _module inputs _options]
                  (reset! judge-input inputs)
                  {:outputs
-                  {:level 2
+                  {:band 2
                    :reasoning "Iteration 1 failed before iteration 2 repaired it."
                    :reasoning-strengths ["The repair completed."]
                    :reasoning-weaknesses ["The first source was missing."]
@@ -146,7 +146,7 @@
                               :write-keys []}))
                      judge-future ((:result/effect handler-result))]
                  @judge-future))]
-        (is (str/includes? (:iteration_evidence @judge-input)
+        (is (str/includes? (:host-iterations @judge-input)
                            "missing-source")
             (pr-str @judge-input))
         (let [scores (into []
