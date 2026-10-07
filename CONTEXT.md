@@ -189,7 +189,7 @@ The completed execution an assessment is about: one execution of a leaf, a compo
 _Avoid_: target, node (a node is a definition; a subject is one execution of it)
 
 **Assessment outcome**:
-How an assessment ended. Scored carries a band, a score and optional feedback. Failed means the judgment could not be carried out (provider error, invalid result, missed deadline, unresolved model). Ungradable means the evidence did not permit a grade, including an exact tie between bands. Pending means it has not ended yet. Only scored outcomes carry a score.
+How an assessment ended. Scored carries a band, a score and optional feedback. Failed means the judgment could not be carried out (provider error, invalid result, missed deadline, unresolved model). Ungradable means the evidence did not permit a grade, including an exact tie between bands and a subject whose execution failed. Pending means it has not ended yet. Only scored outcomes carry a score.
 _Avoid_: zero score, abstention (for a failed or ungradable outcome)
 
 **Monitoring judge**:

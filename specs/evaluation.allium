@@ -220,6 +220,13 @@ contract AssessmentRecording {
         -- deadline is a failed or ungradable outcome with its reason; none of
         -- them becomes a score.
 
+    @invariant FailedSubjectsAreNotGraded
+        -- A completion that failed, timed out or is blocked is still requested,
+        -- but its assessments are ungradable because the subject failed, with
+        -- the subject's failure as the reason; no judge runs. A judge that
+        -- declares it assesses failures grades them like any completion. A
+        -- partial completion is graded.
+
     @invariant FeedbackIsOptional
         -- A rubric declares whether feedback is required. A score-only
         -- assessment carries no feedback rather than empty feedback, and no
@@ -241,7 +248,8 @@ contract PerformanceMonitoring {
     @invariant PerformanceIsAlwaysCollected
         -- Every assessment outcome contributes to the performance of the node
         -- version it assessed, per judge and judge revision, with coverage
-        -- beside every grade.
+        -- beside every grade. Subject failures are counted apart and never
+        -- enter a quality statistic.
 
     @invariant NodeVersionsDoNotBlend
         -- A node version is the node's effective definition when it executed;
@@ -252,7 +260,9 @@ contract PerformanceMonitoring {
         -- Only a declared alert watches a trailing window. A crossing is
         -- signalled once and re-arms on recovery; a window whose coverage is too
         -- low signals degraded coverage instead of poor performance, and its
-        -- recovery is signalled once too. A window speaks only once it is full.
+        -- recovery is signalled once too. A window speaks only once it is full;
+        -- its coverage counts every outcome in it and its mean only the scored
+        -- ones, and too little coverage is signalled before any crossing.
         -- A signal never starts training by itself.
 }
 
