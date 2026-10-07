@@ -199,6 +199,16 @@
   (strip-engine-keys
    (or (orc/value-log-tick-seeds ctx (:tenant-id ctx) (root-tick-id ctx tick-id)) {})))
 
+(defn- run-node
+  "The node a completion is for, as it ran: its entry in the run's durable tick
+   execution context (the definition the run actually executed - for a published
+   run, a node of the run's own that the live sheet does not have). Falls back
+   to the sheet's live node only for a run with no snapshot."
+  [ctx {:keys [sheet-id tick-id node-id]}]
+  (or (some-> (orc/get-tick-execution-context ctx tick-id)
+              (get-in [:nodes-by-id node-id]))
+      (when (and sheet-id node-id) (orc/get-node ctx sheet-id node-id))))
+
 (defn- build-trace-data
   "Build the `trace-data` map the evaluation judges expect:
    `{:inputs <host-input-values> :outputs <host-output-values>
@@ -229,7 +239,7 @@
   (let [sheet-id (:sheet-id event)
         tick-id (:tick-id event)
         node-id (:node-id event)
-        node (when (and sheet-id node-id) (orc/get-node ctx sheet-id node-id))
+        node (run-node ctx event)
         read-keys (:read-keys event)
         direct-inputs (:inputs event)
         composite? (and (seq (:children-ids node)) (empty? read-keys))

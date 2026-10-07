@@ -347,6 +347,23 @@
 ;; Tick-Scoped Resolution Helpers
 ;; =============================================================================
 ;;
+(defn- ephemeral-routing-tree?
+  "True when a tick's tree may run on the ephemeral fast path: only
+   sequence/fallback/condition/leaf nodes, and no composite carrying judges.
+   Ephemeral routing records no per-composite completion, so a judge on a
+   composite (or the root) could never fire; a judged composite is a durable
+   boundary and makes the run durable. A tree with no judged composite keeps
+   the fast path unchanged. `:judges` is on every run node: draft nodes carry
+   their own, a published run's nodes are stamped with their source draft
+   node's at the start of the run (see `build-execution-snapshot`), so the
+   answer is fixed for the life of the tick."
+  [nodes-by-id]
+  (and (seq nodes-by-id)
+       (every? #(contains? #{:sequence :fallback :condition :leaf} (:type %))
+               (vals nodes-by-id))
+       (not-any? #(and (not= :leaf (:type %)) (seq (:judges %)))
+                 (vals nodes-by-id))))
+
 (defn- resolve-nodes-by-id
   "Get nodes-by-id for a tick from tick-scoped execution context."
   [ctx _sheet-id tick-id]
@@ -2293,8 +2310,7 @@
         root-node (when root-id (get nodes-by-id root-id))]
     (when root-node
       (if (and (not= :legacy (get-in tick-ctx [:options :durability-mode]))
-               (every? #(contains? #{:sequence :fallback :condition :leaf} (:type %))
-                       (vals nodes-by-id)))
+               (ephemeral-routing-tree? nodes-by-id))
         (advance-ephemeral-frontier context)
       ;; :inputs carries only what cannot be resolved from the tick
       ;; blackboard — execution context and map-each item overrides. The
@@ -4341,11 +4357,6 @@
       ;; Not a condition node
       :else nil)))
 
-(defn- ephemeral-routing-tree? [nodes-by-id]
-  (and (seq nodes-by-id)
-       (every? #(contains? #{:sequence :fallback :condition :leaf} (:type %))
-               (vals nodes-by-id))))
-
 (defn- ephemeral-routing-active? [context tick-id nodes-by-id]
   (and (not= :legacy (get-in (rm/get-tick-execution-context context tick-id)
                              [:options :durability-mode]))
@@ -4910,17 +4921,25 @@
             ;; Child succeeded (or partially succeeded — D-008) - fallback succeeds.
             ;; :partial means "we got something usable" so fallback stops here.
             ;; The :status surfaced matches the child's so downstream sees the truth.
-            {:result/events
-             [(->event
-               {:type :sheet/node-execution-completed
-                :tags #{[:sheet sheet-id]
-                        [:node parent-id]
-                        [:tick tick-id]}
-                :body (cond-> {:sheet-id sheet-id
-                               :tick-id tick-id
-                               :node-id parent-id
-                               :status child-status}
-                        (seq exec-context) (assoc :inputs exec-context))})]}
+            ;; Like a sequence, the fallback's completion reports the writes of
+            ;; the child that succeeded (as sources into the write log), so a
+            ;; judge on the fallback is shown what the fallback produced.
+            (let [write-sources (value-log/resolve-write-sources
+                                 event-store (:tenant-id context) tick-id event)]
+              {:result/events
+               [(->event
+                 {:type :sheet/node-execution-completed
+                  :tags #{[:sheet sheet-id]
+                          [:node parent-id]
+                          [:tick tick-id]}
+                  :body (cond-> {:sheet-id sheet-id
+                                 :tick-id tick-id
+                                 :node-id parent-id
+                                 :status child-status}
+                          (seq write-sources)
+                          (assoc :write-keys (vec (keys write-sources))
+                                 :write-sources write-sources)
+                          (seq exec-context) (assoc :inputs exec-context))})]})
             ;; D-003: :timeout from a child is like :failure for fallback purposes —
             ;; we didn't get useful output, try the next sibling. If no next sibling,
             ;; fallback completes with :timeout (truthful propagation).
