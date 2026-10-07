@@ -1581,6 +1581,94 @@
                 (str "Opt-in OFF must produce ZERO new judge events. "
                      "Before: " before ", After: " after))))))))
 
+(deftest s13w-tree-shape-path-honours-judge-purposes
+  (testing "a tree-shape judge whose purposes exclude :learning emits no legacy :judge/score-emitted; learning and default-purposes judges on the same tree emit exactly one each (EvaluationFeedsLearningOnlyByPurpose)"
+    (with-test-ctx [ctx]
+      (set-living-description-enabled! ctx true)
+      (let [sheet-id (create-bare-sheet! ctx)
+            node-id (create-repl-researcher-node! ctx sheet-id)
+            tick-id (random-uuid)
+            declare! (fn [judge-name config]
+                       (cp/process-command
+                         (assoc ctx :command
+                                {:command/name :sheet/declare-judge
+                                 :command/id (random-uuid)
+                                 :command/timestamp (time/now)
+                                 :sheet-id sheet-id
+                                 :judge-name judge-name
+                                 :judge-config config})))
+            _ (declare! "shape-monitor" {:type :heuristic-structural :purposes #{:monitoring}})
+            _ (declare! "shape-learn" {:type :heuristic-structural :purposes #{:learning}})
+            _ (declare! "shape-default" {:type :heuristic-structural})
+            _ (cp/process-command
+                (assoc ctx :command
+                       {:command/name :sheet/set-node-judges
+                        :command/id (random-uuid)
+                        :command/timestamp (time/now)
+                        :sheet-id sheet-id
+                        :node-id node-id
+                        :judges ["shape-monitor" "shape-learn" "shape-default"]}))
+            _ (Thread/sleep 100)
+            tree-dsl [:sequence
+                      [:chunk-document {:from :doc :into :chunks}]
+                      [:final {:keys [:chunks]}]]]
+        (emit-node-execution-started! ctx sheet-id tick-id node-id {:doc "x"})
+        (Thread/sleep 100)
+        (emit-rlm-tree-generated! ctx sheet-id tick-id tree-dsl)
+        (Thread/sleep 1500)
+        (let [events (filter #(= tick-id (:tick-id %))
+                             (into [] (es/read (:event-store ctx)
+                                               {:types #{:judge/score-emitted}
+                                                :tenant-id (:tenant-id ctx)})))
+              names (frequencies (map :judge-name events))]
+          (is (= {"shape-learn" 1 "shape-default" 1} names)
+              (str "only learning-purpose judges feed the legacy score on the tree-shape path. Got: "
+                   (pr-str names))))))))
+
+(deftest s13w-one-legacy-score-per-tick-and-judge-across-tree-shape-and-assessment-paths
+  (testing "a heuristic-structural judge grading the tree on :rlm/tree-generated AND the node's completion for the same tick writes ONE legacy :judge/score-emitted for (sheet, node, tick, judge), whichever path lands first"
+    (doseq [order [:tree-first :completion-first]]
+      (with-test-ctx [ctx]
+        (set-living-description-enabled! ctx true)
+        (let [sheet-id (create-bare-sheet! ctx)
+              node-id (create-repl-researcher-node! ctx sheet-id)
+              tick-id (random-uuid)
+              _ (cp/process-command
+                  (assoc ctx :command
+                         {:command/name :sheet/declare-judge
+                          :command/id (random-uuid)
+                          :command/timestamp (time/now)
+                          :sheet-id sheet-id
+                          :judge-name "shape"
+                          :judge-config {:type :heuristic-structural}}))
+              _ (cp/process-command
+                  (assoc ctx :command
+                         {:command/name :sheet/set-node-judges
+                          :command/id (random-uuid)
+                          :command/timestamp (time/now)
+                          :sheet-id sheet-id
+                          :node-id node-id
+                          :judges ["shape"]}))
+              _ (Thread/sleep 100)
+              tree-dsl [:sequence
+                        [:chunk-document {:from :doc :into :chunks}]
+                        [:final {:keys [:chunks]}]]
+              tree! #(emit-rlm-tree-generated! ctx sheet-id tick-id tree-dsl)
+              done! #(emit-node-execution-with-tree-output! ctx sheet-id tick-id node-id tree-dsl)]
+          (emit-node-execution-started! ctx sheet-id tick-id node-id {:doc "x"})
+          (Thread/sleep 100)
+          (if (= order :tree-first)
+            (do (tree!) (Thread/sleep 1500) (done!))
+            (do (done!) (Thread/sleep 1500) (tree!)))
+          (Thread/sleep 2000)
+          (let [events (filter #(= tick-id (:tick-id %))
+                               (into [] (es/read (:event-store ctx)
+                                                 {:types #{:judge/score-emitted}
+                                                  :tenant-id (:tenant-id ctx)})))]
+            (is (= 1 (count events))
+                (str order ": exactly one legacy score for the tick and judge. Got "
+                     (count events) ": " (pr-str (mapv #(select-keys % [:judge-name :assessment-id]) events))))))))))
+
 ;; =============================================================================
 ;; Gap-4 RED#1 (tracer) — :custom judge sub-executes a consumer eval sheet
 ;; =============================================================================
@@ -2180,7 +2268,7 @@
         (with-redefs [orc/execute (fn [_ctx _sheet-id _inputs & opts]
                                      (reset! execute-opts (apply hash-map opts))
                                      {:status :success
-                                      :outputs {:score 1.0 :feedback ""}})]
+                                      :outputs {:score 1.0 :feedback "Fine."}})]
           (let [result (invoke-custom-judge
                          ;; a stale in-memory depth no longer suppresses the judge
                          (assoc ctx

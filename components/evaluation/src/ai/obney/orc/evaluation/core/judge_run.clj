@@ -228,10 +228,12 @@
       (let [dims (validate-dimensions (:dimensions outputs) nil)]
         (if (:error dims)
           (failed :invalid-dimensions (:error dims))
-          {:status :scored
-           :score (double score)
-           :feedback (or (:feedback outputs) "")
-           :dimensions (:dimensions dims)})))))
+          ;; FeedbackIsOptional: a judge that wrote no (or blank) feedback gives a
+          ;; score-only result, which carries no feedback at all.
+          (cond-> {:status :scored
+                   :score (double score)
+                   :dimensions (:dimensions dims)}
+            (non-blank? (:feedback outputs)) (assoc :feedback (:feedback outputs))))))))
 
 (defn- execution-failure-outcome [result completions timeout-ms]
   (let [kind (failure-kind completions)]

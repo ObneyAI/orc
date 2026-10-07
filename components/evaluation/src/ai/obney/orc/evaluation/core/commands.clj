@@ -21,6 +21,7 @@
   (:require [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
             [ai.obney.orc.evaluation.core.assessments :as assessments]
+            [clojure.string :as str]
             [cognitect.anomalies :as anom]))
 
 ;; =============================================================================
@@ -199,14 +200,41 @@
 
 (defn- outcome-error
   "nil when the command body is a well-formed outcome, else a message. A scored
-   outcome has a score; a failed or ungradable one has its reason and message -
-   nothing is recorded without them."
-  [{:keys [status score reason message]}]
+   outcome has a score within [0,1], and - when its judge's rubric requires
+   feedback - non-blank feedback; a failed or ungradable one has its reason and
+   message - nothing is recorded without them."
+  [{:keys [status score feedback reason message judge-config]}]
   (case status
-    :scored (when-not (number? score) "a scored outcome needs a :score")
+    :scored (cond
+              (not (number? score))
+              "a scored outcome needs a :score"
+
+              (not (<= 0.0 (double score) 1.0))
+              (str "a scored outcome's :score must be within [0,1], got " (pr-str score))
+
+              (and (= :required (get-in judge-config [:rubric :feedback]))
+                   (not (and (string? feedback) (not (str/blank? feedback)))))
+              "a scored outcome of a judge whose rubric requires feedback needs non-blank :feedback")
     (:failed :ungradable) (when-not (and reason message)
                             (str "a " (name status) " outcome needs a :reason and a :message"))
     nil))
+
+(defn- tree-shape-score-exists?
+  "True when a `:judge/score-emitted` of the tree-shape path (written by
+   `:evaluation/record-judge-score`, so it carries no assessment) already exists
+   for the request's (sheet, node, tick, judge). That score IS this judge's
+   legacy record for the tick; an assessment's own legacy record would be a
+   second one. Scores that carry an assessment are distinct executions of a node
+   and never count here."
+  [{:keys [event-store tenant-id]} request]
+  (boolean
+    (some (fn [event]
+            (and (nil? (:assessment-id event))
+                 (same-judge-score? (:sheet-id request) (:node-id request)
+                                    (:tick-id request) (:judge-name request) event)))
+          (into [] (es/read event-store {:types #{:judge/score-emitted}
+                                         :tags #{[:tick (:tick-id request)]}
+                                         :tenant-id tenant-id})))))
 
 (defn- terminal-event
   [request-body {:keys [assessment-id status band score feedback dimensions band-distribution
@@ -264,7 +292,9 @@
    outcome is delivered. A scored outcome of a judge whose purposes include
    :learning, and that carries feedback, ALSO records the legacy
    `:judge/score-emitted` in the same append; a monitoring-only judge's, or a
-   score-only outcome, never does.
+   score-only outcome, never does - nor does one whose judge already has its
+   tree-shape legacy score for the tick (one legacy score per judge and tick
+   across the two paths).
 
    The append is fenced by a CAS on the assessment's own history (requested, no
    terminal yet), so two writers that both read before either appends cannot
@@ -294,5 +324,6 @@
        (cond-> [(terminal-event request command)]
          (and (= :scored (:status command))
               (contains? (:purposes request) :learning)
-              (some? (:feedback command)))
+              (some? (:feedback command))
+              (not (tree-shape-score-exists? ctx request)))
          (conj (legacy-score-event request command)))})))
