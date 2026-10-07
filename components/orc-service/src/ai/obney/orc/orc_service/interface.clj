@@ -143,6 +143,9 @@
 
 (def value-log-exec-context value-log/exec-context)
 (def value-log-execution-key value-log/execution-key)
+(def value-log-engine-key? value-log/engine-key?)
+(def value-log-tick-started-event value-log/tick-started-event)
+(def value-log-tick-seeds value-log/tick-seeds)
 (def value-log-writes-for value-log/writes-for)
 (def value-log-latest-values value-log/latest-values)
 (def value-log-input-seeds-by-iteration value-log/input-seeds-by-iteration)

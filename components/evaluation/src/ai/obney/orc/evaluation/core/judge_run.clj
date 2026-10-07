@@ -313,6 +313,7 @@
         inputs (cond-> {:host-instruction (judges/compose-task evidence (:criteria judge-config))
                         :host-inputs (host-value (or (:inputs evidence) {}))
                         :host-outputs (host-value (or (:outputs evidence) {}))
+                        :original-task (host-value (or (:original-task evidence) {}))
                         :rubric (behaviours/rubric-value rubric)}
                  iterations? (assoc :host-iterations (judges/coerce-source-string iterations)))
         sheet-id (build-behaviour! ctx judge-type form {:model (:model judge-config)
@@ -320,6 +321,31 @@
         result (execute-workflow ctx sheet-id inputs timeout-ms origin)]
     (finish ctx result {:judge-type judge-type :rubric rubric
                         :timeout-ms timeout-ms :provider provider})))
+
+(defn execution-family
+  "The complete execution family beneath the assessed node: every node execution
+   under it, following delegates and generated child runs, verbatim and
+   untruncated (`orc/get-execution-family` scoped to the node). A node that ran
+   as one iteration of a map-each is shown only its own iteration's executions
+   in its own run."
+  [ctx {:keys [tick-id node-id exec-context]}]
+  (let [family (orc/get-execution-family ctx tick-id {:node-id node-id})]
+    (if (seq exec-context)
+      (filterv (fn [entry]
+                 (or (not= tick-id (:tick-id entry))
+                     (= exec-context (select-keys (:exec-context entry) (keys exec-context)))))
+               family)
+      family)))
+
+(defn declares-key?
+  "True when `judge-config` is a custom judge whose workflow declares the
+   blackboard key `k`: the judge's way of asking the runtime for optional
+   evidence (:host-family, :child-assessments). Built-in judges declare none."
+  [ctx judge-config k]
+  (let [eval-sheet-id (or (:eval-sheet-id judge-config) (:sheet-id judge-config))]
+    (boolean (and (= :custom (:type judge-config))
+                  eval-sheet-id
+                  (contains? (orc/get-blackboard-by-key ctx eval-sheet-id) k)))))
 
 (defn- run-custom
   [ctx judge-config evidence origin]
@@ -345,7 +371,19 @@
                             :host-outputs (or (:outputs evidence) {})
                             :host-instruction (or (:instruction evidence) "")
                             :host-trace host-trace}
-                     rubric (assoc :rubric (behaviours/rubric-value rubric)))
+                     rubric (assoc :rubric (behaviours/rubric-value rubric))
+                     ;; The run's original task, a separate item from the node's
+                     ;; instruction: handed only to a judge that declares it.
+                     (contains? declared :original-task)
+                     (assoc :original-task (or (:original-task evidence) {}))
+                     ;; Opt-in: the execution family is read only for a judge that
+                     ;; declares :host-family (PayForWhatYouUse).
+                     (contains? declared :host-family)
+                     (assoc :host-family (execution-family ctx evidence))
+                     ;; The settled assessments within the node's family, gathered
+                     ;; by the runtime once every one of them had its outcome.
+                     (contains? declared :child-assessments)
+                     (assoc :child-assessments (or (:child-assessments evidence) [])))
             result (execute-workflow ctx eval-sheet-id inputs timeout-ms origin)]
         (finish ctx result {:judge-type :custom :rubric rubric
                             :timeout-ms timeout-ms :provider (:llm-provider ctx)})))))

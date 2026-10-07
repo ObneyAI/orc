@@ -51,10 +51,14 @@
        (= judge-name (:judge-name event))))
 
 (defn- same-composite-score?
-  [sheet-id node-id tick-id event]
-  (and (= sheet-id (:sheet-id event))
-       (= node-id (:node-id event))
-       (= tick-id (:tick-id event))))
+  "Composite identity: the subject completion when the composite names one, else
+   the legacy (sheet, node, tick) tuple."
+  [sheet-id node-id tick-id subject event]
+  (if subject
+    (= subject (:subject-completion-id event))
+    (and (= sheet-id (:sheet-id event))
+         (= node-id (:node-id event))
+         (= tick-id (:tick-id event)))))
 
 (defn- existing-judge-score?
   "True when a :judge/score-emitted event already exists for the identity
@@ -70,23 +74,20 @@
                                          :tags #{[:tick tick-id]}
                                          :tenant-id tenant-id})))))
 
-(defn- existing-composite-score?
-  "True when a :judge/composite-score-computed event already exists for
-   the identity tuple [sheet-id node-id tick-id].
+(defn- composite-scope-tags [tick-id subject]
+  (if subject #{[:subject subject]} #{[:tick tick-id]}))
 
-   RR-23: scoped by the `[:tick tick-id]` tag `record-composite-score`
-   already writes on every emitted event — was the last untagged
-   full-type scan on this hot path (`existing-judge-score?` above was
-   already tick-scoped); this duplicate check runs once per composite
-   score dispatched, over the fastest-growing event type in the system."
-  [{:keys [event-store tenant-id]} sheet-id node-id tick-id]
+(defn- existing-composite-score?
+  "True when a :judge/composite-score-computed event already exists for the
+   composite's identity (its subject completion, else [sheet-id node-id tick-id]).
+
+   RR-23: scoped by a tag (the subject, else the tick) rather than a full-type
+   scan: this duplicate check runs once per composite dispatched."
+  [{:keys [event-store tenant-id]} sheet-id node-id tick-id subject]
   (boolean
-    (some (fn [e]
-            (and (= sheet-id (:sheet-id e))
-                 (= node-id (:node-id e))
-                 (= tick-id (:tick-id e))))
+    (some (partial same-composite-score? sheet-id node-id tick-id subject)
           (into [] (es/read event-store {:types #{:judge/composite-score-computed}
-                                         :tags #{[:tick tick-id]}
+                                         :tags (composite-scope-tags tick-id subject)
                                          :tenant-id tenant-id})))))
 
 ;; =============================================================================
@@ -143,9 +144,10 @@
    Emitted event shape is identical to the pre-async judge runtime's
    `->composite-score-event`."
   [{{:keys [sheet-id node-id tick-id composite-score
-            contributing-judges emitted-at]} :command
+            contributing-judges coverage purpose subject-completion-id emitted-at]
+     partial-composite? :partial} :command
     :as ctx}]
-  (if (existing-composite-score? ctx sheet-id node-id tick-id)
+  (if (existing-composite-score? ctx sheet-id node-id tick-id subject-completion-id)
     ;; Idempotent no-op: a composite for this tuple already exists.
     {:command-result/events []}
     ;; The read above cannot fence a race: judge dispatch runs one future per
@@ -155,23 +157,28 @@
     ;; fence `record-judge-score` uses above.
     {:command-result/cas
      {:types #{:judge/composite-score-computed}
-      :tags #{[:tick tick-id]}
+      :tags (composite-scope-tags tick-id subject-completion-id)
       :predicate-fn
       (fn [existing]
-        (not-any? (partial same-composite-score? sheet-id node-id tick-id)
+        (not-any? (partial same-composite-score? sheet-id node-id tick-id subject-completion-id)
                   (into [] existing)))}
      :command-result/events
      [(->event
         {:type :judge/composite-score-computed
-         :tags #{[:sheet sheet-id]
-                 [:node node-id]
-                 [:tick tick-id]}
-         :body {:sheet-id sheet-id
-                :tick-id tick-id
-                :node-id node-id
-                :composite-score composite-score
-                :contributing-judges contributing-judges
-                :emitted-at (or emitted-at (str (java.time.Instant/now)))}})]}))
+         :tags (cond-> #{[:sheet sheet-id]
+                         [:node node-id]
+                         [:tick tick-id]}
+                 subject-completion-id (conj [:subject subject-completion-id]))
+         :body (cond-> {:sheet-id sheet-id
+                        :tick-id tick-id
+                        :node-id node-id
+                        :contributing-judges contributing-judges
+                        :emitted-at (or emitted-at (str (java.time.Instant/now)))}
+               (some? composite-score) (assoc :composite-score composite-score)
+               (some? subject-completion-id) (assoc :subject-completion-id subject-completion-id)
+               (some? coverage) (assoc :coverage coverage)
+               (some? partial-composite?) (assoc :partial partial-composite?)
+               (some? purpose) (assoc :purpose purpose))})]}))
 
 ;; =============================================================================
 ;; Assessment outcome

@@ -176,11 +176,22 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    [:composite-score [:and number? [:>= 0.0] [:<= 1.0]]]
+    ;; Absent when no judge scored: a coverage-only composite never invents a score.
+    [:composite-score {:optional true} [:and number? [:>= 0.0] [:<= 1.0]]]
+    ;; The completion the composite is of: composite identity is per subject.
+    [:subject-completion-id {:optional true} :uuid]
     [:contributing-judges [:vector [:map
                                     [:judge-name :string]
                                     [:score number?]
                                     [:weight number?]]]]
+    ;; HonestComposite: how many of the subject's judges the composite covers and
+    ;; how many of them scored. :partial when any did not score. The composite is
+    ;; of the LEARNING judges only: a monitoring-only judge is never mixed in.
+    [:coverage {:optional true} [:map
+                                 [:expected :int] [:scored :int]
+                                 [:failed :int] [:ungradable :int]]]
+    [:partial {:optional true} :boolean]
+    [:purpose {:optional true} :keyword]
     [:emitted-at :string]]})
 
 ;; =============================================================================
@@ -231,11 +242,22 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    [:composite-score [:and number? [:>= 0.0] [:<= 1.0]]]
+    ;; Absent when no judge scored: a coverage-only composite never invents a score.
+    [:composite-score {:optional true} [:and number? [:>= 0.0] [:<= 1.0]]]
+    ;; The completion the composite is of: composite identity is per subject.
+    [:subject-completion-id {:optional true} :uuid]
     [:contributing-judges [:vector [:map
                                     [:judge-name :string]
                                     [:score number?]
                                     [:weight number?]]]]
+    ;; HonestComposite: how many of the subject's judges the composite covers and
+    ;; how many of them scored. :partial when any did not score. The composite is
+    ;; of the LEARNING judges only: a monitoring-only judge is never mixed in.
+    [:coverage {:optional true} [:map
+                                 [:expected :int] [:scored :int]
+                                 [:failed :int] [:ungradable :int]]]
+    [:partial {:optional true} :boolean]
+    [:purpose {:optional true} :keyword]
     [:emitted-at {:optional true} :string]]})
 
 ;; =============================================================================

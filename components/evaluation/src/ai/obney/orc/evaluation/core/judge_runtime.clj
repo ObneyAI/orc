@@ -117,6 +117,13 @@
          :node-id (:node-id matching)
          :inputs (or (:inputs matching) {})}))))
 
+(defn- strip-engine-keys
+  "Drop the engine's own bookkeeping keys (map-each markers, tick iteration,
+   durable order) from a map of values: they are not data any node declared,
+   and a strict judge schema rejects them."
+  [m]
+  (into {} (remove (comp orc/value-log-engine-key? key)) m))
+
 (defn- resolved-reads-inputs
   "RR-31: the node's :inputs, resolved from its recorded reads via the value
    log. `event` is the `:sheet/node-execution-completed` body — it carries
@@ -138,13 +145,76 @@
         direct-inputs (not-empty (:inputs event))]
     (merge resolved direct-inputs)))
 
+(defn- descendant-ids
+  "The ids of every node beneath `node-id` in `nodes-by-id`."
+  [nodes-by-id node-id]
+  (loop [acc #{} frontier [node-id]]
+    (if (empty? frontier)
+      acc
+      (let [kids (into [] (mapcat #(:children-ids (get nodes-by-id %))) frontier)]
+        (recur (into acc kids) kids)))))
+
+(defn- composite-reads
+  "What a composite (a node with children and no read declaration of its own)
+   read from OUTSIDE itself: the values its descendants in this tick read that
+   no earlier descendant had written, resolved from the value log. Values a
+   composite's children pass to each other are internal to it, not its reads."
+  [ctx tick-id event node]
+  (let [nodes-by-id (orc/get-nodes-by-id ctx (:sheet-id event))
+        beneath (descendant-ids nodes-by-id (:id node))
+        tick-events (orc/value-log-read-tick-events (:event-store ctx) (:tenant-id ctx) tick-id)
+        completions (->> tick-events
+                         (filter #(and (= :sheet/node-execution-completed (:event/type %))
+                                       (contains? beneath (:node-id %))))
+                         (sort-by #(str (:event/id %))))
+        external (loop [cs completions, written #{}, found {}]
+                   (if-let [c (first cs)]
+                     (let [fresh (into [] (remove #(or (contains? written %) (contains? found %)))
+                                       (:read-keys c))]
+                       (recur (rest cs)
+                              (into written (:write-keys c))
+                              (into found (map (fn [k] [k c])) fresh)))
+                     found))]
+    (into {}
+          (mapcat (fn [[completion ks]]
+                    (select-keys (orc/value-log-resolve-reads (:event-store ctx) (:tenant-id ctx)
+                                                              tick-id completion)
+                                 (map first ks))))
+          (group-by val external))))
+
+(defn- root-tick-id
+  "The root of the run `tick-id` belongs to: follow :parent-tick-id up the
+   durable tick-started events (delegates and generated trees start child
+   ticks)."
+  [ctx tick-id]
+  (loop [id tick-id, depth 0]
+    (let [parent (:parent-tick-id
+                  (orc/value-log-tick-started-event ctx (:tenant-id ctx) id))]
+      (if (and parent (< depth 64)) (recur parent (inc depth)) id))))
+
+(defn- original-task
+  "The original task of the run: the root run's inputs, resolved values, kept
+   separate from any node's own instruction."
+  [ctx tick-id]
+  (strip-engine-keys
+   (or (orc/value-log-tick-seeds ctx (:tenant-id ctx) (root-tick-id ctx tick-id)) {})))
+
 (defn- build-trace-data
   "Build the `trace-data` map the evaluation judges expect:
    `{:inputs <host-input-values> :outputs <host-output-values>
-     :instruction <host-instruction>
+     :instruction <host-instruction> :original-task <root-run-inputs>
      :researcher-iterations <ordered-durable-records, when applicable>}`.
 
    `event` is the `:sheet/node-execution-completed` event body.
+
+   Evidence by scope: a leaf's :inputs are its own resolved reads; a composite
+   (sequence, fallback, parallel, map-each) records no reads of its own, so its
+   :inputs are what its descendants read from outside it. :outputs are the
+   node's own writes resolved from the value log, INCLUDING writes forwarded
+   from a delegate's child run (`:write-sources`). A composite has no
+   instruction: :instruction stays nil rather than being invented. The run's
+   original task is a separate item, never folded into the node's instruction.
+   The engine's own bookkeeping keys are never part of the evidence.
 
    RR-31: when the completion records :read-keys, :inputs is resolved from
    the value log (`resolved-reads-inputs`) — the node's ACTUAL recorded
@@ -162,19 +232,22 @@
         node (when (and sheet-id node-id) (orc/get-node ctx sheet-id node-id))
         read-keys (:read-keys event)
         direct-inputs (:inputs event)
-        inputs (if (seq read-keys)
-                 (resolved-reads-inputs ctx tick-id event)
-                 (or (not-empty direct-inputs)
-                    (find-started-inputs ctx sheet-id tick-id node-id)
-                    {}))
-        ;; The completion event carries only :write-keys — values live in the
-        ;; tick's :sheet/execution-value-written events. Resolve them by
-        ;; (node-id, exec-context) so judges score against what THIS node
-        ;; execution actually produced. An empty map here would silently
-        ;; degrade every grounding score rather than fail loudly.
-        outputs (orc/value-log-writes-for
-                 (orc/value-log-read-tick-events (:event-store ctx) (:tenant-id ctx) tick-id)
-                 event)
+        composite? (and (seq (:children-ids node)) (empty? read-keys))
+        inputs (strip-engine-keys
+                (cond
+                  (seq read-keys) (resolved-reads-inputs ctx tick-id event)
+                  composite? (composite-reads ctx tick-id event node)
+                  :else (or (not-empty direct-inputs)
+                            (find-started-inputs ctx sheet-id tick-id node-id)
+                            {})))
+        ;; The completion event carries only :write-keys and :write-sources —
+        ;; values live in the tick's :sheet/execution-value-written events (or,
+        ;; for a delegate or composite, in the child run the sources point
+        ;; into). Resolve them by (node-id, exec-context) so judges score
+        ;; against what THIS node execution actually produced. An empty map
+        ;; here would silently degrade every grounding score rather than fail
+        ;; loudly.
+        outputs (orc/value-log-resolve-writes (:event-store ctx) (:tenant-id ctx) tick-id event)
         ;; RR-33: the node's declared writes, for judges that need to name
         ;; the task when the node has no instruction (e.g. a `code` node,
         ;; whose DSL takes no instruction). Prefer the completion event's
@@ -185,9 +258,12 @@
                        (vec (keys outputs)))]
     (cond->
      {:node-id node-id
+      :tick-id tick-id
+      :exec-context (second (orc/value-log-execution-key event))
       :inputs inputs
       :outputs outputs
       :write-keys write-keys
+      :original-task (original-task ctx tick-id)
       ;; RR-33: pass the node's instruction through as nil (not "") when
       ;; absent — an empty string is truthy under `or`, so the pre-RR-33
       ;; `(or (:instruction node) "")` here silently defeated every
@@ -437,29 +513,46 @@
    The command handler is the sole writer of
    `:judge/composite-score-computed`; this builds the body it validates
    + emits. `source` carries :sheet-id / :node-id / :tick-id."
-  [source judge-results]
-  (let [raw-entries (keep (fn [{:keys [judge-name judge-config result]}]
-                            (when (and result (number? (:score result)))
-                              {:judge-name judge-name
-                               :score (:score result)
-                               :weight (:weight judge-config)}))
-                          judge-results)]
-    (when (>= (count raw-entries) 2)
-      (when-let [normalized (normalize-judge-weights raw-entries)]
-        (when-let [composite (compute-composite-score raw-entries)]
-          {:command/id (random-uuid)
-           :command/timestamp (time/now)
-           :command/name :evaluation/record-composite-score
-           :sheet-id (:sheet-id source)
-           :tick-id (:tick-id source)
-           :node-id (:node-id source)
-           :composite-score composite
-           :contributing-judges (mapv (fn [{:keys [judge-name score weight]}]
-                                        {:judge-name judge-name
-                                         :score (double score)
-                                         :weight (double weight)})
-                                      normalized)
-           :emitted-at (str (java.time.Instant/now))})))))
+  ([source judge-results]
+   ;; The direct (tree-shape) path: every judge that returned nothing counts as
+   ;; one that did not score.
+   (->record-composite-score-command
+    source judge-results
+    (let [scored (count (filter #(number? (:score (:result %))) judge-results))]
+      ;; The direct path forms a composite only from two or more scores.
+      {:expected (if (>= scored 2) (count judge-results) 0) :scored scored
+       :failed (- (count judge-results) scored) :ungradable 0})))
+  ([source judge-results coverage]
+   (let [raw-entries (keep (fn [{:keys [judge-name judge-config result]}]
+                             (when (and result (number? (:score result)))
+                               {:judge-name judge-name
+                                :score (:score result)
+                                :weight (:weight judge-config)}))
+                           judge-results)
+         normalized (when (seq raw-entries) (normalize-judge-weights raw-entries))
+         composite (when (seq raw-entries) (compute-composite-score raw-entries))]
+     ;; A composite needs at least two judges expected. With one or more scored
+     ;; it carries the mean over the scored; with none scored it carries
+     ;; coverage only and NO score - a score is never invented.
+     (when (>= (:expected coverage) 2)
+       (cond-> {:command/id (random-uuid)
+                :command/timestamp (time/now)
+                :command/name :evaluation/record-composite-score
+                :sheet-id (:sheet-id source)
+                :tick-id (:tick-id source)
+                :node-id (:node-id source)
+                :contributing-judges (mapv (fn [{:keys [judge-name score weight]}]
+                                             {:judge-name judge-name
+                                              :score (double score)
+                                              :weight (double weight)})
+                                           normalized)
+                :coverage coverage
+                :partial (< (:scored coverage) (:expected coverage))
+                :purpose :learning
+                :emitted-at (str (java.time.Instant/now))}
+         composite (assoc :composite-score composite)
+         (:subject-completion-id source) (assoc :subject-completion-id
+                                                (:subject-completion-id source)))))))
 
 ;; =============================================================================
 ;; Gap-5 — Default judge attachment for repl-researcher nodes
@@ -783,8 +876,11 @@
   "Pure builder of the `:evaluation/assessment-requested` event for `judge` (an
    effective-judges entry) assessing the completion `completion`. `node-id` is
    the node judged (the source node of a published run's node);
-   `version-number` the published sheet version the run executed, nil for a draft."
-  [completion assessment-id {:keys [judge-name judge-config]} node-version node-id version-number]
+   `version-number` the published sheet version the run executed, nil for a
+   draft. `depends-on` (the assessment ids the judging must wait for) is
+   recorded on the request and indexed by a [:depends-on id] tag, so an outcome
+   can find the requests waiting on it."
+  [completion assessment-id {:keys [judge-name judge-config]} node-version node-id version-number depends-on]
   (let [subject (:event/id completion)
         sheet-id (:sheet-id completion)
         run-node-id (:node-id completion)
@@ -794,8 +890,10 @@
         exec-context (second (orc/value-log-execution-key completion))]
     (es/->event
      {:type :evaluation/assessment-requested
-      :tags #{[:sheet sheet-id] [:node node-id] [:tick tick-id]
-              [:assessment assessment-id] [:subject subject]}
+      :tags (into #{[:sheet sheet-id] [:node node-id] [:tick tick-id]
+                    [:assessment assessment-id] [:subject subject]}
+                  (map (fn [dependency] [:depends-on dependency]))
+                  depends-on)
       :body (cond-> {:assessment-id assessment-id
                      :sheet-id sheet-id
                      :node-id node-id
@@ -809,7 +907,8 @@
               (seq exec-context) (assoc :exec-context exec-context)
               (not= node-id run-node-id) (assoc :run-node-id run-node-id)
               node-version (assoc :node-version node-version)
-              version-number (assoc :version-number version-number))})))
+              version-number (assoc :version-number version-number)
+              (seq depends-on) (assoc :depends-on (vec depends-on)))})))
 
 (defn- requested-assessment-ids
   "The ids of the assessments already requested for the completion `subject`."
@@ -819,6 +918,35 @@
         (es/read event-store {:types #{assessments/request-event-type}
                               :tags #{[:subject subject]}
                               :tenant-id tenant-id})))
+
+(defn- family-dependency-ids
+  "The ids of the assessments a judge on `completion` must wait for: one for
+   every judge effective on every execution inside the completion's family, as
+   the evaluation runtime will request them. Assessment ids are deterministic
+   (subject completion, judge, revision), so the dependencies can be named at
+   request time even for a child whose completion has not yet been processed by
+   the evaluation processor: children complete before their parent, but their
+   requests are made asynchronously and may land after it."
+  [context completion]
+  (let [family (judge-run/execution-family
+                context {:tick-id (:tick-id completion)
+                         :node-id (:node-id completion)
+                         :exec-context (second (orc/value-log-execution-key completion))})
+        effective (memoize (fn [sheet-id node-id kind]
+                             (get-effective-judges-for-node context sheet-id node-id kind)))]
+    (into []
+          (comp (mapcat (fn [entry]
+                          (map (fn [judge]
+                                 (assessments/assessment-id
+                                  (:event-id entry) (:judge-name judge)
+                                  (judge-revision-number (:judge-config judge))))
+                               ;; judged as its source node when it is a run of a
+                               ;; published version, like the completion handler
+                               (effective (:sheet-id entry)
+                                          (judged-node-id context entry)
+                                          (:completion-kind entry)))))
+                (distinct))
+          family)))
 
 (defn on-node-execution-completed
   "Handler for :sheet/node-execution-completed: REQUEST the assessments, judge
@@ -852,13 +980,20 @@
                            effective)
           already (requested-assessment-ids context subject)
           fresh (into [] (remove (comp already first)) candidates)
-          fresh-ids (into #{} (map first) fresh)]
+          fresh-ids (into #{} (map first) fresh)
+          ;; Only a judge that declares :child-assessments waits on the family
+          ;; (PayForWhatYouUse): the family is read for no other judge.
+          dependencies (delay (family-dependency-ids context event))]
       (when (seq fresh)
         {:result/events (let [version (node-version/node-version context event)
                               version-number (:version-number
                                               (orc/get-tick-execution-context context (:tick-id event)))]
                           (mapv (fn [[id judge]]
-                                  (->assessment-requested-event event id judge version node-id version-number))
+                                  (->assessment-requested-event
+                                   event id judge version node-id version-number
+                                   (when (judge-run/declares-key? context (:judge-config judge)
+                                                                  :child-assessments)
+                                     @dependencies)))
                                 fresh))
          :result/cas {:types #{assessments/request-event-type}
                       :tags #{[:subject subject]}
@@ -927,6 +1062,29 @@
      :message (str "The assessed node wrote no :generated-tree-raw, so there is no "
                    "tree structure to grade.")}))
 
+(defn- child-assessment-evidence
+  "What a parent's judge is shown of the assessments within its family: for each
+   assessment it waited on, its judge, the node it assessed and its outcome -
+   status, band, score and feedback when scored, reason and message when failed
+   or ungradable. A field the outcome does not have is absent, never invented. A
+   dependency that never ended (cannot happen once judging starts) shows as
+   :pending."
+  [context dependency-ids]
+  (into []
+        (keep (fn [id]
+                (let [events (assessment-events context #{[:assessment id]})
+                      requested (some #(when (= assessments/request-event-type (:event/type %)) %) events)
+                      terminal (some #(when (terminal-event? %) %) events)]
+                  (when requested
+                    (merge (select-keys requested [:assessment-id :judge-name :node-id
+                                                   :subject-completion-id])
+                           {:node-name (:name (orc/get-node context (:sheet-id requested)
+                                                            (:node-id requested)))
+                            :status (get assessments/terminal-status (:event/type terminal) :pending)}
+                           (select-keys terminal [:band :score :feedback :dimensions
+                                                  :reason :message]))))))
+        dependency-ids))
+
 (defn- assess
   "Run the judge of `request` against its subject completion and return
    `{:outcome ... :judge-config ...}`. Every way this can fail is an outcome with
@@ -955,8 +1113,12 @@
              (heuristic-outcome trace-data)
              ;; the assessment id rides in the evidence: the judge's run is
              ;; durably marked with it (judge-run/run-judge)
-             (judge-run/run-judge context judge-config
-                                  (assoc trace-data :assessment-id (:assessment-id request)))))
+             (judge-run/run-judge
+              context judge-config
+              (cond-> (assoc trace-data :assessment-id (:assessment-id request))
+                (judge-run/declares-key? context judge-config :child-assessments)
+                (assoc :child-assessments
+                       (child-assessment-evidence context (:depends-on request)))))))
          (catch Throwable t
            (u/log ::assessment-judging-threw
                   :assessment-id (:assessment-id request)
@@ -978,27 +1140,42 @@
                       :judge-config judge-config))))
 
 (defn- record-composite-when-settled!
-  "Gap-8, computed from ASSESSMENTS: once every assessment requested for the
-   completion has its outcome, the weighted composite of the scored ones (two or
-   more) is recorded for its (sheet, node, tick). Idempotent, like before."
+  "Gap-8 HonestComposite, computed from ASSESSMENTS: once every assessment
+   requested for the completion has its terminal outcome, ONE composite is
+   recorded for its (sheet, node, tick) (idempotent, like before).
+
+   The composite is of the completion's LEARNING judges only - the scalar the
+   learning loops optimise - so a monitoring-only judge's score is never mixed
+   into it. It is the mean over the judges that scored (two or more), and it is
+   never presented without its coverage: how many learning judges were expected,
+   how many scored, failed and were ungradable, and `:partial` when any did not
+   score."
   [context request]
   (let [events (assessment-events context #{[:subject (:subject-completion-id request)]})
         requests (filterv #(= assessments/request-event-type (:event/type %)) events)
         terminal-by-id (into {} (comp (filter terminal-event?) (map (juxt :assessment-id identity))) events)]
     (when (every? (comp terminal-by-id :assessment-id) requests)
-      (let [results (into []
+      (let [learning (filterv #(contains? (set (:purposes %)) :learning) requests)
+            outcome-of (fn [r] (get assessments/terminal-status
+                                    (:event/type (terminal-by-id (:assessment-id r)))))
+            by-status (frequencies (map outcome-of learning))
+            coverage {:expected (count learning)
+                      :scored (get by-status :scored 0)
+                      :failed (get by-status :failed 0)
+                      :ungradable (get by-status :ungradable 0)}
+            results (into []
                           (keep (fn [r]
-                                  (let [t (terminal-by-id (:assessment-id r))]
-                                    (when (= :evaluation/assessment-scored (:event/type t))
-                                      {:judge-name (:judge-name r)
-                                       :judge-config (resolve-judge-config context r)
-                                       :result {:score (:score t)}}))))
-                          requests)]
+                                  (when (= :scored (outcome-of r))
+                                    {:judge-name (:judge-name r)
+                                     :judge-config (resolve-judge-config context r)
+                                     :result {:score (:score (terminal-by-id (:assessment-id r)))}})))
+                          learning)]
         (when-let [command (->record-composite-score-command
                             {:sheet-id (:sheet-id request)
                              :node-id (:node-id request)
-                             :tick-id (:tick-id request)}
-                            results)]
+                             :tick-id (:tick-id request)
+                             :subject-completion-id (:subject-completion-id request)}
+                            results coverage)]
           (cp/process-command (assoc context :command command)))))))
 
 (defn- judge-assessment!
@@ -1014,28 +1191,78 @@
              :anomaly recorded))
     (record-composite-when-settled! context request)))
 
-(defn on-assessment-requested
-  "Handler for :evaluation/assessment-requested: judge it.
+(def ^:private judging-in-flight
+  "The assessments this process is judging right now. Judging starts from two
+   places - a request, and the outcome of the last assessment a request waited
+   on - and an assessment is judged once however the two interleave."
+  (atom #{}))
 
-   A request that already has its terminal outcome (a replay) does nothing.
+(defn- claim-judging!
+  "Atomically claim `assessment-id` for judging: true for exactly one caller."
+  [assessment-id]
+  (let [[before _] (swap-vals! judging-in-flight conj assessment-id)]
+    (not (contains? before assessment-id))))
+
+(defn- start-judging!
+  "Start one background future that judges `request` and records its outcome,
+   unless it is settled or already being judged. Never blocks."
+  [context request]
+  (let [id (:assessment-id request)]
+    (when (claim-judging! id)
+      (future
+        (try
+          (when-not (assessment-settled? context id)
+            (judge-assessment! context request))
+          (catch Throwable t
+            (u/log ::assessment-judging-future-failed
+                   :assessment-id id
+                   :error (ex-message t)
+                   :exception-class (.getName (class t))))
+          (finally
+            (swap! judging-in-flight disj id)))))))
+
+(defn- dependencies-settled?
+  "True when every assessment `request` waits on has its terminal outcome. A
+   failed or ungradable one is as settled as a scored one; a request that waits
+   on nothing is settled."
+  [context request]
+  (every? #(assessment-settled? context %) (:depends-on request)))
+
+(defn on-assessment-requested
+  "Handler for :evaluation/assessment-requested: judge it - once the assessments
+   it waits on have all ended.
+
+   A request that already has its terminal outcome (a replay) does nothing. A
+   request that waits on assessments (a parent's judge that declares
+   :child-assessments) that have not all ended does nothing yet: it stays
+   durably PENDING, and `on-assessment-settled` starts it when the last one ends.
    Otherwise the handler returns a non-blocking `:result/effect` that starts one
    background future for the judgment; the future runs the judge and records the
    outcome through `:evaluation/record-assessment-outcome`. The request is
    durable before this ever runs, so an effect the processor skips leaves the
    assessment visibly PENDING - never silently gone."
   [{:keys [event] :as context}]
-  (when-not (assessment-settled? context (:assessment-id event))
+  (when (and (not (assessment-settled? context (:assessment-id event)))
+             (dependencies-settled? context event))
     {:result/checkpoint :after
-     :result/effect
-     (fn []
-       (future
-         (try
-           (judge-assessment! context event)
-           (catch Throwable t
-             (u/log ::assessment-judging-future-failed
-                    :assessment-id (:assessment-id event)
-                    :error (ex-message t)
-                    :exception-class (.getName (class t)))))))}))
+     :result/effect (fn [] (start-judging! context event))}))
+
+(defn on-assessment-settled
+  "Handler for an assessment's terminal outcome: start every request that waits
+   on it and whose other dependencies have all ended too. Driven by the outcome
+   event itself, so nothing polls. The requests are found by their
+   [:depends-on id] tag."
+  [{:keys [event event-store tenant-id] :as context}]
+  (let [waiting (into []
+                      (filter (fn [request]
+                                (and (not (assessment-settled? context (:assessment-id request)))
+                                     (dependencies-settled? context request))))
+                      (es/read event-store {:types #{assessments/request-event-type}
+                                            :tags #{[:depends-on (:assessment-id event)]}
+                                            :tenant-id tenant-id}))]
+    (when (seq waiting)
+      {:result/checkpoint :after
+       :result/effect (fn [] (doseq [request waiting] (start-judging! context request)))})))
 
 ;; =============================================================================
 ;; Gap-7b — tree-shape grading on the campaign's :rlm/tree-generated event
@@ -1214,6 +1441,15 @@
    where final outputs are available."
   [context]
   (on-rlm-tree-generated context))
+
+(defprocessor :evaluation on-assessment-settled
+  {:topics #{:evaluation/assessment-scored
+             :evaluation/assessment-failed
+             :evaluation/assessment-ungradable}}
+  "S9b: an assessment ended - start the parents' assessments that were waiting on
+   it, once all of their dependencies have ended."
+  [context]
+  (on-assessment-settled context))
 
 (defprocessor :evaluation on-assessment-requested
   {:topics #{:evaluation/assessment-requested}}
