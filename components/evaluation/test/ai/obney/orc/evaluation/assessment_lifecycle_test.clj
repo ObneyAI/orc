@@ -64,18 +64,13 @@
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   ::cache-dir cache-dir}
-        processors (reduce-kv
-                    (fn [acc proc-name {:keys [handler-fn topics]}]
-                      (assoc acc proc-name
-                             (tp/start (cond-> {:event-pubsub ps :topics topics
-                                                :handler-fn handler-fn :context base-ctx}
-                                         (= "evaluation" (namespace proc-name))
-                                         (assoc :processor-name proc-name)))))
-                    {} (apply dissoc @tp/processor-registry* without))]
+        ;; The same delivery production uses: checkpointed (evaluation/*)
+        ;; processors are polled one event at a time, the rest ride pubsub.
+        processors (h/start-test-processors base-ctx without)]
     (assoc base-ctx :processors processors))))
 
 (defn- stop-context [ctx]
-  (doseq [[_ p] (:processors ctx)] (tp/stop p))
+  (h/stop-test-processors! ctx)
   (when-let [ps (:event-pubsub ctx)] (pubsub/stop ps))
   (when-let [c (:cache ctx)] (kv/stop c))
   (when-let [e (:event-store ctx)] (es/stop e))
@@ -311,16 +306,8 @@
   "Stop every processor of `ctx` and start them again over the SAME event store
    (named, as in production): the new processors catch up from their checkpoints."
   [ctx]
-  (doseq [[_ p] (:processors ctx)] (tp/stop p))
-  (assoc ctx :processors
-         (reduce-kv
-          (fn [acc proc-name {:keys [handler-fn topics]}]
-            (assoc acc proc-name
-                   (tp/start (cond-> {:event-pubsub (:event-pubsub ctx) :topics topics
-                                      :handler-fn handler-fn :context (dissoc ctx :processors)}
-                               (= "evaluation" (namespace proc-name))
-                               (assoc :processor-name proc-name)))))
-          {} @tp/processor-registry*)))
+  (h/stop-test-processors! ctx)
+  (assoc ctx :processors (h/start-test-processors (dissoc ctx :processors))))
 
 (deftest a-processor-restart-over-the-same-store-judges-nothing-twice
   (testing "processors stopped and started again over the same event store: catch-up redelivers the completion, nothing is repeated"
@@ -349,7 +336,7 @@
 
 (defn- create-processorless-context []
   (let [ctx (create-context)]
-    (doseq [[_ p] (:processors ctx)] (tp/stop p))
+    (h/stop-test-processors! ctx)
     (assoc ctx :processors {})))
 
 (deftest concurrent-deliveries-of-one-completion-request-once

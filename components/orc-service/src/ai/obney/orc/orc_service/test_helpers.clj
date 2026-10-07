@@ -263,27 +263,96 @@
 ;; Async Test Context (with PubSub + Todo Processors)
 ;; =============================================================================
 
+(def ^:private checkpointed-poll-interval-ms
+  "How often a checkpointed processor looks for new events. A latency knob only:
+   delivery semantics do not depend on it."
+  25)
+
+(defn- checkpointed-processor?
+  "Processors that run with a :processor-name (Grain checkpoints). Production
+   runs these through Grain's poller, never through pubsub."
+  [proc-name]
+  (= "evaluation" (namespace proc-name)))
+
+(defn- start-checkpointed-processor
+  "Deliver a checkpointed processor's events the way production does: one poll
+   loop per (tenant, processor) handling events strictly one at a time in event
+   order (Grain's tenant poller does the same per pair).
+
+   Grain's checkpoint is a gap-free high watermark. Delivering each event on its
+   own thread (pubsub) lets a later event checkpoint first, after which
+   `process-effect-after` sees the earlier event as already processed and skips
+   its effect. A poll loop never has two events of one processor in flight.
+
+   Pubsub served every tenant of the store, so tenants are discovered as they
+   appear (a loop is started for each, resuming from its checkpoint). Unlike the
+   tenant poller, `start-polling` has no :context, so the base context is merged
+   into every handler call here."
+  [base-ctx proc-name {:keys [handler-fn topics]}]
+  (let [event-store (:event-store base-ctx)
+        running (atom true)
+        pollers (atom {})
+        ensure-pollers! (fn []
+                          (doseq [tenant-id (keys (es/tenants event-store))]
+                            (when-not (contains? @pollers tenant-id)
+                              (swap! pollers assoc tenant-id
+                                     (tp/start-polling
+                                      {:event-store event-store
+                                       :tenant-id tenant-id
+                                       :topics topics
+                                       :handler-fn (fn [ctx] (handler-fn (merge base-ctx ctx)))
+                                       :processor-name proc-name
+                                       :poll-interval-ms checkpointed-poll-interval-ms})))))]
+    ;; Existing tenants start before this returns (a rebuilt processor resumes
+    ;; from its checkpoints); later tenants are picked up by the watcher.
+    (ensure-pollers!)
+    {:running running
+     :pollers pollers
+     :thread (doto (Thread.
+                    (fn []
+                      (while @running
+                        (try (ensure-pollers!) (catch Throwable _))
+                        (Thread/sleep checkpointed-poll-interval-ms))))
+               (.setDaemon true)
+               (.setName (str "test-tenant-watcher-" (name proc-name)))
+               (.start))}))
+
+(defn- stop-checkpointed-processor
+  [{:keys [running pollers thread]}]
+  (reset! running false)
+  (.join ^Thread thread 2000)
+  (doseq [poller (vals @pollers)]
+    (tp/stop-polling poller)))
+
 (defn start-test-processors
   "Start every registered todo processor against an existing async context.
    Kept separate so recovery tests can tear down and rebuild processors while
-   retaining the same strongly consistent event store, cache, and pubsub."
-  [base-ctx]
+   retaining the same strongly consistent event store, cache, and pubsub.
+
+   Checkpointed (`evaluation/*`) processors are polled, as in production;
+   every other processor stays on pubsub with no checkpoint.
+
+   `without` (a set of processor names) leaves those processors out, for a test
+   that drives one stage itself."
+  ([base-ctx] (start-test-processors base-ctx #{}))
+  ([base-ctx without]
   (reduce-kv
-   (fn [acc proc-name {:keys [handler-fn topics]}]
+   (fn [acc proc-name {:keys [handler-fn topics] :as config}]
      (assoc acc proc-name
-            (tp/start
-             (cond-> {:event-pubsub (:event-pubsub base-ctx)
-                      :topics topics
-                      :handler-fn handler-fn
-                      :context base-ctx}
-               (= "evaluation" (namespace proc-name))
-               (assoc :processor-name proc-name)))))
+            (if (checkpointed-processor? proc-name)
+              (start-checkpointed-processor base-ctx proc-name config)
+              (tp/start {:event-pubsub (:event-pubsub base-ctx)
+                         :topics topics
+                         :handler-fn handler-fn
+                         :context base-ctx}))))
    {}
-   @tp/processor-registry*))
+   (apply dissoc @tp/processor-registry* without))))
 
 (defn stop-test-processors! [ctx]
-  (doseq [[_ processor] (:processors ctx)]
-    (tp/stop processor)))
+  (doseq [[proc-name processor] (:processors ctx)]
+    (if (checkpointed-processor? proc-name)
+      (stop-checkpointed-processor processor)
+      (tp/stop processor))))
 
 (def ^:private background-drain-timeout-ms 30000)
 
