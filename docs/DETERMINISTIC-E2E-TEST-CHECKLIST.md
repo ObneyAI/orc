@@ -273,6 +273,43 @@ that verifies the stated observable results.
   Verified by `real_llm_arc_e2e_test.clj` (1 test / 15 assertions). Also verified out of band: a
   two-JVM crash/restart probe on one SQLite file (an abruptly halted owner's leaf is left alone
   under its live lease, then resumed exactly once by another worker after expiry, completing).
+- [x] **DET-E2E-310 — Shipped judge workflows build.** Every exported judge sheet and suite builds;
+  a recursive blackboard schema snapshots with its definitions (shadowed and mixed-type ids keep
+  their meaning) and a stable hash. `recursive_schema_snapshot_test.clj`, `shipped_workflows_build_test.clj`.
+- [x] **DET-E2E-311 — Banded decisions.** `llm-decision :bands-from` reads a rubric from the
+  blackboard; a native decision model answers a Score question, an exact tie fails `:undecided`
+  without retry, and a chat model answers a described string band. `model_decision_bands_test.clj`.
+- [x] **DET-E2E-312 — Provider boundary honesty.** A provider finish error is `:provider-finish-error`;
+  metadata is never written as output; input descriptions reach function calling; declared string
+  keys stay strings; requested and resolved models are both recorded. `provider_finish_error_test.clj`,
+  `declared_string_keys_test.clj`, `resolved_model_test.clj`, llm `core_test.clj`.
+- [x] **DET-E2E-313 — Judges are behaviours.** Built-in judges run as workflows grading against a
+  rubric value; nothing is invented (out-of-rubric band, blank required feedback after retry,
+  incomplete dimension, unresolved model all fail). `judges_are_behaviours_test.clj`.
+- [x] **DET-E2E-314 — Durable assessments.** One assessment per (completion, judge, revision);
+  redelivery and restart judge nothing twice; the request set is fixed at first processing; only
+  learning judges with feedback emit learning records. `assessment_lifecycle_test.clj`.
+- [x] **DET-E2E-315 — Assessment origin.** Work done for an assessment is never auto-assessed, across
+  delegates, generated children and a processor restart. `assessment_origin_test.clj`.
+- [x] **DET-E2E-316 — Judges on any node.** Judges attach to composites, delegates and the root; a
+  judged composite runs durably; published versions are judged through their source node.
+  `judge_attachment_scope_test.clj`, `judged_composites_durable_test.clj`, `published_versions_judged_test.clj`.
+- [x] **DET-E2E-317 — Behaviour-level evidence and waits.** Composite judges see the whole and the
+  original task; family and child assessments are opt-in; a parent waits for its children; the
+  composite is per subject with coverage. `behaviour_judging_test.clj`, `execution_family_test.clj`.
+- [x] **DET-E2E-318 — Performance and alerts.** Performance per node version; opt-in alerts signal
+  crossings once and degraded coverage separately. `node_performance_test.clj`.
+- [x] **DET-E2E-319 — Failed subjects.** Failed, timed-out and blocked executions are ungradable
+  `:subject-failed` without a judge call; partial ones are judged. `failed_subjects_test.clj`.
+- [x] **DET-E2E-320 — Production-like processor delivery in tests.** Checkpointed processors are
+  delivered one event at a time; an earlier slow effect is not lost behind a later one.
+  `test_helpers_delivery_test.clj`. A rejected completion fails its node instead of hanging the run:
+  `completion_rejection_test.clj`.
+- [x] **DET-E2E-321 — REAL-model judging end to end.** Under `ORC_OPENROUTER_E2E_TESTS`: grounding
+  (learning, with an alert) and a Jev score-only monitor on map-each leaves, completeness on a
+  delegate, a custom root judge reading child assessments, and a published-version rerun.
+  `real_llm_judging_arc_e2e_test.clj` (7 of 8 live runs green; the eighth surfaced the
+  failed-subject rule now covered by DET-E2E-319).
 
 ## P1 — Observability and streaming
 

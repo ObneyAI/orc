@@ -1031,3 +1031,25 @@ spec bugs tended (gate identity scoped to code/tool leaves; two-spellings scoped
 outcome kinds scoped to contract and tool failures; GEPA components scoped to leaves, decisions and
 conditions). Diagnostic baseline unchanged: `allium check`/`analyse specs` = 151 diagnostics
 (115 information, 36 warnings), 0 errors — the arc adds prose invariants only.
+
+## Judges as behaviours with durable assessments
+
+Specs: `evaluation.allium` (DiscreteBandScoring, TraceJudge, AssessmentRecording,
+PerformanceMonitoring, EvaluationAttachmentResolver, Assessment entity and rules, HonestComposite,
+PayForWhatYouUse), `orc-service.allium` (ModelDecision banded kind, LeafExecutor
+ModelLeafRecordsResolvedModel / ProviderMetadataIsNeverOutput / RejectedCompletionFailsTheNode /
+JudgedCompositesAreDurable, ExecutionFamilyIsQueryable, AssessmentWorkIsMarked), `llm.allium`
+(DeclaredStructuredValues, DeclaredMeaningReachesTheModel, PredictionMetadata,
+StructuredFailureClassification, DecisionProtocolPrediction banded score).
+
+Covered by DET-E2E-310 to 321 (see the checklist for files). A whole-spec weed (check mode) mapped
+every rule, invariant and guarantee in scope to code and tests; non-aligned items were fixed with
+RED tests (tree-shape learning records gated on purposes, one learning record per tick and judge,
+score-only feedback absent, outcome command validates its own bounds) or tended (assessment and
+subject identity, written feedback, failure kinds, failed subjects). Known gaps kept honest:
+`RecordLateResult` has no producer and stays tied to the open question on capacity, claims and
+recovery; researcher campaign events are not passed to assessment judges; the cancelled-campaign
+verdict rule has no dedicated test.
+
+Diagnostics: `allium check specs` = 153 (114 information, 39 warnings), 0 errors; `allium analyse`
+reports no structural findings in the touched specs.
