@@ -222,6 +222,22 @@
              :reason "snapshot predates source node ids and the node name does not identify exactly one draft node"))
     recovered))
 
+(defn- carry-source-judges
+  "Stamp each run node of a published version with the judges attached to the
+   draft node it was published from (`:source-node-id`), as they stand when the
+   run starts. Attachments live on the draft node, never in the snapshot, so a
+   judge attached after publishing still monitors the published version; the
+   run needs them to know which composites are durable boundaries. `:judges`
+   is not part of a node's definition (node-version), so this forks no
+   node version."
+  [nodes-by-id live-nodes]
+  (reduce-kv (fn [acc id node]
+               (if-let [judges (some->> (:source-node-id node) (get live-nodes) :judges seq)]
+                 (assoc acc id (assoc node :judges (vec judges)))
+                 acc))
+             nodes-by-id
+             nodes-by-id))
+
 (defn- parse-snapshot-for-execution
   "Parse a version snapshot into the format expected by execute.
    Returns {:nodes-by-id {...} :root-id uuid :blackboard {...}}"
@@ -232,7 +248,8 @@
         ;; Parse nodes
         node-pairs (parse-snapshot-nodes snapshot-nodes nil 0 "root")
         nodes-by-id (cond-> (into {} node-pairs)
-                      live-nodes (recover-source-node-ids live-nodes sheet-id version-number))
+                      live-nodes (-> (recover-source-node-ids live-nodes sheet-id version-number)
+                                     (carry-source-judges live-nodes)))
         ;; Get root ID (first node)
         root-id (when (seq node-pairs) (first (first node-pairs)))
         ;; Build blackboard from schema (values will be set from inputs)
