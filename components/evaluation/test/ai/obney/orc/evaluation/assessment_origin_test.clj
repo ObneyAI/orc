@@ -110,26 +110,19 @@
 (defn- evaluation-processor? [proc-name] (= "evaluation" (namespace proc-name)))
 
 (defn- stop-evaluation-processors! [ctx]
-  (doseq [[proc-name p] (:processors ctx)
-          :when (evaluation-processor? proc-name)]
-    (tp/stop p))
+  (h/stop-test-processors! {:processors (into {} (filter (comp evaluation-processor? key))
+                                              (:processors ctx))})
   (update ctx :processors #(into {} (remove (comp evaluation-processor? key)) %)))
 
 (defn- start-evaluation-processors!
   "Start the evaluation processors afresh over the same store: nothing they know
    survives in memory; whatever they decide must be read from the store."
   [ctx]
-  (let [base (dissoc ctx :processors)]
-    (update ctx :processors merge
-            (reduce-kv
-             (fn [acc proc-name {:keys [handler-fn topics]}]
-               (if (evaluation-processor? proc-name)
-                 (assoc acc proc-name
-                        (tp/start {:event-pubsub (:event-pubsub ctx) :topics topics
-                                   :handler-fn handler-fn :context base
-                                   :processor-name proc-name}))
-                 acc))
-             {} @tp/processor-registry*))))
+  ;; Through the shared harness, so they are delivered as in production
+  ;; (checkpointed processors are polled, one event at a time).
+  (let [base (dissoc ctx :processors)
+        others (into #{} (remove evaluation-processor?) (keys @tp/processor-registry*))]
+    (update ctx :processors merge (h/start-test-processors base others))))
 
 (deftest the-assessment-mark-survives-a-processor-restart
   (testing "the host completes while the evaluation processors are down; started again over the same store, they assess the host and still never assess inside A"
@@ -155,7 +148,7 @@
                   "a fresh context (no in-memory state) still requests nothing inside A"))
             (is (empty? @b-calls) "judge B never ran")
             (finally
-              (doseq [[_ p] (:processors up)] (tp/stop p)))))))))
+              (h/stop-test-processors! {:processors (into {} (filter (comp evaluation-processor? key)) (:processors up))}))))))))
 
 ;; -----------------------------------------------------------------------------
 ;; Cycle 3 - the mark is inherited by what a judge delegates to
