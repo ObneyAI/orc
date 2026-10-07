@@ -6,8 +6,12 @@
    a fresh rebuild reproduces it.
 
    A cell counts what became of the assessments: scored, failed, ungradable, and
-   pending (requested, no outcome yet). COVERAGE is the share of them that were
-   scored; a grade is never reported without it. Versions of a node are reported
+   pending (requested, no outcome yet). An ungradable outcome whose reason is
+   :subject-failed (the assessed execution itself failed, so nothing was judged)
+   is also counted apart as `:subject-failed`: it is an infrastructure signal,
+   never a quality one, and it is in no mean, trailing mean or band distribution.
+   COVERAGE is the share of them that were scored; a grade is never reported
+   without it. Versions of a node are reported
    separately and never blended, with a rollup across versions beside them.
 
    The trailing mean is the mean of the last N SCORED outcomes (N = `default-window`
@@ -42,7 +46,7 @@
   (let [[sheet-id node-id node-version judge-name revision] k]
     {:sheet-id sheet-id :node-id node-id :node-version node-version
      :judge-name judge-name :judge-revision-number revision
-     :pending 0 :scored 0 :failed 0 :ungradable 0
+     :pending 0 :scored 0 :failed 0 :ungradable 0 :subject-failed 0
      :score-sum 0.0 :bands {} :series []
      :first-seen first-seen :last-seen first-seen}))
 
@@ -70,6 +74,9 @@
     (-> cell
         (update :pending dec)
         (update status inc)
+        ;; An execution that failed is recorded ungradable (:subject-failed); it
+        ;; stays among the ungradable and is counted apart, never as quality.
+        (cond-> (= :subject-failed (:reason event)) (update :subject-failed (fnil inc 0)))
         (assoc :last-seen (str (:event/timestamp event)))
         (cond->
          (= :scored status) (update :score-sum + score)
@@ -79,6 +86,8 @@
                                                              :status status
                                                              :at (str (:event/timestamp event))}
                                                       (= :scored status) (assoc :score score)
+                                                      (= :subject-failed (:reason event))
+                                                      (assoc :reason :subject-failed)
                                                       (some? (:band event)) (assoc :band (:band event))))]
                             (if (> (count series) max-retained)
                               (subvec series (- (count series) max-retained))
@@ -99,7 +108,7 @@
   (defmethod performance* t [state event] (settle state event)))
 
 (defreadmodel :evaluation performance
-  {:events assessments/lifecycle-event-types :version 2}
+  {:events assessments/lifecycle-event-types :version 3}
   [state event] (performance* state event))
 
 ;; =============================================================================
@@ -116,10 +125,12 @@
 (defn stats
   "The reported statistics of a cell-shaped map (a cell or a merge of cells)."
   [{:keys [scored failed ungradable pending score-sum bands series] :as cell} window]
-  (let [total (+ scored failed ungradable pending)]
+  (let [total (+ scored failed ungradable pending)
+        subject-failed (or (:subject-failed cell) 0)]
     (-> (select-keys cell [:sheet-id :node-id :node-version :judge-name :judge-revision-number
                            :first-seen :last-seen])
         (assoc :scored scored :failed failed :ungradable ungradable :pending pending
+               :subject-failed subject-failed
                :total total
                :coverage (if (pos? total) (/ (double scored) total) 0.0)
                :mean-score (when (pos? scored) (/ score-sum scored))
@@ -136,6 +147,7 @@
                   (update :scored + (:scored c))
                   (update :failed + (:failed c))
                   (update :ungradable + (:ungradable c))
+                  (update :subject-failed (fnil + 0) (or (:subject-failed c) 0))
                   (update :score-sum + (:score-sum c))
                   (update :bands #(merge-with + % (:bands c)))
                   (update :series into (:series c))

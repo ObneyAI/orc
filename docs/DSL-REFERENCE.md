@@ -1099,6 +1099,7 @@ Every node constructor accepts `:judges`, a vector of declared judge names: `llm
 | `:timeout-ms` | a positive integer; default 60000 |
 | `:weight` | the judge's relative weight in the composite of a node's learning judges |
 | `:alert` | `{:below :window :min-coverage}`: opt-in performance alert |
+| `:assess-failures?` | a boolean; default false. A completion that failed, timed out or blocked is recorded ungradable (`:subject-failed`) without running the judge; true judges it like any other |
 
 A declaration with an invalid rubric, purposes or alert is rejected. Rebuilding a workflow whose judge definition changed revises the judge (its revision number goes up). A judge's `:provider` field is ignored.
 

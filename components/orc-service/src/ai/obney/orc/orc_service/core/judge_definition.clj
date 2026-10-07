@@ -71,6 +71,9 @@
   "nil when the judge config is a valid definition, else a message."
   [{:keys [purposes rubric timeout-ms alert] :as config}]
   (cond
+    (and (contains? config :assess-failures?) (not (boolean? (:assess-failures? config))))
+    (str "judge :assess-failures? must be a boolean, got " (pr-str (:assess-failures? config)))
+
     (and (= :custom (:type config)) (not (:sheet-id config)))
     "Custom judge type requires :sheet-id"
 

@@ -664,6 +664,9 @@
      :model      - model id or registered provider name; absent resolves like
                    any ORC model node (declared model, else runtime provider)
      :timeout-ms - positive integer
+     :assess-failures? - boolean, default false. A completion that failed,
+                   timed out or blocked is recorded ungradable (:subject-failed)
+                   without running the judge; true judges it like any other.
    Rebuilding a workflow whose judge definition changed REVISES the judge
    (its revision number increases); an unchanged judge is left alone.
 

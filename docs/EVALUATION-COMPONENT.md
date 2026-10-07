@@ -106,6 +106,7 @@ A judge is declared under a name. Fields of its config:
 | `:timeout-ms` | a positive integer; default 60000 |
 | `:weight` | the judge's relative weight in the composite of a node's learning judges |
 | `:alert` | `{:below :window :min-coverage}`, see [Performance and alerts](#performance-and-alerts) |
+| `:assess-failures?` | a boolean; default false. A completion that failed, timed out or blocked is recorded ungradable (`:subject-failed`) without running the judge; true judges it like any other |
 
 A declaration is rejected when a learning judge's rubric does not require feedback, when a rubric is malformed, or when an alert is malformed. A judge's `:provider` field has no effect and is logged when present: the runtime provider executes every node, so a model is chosen with `:model`.
 
@@ -264,6 +265,7 @@ Failed means the judgment could not be carried out. Ungradable means the evidenc
 | `:judge-execution-failed` | failed | the judge's workflow did not succeed |
 | a node failure kind, such as `:provider-finish-error` | failed | the judge's own node failed that way |
 | `:tied-bands` | ungradable | a decision model returned an exact tie between bands; it is not retried |
+| `:subject-failed` | ungradable | the assessed execution failed, timed out or blocked, so there is nothing to grade; no judge ran (unless the judge declares `:assess-failures?`) |
 
 ```clojure
 ;; docs-example: failed-assessment

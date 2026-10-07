@@ -44,6 +44,10 @@
    [:timeout-ms {:optional true} :int]
    [:rubric {:optional true} judge-rubric-schema]
    [:purposes {:optional true} [:set [:enum :monitoring :learning]]]
+   ;; Default false: a completion whose status is :failure, :timeout or :blocked
+   ;; is recorded UNGRADABLE (:subject-failed), never judged. true judges failed
+   ;; completions like any other.
+   [:assess-failures? {:optional true} :boolean]
    ;; Opt-in threshold watching (`judge-definition/alert-error` validates the
    ;; values): only a judge declaring an alert has its node versions' trailing
    ;; window watched.

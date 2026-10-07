@@ -101,6 +101,12 @@ The feedback form of each built-in judge writes its reasoning first, then the ev
 
 A missing band, a band outside the rubric, blank feedback that the rubric requires, an unresolved model, a provider failure or a missed deadline each end as a failed assessment with a reason. An exact tie between bands ends ungradable. None becomes a score. Blank required feedback is asked for once more, as a malformed answer, before it fails with `:missing-feedback`.
 
+### Failed executions are recorded, not graded
+
+A completion whose status is `:failure`, `:timeout` or `:blocked` still has its assessments requested, so coverage stays honest. Each one ends **ungradable** with reason `:subject-failed`, and its message carries the node's status, failure kind and error. No judge workflow runs and no model is called, because a failed producer has no output to grade and a grade of 0 would report an infrastructure failure as a quality drop. `:success`, `:partial` and `:tree-generated` completions are judged normally. A judge that wants to grade failures (for example, one that checks the quality of an error message) declares `:assess-failures? true`; its failed completions are then judged like any other.
+
+Performance counts these outcomes apart as `:subject-failed`. They are ungradable, so they lower coverage, but they are in no mean, trailing mean or band distribution. An alert's window holds the last `:window` outcomes of every kind, and its trailing score is the mean of the scored ones; a window dominated by subject failures therefore falls under `:min-coverage` and signals coverage degraded, never a threshold crossing. A parent judge that declares `:child-assessments` sees a failed child as an ungradable `:subject-failed` assessment, and waits for it like any other (it settles at once). A failed subject's learning judges are all ungradable, so its composite is coverage-only.
+
 ### A grade always comes with its coverage
 
 A mean over the assessments that happened to succeed hides the ones that did not. Performance and composites always report how many assessments were expected and how many were scored, failed, ungradable or pending.
@@ -139,6 +145,7 @@ Each guarantee is exercised by a test in `components/evaluation/test/ai/obney/or
 | Judges on composites, delegates and the root see the whole; opt-in family and child evidence | `behaviour_judging_test`, `judged_composites_durable_test` |
 | A composite is recorded once per subject, with coverage | `behaviour_judging_test` |
 | Performance per node version, alerts once per episode | `node_performance_test` |
+| A failed execution is recorded ungradable (`:subject-failed`), never graded; counted apart in performance | `failed_subjects_test` |
 | Published versions are judged through the draft node's attachments | `published_versions_judged_test` |
 | Every example in the judge docs runs | `docs_examples_test` |
 
@@ -210,6 +217,57 @@ When you need your own evaluation (a deterministic rule, several steps, external
 
 A judge is an ordinary workflow, so you can also `:delegate` to it inline and branch on what it writes with a `condition` node. That is plain workflow composition outside the assessment record: nothing is requested, stored or counted in performance.
 
+### Judges in the way: an inline gate
+
+A monitoring judge watches a node after it ran. Sometimes you want a judge in the way: reject a draft, tell the producer why, and let it try again. That is plain workflow composition, and it works today with the nodes you already have: a `fallback` of attempts, each a `sequence` of the producer, a delegated judge workflow that writes a `:band` (and `:gate-feedback`), and a `condition` on the band. Attempt 2 and later also read `:answer` and the gate's feedback, so the producer revises its own rejected draft. For a score-only gate, an `llm-decision` with `:bands-from :rubric` can write the band instead of a delegated workflow.
+
+```clojure
+;; docs-example: inline-gate
+(def gate-judge
+  (sheet/workflow "docs-gate-judge"
+    (sheet/blackboard {:request :string :answer :string
+                       :band :int :gate-feedback :string})
+    (sheet/llm "review"
+      :instruction "Grade the answer to the request from 1 (reject) to 4 (excellent). If the band is below 3, say what must change."
+      :reads [:request :answer]
+      :writes [:band :gate-feedback])))
+
+(defn gated [gate-id]
+  (sheet/workflow "docs-inline-gate"
+    (sheet/blackboard {:request :string :answer :string
+                       :band :int :gate-feedback :string})
+    (sheet/fallback "attempts"
+      (sheet/sequence "attempt-1"
+        (sheet/llm "draft-1"
+          :instruction "Answer the request."
+          :reads [:request]
+          :writes [:answer])
+        (sheet/delegate "gate-1" :target-sheet-id gate-id
+          :reads [:request :answer]
+          :writes [:band :gate-feedback])
+        (sheet/condition "accept-1" :check {:key :band :op :gte :value 3}))
+      (sheet/sequence "attempt-2"
+        (sheet/llm "draft-2"
+          :instruction "Revise the answer so that it addresses the gate feedback."
+          :reads [:request :answer :gate-feedback]
+          :writes [:answer])
+        (sheet/delegate "gate-2" :target-sheet-id gate-id
+          :reads [:request :answer]
+          :writes [:band :gate-feedback])
+        (sheet/condition "accept-2" :check {:key :band :op :gte :value 3})))))
+```
+
+The example is run by `docs_examples_test` with the model stubbed: the first draft is rejected with feedback, the second attempt is given that feedback and its own rejected answer, and the gate accepts it.
+
+Limits, stated plainly:
+
+- The number of attempts is fixed by unrolling the sequence. There is no loop to bound at run time.
+- The gate's verdicts are ordinary node executions, not assessments. Nothing is requested, stored or counted in performance for them. Attach a monitoring judge to the same nodes if you also want assessments and performance.
+- If every attempt is rejected the `fallback` fails, and so does the workflow around it. Nothing returns the best rejected draft.
+- Each attempt is written out by hand, so a change to the gate means changing every attempt.
+
+A first-class gate construct is planned, to remove the unrolling and to make a verdict an assessment. Until it lands, this is the pattern.
+
 ---
 
 ## 5. What reads judge output
@@ -222,4 +280,5 @@ A judge is an ordinary workflow, so you can also `:delegate` to it inline and br
 
 ## 6. Not yet provided
 
+- **A first-class gate construct:** a judge in the way with a bounded retry and an assessment for each verdict. See "Judges in the way: an inline gate" for the hand-built pattern.
 - **Capacity and recovery for assessments:** limits, worker claims and drain on restart.

@@ -1074,6 +1074,22 @@
 (defn- failed-outcome [reason message]
   {:status :failed :reason reason :message message})
 
+(def ^:private failed-statuses
+  "Completion statuses of an execution that did not produce what it was asked
+   to: recorded, never graded (unless the judge opts in with :assess-failures?)."
+  #{:failure :timeout :blocked})
+
+(defn- subject-failed-outcome
+  "The outcome of an assessment whose subject execution failed: ungradable, with
+   the node's own failure kind and error in the message. No judge runs."
+  [{:keys [status failure-kind error]}]
+  {:status :ungradable
+   :reason :subject-failed
+   :message (str "The assessed execution did not succeed (status " (name status)
+                 (when failure-kind (str ", failure kind " (name failure-kind)))
+                 (when error (str ", error: " error))
+                 "), so there is no output to grade.")})
+
 (defn- heuristic-outcome
   "The deterministic structural judge as an outcome: it grades the tree the node
    emitted, and a node that emitted none is ungradable - never scored."
@@ -1126,6 +1142,11 @@
                                 (str "Judge " (pr-str (:judge-name request)) " revision "
                                      (:judge-revision-number request)
                                      " is not declared on the sheet."))}
+
+      (and (contains? failed-statuses (:status completion))
+           (not (:assess-failures? judge-config)))
+      {:judge-config judge-config
+       :outcome (subject-failed-outcome completion)}
 
       :else
       {:judge-config judge-config

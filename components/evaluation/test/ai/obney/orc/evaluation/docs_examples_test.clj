@@ -650,6 +650,89 @@
           (is (= "my-grounding" (:judge-name a))))))))
 
 ;; ---------------------------------------------------------------------------
+;; Example: judges in the way - an inline gate (hand-built from today's nodes)
+;; ---------------------------------------------------------------------------
+
+;; docs-example-begin: inline-gate
+(def gate-judge
+  (sheet/workflow "docs-gate-judge"
+    (sheet/blackboard {:request :string :answer :string
+                       :band :int :gate-feedback :string})
+    (sheet/llm "review"
+      :instruction "Grade the answer to the request from 1 (reject) to 4 (excellent). If the band is below 3, say what must change."
+      :reads [:request :answer]
+      :writes [:band :gate-feedback])))
+
+(defn gated [gate-id]
+  (sheet/workflow "docs-inline-gate"
+    (sheet/blackboard {:request :string :answer :string
+                       :band :int :gate-feedback :string})
+    (sheet/fallback "attempts"
+      (sheet/sequence "attempt-1"
+        (sheet/llm "draft-1"
+          :instruction "Answer the request."
+          :reads [:request]
+          :writes [:answer])
+        (sheet/delegate "gate-1" :target-sheet-id gate-id
+          :reads [:request :answer]
+          :writes [:band :gate-feedback])
+        (sheet/condition "accept-1" :check {:key :band :op :gte :value 3}))
+      (sheet/sequence "attempt-2"
+        (sheet/llm "draft-2"
+          :instruction "Revise the answer so that it addresses the gate feedback."
+          :reads [:request :answer :gate-feedback]
+          :writes [:answer])
+        (sheet/delegate "gate-2" :target-sheet-id gate-id
+          :reads [:request :answer]
+          :writes [:band :gate-feedback])
+        (sheet/condition "accept-2" :check {:key :band :op :gte :value 3})))))
+;; docs-example-end
+
+(defn- gate-stub
+  "Producer calls are recorded in `drafts`; the gate rejects the first draft
+   with feedback and accepts the second."
+  [drafts reviews]
+  (fn [_provider module inputs options]
+    (let [usage {:prompt_tokens 5 :completion_tokens 5 :total_tokens 10}
+          output-names (set (map :name (:outputs module)))
+          reply (fn [outputs]
+                  (if (:with-metadata? options)
+                    {:outputs outputs :usage usage :model "stub/model" :raw-response (pr-str outputs)}
+                    outputs))]
+      (if (contains? output-names :band)
+        (let [n (count (swap! reviews conj inputs))]
+          (reply (if (= 1 n)
+                   {:band 1 :gate-feedback "Too vague: name the invoice number."}
+                   {:band 4 :gate-feedback "Specific and complete."})))
+        (let [n (count (swap! drafts conj inputs))]
+          (reply {:answer (str "draft " n)}))))))
+
+(deftest an-inline-gate-rejects-the-first-draft-and-accepts-the-second
+  (h/with-async-test-context [ctx]
+    (let [drafts (atom []) reviews (atom [])]
+      (with-redefs [llm/predict (gate-stub drafts reviews)]
+        (let [gate-id (sheet/build-workflow! ctx gate-judge)
+              sheet-id (sheet/build-workflow! ctx (gated gate-id))
+              result (sheet/execute ctx sheet-id {:request "Why was I charged twice?"}
+                                    :timeout-ms 60000)]
+          (is (= :success (:status result)) (pr-str result))
+          (is (= 2 (count @drafts)) "a second attempt was made")
+          (is (= 2 (count @reviews)) "each draft went through the gate")
+          (is (= "draft 2" (get-in result [:outputs :answer])) "the accepted answer is the second draft")
+          (is (= 4 (get-in result [:outputs :band])))
+          (let [[first-draft second-draft] @drafts
+                shows? (fn [inputs text]
+                         (boolean (re-find (re-pattern text) (pr-str inputs))))]
+            (is (not (shows? first-draft "Too vague"))
+                "the first attempt had no feedback yet")
+            (is (shows? second-draft "Too vague: name the invoice number.")
+                "the second attempt was given the gate's rejection feedback")
+            (is (shows? second-draft "draft 1")
+                "and the answer it rejected"))
+          (is (empty? (evaluation/get-assessments ctx {:sheet-id sheet-id}))
+              "inline verdicts are ordinary node executions, not assessments"))))))
+
+;; ---------------------------------------------------------------------------
 ;; The documentation can not drift from this file
 ;; ---------------------------------------------------------------------------
 
