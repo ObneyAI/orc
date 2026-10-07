@@ -18,6 +18,45 @@
   "Behavior tree node types"
   [:enum :leaf :sequence :fallback :condition :llm-condition :parallel :map-each :repl-researcher :delegate])
 
+(def judge-rubric-schema
+  "A judge's declared rubric: what it grades (criterion, optional stance), the
+   integer-keyed level descriptions (contiguous, >= 2, validated by
+   `judge-definition`), and whether grading must carry written feedback."
+  [:map
+   [:criterion :string]
+   [:stance {:optional true} :string]
+   [:bands [:map-of :int :string]]
+   [:feedback [:enum :required :none]]])
+
+(def judge-config-schema
+  "A judge definition. Models resolve like any ORC model node: a declared model
+   id or a registered provider name, else the runtime provider."
+  [:map
+   [:type :keyword] ;; :grounding, :completeness, :instruction-following, :reasoning, :custom
+   [:criteria {:optional true} :string]
+   ;; Weight for aggregation. The Gap-8 composite-score normalizer accepts ANY
+   ;; non-negative number (integer or double) -- values are re-scaled per the
+   ;; share-remaining-mass policy. Negative weights are rejected because they
+   ;; are nonsensical for a probability mass.
+   [:weight {:optional true} [:and number? [:>= 0.0]]]
+   [:provider {:optional true} :keyword]
+   [:model {:optional true} :string]
+   [:timeout-ms {:optional true} :int]
+   [:rubric {:optional true} judge-rubric-schema]
+   [:purposes {:optional true} [:set [:enum :monitoring :learning]]]
+   ;; Default false: a completion whose status is :failure, :timeout or :blocked
+   ;; is recorded UNGRADABLE (:subject-failed), never judged. true judges failed
+   ;; completions like any other.
+   [:assess-failures? {:optional true} :boolean]
+   ;; Opt-in threshold watching (`judge-definition/alert-error` validates the
+   ;; values): only a judge declaring an alert has its node versions' trailing
+   ;; window watched.
+   [:alert {:optional true} [:map
+                             [:below number?]
+                             [:window :int]
+                             [:min-coverage number?]]]
+   [:sheet-id {:optional true} :uuid]]) ;; For :custom type - reference to judge sheet
+
 (def executor-type
   "Executor types for leaf nodes"
   [:enum :ai :code :tool :decision])
@@ -49,7 +88,13 @@
     number?]
    [:probability {:optional true
                   :description "Provider-reported probability that a yes/no proposition holds"}
-    number?]])
+    number?]
+   [:band-distribution {:optional true
+                        :description "A banded decision's reported distribution, exactly as reported: probabilities keyed by 0-indexed level position, the expected position, and confidence when reported"}
+    [:map {:closed true}
+     [:probabilities [:map-of :string number?]]
+     [:expected-position number?]
+     [:confidence {:optional true} number?]]]])
 
 (def node-status
   "Node execution status.
@@ -80,7 +125,13 @@
 (def structured-failure-kind
   [:enum :transport-failure :missing-forced-tool-call
    :tool-call-parsing-failed :schema-validation-failed
-   :empty-provider-response])
+   :empty-provider-response :provider-finish-error
+   ;; The call named a provider that was never configured: nothing was sent, so
+   ;; this is distinct from a transport failure and says what to fix.
+   :provider-not-configured
+   ;; A banded decision whose most probable level is an exact tie: no band is
+   ;; selected (distinct from a malformed answer).
+   :undecided])
 
 (def provider-failure-evidence
   [:map
@@ -88,6 +139,7 @@
    [:model {:optional true} [:maybe :string]]
    [:response-id {:optional true} [:maybe :string]]
    [:finish-reason {:optional true} [:maybe :string]]
+   [:native-finish-reason {:optional true} [:maybe :string]]
    [:tool-call-present? {:optional true} :boolean]
    [:tool-call-name {:optional true} [:maybe :string]]
    [:usage {:optional true} [:maybe [:map
@@ -330,6 +382,7 @@
     ;; :decision executor only: read key holding run-time options, confidence
     ;; floor and the abstention option written when the floor is not met.
     [:options-from {:optional true} :keyword]
+    [:bands-from {:optional true} :keyword]
     [:min-confidence {:optional true} :double]
     [:abstain {:optional true} :any]
     [:fn {:optional true} :string]                 ;; Fully-qualified fn symbol for :code executor
@@ -708,6 +761,7 @@
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
     [:options-from {:optional true} :keyword]
+    [:bands-from {:optional true} :keyword]
     [:min-confidence {:optional true} :double]
     [:abstain {:optional true} :any]
     ;; Phase 4B: opt-in gated tool-caller builder FQN for :code nodes inside
@@ -824,18 +878,15 @@
    [:map
     [:sheet-id :uuid]
     [:judge-name :string]
-    [:judge-config [:map
-                    [:type :keyword]  ;; :grounding, :completeness, :instruction-following, :reasoning, :custom
-                    [:criteria {:optional true} :string]  ;; Custom criteria description
-                    ;; Weight for aggregation. The Gap-8 composite-score
-                    ;; normalizer accepts ANY non-negative number (integer
-                    ;; or double) — values are re-scaled per the share-
-                    ;; remaining-mass policy. Negative weights are rejected
-                    ;; because they're nonsensical for a probability mass.
-                    [:weight {:optional true} [:and number? [:>= 0.0]]]
-                    [:provider {:optional true} :keyword]
-                    [:model {:optional true} :string]
-                    [:sheet-id {:optional true} :uuid]]]] ;; For :custom type - reference to judge sheet
+    [:judge-config judge-config-schema]]
+
+   :sheet/revise-judge
+   [:map
+    [:sheet-id :uuid]
+    [:judge-name :string]
+    ;; The complete new definition (not a patch). Identical to the current
+    ;; definition is a conflict: it is not a new revision.
+    [:judge-config judge-config-schema]]
 
    :sheet/set-node-judges
    [:map
@@ -1074,6 +1125,13 @@
     ;; Resolved provider model for durable LLM-call provenance. Present on
     ;; every model-backed leaf completion; absent on deterministic leaves.
     [:model {:optional true} :string]
+    ;; ModelLeafRecordsResolvedModel: the model the node was configured with
+    ;; (absent when it runs on the provider's default) and the model the
+    ;; provider reported using (absent when none was reported, and on failures
+    ;; that carry no provider evidence). :model above is the resolved one when
+    ;; reported, else the configured one.
+    [:requested-model {:optional true} :string]
+    [:resolved-model {:optional true} :string]
     ;; D-008: present when a map-each terminates in :partial or :failure.
     [:partial-summary {:optional true} partial-summary]
     ;; C-2a-2: node-type keyword (:llm, :code, :map-each, :parallel, ...).
@@ -1431,6 +1489,7 @@
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
     [:options-from {:optional true} :keyword]
+    [:bands-from {:optional true} :keyword]
     [:min-confidence {:optional true} :double]
     [:abstain {:optional true} :any]
     ;; Phase 4B: opt-in gated tool-caller builder FQN (see set-node-executor).
@@ -1569,15 +1628,17 @@
    [:map
     [:sheet-id :uuid]
     [:judge-name :string]
-    [:judge-config [:map
-                    [:type :keyword]
-                    [:criteria {:optional true} :string]
-                    ;; Mirror of :sheet/declare-judge :weight constraint.
-                    [:weight {:optional true} [:and number? [:>= 0.0]]]
-                    [:provider {:optional true} :keyword]
-                    [:model {:optional true} :string]
-                    [:sheet-id {:optional true} :uuid]]]
+    [:judge-config judge-config-schema]
+    ;; Always present on the new commands' events; absent on legacy events.
+    [:revision-number {:optional true} :int]
     [:criteria-version {:optional true} :int]]
+
+   :sheet/judge-revised
+   [:map
+    [:sheet-id :uuid]
+    [:judge-name :string]
+    [:judge-config judge-config-schema]
+    [:revision-number :int]]
 
    :sheet/node-judges-set
    [:map
@@ -1722,6 +1783,9 @@
       [:total-tokens {:optional true} :int]
       [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     [:model {:optional true} :string]
+    ;; See :sheet/complete-node-execution :requested-model / :resolved-model.
+    [:requested-model {:optional true} :string]
+    [:resolved-model {:optional true} :string]
     ;; D-008: present on map-each completion events when status is :partial or :failure.
     [:partial-summary {:optional true} partial-summary]
     ;; C-2a-2: node-type keyword carried through from the command for the
@@ -2498,7 +2562,11 @@
     [:failure-kind {:optional true} [:maybe structured-failure-kind]]
     [:condition-answer {:optional true} [:maybe :boolean]]
     [:decision {:optional true} [:maybe decision-record]]
-    [:provider-evidence {:optional true} [:maybe provider-failure-evidence]]]
+    [:provider-evidence {:optional true} [:maybe provider-failure-evidence]]
+    ;; ModelLeafRecordsResolvedModel, from the node's completion event.
+    [:model {:optional true} [:maybe :string]]
+    [:requested-model {:optional true} [:maybe :string]]
+    [:resolved-model {:optional true} [:maybe :string]]]
 
    ;; Run Detail Screen Query (single trace with full data)
    :sheet/run-detail-screen

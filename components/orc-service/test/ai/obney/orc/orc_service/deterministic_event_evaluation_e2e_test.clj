@@ -187,19 +187,23 @@
                  replayed-trace))
           (is (= "projected" (get-in result [:outputs :output]))))))))
 
-(deftest det-e2e-075-judge-opt-in-disabled
-  (testing "an attached deterministic judge emits no score while evaluation is disabled"
+(deftest det-e2e-075-attached-judge-assesses-with-evaluation-disabled
+  ;; S7 (ADR 0008, AttachmentIsMonitoring): attaching a judge is what enables it.
+  ;; This test used to assert the opposite - that an attached judge stayed silent
+  ;; while the Living Description flag was off - which is the defect J01 records.
+  ;; The flag now gates only the opt-in DEFAULT judges.
+  (testing "an attached deterministic judge scores its node while Living Description evaluation is disabled"
     (h/with-async-test-context [ctx]
       (is (false? (ontology/get-living-description-enabled? ctx)))
       (let [sheet-id (structural-host! ctx "det-e2e-075-disabled"
                                        {:structure {:type :heuristic-structural}}
                                        ["structure"])
-            result (sheet/execute ctx sheet-id {})]
+            result (sheet/execute ctx sheet-id {})
+            scores (wait-events ctx :judge/score-emitted (:trace-id result) 1)]
         (is (= :success (:status result)))
-        (is (h/settle-until! #(h/trace-stored? ctx (:trace-id result))))
-        (Thread/sleep 250)
-        (is (empty? (filter #(= (:trace-id result) (:tick-id %))
-                            (events-of-type ctx :judge/score-emitted))))))))
+        (is (= 1 (count scores))
+            "the attachment alone enables the judge")
+        (is (= "structure" (:judge-name (first scores))))))))
 
 (deftest det-e2e-076-deterministic-structural-judge
   (testing "known tree shape emits the exact heuristic score, dimensions, and projected result"
@@ -261,7 +265,7 @@
                                       scores))))))))))
 
 (deftest det-e2e-079-custom-code-judge-and-recursion-guard
-  (testing "typed host IO reaches a real code judge and max-depth guard skips re-entry"
+  (testing "typed host IO reaches a real code judge, and the judge's own run is durably marked as assessment work"
     (h/with-async-test-context [ctx]
       (enable-evaluation! ctx true)
       (let [eval-sheet (eval-workflow! ctx "det-e2e-079-eval" "score-from-host")
@@ -270,22 +274,21 @@
                                          ["typed"])
             result (sheet/execute ctx host-sheet {})
             scores (wait-events ctx :judge/score-emitted (:trace-id result) 1)
-            invoke-custom @#'ai.obney.orc.evaluation.core.judge-runtime/invoke-custom-judge
-            before (count (all-events ctx))
-            guarded (invoke-custom
-                     (assoc ctx
-                            :ai.obney.orc.evaluation.core.judge-runtime/judge-depth 1)
-                     {:type :custom :sheet-id eval-sheet}
-                     {:inputs {:fixture true}
-                      :outputs {:generated-tree-raw excellent-tree}
-                      :instruction "typed"})]
+            judge-ticks (into #{}
+                              (comp (filter #(and (= :sheet/node-execution-completed (:event/type %))
+                                                  (= eval-sheet (:sheet-id %))))
+                                    (map :tick-id))
+                              (all-events ctx))]
         (is (= 1 (count scores)))
         (is (= 0.9 (:score (first scores))))
         (is (re-find #"generated-tree-raw" (:feedback (first scores))))
-        (is (nil? guarded))
-        (Thread/sleep 150)
-        (is (= before (count (all-events ctx)))
-            "depth guard prevents the real evaluation sheet from sub-executing")))))
+        (is (= 1 (count judge-ticks)) "the evaluation sheet ran once, as the judge")
+        (is (every? #(= {:assessment-id (:assessment-id (first scores))}
+                        (sheet/assessment-origin ctx %))
+                    judge-ticks)
+            "the judge's run carries its assessment as the durable origin")
+        (is (nil? (sheet/assessment-origin ctx (:trace-id result)))
+            "the host's own run carries none")))))
 
 (defn- composite-run! [ctx name judges]
   (let [low (eval-workflow! ctx (str name "-low") "score-low")

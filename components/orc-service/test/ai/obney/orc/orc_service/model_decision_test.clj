@@ -343,3 +343,75 @@
                                         request ["lookup"])]
       (is (false? (get-in (first @calls) [:options :use-function-calling?]))
           "an explicit node option wins"))))
+
+;; ---------------------------------------------------------------------------
+;; Boolean decisions may abstain to false (ModelDecision: "false is an offered
+;; option of a yes/no decision")
+;; ---------------------------------------------------------------------------
+
+(defn- holds-workflow [workflow-name & {:as decision-options}]
+  (sheet/workflow workflow-name
+    (sheet/blackboard {:claim :string :holds :boolean})
+    (apply sheet/llm-decision "holds"
+           (mapcat identity (merge {:instruction "Does the supplied claim hold?"
+                                    :reads [:claim] :writes [:holds]}
+                                   decision-options)))))
+
+(defn- run-with-confidence
+  "Like `run-workflow`, but the provider reports `confidence` beside the
+   answer (the native-decision evidence shape), when non-nil."
+  [ctx workflow inputs answer confidence]
+  (with-redefs [llm/predict
+                (fn [_provider module _inputs options]
+                  (let [output-name (-> module :outputs first :name)]
+                    (if (:with-metadata? options)
+                      (cond-> {:outputs {output-name answer}
+                               :usage {:prompt_tokens 5 :completion_tokens 1 :total_tokens 6}
+                               :model resolved-model
+                               :raw-response (pr-str {output-name answer})}
+                        confidence (assoc :decisions {(name output-name) {:confidence confidence}}))
+                      {output-name answer})))]
+    (let [sheet-id (sheet/build-workflow! ctx workflow)]
+      (sheet/execute (assoc ctx :llm-provider :deterministic-provider) sheet-id inputs))))
+
+(def ^:private claim {:claim "Water boils at 100C at sea level"})
+
+(deftest boolean-decision-can-abstain-to-false
+  (testing "`:abstain false` is an offered option and the workflow builds"
+    (h/with-async-test-context [ctx]
+      (is (= ::built
+             (build-outcome ctx (holds-workflow "md-bool-abstain-false"
+                                                :min-confidence 0.7 :abstain false))))))
+  (testing "an abstention value outside the offered options is still rejected"
+    (h/with-async-test-context [ctx]
+      (is (= ::rejected
+             (build-outcome ctx (holds-workflow "md-bool-abstain-bogus"
+                                                :min-confidence 0.7 :abstain "maybe"))))))
+  (testing "below the floor, true is set aside and false is written"
+    (h/with-async-test-context [ctx]
+      (let [result (run-with-confidence ctx (holds-workflow "md-bool-below-floor"
+                                                            :min-confidence 0.7 :abstain false)
+                                        claim true 0.2)
+            record (:decision (decision-completion ctx result))]
+        (is (= :success (:status result)) (pr-str (select-keys result [:status :error])))
+        (is (false? (get-in result [:outputs :holds])))
+        (is (true? (:abstained? record)))
+        (is (true? (:set-aside record)) "the set-aside answer is recorded"))))
+  (testing "no reported confidence under a floor also abstains to false"
+    (h/with-async-test-context [ctx]
+      (let [result (run-with-confidence ctx (holds-workflow "md-bool-no-conf"
+                                                            :min-confidence 0.7 :abstain false)
+                                        claim true nil)
+            record (:decision (decision-completion ctx result))]
+        (is (= :success (:status result)) (pr-str (select-keys result [:status :error])))
+        (is (false? (get-in result [:outputs :holds])))
+        (is (true? (:abstained? record))))))
+  (testing "a semantic false above the floor is a successful decision, not an abstention"
+    (h/with-async-test-context [ctx]
+      (let [result (run-with-confidence ctx (holds-workflow "md-bool-semantic-false"
+                                                            :min-confidence 0.7 :abstain false)
+                                        claim false 0.95)
+            record (:decision (decision-completion ctx result))]
+        (is (= :success (:status result)) (pr-str (select-keys result [:status :error])))
+        (is (false? (get-in result [:outputs :holds])))
+        (is (false? (:abstained? record)))))))

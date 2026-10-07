@@ -42,6 +42,14 @@
   (select-keys (or inputs {})
                [map-each-index-key map-each-parent-key tick-iteration-key]))
 
+(defn engine-key?
+  "True for a blackboard/inputs key the engine itself uses for bookkeeping
+   (map-each iteration markers, tick iteration, durable order): every key in the
+   namespace of the map-each markers. They are not data any node declared, so
+   evidence shown to a judge never includes them."
+  [k]
+  (and (keyword? k) (= (namespace k) (namespace map-each-index-key))))
+
 (defn execution-key
   "Correlation key for one node execution: [node-id exec-context].
    Works for :sheet/execution-value-written events (which carry

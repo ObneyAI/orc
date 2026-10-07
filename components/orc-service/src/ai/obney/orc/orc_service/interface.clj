@@ -21,13 +21,20 @@
             ;; DSL for workflow building
             [ai.obney.orc.orc-service.core.dsl :as dsl]
             [ai.obney.orc.orc-service.core.family-usage :as family-usage]
+            [ai.obney.orc.orc-service.core.execution-family :as execution-family]
             ;; Resolving blackboard values from the canonical write log
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             ;; WS-2a: the orc block-signal primitive (opaque payload)
             [ai.obney.orc.orc-service.core.block :as block]
             ;; Shape, not values — the profile lifecycle events record instead
             ;; of a blackboard value
-            [ai.obney.orc.orc-service.core.profile :as profile]))
+            [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.judge-definition :as judge-definition]))
+
+(def max-alert-window
+  "The largest trailing window a judge alert may watch (the outcomes a node
+   version's performance keeps in order)."
+  judge-definition/max-alert-window)
 
 ;; =============================================================================
 ;; Read Models
@@ -86,8 +93,20 @@
 ;; Family usage: provider usage of an execution plus all its descendants.
 (def get-family-usage family-usage/get-family-usage)
 
+;; Execution family: every node execution of an execution and of every nested
+;; child execution, in durable completion order, with resolved values.
+(def get-execution-family execution-family/get-execution-family)
+
 ;; Tick functions
 (def get-tick rm/get-tick)
+(def assessment-origin
+  "The durable assessment origin ({:assessment-id uuid}) of a tick, or nil when
+   the tick is not work done for an assessment. Inherited by every child run."
+  rm/assessment-origin)
+(def get-tick-execution-context
+  "The execution context a snapshot-based tick runs under ({:nodes-by-id
+   :version-number :instruction-overrides ...}), or nil for a snapshot-less tick."
+  rm/get-tick-execution-context)
 (def get-researcher-campaign rm/get-researcher-campaign)
 (def get-researcher-iteration-records rm/get-researcher-iteration-records)
 (def get-researcher-effect-claims rm/get-researcher-effect-claims)
@@ -124,6 +143,9 @@
 
 (def value-log-exec-context value-log/exec-context)
 (def value-log-execution-key value-log/execution-key)
+(def value-log-engine-key? value-log/engine-key?)
+(def value-log-tick-started-event value-log/tick-started-event)
+(def value-log-tick-seeds value-log/tick-seeds)
 (def value-log-writes-for value-log/writes-for)
 (def value-log-latest-values value-log/latest-values)
 (def value-log-input-seeds-by-iteration value-log/input-seeds-by-iteration)

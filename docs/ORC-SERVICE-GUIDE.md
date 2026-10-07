@@ -868,180 +868,218 @@ Create deterministic executors for testing:
       (is (>= (count events) 1)))))
 ```
 
-### Mock Judges for Evaluation Tests
+### Judges Without a Model in Tests
 
-```clojure
-(require '[ai.obney.orc.evaluation.core.judges :as judges])
-
-(binding [judges/*use-mock-llm* true]
-  ;; Judge calls will use mock responses
-  (eval/evaluate-single :grounding trace-data))
-```
+Assessments run the judge as a workflow, so test them by stubbing the provider seam with `with-redefs` on `llm/predict`, or by using a deterministic custom judge workflow (see [Building a custom judge](#building-a-custom-judge)). `judges/*use-mock-llm*` and `judges/with-mock-llm` only affect the retained synchronous functions such as `evaluate-single`; they have no effect on assessments. `components/evaluation/test/ai/obney/orc/evaluation/docs_examples_test.clj` shows both approaches running.
 
 ---
 
 ## Attaching Judges to Nodes
 
-> **Layer 1** — requires `evaluation` component. See [COMPONENT-MAP.md](COMPONENT-MAP.md) and [JUDGE-ARCHITECTURE.md](JUDGE-ARCHITECTURE.md).
+> **Layer 1** — requires `evaluation` component. See [COMPONENT-MAP.md](COMPONENT-MAP.md), [EVALUATION-COMPONENT.md](EVALUATION-COMPONENT.md) and [JUDGE-ARCHITECTURE.md](JUDGE-ARCHITECTURE.md).
 
-Judges are evaluators that grade a node's outputs after execution and emit `:judge/score-emitted` events. The judge system is **general** — any `:leaf` or `:repl-researcher` node can have judges attached. RLM-specific defaults (the 5 default judges auto-attached to `:repl-researcher` when the Living Description opt-in flag is on) are covered separately in [`RLM-GUIDE.md`](RLM-GUIDE.md#judges-on-repl-researcher-nodes-rlm-specific-defaults--living-description-loop); this section is the general attachment surface.
+A **judge** is a behaviour that grades an **assessment subject**, one completed execution of a node, against a **rubric**. Each judgment is a durable **assessment** that ends scored, failed or ungradable. The judge system is **general**: a judge attaches to any node (leaf, composite, delegate or the root), and attaching it enables it. No flag has to be turned on. The 5 default judges that `:repl-researcher` nodes get when the Living Description flag is on are covered in [`RLM-GUIDE.md`](RLM-GUIDE.md#judges-on-repl-researcher-nodes-rlm-specific-defaults--living-description-loop). Every code block marked `;; docs-example: <id>` in this section is run by `components/evaluation/test/ai/obney/orc/evaluation/docs_examples_test.clj`.
 
-### Two-step attachment
-
-Judges attach in two steps via existing commands (no DSL change needed):
+### Declare and attach in the DSL
 
 ```clojure
-;; 1. Declare the judge on the host sheet
-(cp/process-command
-  (assoc ctx :command
-         {:command/name :sheet/declare-judge
-          :command/id (random-uuid)
-          :command/timestamp (time/now)
-          :sheet-id host-sheet-id
-          :judge-name "my-grounding"
-          :judge-config {:type :grounding}}))   ;; or :reasoning / :completeness /
-                                                ;; :instruction-following / :heuristic-structural /
-                                                ;; :custom
+;; docs-example: built-in-judge
+(def triage
+  (sheet/workflow "docs-ticket-triage"
+    (sheet/blackboard {:ticket-message :string :category :string})
+    (sheet/judges {:grounded {:type :grounding
+                              :purposes #{:monitoring :learning}}})
+    (sheet/llm "classify"
+      :instruction "Classify the ticket into one category."
+      :reads [:ticket-message]
+      :writes [:category]
+      :judges ["grounded"])))
 
-;; 2. Attach declared judges to a specific node
-(cp/process-command
-  (assoc ctx :command
-         {:command/name :sheet/set-node-judges
-          :command/id (random-uuid)
-          :command/timestamp (time/now)
-          :sheet-id host-sheet-id
-          :node-id leaf-or-repl-researcher-node-id
-          :judges ["my-grounding"]}))   ;; vector of declared judge-names
+(defn run-triage [ctx]
+  (let [sheet-id (sheet/build-workflow! ctx triage)]
+    (sheet/execute ctx sheet-id {:ticket-message "URGENT: billing error on my account."})
+    sheet-id))
+
+(defn scored-assessments [ctx sheet-id]
+  (evaluation/get-assessments ctx {:sheet-id sheet-id :status :scored}))
 ```
 
-`:sheet/set-node-judges` accepts ONLY `:leaf` and `:repl-researcher` node types. Composite nodes (`:sequence`, `:parallel`, etc.) can't have judges directly — attach to their leaf children instead.
+### Declare and attach with commands
+
+The DSL builds these commands for you. You can issue them directly. `:sheet/set-node-judges` accepts any node type.
+
+```clojure
+;; docs-example: attach-by-command
+(defn declare-and-attach! [ctx sheet-id node-id]
+  (doseq [command [{:command/name :sheet/declare-judge
+                    :sheet-id sheet-id
+                    :judge-name "my-grounding"
+                    :judge-config {:type :grounding}}
+                   {:command/name :sheet/set-node-judges
+                    :sheet-id sheet-id
+                    :node-id node-id
+                    :judges ["my-grounding"]}]]
+    (cp/process-command
+     (assoc ctx :command (assoc command
+                                :command/id (random-uuid)
+                                :command/timestamp (time/now))))))
+```
 
 ### Judge types
 
-| Type | What it does | Code path |
-|---|---|---|
-| `:grounding` | LLM judge — checks if outputs are supported by inputs | `judges/grounding-judge` |
-| `:instruction-following` | LLM judge — did the LLM follow the instruction? | `judges/instruction-following-judge` |
-| `:reasoning` | LLM judge — logical consistency of the response | `judges/reasoning-judge` |
-| `:completeness` | LLM judge — does the output cover all required aspects? | `judges/completeness-judge` |
-| `:heuristic-structural` | Deterministic — grades shape of `:writes :generated-tree-raw` if present | `heuristic-structural/evaluate-tree-structure` |
-| `:custom` | Consumer-defined ORC workflow as judge — see below | `invoke-custom-judge` |
+| Type | What it grades |
+|---|---|
+| `:grounding` | whether claims are supported by what the node read |
+| `:instruction-following` | whether the output follows the instruction |
+| `:reasoning` | whether the reasoning is sound |
+| `:completeness` | whether the output covers every required aspect |
+| `:heuristic-structural` | deterministic: the shape of `:writes :generated-tree-raw` if present |
+| `:custom` | a consumer-defined workflow, see below |
 
-> The four built-in LLM judges (`:grounding`, `:instruction-following`, `:reasoning`, `:completeness`) run the **tier-1 shape** (ADR 0011): a decoupled discrete **1–5 `Scale`**, an adversarial reviewer stance, **reason-before-score**, typed-blackboard output (no `:output-schemas`, no JSON-in-prompt), and a no-run-through gate. The emitted `:score` is `[0,1]` derived deterministically from the band. See [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#tier-1-judge-model-2026-06-decoupled-discrete-scale--reason-before-score--all-four-llm-judges).
+The four built-in model judges ship as workflows with a default rubric of five described bands, an adversarial stance and the feedback form (reasoning, evidence lists, band, feedback). Declare your own `:rubric` to change the criterion, stance or bands, or `:feedback :none` for a score-only judge. See [EVALUATION-COMPONENT.md](EVALUATION-COMPONENT.md#rubrics-and-bands).
 
-### When judges fire
+### Purposes
 
-When the **Living Description opt-in flag is on**, the per-event evaluator runtime (`components/evaluation/src/.../core/judge_runtime.clj`) subscribes to `:sheet/node-execution-completed` events and fires attached judges in parallel via futures with a 60s per-judge timeout. Score events land as `:judge/score-emitted`.
+A judge's `:purposes` is a subset of `#{:monitoring :learning}`. A **monitoring judge**'s results describe performance and may carry no feedback. A **learning judge**'s scored results also reach Living Descriptions, harvest and instruction optimization through `:judge/score-emitted`, so it must require feedback. Without `:purposes` a judge serves both, or only monitoring when its rubric has `:feedback :none`.
 
-Opt-in:
+### When judges run
 
-```clojure
-(cp/process-command
-  (assoc ctx :command
-         {:command/name :ontology/set-living-description-enabled
-          :command/id (random-uuid)
-          :command/timestamp (time/now)
-          :enabled? true}))
-```
-
-When the flag is OFF (default), the processor returns immediately with zero overhead — no LLM calls, no events emitted. Existing tests + the legacy retrospective evaluation path continue to work unchanged.
+When a node completes, the evaluation runtime requests one assessment per attached judge, durably, before any judging starts. The judge then runs as a workflow, with a 60 second default deadline (`:timeout-ms`). Delivering the same completion again never creates a second assessment. Repeated executions of one node (a `map-each`, for example) are separate subjects, so three iterations give three assessments. A judge's model is its declared `:model`, otherwise the runtime provider. If neither resolves, the assessment fails with `:judge-model-unresolved`.
 
 ### Building a custom judge
 
-A custom judge is a separate ORC workflow that grades the host node's outputs. The eval workflow's blackboard MUST declare:
-
-- **Reads** (provided by the runtime at execution time): `:host-inputs`, `:host-outputs`, `:host-instruction`, `:host-trace`
-- **Writes** (the judge's outputs): `:score` (double 0.0-1.0), `:feedback` (string), optionally `:dimensions` (vector)
-
-Two shapes:
-
-**Deterministic `:code` judge:**
+A custom judge is a separate workflow that grades the subject. Its blackboard declares the evidence it wants. The runtime always has `:host-inputs`, `:host-outputs` and `:host-instruction` to give it, plus `:rubric` and `:original-task` when declared, and the opt-in `:host-family` (the execution family) and `:child-assessments` (the parent's assessment then waits until its children have ended). With a rubric on the judge it writes a `:band` (and `:feedback` when the rubric requires it); without one it writes a `:score` in `[0,1]` and `:feedback`. A `:code` node's `:fn` is a fully qualified name STRING, not a symbol.
 
 ```clojure
-;; Eval fn — resolved by FQ-name STRING at execution time
-(defn schema-compliance-judge
-  "Score 1.0 if host outputs contain required keys, 0.0 otherwise."
+;; docs-example: custom-judge
+(defn label-judge
+  "Grades the assessed node's `category` output by its length."
   [{:keys [inputs]}]
-  (let [host-outputs (:host-outputs inputs)
-        required-keys #{:issues :recommendations}
-        present (set (keys host-outputs))]
-    {:score (if (every? present required-keys) 1.0 0.0)
-     :feedback (str "Missing keys: " (clojure.set/difference required-keys present))}))
+  (let [category (str (get-in inputs [:host-outputs :category]))]
+    (if (<= (count category) 12)
+      {:band 3 :feedback "A short label, as asked."}
+      {:band 1 :feedback "The category is a sentence, not a label."})))
 
-;; Build the judge as a single-node workflow
-(def schema-judge-workflow
-  (sheet/workflow "schema-compliance"
-    (sheet/blackboard {:host-inputs :map :host-outputs :map
-                       :host-instruction :string :host-trace :map
-                       :score :double :feedback :string})
-    (sheet/code "eval"
-      :fn "myapp.judges/schema-compliance-judge"     ; FQ-name STRING — not a symbol
-      :reads [:host-outputs]
+(def label-judge-workflow
+  (sheet/workflow "docs-label-judge"
+    (sheet/blackboard
+     {:host-inputs [:map-of :keyword [:any {:description "Values the assessed node read"}]]
+      :host-outputs [:map-of :keyword [:any {:description "Values the assessed node wrote"}]]
+      :host-instruction [:string {:description "The assessed node's instruction"}]
+      :rubric [:map [:bands [:map-of :int :string]]
+               [:criterion {:optional true} :string]
+               [:stance {:optional true} :string]]
+      :band [:int {:description "The band chosen from the rubric"}]
+      :feedback [:string {:description "Why this band"}]})
+    (sheet/code "check"
+      :fn "ai.obney.orc.evaluation.docs-examples-test/label-judge"
+      :reads [:host-inputs :host-outputs :host-instruction :rubric]
+      :writes [:band :feedback])))
+
+(def label-rubric
+  {:criterion "The category is a short label."
+   :stance "Be strict."
+   :bands {1 "Not a label." 2 "A long label." 3 "A short label."}
+   :feedback :required})
+
+(defn label-judged-workflow [judge-sheet-id]
+  (sheet/workflow "docs-label-judged"
+    (sheet/blackboard {:ticket-message :string :category :string})
+    (sheet/judges {:label {:type :custom
+                           :sheet-id judge-sheet-id
+                           :rubric label-rubric}})
+    (sheet/code "classify"
+      :fn "ai.obney.orc.evaluation.docs-examples-test/classify"
+      :reads [:ticket-message]
+      :writes [:category]
+      :judges ["label"])))
+```
+
+A judge that throws, writes a band outside the rubric, or does not finish leaves a failed assessment with a reason. Nothing is invented:
+
+```clojure
+;; docs-example: failed-assessment
+(defn cannot-grade [_] (throw (ex-info "this judge cannot grade" {})))
+
+(defn failing-judged-workflow [judge-sheet-id]
+  (sheet/workflow "docs-failing-judged"
+    (sheet/blackboard {:ticket-message :string :category :string})
+    (sheet/judges {:broken {:type :custom :sheet-id judge-sheet-id}})
+    (sheet/code "classify"
+      :fn "ai.obney.orc.evaluation.docs-examples-test/classify"
+      :reads [:ticket-message]
+      :writes [:category]
+      :judges ["broken"])))
+```
+
+### Judging a composite
+
+A judge on a sequence, fallback, parallel, map-each or delegate reads its forwarded outputs; a judged composite makes its tree run durably. Runs of published versions are judged through the draft node's attachments.
+
+```clojure
+;; docs-example: composite-judge
+(defn step [{:keys [inputs]}] {:mid (str "mid:" (:request inputs))})
+(defn finish [{:keys [inputs]}] {:answer (str "answer:" (:mid inputs))})
+
+(defn step-judge [_] {:score 0.5 :feedback "The step ran."})
+
+(defn pipeline-judge
+  "Reads the whole execution family and the child assessments."
+  [{:keys [inputs]}]
+  (let [executed (mapv :node-name (:host-family inputs))
+        children (mapv :status (:child-assessments inputs))]
+    {:score (if (and (= #{"step" "finish"} (set executed)) (= [:scored] children)) 1.0 0.0)
+     :feedback (str "Executed " (count executed) " nodes; child assessments: " children)}))
+
+(def any-map [:map-of :keyword [:any {:description "Any value"}]])
+
+(defn judge-workflow-with [workflow-name fn-name extra-keys]
+  (sheet/workflow workflow-name
+    (sheet/blackboard
+     (merge {:host-inputs any-map
+             :host-outputs any-map
+             :host-instruction [:string {:description "The assessed node's instruction"}]
+             :score :double
+             :feedback [:string {:description "Why this score"}]}
+            extra-keys))
+    (sheet/code "judge" :fn fn-name
+      :reads (into [:host-inputs :host-outputs :host-instruction] (keys extra-keys))
       :writes [:score :feedback])))
 
-(def schema-judge-sheet-id (sheet/build-workflow! ctx schema-judge-workflow))
+(defn judged-pipeline [ctx]
+  (let [step-judge-id (sheet/build-workflow!
+                       ctx (judge-workflow-with "docs-step-judge"
+                                                "ai.obney.orc.evaluation.docs-examples-test/step-judge" {}))
+        pipeline-judge-id (sheet/build-workflow!
+                           ctx (judge-workflow-with
+                                "docs-pipeline-judge"
+                                "ai.obney.orc.evaluation.docs-examples-test/pipeline-judge"
+                                {:host-family [:vector any-map]
+                                 :child-assessments [:vector any-map]}))]
+    (sheet/build-workflow! ctx
+      (sheet/workflow "docs-judged-pipeline"
+        (sheet/blackboard {:request :string :mid :string :answer :string})
+        (sheet/judges {:step-check {:type :custom :sheet-id step-judge-id}
+                       :pipeline-check {:type :custom :sheet-id pipeline-judge-id}})
+        (sheet/sequence "pipeline" :judges ["pipeline-check"]
+          (sheet/code "step" :fn "ai.obney.orc.evaluation.docs-examples-test/step"
+            :reads [:request] :writes [:mid] :judges ["step-check"])
+          (sheet/code "finish" :fn "ai.obney.orc.evaluation.docs-examples-test/finish"
+            :reads [:mid] :writes [:answer]))))))
 ```
 
-**LLM-graded judge** (same structured-output pattern as the 4 built-in LLM judges):
+### Querying assessments
 
-```clojure
-(def hallucination-risk-judge
-  (sheet/workflow "hallucination-risk"
-    (sheet/blackboard {:host-inputs :map :host-outputs :map
-                       :host-instruction :string :host-trace :map
-                       :score :double :feedback :string})
-    (sheet/llm "grade"
-      :model "google/gemini-3-flash-preview"
-      :instruction "Evaluate the hallucination risk of the host's outputs against
-                    the original inputs. Higher risk = claims unsupported by inputs.
-                    Return :score (0.0-1.0, where 1.0 = no risk) and :feedback."
-      :reads [:host-outputs :host-instruction]
-      :writes [:score :feedback])))
-
-(def hallucination-sheet-id (sheet/build-workflow! ctx hallucination-risk-judge))
-```
-
-### Attaching a custom judge
-
-```clojure
-(cp/process-command
-  (assoc ctx :command
-         {:command/name :sheet/declare-judge
-          :command/id (random-uuid)
-          :command/timestamp (time/now)
-          :sheet-id host-sheet-id
-          :judge-name "hallucination-risk"
-          :judge-config {:type :custom :sheet-id hallucination-sheet-id}}))
-
-(cp/process-command
-  (assoc ctx :command
-         {:command/name :sheet/set-node-judges
-          :command/id (random-uuid)
-          :command/timestamp (time/now)
-          :sheet-id host-sheet-id
-          :node-id host-node-id
-          :judges ["hallucination-risk"]}))
-```
-
-When the host node's `:sheet/node-execution-completed` event fires, the runtime sub-executes the eval sheet with the host's writes, harvests `:score` + `:feedback` + `:dimensions` from the outputs, and emits a `:judge/score-emitted` event tagged with `(sheet, node, tick)`.
-
-### Querying scores
-
-```clojure
-(require '[ai.obney.orc.evaluation.interface :as eval])
-
-(eval/get-judge-scores ctx host-sheet-id host-node-id tick-id)
-;; => [{:judge-name "my-grounding" :score 0.85 :feedback "..." :dimensions [...] ...}
-;;     {:judge-name "hallucination-risk" :score 0.92 :feedback "..." :dimensions [...] ...}]
-```
+`(evaluation/get-assessments ctx {:sheet-id host-sheet-id :node-id host-node-id})` returns the assessments oldest first, each with its `:status`, `:judge-name`, `:judge-revision-number`, and `:band :score :feedback` or `:reason :message`. The legacy `evaluation/get-judge-scores` still returns the learning judges' score entries for a `(sheet-id, node-id, tick-id)`. For performance per node version see [EVALUATION-COMPONENT.md](EVALUATION-COMPONENT.md#performance-and-alerts).
 
 ### Current limits
 
-- **Multi-judge composite scoring is available.** When 2+ judges fire on a (sheet, node, tick), the runtime also emits a `:judge/composite-score-computed` event with the weighted composite. Default policy: even-weight (1/N) when consumers don't set explicit weights; consumer-set `:judge-config :weight` values normalize to sum to 1.0. The `:contributing-judges` field on the event shows the effective normalized weight each judge applied — useful for debugging "how did this composite get computed?"
-- **Recursion ceiling.** A `:custom` judge sheet whose internal nodes have their own `:judges` attached → those nested judges are SKIPPED (default `:judge-depth` ceiling = 1). Prevents runaway sub-tick chains.
-- **Per-judge timeout** defaults to 60 seconds. Override per-judge via `:judge-config.:timeout-ms`.
-- **`:code` node `:fn` must be a FQ-name STRING**, not a symbol literal. The runtime calls `requiring-resolve` on the string.
-- **Dimension `:weight`** is required by the `:judge/score-emitted` event schema. The runtime auto-fills `:weight 1.0` when consumers don't provide it, so simple consumers can omit it from their LLM rubric.
+- **Composite scoring covers learning judges.** When a subject has 2 or more learning judges, one `:judge/composite-score-computed` event is recorded after they have all settled. It carries the mean over those that scored, weighted by `:weight` (even weights when none are set), its coverage, and `:partial` when any did not score. Monitoring judges are never mixed in.
+- **Assessment work is never assessed.** A judge runs as a workflow whose run is durably marked with an assessment origin (`:assessment-origin {:assessment-id ...}` on `orc/execute`, readable with `orc/assessment-origin`). Every child run (delegates, generated trees) inherits the mark, and a completion under it requests no assessment, whatever judges are attached inside the judge's tree. Judges may still delegate, run parallel checks and call tools.
+- **Crash recovery is not yet provided.** Assessments execute as soon as they are requested. A crash leaves requested assessments visibly pending; capacity limits, worker claims and drain are open.
+- **A judge's `:provider` field has no effect.** Choose a model with `:model`.
+- **A judge is revised, not redeclared.** Rebuilding a workflow whose judge definition changed raises the judge's revision number; results under different revisions are never blended.
+- **Dimension `:weight`** defaults to 1.0 when a custom judge's dimension omits it.
 
 ---
 

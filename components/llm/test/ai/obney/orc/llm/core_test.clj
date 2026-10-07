@@ -891,3 +891,247 @@
                   {:choices [{:message {:content "[[ ## verdict ## ]]\ntrue\n\nsee [[ ## verdict ## ]] above"}}]})]
     (is (= {:verdict "above"}
            (llm/predict :test verdict-spec {:question "Grounded?"} {:validate? false})))))
+
+;; --------------------------------------------------------------------------- ;;
+;; DeclaredMeaningReachesTheModel (llm.allium): input descriptions reach the
+;; model whether the request is marker-form or function-calling.
+;; --------------------------------------------------------------------------- ;;
+
+(def ^:private described-inputs-spec
+  {:inputs [{:name :claim :spec :string :description "The claim under review"}
+            {:name :evidence :spec :string :description "Evidence offered for the claim"}
+            {:name :note :spec :string}]
+   :outputs [{:name :answer :spec :string :description "The verdict"}]
+   :instructions "Judge the claim."})
+
+(def ^:private described-inputs-values
+  {:claim "Water boils at 100C" :evidence "Textbook chapter 3" :note "n/a"})
+
+(defn- captured-user-text
+  [function-calling?]
+  (let [captured (atom nil)]
+    (with-redefs [router/supports-function-calling? (constantly function-calling?)
+                  router/completion
+                  (fn [_provider request]
+                    (reset! captured request)
+                    (if function-calling?
+                      {:choices [{:message {:tool-calls
+                                            [{:function {:name "submit_response"
+                                                         :arguments "{\"answer\":\"ok\"}"}}]}}]}
+                      {:choices [{:message {:content "[[ ## answer ## ]]\nok"}}]}))]
+      (llm/predict :test described-inputs-spec described-inputs-values {:validate? false})
+      (let [content (get-in @captured [:messages 0 :content])]
+        (if (string? content) content (pr-str content))))))
+
+(deftest function-calling-request-carries-each-input-description-beside-its-value
+  (let [text (captured-user-text true)]
+    (is (str/includes? text "The claim under review"))
+    (is (str/includes? text "Evidence offered for the claim"))
+    (is (str/includes? text "Water boils at 100C"))
+    (is (str/includes? text "Textbook chapter 3"))
+    (testing "description sits next to its own value"
+      (is (re-find #"(?s)claim[^\n]*The claim under review[^\n]*Water boils at 100C|claim[^\n]*Water boils at 100C" text))
+      (is (< (str/index-of text "The claim under review")
+             (str/index-of text "Water boils at 100C")
+             (str/index-of text "Evidence offered for the claim")
+             (str/index-of text "Textbook chapter 3"))))
+    (testing "an input without a description renders as before"
+      (is (str/includes? text "note: n/a")))))
+
+(deftest marker-request-body-is-unchanged-by-input-description-rendering
+  ;; Baseline captured from the marker path before the function-calling fix.
+  (is (= (str "Your input fields are:\n1. `claim` (str): The claim under review\n"
+              "2. `evidence` (str): Evidence offered for the claim\n3. `note` (str): \n"
+              "Your output fields are:\n1. `answer` (str): The verdict\n"
+              "All interactions will be structured in the following way, with the appropriate values filled in.\n\n"
+              "[[ ## claim ## ]]\n{claim}\n\n[[ ## evidence ## ]]\n{evidence}\n\n[[ ## note ## ]]\n{note}\n\n"
+              "[[ ## answer ## ]]\n{answer}\n[[ ## completed ## ]]\n"
+              "In adhering to this structure, your instructions are: Judge the claim.\n\n"
+              "[[ ## claim ## ]]\nWater boils at 100C\n\n[[ ## evidence ## ]]\nTextbook chapter 3\n\n"
+              "[[ ## note ## ]]\nn/a")
+         (captured-user-text false))))
+
+(deftest provider-decode-keeps-declared-string-keys
+  (testing "declared string map keys stay strings; convention keys keywordize"
+    (is (= {"0" 0.41 "1" 0.59}
+           (llm/decode-provider-value [:map ["0" :double] ["1" :double]]
+                                      {"0" 0.41 "1" 0.59})))
+    (is (= {"0" 0.41 "1" 1.0}
+           (llm/decode-provider-value [:map ["0" :double] ["1" :double]]
+                                      {"0" 0.41 "1" 1}))
+        "values still decode through the schema")
+    (is (= {:a 1 "b" 2}
+           (llm/decode-provider-value [:map [:a :int] ["b" :int]]
+                                      {"a" 1 "b" 2})))
+    (is (= {"k" 1.0}
+           (llm/decode-provider-value [:map-of :string :double] {"k" 1})))
+    (is (= {:k 1.0}
+           (llm/decode-provider-value [:map-of :keyword :double] {"k" 1})))
+    (is (= [{"0" 0.1} {"0" 0.9}]
+           (llm/decode-provider-value [:vector [:map ["0" :double]]]
+                                      [{"0" 0.1} {"0" 0.9}])))
+    (is (= {:scores {"0" 1.0} :label "x"}
+           (llm/decode-provider-value [:map [:scores [:map ["0" :double]]] [:label :string]]
+                                      {"scores" {"0" 1} "label" "x"})))))
+
+(def ^:private string-key-output
+  {:inputs []
+   :outputs [{:name :probs :spec [:map ["0" :double] ["1" :double]]}
+             {:name :scores :spec [:map-of :string :double]}
+             {:name :tags :spec [:map-of :keyword :int]}]})
+
+(def ^:private string-key-args
+  (str "{\"probs\":{\"0\":0.41,\"1\":1},"
+       "\"scores\":{\"x\":1},\"tags\":{\"t\":2}}"))
+
+(deftest predict-keeps-declared-string-keys-through-sio-keyword-parsing
+  (testing "function-calling path"
+    (with-redefs
+      [router/supports-function-calling? (constantly true)
+       router/completion
+       (fn [& _]
+         {:choices [{:message {:tool-calls
+                               [{:function {:name "submit_response"
+                                            :arguments string-key-args}}]}}]})]
+      (is (= {:probs {"0" 0.41 "1" 1.0} :scores {"x" 1.0} :tags {:t 2}}
+             (llm/predict :test string-key-output {}
+                          {:validate? true :use-function-calling? true})))))
+  (testing "marker path"
+    (with-redefs
+      [router/supports-function-calling? (constantly false)
+       router/completion
+       (fn [& _]
+         {:choices [{:message {:content
+                               (str "[[ ## probs ## ]]\n{\"0\":0.41,\"1\":1}\n"
+                                    "[[ ## scores ## ]]\n{\"x\":1}\n"
+                                    "[[ ## tags ## ]]\n{\"t\":2}")}}]})]
+      (is (= {:probs {"0" 0.41 "1" 1.0} :scores {"x" 1.0} :tags {:t 2}}
+             (llm/predict :test string-key-output {}
+                          {:validate? true :use-function-calling? false})))))
+  (testing "decode-provider-value recovers keyword-arrived declared string keys only"
+    (is (= {"0" 1.0 :other 2}
+           (llm/decode-provider-value [:map ["0" :double] [:other :int]]
+                                      {:0 1 :other 2})))
+    (is (= {"0" 1.0 :undeclared 2}
+           (llm/decode-provider-value [:map ["0" :double] [:undeclared {:optional true} :int]]
+                                      {:0 1 :undeclared 2})))
+    (let [ns-key (keyword "x" "0")]
+      (is (= {"0" 1.0 ns-key 5}
+             (llm/decode-provider-value [:map ["0" :double] [ns-key {:optional true} :int]]
+                                        {:0 1 ns-key 5}))))))
+
+;; ---------------------------------------------------------------------------
+;; J21 — a provider that finished with an error is a failure, never an output
+;; ---------------------------------------------------------------------------
+
+(def ^:private finish-error-response
+  {:id "gen-finish-error"
+   :model "google/gemini-2.5-flash"
+   :choices [{:index 0
+              :finish-reason :error
+              :native-finish-reason "MALFORMED_FUNCTION_CALL"
+              :message {:role "assistant" :content nil}}]})
+
+(defn- predict-failure [response options]
+  (with-redefs [router/supports-function-calling? (constantly (:fc? options true))
+                router/completion (fn [& _] response)]
+    (try
+      (llm/predict :openrouter qa {:question "Capital?"}
+                   (merge {:validate? false :with-metadata? true}
+                          (dissoc options :fc?)))
+      (catch clojure.lang.ExceptionInfo e e))))
+
+(deftest a-provider-finish-error-is-a-failure-without-validation-or-forced-tool
+  (let [failure (predict-failure finish-error-response {})
+        data (ex-data failure)]
+    (is (instance? clojure.lang.ExceptionInfo failure))
+    (is (= :provider-finish-error (:failure-kind data)))
+    (is (= {:provider "openrouter"
+            :model "google/gemini-2.5-flash"
+            :response-id "gen-finish-error"
+            :finish-reason "error"
+            :native-finish-reason "MALFORMED_FUNCTION_CALL"
+            :tool-call-present? false
+            :tool-call-name nil
+            :usage nil
+            :output-truncated? false}
+           (:provider-evidence data)))))
+
+(deftest a-provider-finish-error-is-a-failure-on-the-marker-path
+  (let [failure (predict-failure finish-error-response {:fc? false})]
+    (is (= :provider-finish-error (:failure-kind (ex-data failure))))))
+
+(deftest a-provider-finish-error-reports-usage-only-when-the-provider-did
+  (let [usage {:prompt-tokens 5 :completion-tokens 0 :total-tokens 5}
+        failure (predict-failure (assoc finish-error-response :usage usage) {})]
+    (is (= usage (get-in (ex-data failure) [:provider-evidence :usage])))))
+
+(deftest successful-and-neighbouring-shapes-keep-their-classification
+  (testing "a tool-call success with nil text content parses"
+    (is (= {:outputs {:answer "Paris"}}
+           (select-keys
+            (predict-failure
+             {:id "ok" :model "m"
+              :choices [{:finish-reason :tool_calls
+                         :message {:content nil
+                                   :tool-calls [{:function {:name "submit_response"
+                                                            :arguments "{\"answer\":\"Paris\"}"}}]}}]}
+             {})
+            [:outputs]))))
+  (testing "a forced tool with no call stays missing-forced-tool-call"
+    (is (= :missing-forced-tool-call
+           (:failure-kind (ex-data (predict-failure
+                                    {:id "x" :choices [{:finish-reason :stop :message {:content nil}}]}
+                                    {:force-tool-choice? true}))))))
+  (testing "a valid marker response stays valid"
+    (is (= {:answer "Paris"}
+           (:outputs (predict-failure
+                      {:id "m" :model "m"
+                       :choices [{:finish-reason :stop
+                                  :message {:content "[[ ## answer ## ]]\nParis\n[[ ## completed ## ]]"}}]}
+                      {:fc? false})))))
+  (testing "length truncation is not reclassified as a finish error"
+    (let [r (predict-failure
+             {:id "l" :choices [{:finish-reason :length :message {:content nil}}]}
+             {:force-tool-choice? true})]
+      (is (= :missing-forced-tool-call (:failure-kind (ex-data r))))
+      (is (true? (get-in (ex-data r) [:provider-evidence :output-truncated?]))))))
+
+(deftest receipt-82-replay-is-a-provider-finish-error
+  ;; Decoded OpenRouter body of campaign receipt 82 (only the response-shape
+  ;; fields), converted to litellm's transformed choice shape.
+  (let [decoded {:id "gen-1791252150-kF8Cdkfpix3iXEutQA3H"
+                 :model "google/gemini-2.5-flash"
+                 :choices [{:index 0 :finish_reason "error"
+                            :native_finish_reason "MALFORMED_FUNCTION_CALL"
+                            :message {:role "assistant" :content nil}}]}
+        transformed (update decoded :choices
+                            (fn [cs] (mapv (fn [c]
+                                             {:index (:index c)
+                                              :finish-reason (keyword (:finish_reason c))
+                                              :native-finish-reason (:native_finish_reason c)
+                                              :message (:message c)})
+                                           cs)))
+        data (ex-data (predict-failure transformed {}))]
+    (is (= :provider-finish-error (:failure-kind data)))
+    (is (= "MALFORMED_FUNCTION_CALL"
+           (get-in data [:provider-evidence :native-finish-reason])))
+    (is (= "gen-1791252150-kF8Cdkfpix3iXEutQA3H"
+           (get-in data [:provider-evidence :response-id])))))
+
+(deftest streaming-provider-finish-error-is-a-terminal-error-not-a-final
+  (with-redefs [router/completion
+                (fn [& _]
+                  (fake-stream [{:id "gen-stream-err" :model "m"
+                                 :choices [{:delta {:content "partial"}}]}
+                                {:choices [{:delta {}
+                                            :finish-reason :error
+                                            :native-finish-reason "MALFORMED_FUNCTION_CALL"}]}]))]
+    (let [events (drain (llm/predict-stream-v2 :test qa {:question "Capital?"}
+                                                {:debounce-ms 0}))
+          terminal (last events)]
+      (is (= :error (:orc/event terminal)))
+      (is (not-any? #(= :final (:orc/event %)) events))
+      (is (= :provider-finish-error (get-in terminal [:error :failure-kind])))
+      (is (= "MALFORMED_FUNCTION_CALL"
+             (get-in terminal [:error :provider-evidence :native-finish-reason]))))))

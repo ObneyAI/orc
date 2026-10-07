@@ -8,6 +8,7 @@
    - Last write wins (no optimistic concurrency)"
   (:require [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
+            [ai.obney.orc.orc-service.core.judge-definition :as judge-definition]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
             [ai.obney.orc.orc-service.core.read-models :as rm]
@@ -453,7 +454,7 @@
    - :code executor runs a Clojure function
    - :tool executor directly invokes a tool"
   [{{:keys [sheet-id node-id executor model fn tool tools options tool-caller-fn tool-contracts
-                options-from min-confidence abstain]} :command
+                options-from bands-from min-confidence abstain]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)]
     (cond
@@ -491,6 +492,7 @@
                   tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
                   tool-contracts (assoc :tool-contracts tool-contracts)
                   options-from (assoc :options-from options-from)
+                  bands-from (assoc :bands-from bands-from)
                   min-confidence (assoc :min-confidence min-confidence)
                   (some? abstain) (assoc :abstain abstain)
                   (:executor node) (assoc :previous-executor (:executor node))
@@ -945,10 +947,9 @@
       {::anom/category ::anom/conflict
        ::anom/message (str "Judge '" judge-name "' already declared")}
 
-      (and (= :custom (:type judge-config))
-           (not (:sheet-id judge-config)))
+      (judge-definition/config-error judge-config)
       {::anom/category ::anom/incorrect
-       ::anom/message "Custom judge type requires :sheet-id"}
+       ::anom/message (judge-definition/config-error judge-config)}
 
       :else
       {:command-result/events
@@ -958,17 +959,57 @@
           :body {:sheet-id sheet-id
                  :judge-name judge-name
                  :judge-config judge-config
+                 :revision-number 1
                  :criteria-version 1}})]})))
+
+(defcommand :sheet revise-judge
+  {:authorized? authenticated?}
+  "Revise a declared judge's definition (rubric, purposes, model, type, ...).
+   The config is the COMPLETE new definition. The judge keeps its name and its
+   revision number increases, so results graded by the old and new definitions
+   never blend. Revising to an identical definition is a conflict: it is not a
+   new revision."
+  [{{:keys [sheet-id judge-name judge-config]} :command
+    :as ctx}]
+  (let [sheet (rm/get-sheet ctx sheet-id)
+        judge (rm/get-judge ctx sheet-id judge-name)]
+    (cond
+      (not sheet)
+      {::anom/category ::anom/not-found
+       ::anom/message "Sheet not found"}
+
+      (not judge)
+      {::anom/category ::anom/not-found
+       ::anom/message (str "Judge '" judge-name "' not declared; declare it first")}
+
+      (judge-definition/config-error judge-config)
+      {::anom/category ::anom/incorrect
+       ::anom/message (judge-definition/config-error judge-config)}
+
+      (= judge-config (:judge-config (peek (:revisions judge))))
+      {::anom/category ::anom/conflict
+       ::anom/message (str "Judge '" judge-name "' unchanged: revising to the same "
+                           "definition is not a new revision")}
+
+      :else
+      {:command-result/events
+       [(->event
+         {:type :sheet/judge-revised
+          :tags #{[:sheet sheet-id]}
+          :body {:sheet-id sheet-id
+                 :judge-name judge-name
+                 :judge-config judge-config
+                 :revision-number (inc (:revision-number judge))}})]})))
 
 (defcommand :sheet set-node-judges
   {:authorized? authenticated?}
   "Set which evaluation judges apply to a node.
 
-   Gap-5: accepts both `:leaf` and `:repl-researcher` node types. The
-   judge runtime fires on `:sheet/node-execution-completed` events
-   regardless of executor kind; allowing repl-researcher attachment
-   lets consumers override the Gap-5 default-attachment behavior on
-   any repl-researcher node."
+   Any node of the sheet may carry judges: leaves, researchers, composites
+   (sequence, parallel, fallback, map-each), delegates, conditions and the
+   root. An attached judge monitors the completions of the node it is
+   attached to, so a judge on a composite or delegate grades the whole.
+   An unknown node, or a judge name not declared on the sheet, is rejected."
   [{{:keys [sheet-id node-id judges]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)
@@ -978,10 +1019,6 @@
       (not node)
       {::anom/category ::anom/not-found
        ::anom/message "Node not found"}
-
-      (not (contains? #{:leaf :repl-researcher} (:type node)))
-      {::anom/category ::anom/incorrect
-       ::anom/message "Only :leaf and :repl-researcher nodes can have evaluation judges"}
 
       (seq unknown-judges)
       {::anom/category ::anom/not-found
@@ -1748,7 +1785,8 @@
             status writes rejected-writes write-sources write-references? duration-ms
             observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage own-usage model
             node-type completion-kind raw-response failure-kind provider-evidence
-            condition-answer decision block-payload read-sources]} :command
+            condition-answer decision block-payload read-sources
+            requested-model resolved-model]} :command
     :as ctx}]
   (if (or (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
           (and completion-id
@@ -1909,6 +1947,10 @@
                                     (seq usage) (assoc :usage usage)
                                     (seq own-usage) (assoc :own-usage own-usage)
                                     model (assoc :model model)
+                                    ;; ModelLeafRecordsResolvedModel: the configured
+                                    ;; and the provider-reported model, kept apart.
+                                    requested-model (assoc :requested-model requested-model)
+                                    resolved-model (assoc :resolved-model resolved-model)
                                     ;; C-2a-2: propagate :node-type so the
                                     ;; per-node-type aggregator can partition
                                     ;; without looking up via the sheets RM.
@@ -2327,6 +2369,9 @@
     (let [node (get nodes-by-id root-id)]
       (when node
         (cond-> {:id (:id node)
+                 ;; The draft node this snapshot node came from: a published
+                 ;; run is judged and measured as this node.
+                 :source-node-id (:id node)
                  :type (:type node)
                  :name (:name node)}
           ;; Leaf-specific fields
@@ -2343,6 +2388,7 @@
                    (= :decision (:executor node))
                    (merge (cond-> {}
                             (:options-from node) (assoc :options-from (:options-from node))
+                            (:bands-from node) (assoc :bands-from (:bands-from node))
                             (:min-confidence node) (assoc :min-confidence (:min-confidence node))
                             (some? (:abstain node)) (assoc :abstain (:abstain node))
                             (:options node) (assoc :options (:options node))))))

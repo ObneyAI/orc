@@ -93,6 +93,29 @@ contract LeafExecutor {
         -- workflow consumer. Successful execution does not require that the
         -- callable be owned by ORC.
 
+    @invariant ModelLeafRecordsResolvedModel
+        -- Every model-backed leaf durably records the model it was configured
+        -- to use, when one was configured, and separately the model the
+        -- provider reports it actually used, when one was reported. Neither
+        -- stands in for the other, and a failed call does not invent a
+        -- resolved model.
+
+    @invariant RejectedCompletionFailsTheNode
+        -- A completion the engine cannot record fails the node visibly, naming
+        -- what was rejected and keeping the attempted outcome as detail; a node
+        -- never waits for its run's deadline because its completion was refused.
+
+    @invariant JudgedCompositesAreDurable
+        -- A run whose composite nodes carry judges records those composites'
+        -- completions durably so they can be assessed; a run with no judged
+        -- composite keeps its ephemeral evaluation.
+
+    @invariant ProviderMetadataIsNeverOutput
+        -- Prediction metadata (usage, model identity, response text, provider
+        -- evidence) is never written to the blackboard as though it were a
+        -- declared output. A provider that finished with an error fails the
+        -- node with that classification and its evidence, and writes nothing.
+
     @invariant ConfiguredConsumerToolGateIsAuthoritative
         -- When a researcher names a consumer-supplied tool gate, every inline
         -- tool call and every tool call from its generated subtree uses that
@@ -300,7 +323,10 @@ contract ModelDecision {
         -- A model decision writes its answer to exactly one declared
         -- blackboard key, and that key's schema determines the decision: a
         -- boolean schema asks whether a proposition holds; a finite enum
-        -- schema asks which one of its members applies. Options may instead be
+        -- schema asks which one of its members applies; a banded decision asks
+        -- which ordered band of a rubric applies, reading the rubric's
+        -- described bands from a declared read key so the rubric can be
+        -- changed without changing the workflow. Options may instead be
         -- supplied at run time by a declared read key holding identified,
         -- described options. A decision whose answer key is neither boolean
         -- nor finite is rejected when the workflow is built.
@@ -324,7 +350,8 @@ contract ModelDecision {
         -- obtained. When a floor is configured, a choice whose reported
         -- confidence is below it, or that reports none, writes the decision's
         -- declared abstention option instead and records the answer that was
-        -- set aside. The abstention option must be one of the offered options.
+        -- set aside. The abstention option must be one of the offered options,
+        -- and false is an offered option of a yes/no decision.
         -- A confidence value is the provider's own reported statistic for that
         -- primitive; it is never synthesised from a bare answer.
 
@@ -360,6 +387,19 @@ contract DelegationBoundary {
         -- Parent values reach the child's inputs by name. Two distinct parent
         -- keys that would supply the same child input are rejected when the
         -- workflow is built, never silently collapsed into one.
+
+    @invariant ExecutionFamilyIsQueryable
+        -- Every node execution beneath an execution, including the executions
+        -- of delegated workflows, is retrievable through the public interface
+        -- in order, each with its node, instruction, status, resolved inputs and
+        -- outputs, failure and tool evidence, so a consumer can read what a
+        -- whole behaviour did.
+
+    @invariant AssessmentWorkIsMarked
+        -- An execution started to perform an assessment, and every execution it
+        -- delegates to, is durably marked as assessment work, so the mark can
+        -- be read from the execution record after any asynchronous hand-off or
+        -- process restart.
 
     @invariant FamilyUsageIsQueryable
         -- The total provider usage of an execution together with all of its

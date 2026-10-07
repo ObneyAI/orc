@@ -347,6 +347,23 @@
 ;; Tick-Scoped Resolution Helpers
 ;; =============================================================================
 ;;
+(defn- ephemeral-routing-tree?
+  "True when a tick's tree may run on the ephemeral fast path: only
+   sequence/fallback/condition/leaf nodes, and no composite carrying judges.
+   Ephemeral routing records no per-composite completion, so a judge on a
+   composite (or the root) could never fire; a judged composite is a durable
+   boundary and makes the run durable. A tree with no judged composite keeps
+   the fast path unchanged. `:judges` is on every run node: draft nodes carry
+   their own, a published run's nodes are stamped with their source draft
+   node's at the start of the run (see `build-execution-snapshot`), so the
+   answer is fixed for the life of the tick."
+  [nodes-by-id]
+  (and (seq nodes-by-id)
+       (every? #(contains? #{:sequence :fallback :condition :leaf} (:type %))
+               (vals nodes-by-id))
+       (not-any? #(and (not= :leaf (:type %)) (seq (:judges %)))
+                 (vals nodes-by-id))))
+
 (defn- resolve-nodes-by-id
   "Get nodes-by-id for a tick from tick-scoped execution context."
   [ctx _sheet-id tick-id]
@@ -2293,8 +2310,7 @@
         root-node (when root-id (get nodes-by-id root-id))]
     (when root-node
       (if (and (not= :legacy (get-in tick-ctx [:options :durability-mode]))
-               (every? #(contains? #{:sequence :fallback :condition :leaf} (:type %))
-                       (vals nodes-by-id)))
+               (ephemeral-routing-tree? nodes-by-id))
         (advance-ephemeral-frontier context)
       ;; :inputs carries only what cannot be resolved from the tick
       ;; blackboard — execution context and map-each item overrides. The
@@ -2539,6 +2555,64 @@
                      :result result
                      :resolved-at (str (java.time.Instant/now))}))}))))
 
+(defn- command-rejection
+  "The anomaly a command returned when it was rejected, else nil.
+   cp/process-command reports a rejected command (schema failure, failed
+   authorization, append conflict) by RETURNING an anomaly, not by throwing."
+  [result]
+  (when (and (map? result) (:cognitect.anomalies/category result))
+    result))
+
+(defn- process-lifecycle-command!
+  "Run a command whose rejection would strand a node execution. A rejection is
+   logged loudly with the command name and the result is returned, so the
+   caller can turn it into a visible failure rather than a silent stall."
+  [context command]
+  (let [result (cp/process-command (assoc context :command command))]
+    (when-let [anomaly (command-rejection result)]
+      (u/log ::lifecycle-command-rejected
+             :level :error
+             :command-name (:command/name command)
+             :sheet-id (:sheet-id command)
+             :tick-id (:tick-id command)
+             :node-id (:node-id command)
+             :anomaly-category (:cognitect.anomalies/category anomaly)
+             :anomaly-message (:cognitect.anomalies/message anomaly)))
+    result))
+
+(defn- complete-node-or-fail!
+  "Issue a node-completion command. When the command is REJECTED the node
+   would never reach a terminal fact and the run would hang until its
+   deadline, so fail the node visibly through :sheet/fail-node-execution. The
+   error names the rejected completion and keeps the original status,
+   failure kind and error text as detail. A :conflict means a competing writer
+   already holds a terminal fact for the node, so it is logged but not failed
+   again."
+  [context completion-command]
+  (let [result (process-lifecycle-command! context completion-command)
+        anomaly (command-rejection result)]
+    (if (and anomaly
+             (not= :cognitect.anomalies/conflict
+                   (:cognitect.anomalies/category anomaly)))
+      (process-lifecycle-command!
+       context
+       {:command/id (random-uuid)
+        :command/timestamp (time/now)
+        :command/name :sheet/fail-node-execution
+        :sheet-id (:sheet-id completion-command)
+        :tick-id (:tick-id completion-command)
+        :node-id (:node-id completion-command)
+        :error (str "Completion rejected: " (:command/name completion-command)
+                    " was rejected ("
+                    (or (:cognitect.anomalies/message anomaly)
+                        (:cognitect.anomalies/category anomaly))
+                    "); attempted status " (pr-str (:status completion-command))
+                    (when-let [k (:failure-kind completion-command)]
+                      (str ", failure-kind " (pr-str k)))
+                    (when-let [e (:error completion-command)]
+                      (str ", original error: " e)))})
+      result)))
+
 (defn execute-leaf-node
   "Execute a leaf node when node-execution-started is emitted.
    Supports multiple executor types:
@@ -2652,15 +2726,14 @@
                 ;; Cancellation guard: the tick was cancelled between event
                 ;; emission and this future starting (or while queued). Fail
                 ;; fast instead of spending an LLM call on a dead tick.
-                (cp/process-command
-                  (assoc context :command
-                         {:command/id (random-uuid)
+                (process-lifecycle-command! context
+                  {:command/id (random-uuid)
                           :command/timestamp (time/now)
                           :command/name :sheet/fail-node-execution
                           :sheet-id sheet-id
                           :tick-id tick-id
                           :node-id node-id
-                          :error "tick cancelled"}))
+                          :error "tick cancelled"})
                 (do
               (let [start-ms (System/currentTimeMillis)
                     _ (when is-llm-call?
@@ -2696,7 +2769,8 @@
                     result (executor/validate-leaf-outputs blackboard raw-result is-llm-call?)
                   {:keys [status outputs rejected-writes error duration-ms usage raw-response
                           failure-kind provider-evidence block-payload decision]
-                   result-model :model} result
+                   result-model :model
+                   resolved-model :resolved-model} result
                   _ (when is-llm-call?
                       (u/log ::leaf-llm-subcall-completed
                              :node-id node-id
@@ -2705,9 +2779,10 @@
                              :total-tokens (:total-tokens usage)))]
               ;; Track usage for this tick (aggregates across all LLM calls)
               (when usage (add-usage! tick-id usage))
-              ;; Use process-command to emit completion event
-              (cp/process-command
-                (assoc context :command
+              ;; Use process-command to emit completion event. A REJECTED
+              ;; completion fails the node visibly (S7w) instead of wedging.
+              (complete-node-or-fail!
+                context
                        (cond-> {:command/id (random-uuid)
                                 :command/timestamp (time/now)
                                 :command/name :sheet/complete-node-execution
@@ -2757,13 +2832,19 @@
                                    (assoc :read-sources (read-sources (:reads node) blackboard exec-context)))))
                          (seq usage) (assoc :usage usage)
                          decision (assoc :decision decision)
-                         ;; A decision records the model the provider actually
-                         ;; resolved; other leaves keep the node's configured one.
-                         (and is-llm-call? (= :decision executor-type)
-                              (or result-model (:model node)))
+                         ;; ModelLeafRecordsResolvedModel: every model call
+                         ;; records the model the provider reported when it
+                         ;; reported one, else the configured one, in :model.
+                         ;; The two are also kept apart so neither stands in
+                         ;; for the other: :requested-model is only what the
+                         ;; node configured, :resolved-model only what the
+                         ;; provider reported (never invented on a failure).
+                         (and is-llm-call? (or result-model (:model node)))
                          (assoc :model (or result-model (:model node)))
-                         (and is-llm-call? (not= :decision executor-type) (:model node))
-                         (assoc :model (:model node)))))
+                         (and is-llm-call? (:model node))
+                         (assoc :requested-model (:model node))
+                         (and is-llm-call? resolved-model)
+                         (assoc :resolved-model resolved-model)))
               ;; ALSO emit the RLM-specific learning-signal event when an LLM
               ;; call has usage. Carries a precomputed structured node-path
               ;; and an :input-profile derived from the node's :reads so
@@ -2798,29 +2879,29 @@
             (catch Throwable t
               (cond
                 (block/blocking-condition? t)
-                (cp/process-command
-                  (assoc context :command
-                         {:command/id (random-uuid)
-                          :command/timestamp (time/now)
-                          :command/name :sheet/complete-node-execution
-                          :sheet-id sheet-id
-                          :tick-id tick-id
-                          :node-id node-id
-                          :node-type (:type node)
-                          :status :blocked
-                          :writes {}
-                          :block-payload (block/block-payload t)}))
+                (complete-node-or-fail!
+                  context
+                  {:command/id (random-uuid)
+                   :command/timestamp (time/now)
+                   :command/name :sheet/complete-node-execution
+                   :sheet-id sheet-id
+                   :tick-id tick-id
+                   :node-id node-id
+                   :node-type (:type node)
+                   :status :blocked
+                   :writes {}
+                   :block-payload (block/block-payload t)})
 
                 (instance? Exception t)
-                (cp/process-command
-                  (assoc context :command
-                         {:command/id (random-uuid)
-                          :command/timestamp (time/now)
-                          :command/name :sheet/fail-node-execution
-                          :sheet-id sheet-id
-                          :tick-id tick-id
-                          :node-id node-id
-                          :error (.getMessage t)}))
+                (process-lifecycle-command!
+                  context
+                  {:command/id (random-uuid)
+                   :command/timestamp (time/now)
+                   :command/name :sheet/fail-node-execution
+                   :sheet-id sheet-id
+                   :tick-id tick-id
+                   :node-id node-id
+                   :error (or (.getMessage t) (str (class t)))})
 
                 :else (throw t))))
               (finally (execution-lease/end! lease))))))
@@ -3661,9 +3742,8 @@
                                               :iterations (vec iterations)
                                               :iteration-count (count iterations)
                                               :emitted-at (str (java.time.Instant/now))}})]}))
-              (cp/process-command
-                (assoc context :command
-                       (cond-> {:command/id (random-uuid)
+              (complete-node-or-fail! context
+                (cond-> {:command/id (random-uuid)
                                 :command/timestamp (time/now)
                                 :command/name :sheet/complete-node-execution
                                 :sheet-id sheet-id
@@ -3722,7 +3802,7 @@
                          ;; node's own share so the family total counts each
                          ;; provider call once.
                          (and (seq usage) (seq own-usage)) (assoc :own-usage own-usage)
-                         (:model node) (assoc :model (:model node))))))))))
+                         (:model node) (assoc :model (:model node)))))))))
             (catch Exception e
               (let [researcher-terminal?
                     (and checkpointed?
@@ -3886,9 +3966,8 @@
                                    {}
                                    (:writes node))
             copied-outputs (apply dissoc outputs (keys output-sources))]
-        (cp/process-command
-         (assoc context :command
-                (cond-> {:command/id (random-uuid)
+        (complete-node-or-fail! context
+          (cond-> {:command/id (random-uuid)
                          :command/timestamp (time/now)
                          :command/name :sheet/complete-node-execution
                          :sheet-id parent-sheet-id
@@ -3904,7 +3983,7 @@
                          :write-references? true
                          :inputs (merge read-inputs exec-context)}
                   (seq read-sources) (assoc :read-sources read-sources)
-                  (:error result) (assoc :error (:error result))))))))))
+                  (:error result) (assoc :error (:error result)))))))))
 
 (defn deliver-delegate-child-completion
   "Wake a parent delegate from the child's durable terminal event."
@@ -4068,6 +4147,12 @@
                                            (:sheet-id inherited-budget-root)
                                            :llm-budget-root-tick-id
                                            (:tick-id inherited-budget-root)
+                                           ;; AssessmentWorkIsMarked: a delegate
+                                           ;; child of assessment work is itself
+                                           ;; assessment work.
+                                           :assessment-origin
+                                           (get-in parent-tick-ctx
+                                                   [:options :assessment-origin])
                                            :return-references? true)
                   child-started-after? (seq (into [] (es/read event-store
                                                              {:tenant-id (:tenant-id context)
@@ -4079,28 +4164,26 @@
               ;; already-terminal child before starting this observer.
               (when (and (= :failure (:status child-result))
                          (not child-started-after?))
-                (cp/process-command
-                 (assoc context :command
-                        {:command/id (random-uuid)
+                (process-lifecycle-command! context
+                  {:command/id (random-uuid)
                          :command/timestamp (time/now)
                          :command/name :sheet/fail-node-execution
                          :sheet-id sheet-id
                          :tick-id tick-id
                          :node-id node-id
-                         :error (:error child-result)})))
+                         :error (:error child-result)}))
               nil)
 
             (catch Exception e
               ;; Fail node execution (ORC pattern)
-              (cp/process-command
-                (assoc context :command
-                       {:command/id (random-uuid)
+              (process-lifecycle-command! context
+                {:command/id (random-uuid)
                         :command/timestamp (time/now)
                         :command/name :sheet/fail-node-execution
                         :sheet-id sheet-id
                         :tick-id tick-id
                         :node-id node-id
-                        :error (.getMessage e)})))
+                        :error (or (.getMessage e) (str (class e)))}))
             (finally
               (release-delegate! child-tick-id)
               (execution-lease/end! lease)))
@@ -4217,8 +4300,8 @@
          (future
            (try
              (if (rm/is-tick-or-ancestor-cancelled? context tick-id)
-               (cp/process-command
-                (assoc context :command (fail-command "tick cancelled")))
+               (process-lifecycle-command! context
+                 (fail-command "tick cancelled"))
                (let [result (if provider
                               (executor/execute-llm-condition
                                node blackboard provider
@@ -4228,7 +4311,7 @@
                               {:status :failure
                                :error "No llm-provider configured for LLM condition"})
                      {:keys [status error duration-ms usage model failure-kind
-                             provider-evidence]} result
+                             provider-evidence resolved-model]} result
                      answer (:result result)
                      ;; true = success; valid false = failure; anything else
                      ;; is a provider outcome carried by the executor status.
@@ -4238,9 +4321,8 @@
                                     :failure)
                      reads (extract-read-inputs (:reads node) blackboard)]
                  (when usage (add-usage! tick-id usage))
-                 (cp/process-command
-                  (assoc context :command
-                         (cond-> {:command/id (random-uuid)
+                 (complete-node-or-fail! context
+                   (cond-> {:command/id (random-uuid)
                                   :command/timestamp (time/now)
                                   :command/name :sheet/complete-node-execution
                                   :sheet-id sheet-id
@@ -4261,22 +4343,19 @@
                            (seq reads)
                            (assoc :read-sources (read-sources (:reads node) blackboard exec-context))
                            (seq usage) (assoc :usage usage)
-                           model (assoc :model model))))))
+                           model (assoc :model model)
+                           (:model node) (assoc :requested-model (:model node))
+                           resolved-model (assoc :resolved-model resolved-model)))))
              (catch Throwable t
                (if (instance? Exception t)
-                 (cp/process-command
-                  (assoc context :command (fail-command (.getMessage t))))
+                 (process-lifecycle-command! context
+                   (fail-command (or (.getMessage t) (str (class t)))))
                  (throw t))))))
         ;; Return nil - completion handled by the future
         nil)
 
       ;; Not a condition node
       :else nil)))
-
-(defn- ephemeral-routing-tree? [nodes-by-id]
-  (and (seq nodes-by-id)
-       (every? #(contains? #{:sequence :fallback :condition :leaf} (:type %))
-               (vals nodes-by-id))))
 
 (defn- ephemeral-routing-active? [context tick-id nodes-by-id]
   (and (not= :legacy (get-in (rm/get-tick-execution-context context tick-id)
@@ -4749,9 +4828,8 @@
                                                           (matches-execution-context? e exec-context)))))
                     any-partial? (some #(= :partial (:status %)) child-completions)
                     final-status (if any-partial? :partial child-status)]
-                (cp/process-command
-                  (assoc context :command
-                         (cond-> {:command/id (random-uuid)
+                (complete-node-or-fail! context
+                  (cond-> {:command/id (random-uuid)
                                   :command/timestamp (time/now)
                                   :command/name :sheet/complete-node-execution
                                   :sheet-id sheet-id
@@ -4765,7 +4843,7 @@
                                   :write-sources (value-log/resolve-write-sources
                                                   event-store (:tenant-id context)
                                                   tick-id event)}
-                           (seq exec-context) (assoc :inputs exec-context))))
+                           (seq exec-context) (assoc :inputs exec-context)))
                 nil))
 
             (= child-status :failure)
@@ -4843,17 +4921,25 @@
             ;; Child succeeded (or partially succeeded — D-008) - fallback succeeds.
             ;; :partial means "we got something usable" so fallback stops here.
             ;; The :status surfaced matches the child's so downstream sees the truth.
-            {:result/events
-             [(->event
-               {:type :sheet/node-execution-completed
-                :tags #{[:sheet sheet-id]
-                        [:node parent-id]
-                        [:tick tick-id]}
-                :body (cond-> {:sheet-id sheet-id
-                               :tick-id tick-id
-                               :node-id parent-id
-                               :status child-status}
-                        (seq exec-context) (assoc :inputs exec-context))})]}
+            ;; Like a sequence, the fallback's completion reports the writes of
+            ;; the child that succeeded (as sources into the write log), so a
+            ;; judge on the fallback is shown what the fallback produced.
+            (let [write-sources (value-log/resolve-write-sources
+                                 event-store (:tenant-id context) tick-id event)]
+              {:result/events
+               [(->event
+                 {:type :sheet/node-execution-completed
+                  :tags #{[:sheet sheet-id]
+                          [:node parent-id]
+                          [:tick tick-id]}
+                  :body (cond-> {:sheet-id sheet-id
+                                 :tick-id tick-id
+                                 :node-id parent-id
+                                 :status child-status}
+                          (seq write-sources)
+                          (assoc :write-keys (vec (keys write-sources))
+                                 :write-sources write-sources)
+                          (seq exec-context) (assoc :inputs exec-context))})]})
             ;; D-003: :timeout from a child is like :failure for fallback purposes —
             ;; we didn't get useful output, try the next sibling. If no next sibling,
             ;; fallback completes with :timeout (truthful propagation).
@@ -5650,9 +5736,8 @@
           ;; Route terminal append through the command CAS. A pubsub event may
           ;; be delivered more than once; returning a raw processor event here
           ;; allowed equivalent terminal records to race into the log.
-          (cp/process-command
-           (assoc context :command
-                  (cond-> {:command/id (random-uuid)
+          (process-lifecycle-command! context
+            (cond-> {:command/id (random-uuid)
                            :command/timestamp (time/now)
                            :command/name :sheet/emit-tick-completed
                            :sheet-id sheet-id
@@ -5665,7 +5750,7 @@
                     output-keys (assoc :output-keys output-keys)
                     correlation-id (assoc :correlation-id correlation-id)
                     (= :blocked final-status) (assoc :block-payload block-payload)
-                    final-error (assoc :error final-error)))))))))
+                    final-error (assoc :error final-error))))))))
 
 
 ;; =============================================================================
@@ -6591,6 +6676,7 @@
                                                          (and (= :decision (:executor snapshot-node)) (:options snapshot-node))
                                                          (assoc :options (:options snapshot-node))
                                                          (:options-from snapshot-node) (assoc :options-from (:options-from snapshot-node))
+                                                         (:bands-from snapshot-node) (assoc :bands-from (:bands-from snapshot-node))
                                                          (:min-confidence snapshot-node) (assoc :min-confidence (:min-confidence snapshot-node))
                                                          (some? (:abstain snapshot-node)) (assoc :abstain (:abstain snapshot-node)))}))
                                              (when (:retry snapshot-node)

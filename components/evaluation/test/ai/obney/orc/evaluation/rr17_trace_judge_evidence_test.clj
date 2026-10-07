@@ -130,23 +130,35 @@
                (fn [_provider _module inputs _options]
                  (reset! judge-input inputs)
                  {:outputs
-                  {:level 2
+                  {:band 2
                    :reasoning "Iteration 1 failed before iteration 2 repaired it."
                    :reasoning-strengths ["The repair completed."]
                    :reasoning-weaknesses ["The first source was missing."]
                    :feedback "Check source availability first."}})}
-              #(let [handler-result
-                     (judge-runtime/on-node-execution-completed
-                      (assoc ctx :event
-                             {:event/type :sheet/node-execution-completed
-                              :sheet-id sheet-id
-                              :tick-id tick-id
-                              :node-id node-id
-                              :status :success
-                              :write-keys []}))
-                     judge-future ((:result/effect handler-result))]
-                 @judge-future))]
-        (is (str/includes? (:iteration_evidence @judge-input)
+              ;; S7: the completion requests the assessment and the judging
+              ;; processor judges it from the durable request; the judge's input
+              ;; is read from the durable iteration records, not a trace that
+              ;; publishes asynchronously.
+              #(do (command-processor/process-command
+                    (assoc ctx :command
+                           {:command/name :sheet/complete-node-execution
+                            :command/id (random-uuid)
+                            :command/timestamp (java.time.OffsetDateTime/now)
+                            :sheet-id sheet-id
+                            :tick-id tick-id
+                            :node-id node-id
+                            :node-type :repl-researcher
+                            :status :success
+                            :writes {}
+                            :duration-ms 1}))
+                   (h/settle-until!
+                    (fn [] (seq (into [] (event-store/read
+                                          (:event-store ctx)
+                                          {:tenant-id (:tenant-id ctx)
+                                           :types #{:judge/score-emitted}
+                                           :tags #{[:tick tick-id]}}))))
+                    :timeout-ms 30000)))]
+        (is (str/includes? (:host-iterations @judge-input)
                            "missing-source")
             (pr-str @judge-input))
         (let [scores (into []
