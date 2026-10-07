@@ -2369,6 +2369,9 @@
     (let [node (get nodes-by-id root-id)]
       (when node
         (cond-> {:id (:id node)
+                 ;; The draft node this snapshot node came from: a published
+                 ;; run is judged and measured as this node.
+                 :source-node-id (:id node)
                  :type (:type node)
                  :name (:name node)}
           ;; Leaf-specific fields

@@ -61,7 +61,8 @@
       state
       (-> state
           (assoc-in [:index id] {:cell k :settled? false})
-          (update-in [:cells k] #(or % (empty-cell k (:requested-at event))))
+          (update-in [:cells k] #(or % (cond-> (empty-cell k (:requested-at event))
+                                    (:version-number event) (assoc :version-number (:version-number event)))))
           (update-in [:cells k :pending] inc)))))
 
 (defn- settle-cell [cell status event]
@@ -98,7 +99,7 @@
   (defmethod performance* t [state event] (settle state event)))
 
 (defreadmodel :evaluation performance
-  {:events assessments/lifecycle-event-types :version 1}
+  {:events assessments/lifecycle-event-types :version 2}
   [state event] (performance* state event))
 
 ;; =============================================================================
@@ -179,6 +180,7 @@
                       (group-by :node-version)
                       (map (fn [[v group]]
                              {:node-version v
+                              :version-number (:version-number (first group))
                               :first-seen (first (sort (map :first-seen group)))
                               :last-seen (last (sort (map :last-seen group)))
                               :judges (->> (sort-by judge-order group)

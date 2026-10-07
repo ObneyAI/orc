@@ -14,7 +14,8 @@
 (def ^:private not-definition
   "Keys of a node entry that are bookkeeping or the judging setup, not what the
    node does when it runs."
-  #{:id :sheet-id :parent-id :children-ids :status :last-error :judges :name})
+  #{:id :sheet-id :parent-id :children-ids :status :last-error :judges :name
+    :source-node-id})
 
 (defn- canonical
   "A deterministic, order-independent form of `x`: maps and sets become sorted

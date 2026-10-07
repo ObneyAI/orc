@@ -130,6 +130,9 @@
           node-record {:id node-id
                        :type (:type snapshot-node)
                        :name (:name snapshot-node)
+                       ;; The draft node this one was published from (absent on
+                       ;; snapshots published before it was recorded).
+                       :source-node-id (:source-node-id snapshot-node)
                        :parent-id parent-id
                        :children-ids (mapv (fn [i _]
                                              (java.util.UUID/nameUUIDFromBytes
@@ -186,15 +189,50 @@
                                 children)]
       (cons [node-id node-record] child-records))))
 
+(defn- recover-source-node-ids
+  "Link the run nodes of a snapshot published before draft ids were recorded to
+   their draft nodes, where that is unambiguous: a run node takes the id of the
+   live draft node of the same name only when exactly one node of that name
+   exists in the snapshot AND exactly one in the live sheet. Nodes that cannot be
+   linked are left without a source id - they are not judged - and the run says
+   so loudly; a guess between same-named nodes would attribute assessments to
+   the wrong node."
+  [nodes-by-id live-nodes sheet-id version-number]
+  (let [by-name (fn [nodes] (group-by :name (remove #(nil? (:name %)) nodes)))
+        run-by-name (by-name (vals nodes-by-id))
+        live-by-name (by-name (vals live-nodes))
+        recovered (reduce-kv
+                   (fn [acc id node]
+                     (if (:source-node-id node)
+                       acc
+                       (let [run-same (get run-by-name (:name node))
+                             live-same (get live-by-name (:name node))]
+                         (if (and (= 1 (count run-same)) (= 1 (count live-same)))
+                           (assoc acc id (assoc node :source-node-id (:id (first live-same))))
+                           acc))))
+                   nodes-by-id
+                   nodes-by-id)
+        unlinked (into [] (comp (remove :source-node-id) (map #(or (:name %) (:id %))))
+                       (vals recovered))]
+    (when (seq unlinked)
+      (u/log ::published-nodes-cannot-be-judged
+             :sheet-id sheet-id
+             :version-number version-number
+             :node-names unlinked
+             :reason "snapshot predates source node ids and the node name does not identify exactly one draft node"))
+    recovered))
+
 (defn- parse-snapshot-for-execution
   "Parse a version snapshot into the format expected by execute.
    Returns {:nodes-by-id {...} :root-id uuid :blackboard {...}}"
-  [snapshot]
+  ([snapshot] (parse-snapshot-for-execution snapshot nil nil nil))
+  ([snapshot live-nodes sheet-id version-number]
   (let [snapshot-nodes (:nodes snapshot)
         blackboard-schema (:blackboard-schema snapshot)
         ;; Parse nodes
         node-pairs (parse-snapshot-nodes snapshot-nodes nil 0 "root")
-        nodes-by-id (into {} node-pairs)
+        nodes-by-id (cond-> (into {} node-pairs)
+                      live-nodes (recover-source-node-ids live-nodes sheet-id version-number))
         ;; Get root ID (first node)
         root-id (when (seq node-pairs) (first (first node-pairs)))
         ;; Build blackboard from schema (values will be set from inputs)
@@ -207,7 +245,7 @@
                           blackboard-schema)]
     {:nodes-by-id nodes-by-id
      :root-id root-id
-     :blackboard blackboard}))
+     :blackboard blackboard})))
 
 ;; =============================================================================
 ;; Execution Snapshot Builder
@@ -250,7 +288,10 @@
                                (rm/get-version read-ctx sheet-id version-to-use))
             {:keys [nodes-by-id root-id blackboard-entries version-number]}
             (if version-snapshot
-              (let [parsed (parse-snapshot-for-execution (:snapshot version-snapshot))]
+              (let [parsed (parse-snapshot-for-execution (:snapshot version-snapshot)
+                                                  (rm/get-nodes-by-id read-ctx sheet-id)
+                                                  sheet-id
+                                                  (:version-number version-snapshot))]
                 {:nodes-by-id (:nodes-by-id parsed)
                  :root-id (:root-id parsed)
                  :blackboard-entries (:blackboard parsed)
