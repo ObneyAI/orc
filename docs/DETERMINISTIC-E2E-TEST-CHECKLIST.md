@@ -825,3 +825,8 @@ RECON-8's deterministic lifecycle/trace gate is 13/78. RECON-9's native public
 prediction and workflow guide gate is 25/125. Counts overlap, not a unique total.
 No paid provider is hidden inside the deterministic gates; captured real-model
 evidence is separate. Full repository CI and live GEPA remain separate gates.
+
+## Retained provider usage in learning provenance
+
+- [x] **RECON-10 — Description provenance preserves rich provider usage.** Public description commands and real consolidation execution persist decimal cost and nested provider details, project the successor, and reject malformed token counts without appending an event.
+- [x] **RECON-11 — Claim-delta provenance preserves rich provider usage.** Public claim recording persists the same usage and projects the claim; malformed token counts remain rejected. The retired anti-recency event shares the additive usage contract; its absent producer is audited rather than inventing a new writer.

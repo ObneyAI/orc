@@ -1091,3 +1091,36 @@ deterministic tests intentionally isolate serialization and value propagation;
 the separate paid run supplies real-model evidence. No generated TODO, skipped
 obligation or skeleton is counted as coverage. Full repository CI is not implied
 by this focused obligation line.
+
+
+## Provider usage compatibility in learning provenance
+
+Existing `ModelProvenance.usage` permits provider accounting data. The five
+ontology provenance event schemas incorrectly required every usage value to be
+an integer, rejecting fractional cost and nested provider details. This was code
+drift; no Allium intent or ontology architecture changed. The shared open usage
+schema retains integral known token counts, numeric/explicitly unavailable cost,
+and additive accounting details. Four active event contracts and the retained
+anti-recency audit schema use it. The audit command was already retired: source
+review confirms the expanded schema still accepts its historical integer usage;
+no synthetic replacement writer or claimed live audit path was introduced.
+
+RECON-10 and RECON-11: **2 obligations, 2 covered, 0 uncovered**. The focused
+`provenance-usage-test` runs **4 tests / 35 assertions** through public commands,
+durable events, description/claim projections, and an actual consolidation
+workflow with only the provider completion boundary injected. Description RED:
+12 failures / 15 assertions, then GREEN 15 assertions. Claim RED: 5 failures /
+21 assertions, then GREEN 21 assertions. Command anomalies identify invalid
+event schema paths, so failure evidence does not depend on waiting for a timeout.
+Malformed string/fractional token counts remain rejected; absent and explicit-null
+cost are distinguished. Original assertion failures are retained in the laboratory
+reconciliation evidence.
+
+The workflow proof respects the two existing accounting boundaries: successor
+provenance copies normalized node totals/cost; detailed provider usage remains on
+the durable provider-attempt observation. The first expanded test incorrectly
+expected full details in normalized completion usage; its retained failure was a
+test translation error, corrected by asserting both boundaries without changing
+the executor. Direct provenance commands preserve their complete supplied usage.
+The root's separate replay of a real captured provider response and final CI are
+independent verification, not inferred from these deterministic results.

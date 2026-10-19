@@ -48,6 +48,20 @@ Returned provider evidence is distinct from the exact outgoing HTTP body. The
 latter still requires a controlled transport capture. Never claim a reconstructed
 prompt or normalized response is a verbatim wire capture.
 
+## Preserve accounting through learning provenance
+
+Reflection completions carry integer token counts and an optional numeric cost.
+Description and claim-delta provenance must accept that same accounting contract.
+Treating every usage entry as an integer rejects valid fractional cost and can
+prevent a successful reflection from producing its successor event. The shared
+provenance usage schema validates known fields and retains additive provider
+accounting details; malformed token counts remain rejected.
+
+Completion accounting is distinct from full provider observations. The successor
+inherits completion totals and cost. Detailed provider usage stays on the
+execution-owned provider-attempt event. Direct provenance commands also preserve
+any supplied compatible provider details, including explicit unavailable cost.
+
 ## Judge the intended boundary
 
 Score-only native judges and conversational band-plus-feedback judges can assess
@@ -64,7 +78,7 @@ ORC timeout before any provider request is sent.
 
 ## Verification and limits
 
-The reconciliation checklist tracks nine focused obligations. Local verification
+The reconciliation checklist tracks eleven focused obligations. Local verification
 includes real command/event/projection paths, controlled HTTP contract tests,
 real strict generation and native model calls, and cold reconstruction.
 The live compatibility run completed nine model calls and seven assessments:

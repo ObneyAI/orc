@@ -12,6 +12,20 @@
 ;; Shared Domain Schemas
 ;; =============================================================================
 
+(def model-usage
+  "Provider usage retained in learning provenance. Token counts stay integral;
+   cost may be fractional or explicitly unavailable. This open map preserves
+   additive provider accounting details instead of mistaking them for tokens."
+  [:map
+   [:prompt-tokens {:optional true} :int]
+   [:completion-tokens {:optional true} :int]
+   [:total-tokens {:optional true} :int]
+   [:cost {:optional true} [:maybe number?]]
+   [:cost-details {:optional true} [:maybe :map]]
+   [:prompt-tokens-details {:optional true} [:maybe :map]]
+   [:completion-tokens-details {:optional true} [:maybe :map]]
+   [:is-byok {:optional true} [:maybe :boolean]]])
+
 (def ontology-scope
   "Scope levels for ontology concepts. `:tree-class` is added (C-2d-1)
    for the hierarchical tree-class taxonomy — projects tree-fingerprint
@@ -710,7 +724,7 @@
     [:model-provenance {:optional true} [:maybe [:map
                                                  [:trace-id :uuid]
                                                  [:model :string]
-                                                 [:usage [:map-of :keyword :int]]]]]
+                                                 [:usage model-usage]]]]
     ;; PR-2: outcome attribution — see :ontology/claim-deltas-recorded.
     [:request-id {:optional true} :uuid]
     [:recorded-at :string]]
@@ -723,7 +737,7 @@
     [:model-provenance {:optional true} [:maybe [:map
                                                  [:trace-id :uuid]
                                                  [:model :string]
-                                                 [:usage [:map-of :keyword :int]]]]]
+                                                 [:usage model-usage]]]]
     ;; PR-2: outcome attribution — see :ontology/claim-deltas-recorded.
     [:request-id {:optional true} :uuid]
     [:recorded-at :string]]
@@ -746,7 +760,7 @@
     [:model-provenance {:optional true} [:maybe [:map
                                                  [:trace-id :uuid]
                                                  [:model :string]
-                                                 [:usage [:map-of :keyword :int]]]]]
+                                                 [:usage model-usage]]]]
     ;; PR-2: outcome attribution — see :ontology/claim-deltas-recorded.
     [:request-id {:optional true} :uuid]
     [:recorded-at :string]]
@@ -1031,7 +1045,7 @@
     [:model-provenance     {:optional true} [:maybe [:map
                                                      [:trace-id :uuid]
                                                      [:model :string]
-                                                     [:usage [:map-of :keyword :int]]]]]
+                                                     [:usage model-usage]]]]
     ;; PR-2 (EveryConsolidationRequestYieldsAnOutcome): which
     ;; :ontology/consolidation-requested event this outcome answers — the
     ;; REQUEST EVENT's :event/id, threaded by the consolidate-on-request
@@ -1171,7 +1185,7 @@
     [:model-provenance {:optional true} [:maybe [:map
                                                  [:trace-id :uuid]
                                                  [:model :string]
-                                                 [:usage [:map-of :keyword :int]]]]]
+                                                 [:usage model-usage]]]]
     [:detected-at     :string]]
 
    :ontology/anti-recency-clamp-applied
