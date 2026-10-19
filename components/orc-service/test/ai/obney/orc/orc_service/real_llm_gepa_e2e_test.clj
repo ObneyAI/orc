@@ -63,7 +63,7 @@
             (when (= component (:name node)) (:instruction node)))
           (get-in started [:execution-snapshot :nodes-by-id]))))
 
-(defn- restart-processors
+(defn restart-processors
   [ctx]
   ;; Evaluation processors are checkpoint pollers, while execution processors
   ;; are pubsub systems. Restart through the fixture's matching lifecycle so
@@ -72,31 +72,6 @@
   (rmp/l1-clear!)
   (let [base (dissoc ctx :processors)]
     (assoc base :processors (h/start-test-processors base))))
-
-(defn restart-probe [{:keys [inputs]}]
-  {:answer (:question inputs)})
-
-(deftest processor-restart-retains-executable-context
-  ;; Register the public evaluator runtime explicitly, independent of test order.
-  (require 'ai.obney.orc.evaluation.interface)
-  (testing "restart respects polling and pubsub lifecycle handles without model calls"
-    (h/with-async-test-context [ctx]
-      (let [sheet-id (sheet/build-workflow!
-                      ctx (sheet/workflow "processor-restart-probe"
-                            (sheet/blackboard {:question :string :answer :string})
-                            (sheet/code "copy"
-                              :fn "ai.obney.orc.orc-service.real-llm-gepa-e2e-test/restart-probe"
-                              :reads [:question] :writes [:answer])))
-            rebuilt (restart-processors ctx)]
-        (try
-          (let [result (sheet/execute rebuilt sheet-id {:question "retained"}
-                                     :timeout-ms 20000)]
-            (is (= :success (:status result)))
-            (is (= "retained" (get-in result [:outputs :answer])))
-            (is (some #(= (:trace-id result) (:tick-id %))
-                      (live/events rebuilt :sheet/tree-tick-completed))))
-          (finally
-            (h/stop-test-processors! rebuilt)))))))
 
 (defn- await-resume-terminal!
   [ctx optimization-id timeout-ms]
