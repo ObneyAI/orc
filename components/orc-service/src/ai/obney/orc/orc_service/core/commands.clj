@@ -1782,7 +1782,7 @@
 
    Optional :usage carries per-node token counts from LLM calls."
   [{{:keys [sheet-id tick-id node-id completion-id researcher-ownership-epoch
-            status writes rejected-writes write-sources write-references? duration-ms
+            status writes rejected-writes missing-write-keys write-sources write-references? duration-ms
             observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage own-usage model
             node-type completion-kind raw-response failure-kind provider-evidence
             condition-answer decision block-payload read-sources
@@ -1902,6 +1902,7 @@
                                     (assoc :write-keys (vec (distinct (concat (keys writes)
                                                                              (keys forwarded-sources))))
                                            :write-profile (profile/profile-values writes))
+                                    (seq missing-write-keys) (assoc :missing-write-keys missing-write-keys)
                                     (seq rejected-writes)
                                     (assoc :rejected-write-keys (vec (keys rejected-writes))
                                            :rejected-write-profile (profile/profile-values rejected-writes))

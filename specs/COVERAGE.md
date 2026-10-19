@@ -1053,3 +1053,41 @@ verdict rule has no dedicated test.
 
 Diagnostics: `allium check specs` = 153 (114 information, 39 warnings), 0 errors; `allium analyse`
 reports no structural findings in the touched specs.
+
+## Structured-contract and judge reconciliation
+
+Scope: `EveryRequestCarriesItsInputFieldGuide`, `DecisionRequestCarriesDeclaredMeaning`,
+strict output contracts, output presence, command-owned provider observations and
+judge missing-write evidence. See `docs/RECONCILED-CONTRACTS.md` and RECON-1 through
+RECON-9 in the deterministic checklist for the integration boundaries.
+
+Independent verification: SIO 114 tests/1405 assertions; client 283 tests/1009
+assertions; changed ORC namespaces 157 tests/976 assertions; judge lifecycle and
+trace-harness gate 13 tests/78 assertions; native presence/workflow guide gate
+25 tests/125 assertions. Counts overlap and must not be added as unique coverage.
+Legacy opt-in live tests were disabled in the local deterministic gate. Separate
+captured live compatibility used nine real model calls/seven assessments, followed
+by exact cold projection equality. Repository CI remains a separate merge gate.
+
+Scoped weed classifications: missing required outputs and missing-write diagnostic
+loss were code bugs; native absent-input-to-null synthesis was a code bug with one
+stale characterization expectation. Universal marker-guide ordering was a spec
+bug: existing marker golden-layout compatibility is preserved. Composite output
+union was an experiment setup error; the corrected tree explicitly publishes its
+joined output. Judge timeout rejection was the experiment transport's admission
+limit, not an ORC transport defect. No semantic phrase matching or generated-output
+repair was introduced.
+
+Allium check/analyse baseline remains 153 diagnostics (114 information, 39 warnings),
+zero errors and no analysis findings. This is the characterized judge baseline,
+not a clean diagnostic report. SIO and client each have one intentional external
+caller source-hint warning. Separate judge recovery and execution-family gaps
+remain explicit; no production domain was excluded from the existing ledger.
+
+Obligation line: 9 obligations, 9 covered, 0 uncovered for RECON-1 through RECON-9.
+The final delegated contract adds 1 test/30 assertions and the independent judge
+compatibility sweep passes 93 tests/492 assertions. Injected HTTP responses in
+deterministic tests intentionally isolate serialization and value propagation;
+the separate paid run supplies real-model evidence. No generated TODO, skipped
+obligation or skeleton is counted as coverage. Full repository CI is not implied
+by this focused obligation line.

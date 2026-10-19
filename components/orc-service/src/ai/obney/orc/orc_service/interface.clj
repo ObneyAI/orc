@@ -5,6 +5,7 @@
    and re-exports the public API."
   (:require ;; Load core namespaces for side-effect registration of commands/queries
             [ai.obney.orc.orc-service.core.commands]
+            [ai.obney.orc.orc-service.core.provider-observations :as provider-observations]
             [ai.obney.orc.orc-service.core.queries]
             [ai.obney.orc.orc-service.core.todo-processors]
             [ai.obney.orc.orc-service.core.periodic-tasks]
@@ -304,3 +305,8 @@
 ;;
 ;; See: components/gepa/
 ;; See: development/src/gepa_training_demo.clj for full examples
+
+;; Exact provider attempt observations via authorized registered commands/queries.
+(def start-provider-attempt! provider-observations/start-provider-attempt!)
+(def complete-provider-attempt! provider-observations/complete-provider-attempt!)
+(def provider-attempts provider-observations/provider-attempts)

@@ -796,3 +796,32 @@ prove isolation, lineage, terminal fencing, or durable recovery.
   counts, with elapsed time only as supporting evidence.
 - Existing unit/integration coverage may supply helpers, but each checked item
   must prove its complete workflow-level contract.
+
+## Reconciled experiment runtime
+
+- [x] RECON-1: shown nested input meanings reach marker, function, strict JSON and native boolean/choice/score requests.
+- [x] RECON-2: strict ordered-band decisions retain declared order, meanings and exact decoding; malformed annotations fail.
+- [x] RECON-3: prediction metadata remains separate; absent/null output envelopes cannot fabricate required nullable writes.
+- [x] RECON-4: described enums, required null, optional absence and declared string keys survive delegated values and cold readback.
+- [x] RECON-5: provider failures preserve observations and exact invocation ownership without accepted generated writes.
+- [x] RECON-6: score-only and feedback assessments retain exact node/composite subjects across parallel/repeated executions and cold readback.
+
+- [x] RECON-7: missing required writes have explicit durable key evidence without fabricated rejected values; judges retain missing-feedback classification and retry behavior.
+
+- [x] RECON-8: test-context processor restart handles both checkpoint pollers and pubsub systems through their matching lifecycle APIs. The public workflow still executes a code node after restart, returns its declared output, and records its durable terminal event. Verified by `processor-restart-retains-executable-context` together with `trace-assembly-test`: 13 tests, 78 assertions, zero failures/errors (`evidence/reconciliation/root-ci-harness-green.log` in the reconciliation lab). This verifies the deterministic test harness and trace readiness; it does not establish live GEPA resume success.
+
+- [x] RECON-9: native decision requests preserve absent optional inputs as absent, explicit null/false/empty inputs as present, and exclude undeclared inputs; the guide describes exactly the supplied declared fields. Verify through public `llm/predict` and the registered transport seam. The old coupon=nil snapshot was a test-translation bug. Separately, SIO `validate-inputs` currently skips absent/nil/false inputs through `when-let`; required-input validation is not repaired or proven by this request-rendering test. Marker prompt ordering is reconciled as a specification correction to the existing golden-layout contract, not a rendering change.
+
+Reconciliation proof ledger: RECON-1/2/3/5/7 are covered by the changed
+ORC namespaces (157 tests/976 assertions), the SIO/compiler gate (114/1405),
+the client boundary gate (283/1009), and the judge compatibility gate (93/492).
+RECON-4 additionally executes `delegated_structured_contract_test.clj` (1/30):
+strict HTTP adapter, described enum, required null, optional absence, literal
+string keys, delegate ownership and typed consumer, followed by SQLite close/reopen
+with a fresh cache. Existing nullable continuation also verifies fresh-process
+readback. RECON-6 uses the real-model compatibility run (9 calls, 7 assessments)
+and exact fresh-process event/family/assessment/report/provider-attempt equality.
+RECON-8's deterministic lifecycle/trace gate is 13/78. RECON-9's native public
+prediction and workflow guide gate is 25/125. Counts overlap, not a unique total.
+No paid provider is hidden inside the deterministic gates; captured real-model
+evidence is separate. Full repository CI and live GEPA remain separate gates.

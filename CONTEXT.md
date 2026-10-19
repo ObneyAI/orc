@@ -4,6 +4,24 @@ Behavior-tree workflow execution engine for LLM-powered workflows, built on Grai
 
 ## Language
 
+### Model requests
+
+**Request mode**:
+How a model leaf asks for its structured answer: marker mode (field markers in the prompt, parsed from text) or function mode (a single structured function call).
+_Avoid_: transport, protocol
+
+**Input field**:
+A field of a model leaf's declared input contract. It remains an input field when a particular request does not carry it.
+_Avoid_: argument, parameter
+
+**Shown field**:
+An input field present in a particular request's values, at any depth (present with no value counts as shown). Only shown fields are visible to the model in that request.
+_Avoid_: active field, used field
+
+**Input field guide**:
+The account, sent with every model request whatever its request mode, of each shown field -- its name, type and meaning, the item fields of a collection once, each meaning once.
+_Avoid_: schema dump, input spec, signature text
+
 ### Retrieval
 
 **Signal**:

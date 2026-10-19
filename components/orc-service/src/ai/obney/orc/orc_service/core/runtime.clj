@@ -73,6 +73,8 @@
               (seq (:write-keys completion))
               (assoc :write-keys (:write-keys completion)
                      :output-profile (:write-profile completion))
+              (seq (:missing-write-keys completion))
+              (assoc :missing-write-keys (:missing-write-keys completion))
               (seq (:rejected-write-keys completion))
               (assoc :rejected-write-keys (:rejected-write-keys completion)
                      :rejected-output-profile (:rejected-write-profile completion))

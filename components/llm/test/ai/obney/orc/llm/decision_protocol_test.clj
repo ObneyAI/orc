@@ -10,10 +10,12 @@
    shapes follow the OpenRouter /api/alpha/decisions reference:
    noul {:type \"noul\" :noul p}; choice {:type \"choice\" :choice id
    :confidence? c :probabilities? {id p}}; usage {:input_tokens :output_tokens :cost}."
-  (:require [clojure.string :as str]
+  (:require [cheshire.core :as json]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [hato.client :as http]
             [litellm.router :as router]
+            [sio.core :as sio]
             [ai.obney.orc.llm.interface :as llm]))
 
 (def ^:private route-descriptions
@@ -134,6 +136,154 @@
                          "Which operation addresses the request?"))
       (is (str/includes? (pr-str (:instructions question))
                          "The operation that addresses the request")))))
+
+;; ---------------------------------------------------------------------------
+;; EveryRequestCarriesItsInputFieldGuide (decision path): each question's
+;; instruction carries the guide for the fields this request shows.
+;; ---------------------------------------------------------------------------
+
+(defn- as-the-executor-sends
+  "A value exactly as the executor hands it to `llm/predict`
+   (executor `serialize-for-llm`): nil as the empty string, a map or a
+   collection as JSON text, anything else as it is."
+  [value]
+  (cond (nil? value) ""
+        (coll? value) (json/generate-string value)
+        :else value))
+
+(def ^:private guide-spec
+  {:inputs [{:name :subject :spec :string :description "The ticket subject line"}
+            {:name :coupon :spec :string :optional true
+             :description "Promo code the customer quoted"}
+            {:name :notes :spec :string :optional true
+             :description "Agent notes, when there are any"}
+            {:name :account
+             :description "The customer account"
+             :spec [:map
+                    [:tier {:description "Support tier"} [:enum "free" "pro"]]
+                    [:region {:optional true :description "Where they are based"} :string]]}
+            {:name :messages
+             :description "The conversation so far, oldest first"
+             :spec [:vector
+                    [:map {:description "One message"}
+                     [:author-kind {:description "human means a staff member, never the customer's own words"}
+                      [:enum "human" "customer"]]
+                     [:text {:description "What was written"} :string]]]}]
+   :outputs [{:name :route
+              :spec (into [:enum {:descriptions route-descriptions}]
+                          (keys route-descriptions))
+              :description "The operation that addresses the ticket"}
+             {:name :urgent :spec :boolean
+              :description "Whether the ticket needs a same-day reply"}]
+   :instructions "Triage the ticket."})
+
+(def ^:private guide-answers
+  {:route {:type "choice" :choice "lookup"
+           :confidence (confidence-for lookup-probabilities)
+           :probabilities lookup-probabilities}
+   :urgent {:type "noul" :noul 0.9}})
+
+(defn- guide-request-inputs
+  "The inputs of a request that shows `subject`, `notes` (present, no value),
+   `account` (without its optional region) and `messages`; `coupon` is absent."
+  []
+  (into {} (map (fn [[k v]] [k (as-the-executor-sends v)]))
+        {:subject "Refund please"
+         :notes nil
+         :account {:tier "pro"}
+         :messages [{:author-kind "human" :text "How can I help?"}
+                    {:author-kind "customer" :text "I was charged twice"}]}))
+
+(defn- question-named [request qname]
+  (let [qs (:questions request)]
+    (get qs qname (get qs (keyword qname)))))
+
+(deftest every-question-carries-the-guide-for-the-shown-fields
+  (let [requests (atom [])]
+    (register-decision-provider! :decision-test-guide (response guide-answers) requests)
+    ;; the executor calls predict with :validate? false (its complex values are JSON text)
+    (llm/predict :decision-test-guide guide-spec (guide-request-inputs) {:validate? false})
+    (is (= 1 (count @requests)))
+    (doseq [qname ["route" "urgent"]
+            :let [instructions (:instructions (question-named (first @requests) qname))]]
+      (testing (str qname " question")
+        (doseq [shown ["The ticket subject line"
+                       "Agent notes, when there are any"
+                       "The customer account"
+                       "Support tier"
+                       "The conversation so far, oldest first"
+                       "One message"
+                       "human means a staff member, never the customer's own words"
+                       "What was written"]]
+          (is (str/includes? instructions shown) (str "shown meaning: " shown)))
+        (doseq [absent ["Promo code the customer quoted"
+                        "Where they are based"]]
+          (is (not (str/includes? instructions absent)) (str "absent meaning: " absent)))))))
+
+(deftest the-guide-changes-neither-the-state-nor-the-options
+  (let [requests (atom [])
+        inputs (guide-request-inputs)]
+    (register-decision-provider! :decision-test-guide-state (response guide-answers) requests)
+    (llm/predict :decision-test-guide-state guide-spec inputs {:validate? false})
+    (let [{:keys [state] :as request} (first @requests)
+          route (question-named request "route")
+          urgent (question-named request "urgent")]
+      (is (= {:subject "Refund please" :notes ""
+              :account "{\"tier\":\"pro\"}"
+              :messages (get inputs :messages)}
+             state)
+          "the state holds the input values and nothing else")
+      (is (not (str/includes? (pr-str state) "Your input fields")) "the guide is not in the state")
+      (is (= "choice" (name (:type route))))
+      (is (= route-descriptions
+             (update-keys (:criteria route) #(if (keyword? %) (name %) %)))
+          "option identities and their descriptions are untouched")
+      (is (= "noul" (name (:type urgent))))
+      (is (= {"true" "The following holds: Whether the ticket needs a same-day reply"
+              "false" "The following does not hold: Whether the ticket needs a same-day reply"}
+             (update-keys (:criteria urgent) #(if (keyword? %) (name %) %)))))))
+
+(deftest the-guide-follows-the-instruction-and-the-output-description
+  (let [requests (atom [])
+        inputs (guide-request-inputs)
+        guide (sio/input-field-guide (:inputs guide-spec) inputs)]
+    (register-decision-provider! :decision-test-guide-order (response guide-answers) requests)
+    (llm/predict :decision-test-guide-order guide-spec inputs {:validate? false})
+    (is (string? guide))
+    (is (= (str "Triage the ticket.\nThe operation that addresses the ticket\n\n" guide)
+           (:instructions (question-named (first @requests) "route")))
+        "the text that was there is the prefix; the one renderer's guide follows it")
+    (is (= (str "Triage the ticket.\nWhether the ticket needs a same-day reply\n\n" guide)
+           (:instructions (question-named (first @requests) "urgent"))))))
+
+(deftest a-request-that-shows-no-text-input-adds-no-guide
+  (let [requests (atom [])
+        image-spec (update guide-spec :inputs conj {:name :photo :type :image
+                                                    :description "A photo of the damage"})]
+    (register-decision-provider! :decision-test-guide-none (response guide-answers) requests)
+    (llm/predict :decision-test-guide-none guide-spec {} {:validate? false})
+    (llm/predict :decision-test-guide-none image-spec {:photo "data:image/png;base64,AAAA"}
+                 {:validate? false})
+    (is (= 2 (count @requests)))
+    (doseq [request @requests]
+      (is (= "Triage the ticket.\nThe operation that addresses the ticket"
+             (:instructions (question-named request "route")))
+          "no guide, no dangling separator"))))
+
+(deftest values-given-as-data-are-explained-like-values-given-as-json-text
+  (let [requests (atom [])]
+    (register-decision-provider! :decision-test-guide-data (response guide-answers) requests)
+    (llm/predict :decision-test-guide-data guide-spec
+                 {:subject "Refund please"
+                  :account {:tier "pro"}
+                  :messages [{:author-kind "human" :text "How can I help?"}]})
+    (let [instructions (:instructions (question-named (first @requests) "route"))]
+      (doseq [shown ["The ticket subject line" "Support tier"
+                     "human means a staff member, never the customer's own words"]]
+        (is (str/includes? instructions shown) shown))
+      (doseq [absent ["Promo code the customer quoted" "Where they are based"
+                      "Agent notes, when there are any"]]
+        (is (not (str/includes? instructions absent)) absent)))))
 
 (deftest boolean-output-is-asked-as-noul
   (let [requests (atom [])]
@@ -389,3 +539,34 @@
     (is (zero? @completions) "no conversational completion")
     (is (= "typesafe/jev-1.13" (:model (first @requests)))
         "the decision provider's own model is used, not the provider name")))
+
+;; RECON-9: state construction preserves presence, independently of validation.
+;; The earlier coupon=nil snapshot encoded an implementation artifact rather
+;; than the specified omitted-field contract.
+(deftest native-state-preserves-absence-null-false-and-empty-values
+  (let [requests (atom [])
+        spec (assoc boolean-spec :inputs
+                    [{:name :omitted :spec :string :optional true
+                      :description "Absent optional context"}
+                     {:name :nullable :spec [:maybe :string]
+                      :description "Explicitly unknown context"}
+                     {:name :flag :spec :boolean
+                      :description "Whether authorization was granted"}
+                     {:name :empty-text :spec :string
+                      :description "Text supplied without characters"}])
+        values {:nullable nil :flag false :empty-text "" :undeclared "must not reach state"}]
+    (register-decision-provider! :decision-test-presence
+                                 (response {:answerable {:type "noul" :noul 0.9}}) requests)
+    (llm/predict :decision-test-presence spec values {:validate? false})
+    (is (= 1 (count @requests)))
+    (let [request (first @requests)
+          state (:state request)
+          instructions (:instructions (question-named request "answerable"))]
+      (is (= {:nullable nil :flag false :empty-text ""} state))
+      (is (contains? state :nullable) "explicit null retains its field identity")
+      (is (not (contains? state :omitted)) "absence does not become explicit null")
+      (is (not (contains? state :undeclared)) "only declared inputs are offered")
+      (doseq [meaning ["Explicitly unknown context" "Whether authorization was granted"
+                       "Text supplied without characters"]]
+        (is (str/includes? instructions meaning)))
+      (is (not (str/includes? instructions "Absent optional context"))))))

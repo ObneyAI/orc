@@ -511,6 +511,7 @@
     ;; :sheet/node-trace-detail query, which rehydrates on demand.
     [:read-keys {:optional true} [:vector :keyword]]     ;; keys read
     [:write-keys {:optional true} [:vector :keyword]]    ;; keys written
+    [:missing-write-keys {:optional true} [:vector :keyword]]
     [:rejected-write-keys {:optional true} [:vector :keyword]]
     [:input-profile {:optional true} [:map-of :keyword :map]]
     [:output-profile {:optional true} [:map-of :keyword :map]]
@@ -1070,6 +1071,7 @@
     ;; Values rejected by blackboard schema validation. They are persisted as
     ;; trace-only :sheet/execution-value-rejected events and never projected
     ;; into canonical blackboard state.
+    [:missing-write-keys {:optional true} [:vector :keyword]]
     [:rejected-writes {:optional true} [:map-of :keyword :any]]
     [:write-sources {:optional true} [:map-of :keyword
                                       [:map [:tick-id :uuid] [:event-id :uuid]]]]
@@ -1730,6 +1732,7 @@
     ;; Resolve them with core/value-log.
     [:write-keys {:optional true} [:vector :keyword]]
     [:write-profile {:optional true} [:map-of :keyword :map]]
+    [:missing-write-keys {:optional true} [:vector :keyword]]
     [:rejected-write-keys {:optional true} [:vector :keyword]]
     [:rejected-write-profile {:optional true} [:map-of :keyword :map]]
     [:write-sources {:optional true} [:map-of :keyword

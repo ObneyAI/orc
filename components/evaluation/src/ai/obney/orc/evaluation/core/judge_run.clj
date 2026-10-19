@@ -93,7 +93,7 @@
 (defn- rejected-keys
   "The writes the executor rejected on the judge's failed completions."
   [completions]
-  (into #{} (comp (filter #(= :failure (:status %))) (mapcat :rejected-write-keys)) completions))
+  (into #{} (comp (filter #(= :failure (:status %))) (mapcat #(concat (:rejected-write-keys %) (:missing-write-keys %)))) completions))
 
 (defn- failure-kind [completions]
   (some #(when (and (= :failure (:status %)) (:failure-kind %)) (:failure-kind %))

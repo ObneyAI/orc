@@ -745,8 +745,11 @@
                                   opts (when (map? (first rest)) (first rest))
                                   field-schema (if opts (second rest) (first rest))
                                   optional? (:optional opts)]
+                              ;; Never mark optionality on the NAME (`name?:`): a function-calling
+                              ;; model copies the suffix into the key it returns, and the value is
+                              ;; then silently lost on decode. State it in words, outside the name.
                               (str (name field-key)
-                                   (when optional? "?")
+                                   (when optional? " (optional)")
                                    ": " (malli-schema->description field-schema))))]
           (str "object with {" (clojure.string/join ", " field-descs) "}"))
 
@@ -758,7 +761,7 @@
              (clojure.string/join ", " (map provider-enum-spelling args)))
 
         :maybe
-        (str (malli-schema->description (first args)) " (optional)")
+        (str (malli-schema->description (first args)) " or null")
 
         :or
         (str "either " (clojure.string/join " or " (map malli-schema->description args)))
@@ -936,42 +939,27 @@
       (catch Exception _ nil))))
 
 (defn- build-field
-  "Build a ORC LLM field definition from a blackboard key and its entry.
-   Now uses Malli schemas directly instead of legacy field types.
+  "Build a ORC LLM INPUT field definition from a blackboard key and its entry.
 
-   If the Malli schema has a :description property (e.g., [:string {:description \"...\"}]),
-   it will be used as the field description, combined with type info.
-   This aligns with Python DSPy's InputField(desc=\"...\") pattern.
+   The field's :description is its declared meaning and nothing else: the
+   :description property of its Malli schema (e.g. [:string {:description \"...\"}]),
+   or no description at all when the schema declares none. The input field guide
+   states each shown field's name and type itself, and its nested fields only
+   where the request carries them, so a description that also spelled out the
+   declared type (or invented \"Blackboard key: ...\" text) would name nested
+   fields the request does not carry. Output fields are built elsewhere
+   (flatten-output-schema) and keep their type text.
 
    If the Malli schema has a :field-type property (e.g., [:vector {:field-type :image} :string]),
    it will be set as :type on the ORC LLM field definition, enabling multimodal support."
   [key-name blackboard-entry]
   (let [schema (:schema blackboard-entry)
         field-type (schema-field-type schema)
-        ;; Extract custom description from Malli schema properties
-        custom-desc (extract-schema-description schema)
-        type-desc (when schema (malli-schema->description schema))
-        ;; Combine: custom description + type info, or fallback to auto-generated
-        description (cond
-                      ;; Custom description provided - combine with type info
-                      (and custom-desc type-desc)
-                      (str custom-desc " (" type-desc ")")
-
-                      ;; Custom description only (no type info)
-                      custom-desc
-                      custom-desc
-
-                      ;; No custom description - use auto-generated
-                      type-desc
-                      (str "Blackboard key: " key-name " - " type-desc)
-
-                      ;; Fallback when no schema
-                      :else
-                      (str "Blackboard key: " key-name))]
+        description (extract-schema-description schema)]
     (cond-> {:name key-name
              :original-key key-name  ;; Keep original for mapping back
-             :spec (or schema :any)  ;; Use the Malli schema directly
-             :description description}
+             :spec (or schema :any)} ;; Use the Malli schema directly
+      description (assoc :description description)
       field-type (assoc :type field-type))))
 
 ;; =============================================================================
@@ -1672,7 +1660,7 @@
 
 (def ^:private prediction-envelope-keys
   "Keys llm/predict adds around :outputs when called with :with-metadata?."
-  #{:outputs :usage :model :raw-response :provider-evidence :decisions})
+  #{:outputs :usage :model :raw-response :provider-evidence :decisions :provider-observations})
 
 (defn- prediction-envelope?
   "True when `result` is llm/predict's metadata envelope rather than a direct
@@ -1682,13 +1670,21 @@
        (contains? result :outputs)
        (every? prediction-envelope-keys (keys result))))
 
-(defn- outputs-have-nil?
-  "Check if any output values are nil, including nested maps where all values are nil."
-  [outputs]
-  (some (fn [v]
-          (or (nil? v)
-              (and (map? v) (every? nil? (vals v)))))
-        (vals outputs)))
+(defn- unparseable-output-keys
+  "Nil-shaped results are missing-value evidence only when their actual declared
+   schema rejects them. Required nullable values and valid all-null/empty maps
+   must cross the normal schema boundary without being relabelled as absence."
+  [blackboard outputs]
+  (into []
+        (keep (fn [[k value]]
+                (when (and (or (nil? value)
+                               (and (map? value) (every? nil? (vals value))))
+                           (not (when-let [schema (get-in blackboard [k :schema])]
+                                  (try
+                                    (m/validate schema (llm/decode-provider-value schema value))
+                                    (catch Exception _ false)))))
+                  k)))
+        outputs))
 
 (defn- strip-nil-optional-writes
   "Drop declared-OPTIONAL writes that parsed to nil, so a node can mark a
@@ -1720,6 +1716,16 @@
    an exact decision tie, and a provider that was never configured. Another
    invocation cannot change them, only spend budget."
   #{:undecided :provider-not-configured})
+
+(defn- persist-provider-attempt
+  "Run the injected durable transition. Return a bounded failure marker only;
+   persistence exceptions must not leak transport/configuration details."
+  [callback attempt]
+  (when callback
+    (try
+      (let [result (callback attempt)]
+        (when (:cognitect.anomalies/category result) :observation-persistence-failed))
+      (catch Exception _ :observation-persistence-failed))))
 
 (defn execute-ai
   "Execute a leaf node using ORC LLM AI.
@@ -1764,9 +1770,8 @@
         internal-option-keys #{:execution-deadline-ms :reserve-llm-call!
                                :reserve-provider-attempt! :provider-reservation-context
                                :tick-id :node-attempt :max-node-attempts
-                               :exec-context
-                               :max-retries :retry-delay-ms :validate?
-                               :unparseable-is-schema-error?}
+                               :exec-context :start-provider-attempt! :complete-provider-attempt!
+                               :max-retries :retry-delay-ms :validate? :unparseable-is-schema-error?}
         llm-options (merge {:validate? false
                                :with-metadata? true
                                :with-provider-evidence? true
@@ -1855,13 +1860,10 @@
                                          (:outputs result)
                                          result)
                            ;; Reassemble flattened outputs back into nested structure
-                           outputs (if (and (prediction-envelope? result)
-                                            (nil? raw-outputs))
-                                     ;; The provider answered with no outputs at all:
-                                     ;; every declared write is unextractable, so the
-                                     ;; nil-gate below fails the node on THOSE keys.
-                                     (zipmap (:writes node) (repeat nil))
-                                     (reassemble-flattened-outputs raw-outputs output-mapping))]
+                           ;; Missing envelope outputs stay missing. A nullable
+                           ;; write is present only when the provider supplied
+                           ;; that declared key explicitly with a null value.
+                           outputs (reassemble-flattened-outputs raw-outputs output-mapping)]
                        {:outputs outputs
                         :usage (normalize-usage (:usage result))
                         :model (or (:model result) (:model node))
@@ -1880,13 +1882,16 @@
                         ;; A native decision model reports per-question
                         ;; evidence (distribution, confidence) beside its
                         ;; outputs; carried so a decision can record it.
-                        :decisions (:decisions result)})))
+                        :decisions (:decisions result)
+                        :provider-observations (:provider-observations result)})))
 
         ;; Compute backoff delay for a given attempt
         backoff-for (fn [attempt]
                       (if (sequential? retry-delay-ms)
                         (nth retry-delay-ms (min attempt (dec (count retry-delay-ms))))
                         retry-delay-ms))
+        start-provider-attempt! (:start-provider-attempt! options)
+        complete-provider-attempt! (:complete-provider-attempt! options)
         deadline-ms (:execution-deadline-ms options)
         reserve-call! (:reserve-llm-call! options)
         tick-id (:tick-id options)
@@ -1947,17 +1952,24 @@
     (loop [attempt 0
            accumulated-usage nil]
       (let [{:keys [options timeout-error]} (prepare-attempt attempt)
-            {:keys [outputs usage model resolved-model error raw-response failure-kind
-                    provider-evidence decisions]}
-            (if timeout-error
-              {:error timeout-error :budget-timeout? true}
+            invocation (when-not timeout-error
+                         {:invocation-id (random-uuid)
+                          :node-attempt node-attempt :provider-attempt (inc attempt)})
+            start-error (when invocation (persist-provider-attempt start-provider-attempt! invocation))
+            {:keys [outputs usage model resolved-model error raw-response failure-kind provider-evidence
+                    decisions provider-observations]}
+            (cond
+              timeout-error {:error timeout-error :budget-timeout? true}
+              start-error {:error "Provider attempt start could not be persisted"}
+              :else
               (try
                 (try-once attempt options)
                 (catch Exception e
-                  (let [{:keys [failure-kind provider-evidence]} (ex-data e)
+                  (let [{:keys [failure-kind provider-evidence provider-observations]} (ex-data e)
                         provider-evidence (some-> provider-evidence
                                                   (update :usage normalize-usage))]
                     (cond-> {:error (.getMessage e)}
+                      provider-observations (assoc :provider-observations provider-observations)
                       failure-kind (assoc :failure-kind failure-kind)
                       provider-evidence
                       (assoc :provider-evidence provider-evidence
@@ -1968,23 +1980,49 @@
             ;; Drop nil best-effort writes so an omitted evidence array is the
             ;; node's declared-optional absence, not a nil-gate failure.
             outputs (strip-nil-optional-writes outputs optional-writes)
-            ;; Opt-in: a declared write the provider left out entirely is as
-            ;; unparseable as one it answered with nil; both are validated.
-            outputs (if (and unparseable-is-schema-error? (not error) (not budget-timeout?))
-                      (merge (zipmap (:writes node) (repeat nil)) outputs)
-                      outputs)
+            ;; Prediction skips input validation because gathered complex inputs
+            ;; are serialized. Presence is a separate obligation from value
+            ;; validation: an omitted nullable write must not become explicit null.
+            missing-output-keys (vec (remove #(or (contains? optional-writes %)
+                                                  (contains? outputs %))
+                                            (:writes node)))
+            unparseable-keys (into missing-output-keys
+                                   (unparseable-output-keys blackboard outputs))
             total-usage (merge-usage accumulated-usage usage)
             schema-result (when (and (not error)
                                      (or unparseable-is-schema-error?
-                                         (not (outputs-have-nil? outputs))))
-                            (validate-leaf-outputs
-                             blackboard
-                             (cond-> {:status :success :outputs outputs}
-                               raw-response (assoc :raw-response raw-response))
-                             true))
+                                         (empty? unparseable-keys)))
+                            (if (seq missing-output-keys)
+                              ;; Keep the judge's schema-error/retry policy without
+                              ;; inserting values that the provider never returned.
+                              {:status :failure :outputs {} :missing-write-keys missing-output-keys :rejected-writes (or outputs {})
+                               :error (str "Missing required output keys " missing-output-keys)}
+                              (validate-leaf-outputs
+                               blackboard
+                               (cond-> {:status :success :outputs outputs}
+                                 raw-response (assoc :raw-response raw-response))
+                               true)))
             schema-error (when (= :failure (:status schema-result))
-                           (:error schema-result))]
+                           (:error schema-result))
+            completion-error
+            (when (and invocation (not start-error))
+              (persist-provider-attempt
+               complete-provider-attempt!
+               (assoc invocation :outcome
+                      (cond-> {:status (if (or error (seq unparseable-keys) schema-error) :failure :success)}
+                        failure-kind (assoc :failure-kind failure-kind)
+                        (and (nil? failure-kind) (or (seq unparseable-keys) schema-error))
+                        (assoc :failure-kind :schema-validation-failed)
+                        provider-observations (assoc :provider-observations provider-observations)))))]
         (cond
+          (or start-error completion-error)
+          {:status :failure :retryable? false
+           :error (if start-error
+                    "Provider attempt start could not be persisted; provider was not dispatched"
+                    "Provider attempt outcome could not be persisted; dispatch will not be repeated")
+           :duration-ms (- (System/currentTimeMillis) start-time)
+           :usage total-usage}
+
           budget-timeout?
           {:status :timeout
            :error error
@@ -2035,11 +2073,8 @@
           ;; outputs that fail their declared schemas. A node-level :retry can
           ;; still retry this parse failure. The verbatim raw response is
           ;; carried on the result and logged in full so it is diagnosable.
-          (and (outputs-have-nil? outputs) (not unparseable-is-schema-error?))
-          (let [nil-keys (vec (for [[k v] outputs
-                                    :when (or (nil? v)
-                                              (and (map? v) (every? nil? (vals v))))]
-                                k))
+          (and (seq unparseable-keys) (not unparseable-is-schema-error?))
+          (let [nil-keys unparseable-keys
                 raw-len (count (str raw-response))
                 preview (when raw-response
                           (subs raw-response 0 (min 1000 (count raw-response))))
@@ -5524,6 +5559,7 @@
      (loop [attempt 0]
        (let [result (execute-fn)]
          (if (or (contains? #{:success :timeout :blocked} (:status result))
+                 (false? (:retryable? result))
                  (>= (inc attempt) max-attempts))
            result
            (do
@@ -5562,7 +5598,11 @@
   [node blackboard provider & {:keys [context options stream] :or {context {} options {}}}]
   (let [executor-type (or (:executor node) :ai)
         retry-config (:retry node)
-        execution-options (merge options (:options node))
+        execution-options (merge options (:options node)
+                                 ;; Durable observation capabilities belong to the
+                                 ;; host, not to model/node request configuration.
+                                 (select-keys options [:start-provider-attempt!
+                                                       :complete-provider-attempt!]))
         max-node-attempts (or (get-in retry-config [:max-attempts]) 1)
         node-attempt (atom 0)
         execute-fn (fn []

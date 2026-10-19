@@ -430,15 +430,17 @@
 ;; here so a later pin move cannot change it again unobserved.
 ;; ---------------------------------------------------------------------------
 
-(deftest a-nil-provider-response-yields-nil-fields-not-a-bare-npe
+(deftest a-nil-provider-response-preserves-absence-not-a-bare-npe
   ;; At 91e7d100 this threw java.lang.NullPointerException straight out of the
   ;; parser: "Cannot invoke String.length() because this.text is null". A raw
   ;; NPE carries no :failure-kind, so ORC's structured-failure vocabulary and
   ;; every caller that classifies on it were blind to the case.
+  ;; Final parser presence is now explicit: no field is invented for a missing
+  ;; response. Validation still rejects that absence through the typed boundary.
   (with-redefs [router/supports-function-calling? (constantly false)
                 router/completion (fn [& _] {:choices [{:message {:content nil}}]})]
-    (testing "the parser reports absence as data"
-      (is (= {:answer nil}
+    (testing "the parser preserves absence instead of inventing a nullable value"
+      (is (= {}
              (llm/predict :test qa {:question "Capital?"} {:validate? false}))))
 
     (testing "and ORC's boundary then classifies it, rather than leaking an NPE"
@@ -923,25 +925,25 @@
       (let [content (get-in @captured [:messages 0 :content])]
         (if (string? content) content (pr-str content))))))
 
-(deftest function-calling-request-carries-each-input-description-beside-its-value
+(deftest function-calling-request-carries-each-input-description-once-with-unchanged-values
   (let [text (captured-user-text true)]
     (is (str/includes? text "The claim under review"))
     (is (str/includes? text "Evidence offered for the claim"))
     (is (str/includes? text "Water boils at 100C"))
     (is (str/includes? text "Textbook chapter 3"))
-    (testing "description sits next to its own value"
-      (is (re-find #"(?s)claim[^\n]*The claim under review[^\n]*Water boils at 100C|claim[^\n]*Water boils at 100C" text))
-      (is (< (str/index-of text "The claim under review")
-             (str/index-of text "Water boils at 100C")
-             (str/index-of text "Evidence offered for the claim")
-             (str/index-of text "Textbook chapter 3"))))
+    (testing "the guide identifies each meaning once and leaves values unchanged"
+      (is (str/includes? text "1. `claim` (str): The claim under review"))
+      (is (str/includes? text "2. `evidence` (str): Evidence offered for the claim"))
+      (is (= 1 (count (re-seq #"The claim under review" text))))
+      (is (= 1 (count (re-seq #"Evidence offered for the claim" text))))
+      (is (str/includes? text "claim: Water boils at 100C\n\nevidence: Textbook chapter 3")))
     (testing "an input without a description renders as before"
       (is (str/includes? text "note: n/a")))))
 
-(deftest marker-request-body-is-unchanged-by-input-description-rendering
-  ;; Baseline captured from the marker path before the function-calling fix.
+(deftest marker-request-keeps-its-value-layout-with-the-input-field-guide
+  ;; The guide omits an empty description suffix; marker names and values stay exact.
   (is (= (str "Your input fields are:\n1. `claim` (str): The claim under review\n"
-              "2. `evidence` (str): Evidence offered for the claim\n3. `note` (str): \n"
+              "2. `evidence` (str): Evidence offered for the claim\n3. `note` (str)\n"
               "Your output fields are:\n1. `answer` (str): The verdict\n"
               "All interactions will be structured in the following way, with the appropriate values filled in.\n\n"
               "[[ ## claim ## ]]\n{claim}\n\n[[ ## evidence ## ]]\n{evidence}\n\n[[ ## note ## ]]\n{note}\n\n"

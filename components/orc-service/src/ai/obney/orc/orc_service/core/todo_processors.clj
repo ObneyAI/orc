@@ -9,6 +9,7 @@
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
+            [ai.obney.orc.orc-service.core.provider-observations :as provider-observations]
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
             [ai.obney.orc.orc-service.core.researcher-mode :as researcher-mode]
@@ -2458,10 +2459,10 @@
   [reads blackboard]
   (reduce
     (fn [acc k]
-      (let [v (get-in blackboard [k :value])]
-        (if (nil? v)
-          acc
-          (assoc acc k (truncate-trace-value v)))))
+      (let [entry (get blackboard k)]
+        (if (contains? entry :value)
+          (assoc acc k (truncate-trace-value (:value entry)))
+          acc)))
     {}
     (or reads [])))
 
@@ -2500,7 +2501,19 @@
      {:execution-deadline-ms (get-in tick-options [:execution-deadline-ms])
       :reserve-llm-call! #(reserve-llm-call-or-cancel! context tick-ctx sheet-id tick-id)
       :tick-id tick-id
-      :exec-context exec-context}
+      :exec-context exec-context
+      :start-provider-attempt!
+      (fn [attempt]
+        (provider-observations/start-provider-attempt!
+         context (merge attempt {:sheet-id sheet-id :tick-id tick-id :node-id node-id
+                                 :node-start-id (get-in context [:event :event/id])
+                                 :exec-context exec-context})))
+      :complete-provider-attempt!
+      (fn [attempt]
+        (provider-observations/complete-provider-attempt!
+         context (merge attempt {:sheet-id sheet-id :tick-id tick-id :node-id node-id
+                                 :node-start-id (get-in context [:event :event/id])
+                                 :exec-context exec-context})))}
       reserve-provider-attempt!
       (assoc :reserve-provider-attempt! reserve-provider-attempt!
              :provider-reservation-context reservation-context))))
@@ -2767,7 +2780,7 @@
                              :else
                              (executor/execute-leaf-mock node blackboard))
                     result (executor/validate-leaf-outputs blackboard raw-result is-llm-call?)
-                  {:keys [status outputs rejected-writes error duration-ms usage raw-response
+                  {:keys [status outputs rejected-writes missing-write-keys error duration-ms usage raw-response
                           failure-kind provider-evidence block-payload decision]
                    result-model :model
                    resolved-model :resolved-model} result
@@ -2796,6 +2809,7 @@
                                 :node-type (:type node)
                                 :status status
                                 :writes (normalize-output-keys (or outputs {}))}
+                         (seq missing-write-keys) (assoc :missing-write-keys missing-write-keys)
                          (seq rejected-writes)
                          (assoc :rejected-writes (normalize-output-keys rejected-writes))
                          duration-ms (assoc :duration-ms duration-ms)
@@ -3637,7 +3651,7 @@
                                   (merge (apply dissoc (:outputs raw-result) (:writes node))
                                          (:outputs validated-result)))
                            validated-result)
-                  {:keys [status outputs rejected-writes error duration-ms
+                  {:keys [status outputs rejected-writes missing-write-keys error duration-ms
                           generated-tree-raw generated-tree-source
                           iteration-reasonings usage own-usage iterations block-payload]} result
                   ;; Handle :tree-generated status - only propagate raw tree (canonical contains fns)
@@ -3776,6 +3790,7 @@
                          terminal-quantum-observation
                          (merge terminal-quantum-observation)
                          error (assoc :error error)
+                         (seq missing-write-keys) (assoc :missing-write-keys missing-write-keys)
                          (seq rejected-writes)
                          (assoc :rejected-writes (normalize-output-keys rejected-writes))
                          ;; Carry the node's real read inputs (plus any map-each
@@ -6392,6 +6407,8 @@
                               (assoc :write-keys (:write-keys completed)
                                      :output-profile (:write-profile completed))
 
+                              (seq (:missing-write-keys completed))
+                              (assoc :missing-write-keys (:missing-write-keys completed))
                               (seq (:rejected-write-keys completed))
                               (assoc :rejected-write-keys (:rejected-write-keys completed)
                                      :rejected-output-profile
