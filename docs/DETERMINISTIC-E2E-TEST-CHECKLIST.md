@@ -872,3 +872,15 @@ the old test in memory makes the durable regression fail at that same equality
 (9 passing assertions, 1 failure, 0 errors). The corrected controlled probe
 passes 1 test / 7 assertions. Independent execution of the complete event/evaluation
 and diagnostic namespaces passes 16 tests / 108 assertions.
+
+## Nullable continuation fresh-process harness
+
+- [x] NULLABLE-CP-1: The existing required-null sequence/SQLite test must retain every nullable and complete cold-replay assertion when run in Polylith's real isolated project classloader; the child inherits effective project paths rather than only the tool bootstrap classpath. Child failures expose captured diagnostics. No production or specification behavior changes.
+
+NULLABLE-CP-1: **1 obligation, 1 covered, 0 uncovered**. The original launch
+fails through Polylith's actual isolated loader because the child cannot locate
+the test namespace (10 passing assertions, 1 failure). The corrected launch
+passes 1 test / 15 assertions, independently repeated on the main thread. All
+original nullable, complete event equality, replay, digest and timeout checks
+remain. Allium check/analyse retain 114 information diagnostics, 39 warnings,
+zero errors and no analysis findings. No production code changes.

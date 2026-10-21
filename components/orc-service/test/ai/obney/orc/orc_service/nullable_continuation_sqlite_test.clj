@@ -3,6 +3,7 @@
   (:require [clojure.test :refer [deftest is]]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [cheshire.core :as json]
             [hato.client :as http]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -43,6 +44,22 @@
      ;; Compare complete native event print forms in fresh process, avoiding
      ;; EDN tagged Java-time reader differences. No event is excluded.
      :events (mapv pr-str events)}))
+
+(defn- fresh-jvm-classpath
+  "Carry the active test loader's paths into a new process. Polylith loads
+   project tests in a URLClassLoader without changing java.class.path."
+  []
+  (let [loaders (reverse (take-while some?
+                                   (iterate #(.getParent ^ClassLoader %)
+                                            (clojure.lang.RT/baseLoader))))
+        loader-paths (for [loader loaders
+                           :when (instance? java.net.URLClassLoader loader)
+                           url (.getURLs ^java.net.URLClassLoader loader)]
+                       (.getPath (io/file (.toURI url))))
+        bootstrap-paths (str/split (System/getProperty "java.class.path")
+                                  (re-pattern (java.util.regex.Pattern/quote
+                                               java.io.File/pathSeparator)))]
+    (str/join java.io.File/pathSeparator (distinct (concat loader-paths bootstrap-paths)))))
 
 (defn -main [manifest-path result-path]
   ;; Query only: no provider, poller, schedule or execution is started.
@@ -129,14 +146,15 @@
       (let [command [(str (System/getProperty "java.home") "/bin/java")
                      "--add-opens=java.base/java.nio=ALL-UNNAMED"
                      "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
-                     "-cp" (System/getProperty "java.class.path") "clojure.main" "-m"
+                     "-cp" (fresh-jvm-classpath) "clojure.main" "-m"
                      "ai.obney.orc.orc-service.nullable-continuation-sqlite-test" manifest rebuilt-path]
             process (.start (doto (ProcessBuilder. ^java.util.List command)
                               (.redirectErrorStream true) (.redirectOutput log)))
             exited? (.waitFor process 60 TimeUnit/SECONDS)]
         (when-not exited? (.destroyForcibly process) (.waitFor process 10 TimeUnit/SECONDS))
         (is exited? "fresh JVM must finish within its bound")
-        (is (and exited? (zero? (.exitValue process))) (str "See " log))
+        (is (and exited? (zero? (.exitValue process))) (str "Fresh JVM exit=" (when exited? (.exitValue process))
+                     "; diagnostic log " log "\n" (slurp log)))
         (when (and exited? (zero? (.exitValue process)))
           (let [rebuilt (edn/read-string (slurp rebuilt-path))]
             (is (= original rebuilt) "Fresh projections and complete canonical event sequence agree")
