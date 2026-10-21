@@ -766,6 +766,9 @@
           (when durable-budget?
             (or (get-in context [:tick-options :llm-budget-root-sheet-id])
                 (:sheet-id context)))
+          ;; AssessmentWorkIsMarked: a generated child of assessment work is
+          ;; itself assessment work.
+          assessment-origin (get-in context [:tick-options :assessment-origin])
           campaign-sheet-id
           (or (get-in context [:tick-options :researcher-campaign-sheet-id])
               (:sheet-id context))
@@ -797,6 +800,8 @@
                                                           (remove (comp nil? val))
                                                           (merge blackboard sandbox-vars))
                                             :options (cond-> {:timeout-ms timeout-ms}
+                                                       assessment-origin
+                                                       (assoc :assessment-origin assessment-origin)
                                                        durable-budget?
                                                        (assoc :llm-call-budget llm-call-budget)
                                                        campaign-ownership-epoch

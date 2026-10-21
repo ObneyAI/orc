@@ -40,6 +40,7 @@
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
+            [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.time.interface :as time]))
@@ -63,27 +64,13 @@
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   ::cache-dir cache-dir}
-        processors (reduce-kv
-                     (fn [acc proc-name {:keys [handler-fn topics]}]
-                       (assoc acc proc-name
-                              ;; Only the evaluation judge processors take a
-                              ;; :processor-name (they use the effect path,
-                              ;; which checkpoints per-event — a distinct name
-                              ;; keeps their replay-guard watermarks separate).
-                              ;; Naming the pure-path processors would switch
-                              ;; them into the checkpointed branch, whose
-                              ;; monotonic replay-guard false-positives under
-                              ;; the concurrent sub-ticks custom-judge
-                              ;; orc/execute fans out.
-                              (tp/start (cond-> {:event-pubsub ps :topics topics
-                                                 :handler-fn handler-fn :context base-ctx}
-                                          (= "evaluation" (namespace proc-name))
-                                          (assoc :processor-name proc-name)))))
-                     {} @tp/processor-registry*)]
+        ;; The same delivery production uses: checkpointed (evaluation/*) processors
+        ;; are polled one event at a time, the rest ride pubsub unnamed.
+        processors (h/start-test-processors base-ctx)]
     (assoc base-ctx :processors processors)))
 
 (defn- stop-context [ctx]
-  (doseq [[_ p] (:processors ctx)] (tp/stop p))
+  (h/stop-test-processors! ctx)
   (when-let [ps (:event-pubsub ctx)] (pubsub/stop ps))
   (when-let [c (:cache ctx)] (kv/stop c))
   (when-let [es (:event-store ctx)] (es/stop es))
@@ -274,55 +261,79 @@
             (str "missing :judge-name must fail validation. Got: " (pr-str r)))))))
 
 ;; =============================================================================
-;; 5. Non-blocking-handler contract: the handler returns a :result/effect
-;;    immediately and does NOT deref the (slow) judge on the handler thread.
+;; 5. Non-blocking-handler contract: the completion handler only REQUESTS an
+;;    assessment (durable events + CAS, no effect) and never waits on a (slow)
+;;    judge; the judge runs from the durable request, off the handler thread.
+;;
+;;    S7 (ADR 0008) changed the shape of this contract: the handler used to return
+;;    a `:result/effect` that started the judge; it now returns the request as
+;;    `:result/events` + `:result/cas` (the pure path, which no checkpoint
+;;    watermark can skip) and the judging effect belongs to the
+;;    `:evaluation/assessment-requested` processor.
 ;; =============================================================================
 
-(deftest handler-returns-effect-not-events-and-never-blocks
-  (testing "even with a deliberately SLOW judge, on-node-execution-completed returns a :result/effect map fast (no deref on the handler thread, no :result/events)"
+(deftest completion-handler-requests-durably-and-never-blocks-on-a-slow-judge
+  (testing "even with a deliberately SLOW judge, on-node-execution-completed returns promptly with :result/events + :result/cas (no :result/effect); the slow judge's score still lands via the command path"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      ;; A judge that would take 3s if the handler deref'd it inline.
+      ;; A judge that would take 3s if the handler waited for it.
       (with-redefs [heuristic-structural/evaluate-tree-structure
                     (fn [_tree] (Thread/sleep 3000) {:score 0.5 :feedback "slow" :dimensions []})]
-        (let [sheet-id (random-uuid) node-id (random-uuid) tick-id (random-uuid)
-              ;; Build the handler context by hand: a node with the
-              ;; heuristic-structural judge effectively resolved. We
-              ;; redefine the resolver to return one heuristic judge so
-              ;; the handler reaches the effect branch deterministically.
+        (let [sr (cp/process-command (assoc ctx :command
+                                            {:command/name :sheet/create-sheet
+                                             :command/id (random-uuid) :command/timestamp (time/now)
+                                             :name (str "slow-" (random-uuid))}))
+              sheet-id (-> sr :command-result/events first :sheet-id)
+              _ (cp/process-command (assoc ctx :command
+                                           {:command/name :sheet/declare-judge
+                                            :command/id (random-uuid) :command/timestamp (time/now)
+                                            :sheet-id sheet-id :judge-name "structure"
+                                            :judge-config {:type :heuristic-structural}}))
+              nr (cp/process-command (assoc ctx :command
+                                            {:command/name :sheet/create-node
+                                             :command/id (random-uuid) :command/timestamp (time/now)
+                                             :sheet-id sheet-id :type :leaf}))
+              node-id (-> nr :command-result/events first :node-id)
+              _ (cp/process-command (assoc ctx :command
+                                           {:command/name :sheet/set-node-judges
+                                            :command/id (random-uuid) :command/timestamp (time/now)
+                                            :sheet-id sheet-id :node-id node-id :judges ["structure"]}))
+              _ (Thread/sleep 150)
+              tick-id (random-uuid)
+              ;; The completion is handed to the handler by hand (it is never
+              ;; appended as an event, so only this call can request it).
               event {:event/id (random-uuid)
                      :event/type :sheet/node-execution-completed
                      :sheet-id sheet-id :node-id node-id :tick-id tick-id
                      :status :success
                      :writes {:generated-tree-raw [:sequence [:llm {}] [:final {}]]}}
-              handler-ctx (assoc ctx :event event)]
-          (with-redefs [jr/get-effective-judges-for-node
-                        (fn [& _] [{:judge-name "structure" :judge-config {:type :heuristic-structural}}])]
-            (let [t0 (System/currentTimeMillis)
-                  result (#'ai.obney.orc.evaluation.core.judge-runtime/on-node-execution-completed
-                          handler-ctx)
-                  elapsed (- (System/currentTimeMillis) t0)]
-              (is (< elapsed 1000)
-                  (str "handler must return WELL before the 3s judge would finish "
-                       "(proves no inline deref). Elapsed: " elapsed "ms"))
-              (is (fn? (:result/effect result))
-                  "handler returns a :result/effect function")
-              (is (= :after (:result/checkpoint result))
-                  "effect is checkpointed :after (per-event try/catch + skip-checkpoint path)")
-              (is (nil? (:result/events result))
-                  "handler must NOT return :result/events — emission goes through commands now")
-              ;; Running the effect spawns a background future and ALSO
-              ;; returns immediately (it must not block on the slow judge).
-              (let [t1 (System/currentTimeMillis)
-                    _ ((:result/effect result))
-                    effect-elapsed (- (System/currentTimeMillis) t1)]
-                (is (< effect-elapsed 1000)
-                    (str "the effect itself must return immediately (spawns a future). "
-                         "Elapsed: " effect-elapsed "ms")))
-              ;; Eventually the slow judge's score lands via the command path.
-              (is (wait-until 8000
-                              #(seq (filter (fn [e] (= tick-id (:tick-id e))) (score-events ctx))))
-                  "the slow judge's score eventually appears via :evaluation/record-judge-score"))))))))
+              handler-ctx (assoc ctx :event event)
+              t0 (System/currentTimeMillis)
+              result (#'ai.obney.orc.evaluation.core.judge-runtime/on-node-execution-completed
+                      handler-ctx)
+              elapsed (- (System/currentTimeMillis) t0)]
+          (is (< elapsed 1000)
+              (str "handler must return WELL before the 3s judge would finish "
+                   "(proves it never waits on a judge). Elapsed: " elapsed "ms"))
+          (is (nil? (:result/effect result))
+              "the handler starts no judging: that is the assessment processor's job")
+          (is (seq (:result/events result)) "the request is returned as events")
+          (is (every? #(= :evaluation/assessment-requested (:event/type %)) (:result/events result))
+              "and every one is an assessment request")
+          (is (some? (:result/cas result)) "fenced by a CAS, so replay appends nothing")
+          ;; And through the full path - a real completion, a real request, the
+          ;; slow judge off the handler thread - its score still lands.
+          (let [real-tick (random-uuid)]
+            (cp/process-command (assoc ctx :command
+                                       {:command/name :sheet/complete-node-execution
+                                        :command/id (random-uuid) :command/timestamp (time/now)
+                                        :sheet-id sheet-id :tick-id real-tick :node-id node-id
+                                        :node-type :llm :status :success
+                                        :writes {:generated-tree-raw [:sequence [:llm {}] [:final {}]]}
+                                        :duration-ms 1}))
+            (is (wait-until 8000
+                            #(seq (filter (fn [e] (= real-tick (:tick-id e))) (score-events ctx))))
+                "the slow judge's score eventually appears via :evaluation/record-assessment-outcome")))))))
 
 ;; =============================================================================
 ;; 6. BURST stall proof (analogous to grain's poller_burst_stall_test):

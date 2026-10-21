@@ -1031,3 +1031,148 @@ spec bugs tended (gate identity scoped to code/tool leaves; two-spellings scoped
 outcome kinds scoped to contract and tool failures; GEPA components scoped to leaves, decisions and
 conditions). Diagnostic baseline unchanged: `allium check`/`analyse specs` = 151 diagnostics
 (115 information, 36 warnings), 0 errors — the arc adds prose invariants only.
+
+## Judges as behaviours with durable assessments
+
+Specs: `evaluation.allium` (DiscreteBandScoring, TraceJudge, AssessmentRecording,
+PerformanceMonitoring, EvaluationAttachmentResolver, Assessment entity and rules, HonestComposite,
+PayForWhatYouUse), `orc-service.allium` (ModelDecision banded kind, LeafExecutor
+ModelLeafRecordsResolvedModel / ProviderMetadataIsNeverOutput / RejectedCompletionFailsTheNode /
+JudgedCompositesAreDurable, ExecutionFamilyIsQueryable, AssessmentWorkIsMarked), `llm.allium`
+(DeclaredStructuredValues, DeclaredMeaningReachesTheModel, PredictionMetadata,
+StructuredFailureClassification, DecisionProtocolPrediction banded score).
+
+Covered by DET-E2E-310 to 321 (see the checklist for files). A whole-spec weed (check mode) mapped
+every rule, invariant and guarantee in scope to code and tests; non-aligned items were fixed with
+RED tests (tree-shape learning records gated on purposes, one learning record per tick and judge,
+score-only feedback absent, outcome command validates its own bounds) or tended (assessment and
+subject identity, written feedback, failure kinds, failed subjects). Known gaps kept honest:
+`RecordLateResult` has no producer and stays tied to the open question on capacity, claims and
+recovery; researcher campaign events are not passed to assessment judges; the cancelled-campaign
+verdict rule has no dedicated test.
+
+Diagnostics: `allium check specs` = 153 (114 information, 39 warnings), 0 errors; `allium analyse`
+reports no structural findings in the touched specs.
+
+## Structured-contract and judge reconciliation
+
+Scope: `EveryRequestCarriesItsInputFieldGuide`, `DecisionRequestCarriesDeclaredMeaning`,
+strict output contracts, output presence, command-owned provider observations and
+judge missing-write evidence. See `docs/RECONCILED-CONTRACTS.md` and RECON-1 through
+RECON-9 in the deterministic checklist for the integration boundaries.
+
+Independent verification: SIO 114 tests/1405 assertions; client 283 tests/1009
+assertions; changed ORC namespaces 157 tests/976 assertions; judge lifecycle and
+trace-harness gate 13 tests/78 assertions; native presence/workflow guide gate
+25 tests/125 assertions. Counts overlap and must not be added as unique coverage.
+Legacy opt-in live tests were disabled in the local deterministic gate. Separate
+captured live compatibility used nine real model calls/seven assessments, followed
+by exact cold projection equality. Repository CI remains a separate merge gate.
+
+Scoped weed classifications: missing required outputs and missing-write diagnostic
+loss were code bugs; native absent-input-to-null synthesis was a code bug with one
+stale characterization expectation. Universal marker-guide ordering was a spec
+bug: existing marker golden-layout compatibility is preserved. Composite output
+union was an experiment setup error; the corrected tree explicitly publishes its
+joined output. Judge timeout rejection was the experiment transport's admission
+limit, not an ORC transport defect. No semantic phrase matching or generated-output
+repair was introduced.
+
+Allium check/analyse baseline remains 153 diagnostics (114 information, 39 warnings),
+zero errors and no analysis findings. This is the characterized judge baseline,
+not a clean diagnostic report. SIO and client each have one intentional external
+caller source-hint warning. Separate judge recovery and execution-family gaps
+remain explicit; no production domain was excluded from the existing ledger.
+
+Obligation line: 9 obligations, 9 covered, 0 uncovered for RECON-1 through RECON-9.
+The final delegated contract adds 1 test/30 assertions and the independent judge
+compatibility sweep passes 93 tests/492 assertions. Injected HTTP responses in
+deterministic tests intentionally isolate serialization and value propagation;
+the separate paid run supplies real-model evidence. No generated TODO, skipped
+obligation or skeleton is counted as coverage. Full repository CI is not implied
+by this focused obligation line.
+
+
+## Provider usage compatibility in learning provenance
+
+Existing `ModelProvenance.usage` permits provider accounting data. The five
+ontology provenance event schemas incorrectly required every usage value to be
+an integer, rejecting fractional cost and nested provider details. This was code
+drift; no Allium intent or ontology architecture changed. The shared open usage
+schema retains integral known token counts, numeric/explicitly unavailable cost,
+and additive accounting details. Four active event contracts and the retained
+anti-recency audit schema use it. The audit command was already retired: source
+review confirms the expanded schema still accepts its historical integer usage;
+no synthetic replacement writer or claimed live audit path was introduced.
+
+RECON-10 and RECON-11: **2 obligations, 2 covered, 0 uncovered**. The focused
+`provenance-usage-test` runs **4 tests / 35 assertions** through public commands,
+durable events, description/claim projections, and an actual consolidation
+workflow with only the provider completion boundary injected. Description RED:
+12 failures / 15 assertions, then GREEN 15 assertions. Claim RED: 5 failures /
+21 assertions, then GREEN 21 assertions. Command anomalies identify invalid
+event schema paths, so failure evidence does not depend on waiting for a timeout.
+Malformed string/fractional token counts remain rejected; absent and explicit-null
+cost are distinguished. Original assertion failures are retained in the laboratory
+reconciliation evidence.
+
+The workflow proof respects the two existing accounting boundaries: successor
+provenance copies normalized node totals/cost; detailed provider usage remains on
+the durable provider-attempt observation. The first expanded test incorrectly
+expected full details in normalized completion usage; its retained failure was a
+test translation error, corrected by asserting both boundaries without changing
+the executor. Direct provenance commands preserve their complete supplied usage.
+The root's separate replay of a real captured provider response and final CI are
+independent verification, not inferred from these deterministic results.
+
+## Parallel contracts and ordinary missing-output evidence
+
+`DeclaredOutputsOnly` already requires missing-key evidence in completions and
+traces. The ordinary unparseable-output branch omitted that metadata although the
+schema-error policy retained it. This is a code bug, corrected without changing
+failure classification, retry policy, raw response, or supplied-value evidence.
+No specification change is needed. Required nullable absence remains distinct
+from explicit null; no absent value is fabricated as a rejected value.
+
+The generated parallel test's ordinal fake predates reconciliation. A forced
+right-first comparison at base1851212 accepted two wrong-owner writes. At
+reconciled07f220d7 the same fake failed, and canonical writes rejected the wrong
+owner. This is a test defect exposed by required-output validation, not evidence
+that valid parallel responses fail. The corrected fake follows each requested
+module contract, and both orders verify exact canonical producer ownership.
+
+RECON-12/13: 2 obligations, 2 covered, 0 uncovered. Independent focused verification
+passed 39 tests / 214 assertions. The new metadata test was RED at both durable
+completion and public trace, then GREEN. The model fake is intentional for forced
+scheduling and invalid-output evidence; real provider verification is separate.
+There are no generated skeletons, skipped obligations, or weakened assertions.
+Allium remains153 diagnostics (114 information,39 warnings), zero errors and no
+analysis findings. Full aggregate and live CI remain merge gates.
+
+## Living-description CI evidence
+
+Test-only diagnostics preserve the existing DET-E2E-103/104 assertions, prompts,
+models, options, execution deadlines, and teardown. Opt-in capture saves exact
+HTTP entity bodies, command failures, tenant events and public traces before
+teardown; CI uploads them even when the test step fails. Credentials are excluded
+or explicitly withheld. Production behavior and Allium specifications are
+unchanged. Historical CI failure causation remains unresolved.
+
+LIVE-EVIDENCE-1/2/3: **3 obligations, 3 covered, 0 uncovered**. The focused
+`living-description-evidence-test` namespace passes 7 tests / 32 assertions over
+local HTTP and real Grain. These tests do not establish live provider behavior.
+The existing Allium diagnostic baseline is unchanged; independent inspection and
+the next instrumented CI execution remain required before merge.
+
+## Replay observation boundary
+
+REPLAY-074: **1 obligation, 1 covered, 0 uncovered**. The specification's
+`TraceRefreshNeverRegresses` already permits later durable evidence to enrich a
+trace. The old test compared different evidence prefixes; production behavior
+and specifications require no change. The corrected test waits for this tree's
+complete routing evidence and retains every full projection comparison. A
+controlled regression fails with the old observation barrier restored in memory.
+Independent focused namespaces pass 16 tests / 108 assertions. No generated
+skeletons, weakened assertions, or excluded production domains were introduced.
+Allium check and analyse retain 153 diagnostics (114 information, 39 warnings),
+zero errors and no analysis findings. Full CI remains the merge gate.

@@ -42,6 +42,14 @@
   (select-keys (or inputs {})
                [map-each-index-key map-each-parent-key tick-iteration-key]))
 
+(defn engine-key?
+  "True for a blackboard/inputs key the engine itself uses for bookkeeping
+   (map-each iteration markers, tick iteration, durable order): every key in the
+   namespace of the map-each markers. They are not data any node declared, so
+   evidence shown to a judge never includes them."
+  [k]
+  (and (keyword? k) (= (namespace k) (namespace map-each-index-key))))
+
 (defn execution-key
   "Correlation key for one node execution: [node-id exec-context].
    Works for :sheet/execution-value-written events (which carry
@@ -161,7 +169,7 @@
                  (catch Exception _ []))]
     (hydrate runtime-source events)))
 
-(declare resolve-source)
+(declare resolve-source-entry)
 
 (defn resolve-writes
   "Convenience: read a tick's events and return what one node execution
@@ -179,8 +187,8 @@
                         (or (:write-sources completion) {}) events)]
     (if (seq sources)
       (reduce-kv (fn [acc k value-source]
-                   (let [v (resolve-source runtime-source tenant-id value-source)]
-                     (if (some? v) (assoc acc k v) acc)))
+                   (if-let [entry (resolve-source-entry runtime-source tenant-id value-source)]
+                     (assoc acc k (:value entry)) acc))
                  {} sources)
       (writes-for events completion))))
 
@@ -274,19 +282,27 @@
                  (catch Exception _ []))]
     (hydrate runtime-source events)))
 
-(defn resolve-source
-  "Resolve a {:tick-id :event-id} reference, following cross-tick references.
-   Missing, foreign, and cyclic references resolve to nil."
+(defn- resolve-source-entry
+  "A found value envelope, including explicit nil; nil means unresolved."
   ([runtime-source tenant-id source]
-   (resolve-source runtime-source tenant-id source #{}))
+   (resolve-source-entry runtime-source tenant-id source #{}))
   ([runtime-source tenant-id {:keys [tick-id event-id] :as source} seen]
    (when (and tick-id event-id (not (contains? seen source)))
      (when-let [event (some #(when (or (= event-id (:event/id %))
                                        (= event-id (:value-id %))) %)
                             (read-tick-writes runtime-source tenant-id tick-id))]
        (if (= :sheet/execution-value-referenced (:event/type event))
-         (resolve-source runtime-source tenant-id (:source event) (conj seen source))
-         (:value event))))))
+         (resolve-source-entry runtime-source tenant-id (:source event) (conj seen source))
+         (when (contains? event :value) (select-keys event [:value])))))))
+
+(defn resolve-source
+  "Resolve a {:tick-id :event-id} reference, following cross-tick references.
+   Missing, foreign, and cyclic references resolve to nil. Explicit null also
+   returns nil; map-producing resolution APIs preserve its key presence."
+  ([runtime-source tenant-id source]
+   (:value (resolve-source-entry runtime-source tenant-id source)))
+  ([runtime-source tenant-id source seen]
+   (:value (resolve-source-entry runtime-source tenant-id source seen))))
 
 (defn tick-started-event
   "The tick's ORIGINATING :sheet/tree-tick-started — the one carrying
@@ -315,8 +331,8 @@
     cached
     (let [started (tick-started-event runtime-source tenant-id tick-id)
           v (reduce-kv (fn [acc k value-source]
-                         (let [value (resolve-source runtime-source tenant-id value-source)]
-                           (if (some? value) (assoc acc k value) acc)))
+                         (if-let [entry (resolve-source-entry runtime-source tenant-id value-source)]
+                           (assoc acc k (:value entry)) acc))
                        {} (or (:seed-sources started) {}))]
       (swap! tick-seeds* assoc tick-id v)
       v)))
@@ -337,11 +353,11 @@
         tick-seed-values (tick-seeds runtime-source tenant-id tick-id)]
     (reduce (fn [acc k]
               (let [source (get sources k)
-                    value (cond
-                            source (resolve-source runtime-source tenant-id source)
-                            (contains? iteration-seeds k) (get iteration-seeds k)
-                            :else (get tick-seed-values k))]
-                (if (some? value) (assoc acc k value) acc)))
+                    entry (cond
+                            source (resolve-source-entry runtime-source tenant-id source)
+                            (contains? iteration-seeds k) {:value (get iteration-seeds k)}
+                            (contains? tick-seed-values k) {:value (get tick-seed-values k)})]
+                (if entry (assoc acc k (:value entry)) acc)))
             {}
             read-keys)))
 
@@ -392,10 +408,10 @@
                 (tick-seeds source tenant-id tick-id))]
     (reduce (fn [acc [k e]]
               (let [src (:source e)
-                    v (if src
-                        (resolve-source source tenant-id src)
-                        (get seeds k))]
-                (if (some? v) (assoc acc k v) acc)))
+                    entry (if src
+                            (resolve-source-entry source tenant-id src)
+                            (when (contains? seeds k) {:value (get seeds k)}))]
+                (if entry (assoc acc k (:value entry)) acc)))
             {}
             entries)))
 
@@ -415,10 +431,10 @@
   [source tenant-id tick-id]
   (merge (tick-seeds source tenant-id tick-id)
          (reduce (fn [acc event]
-                   (let [v (if (= :sheet/execution-value-referenced (:event/type event))
-                             (resolve-source source tenant-id (:source event))
-                             (:value event))]
-                     (if (some? v) (assoc acc (:key event) v) acc)))
+                   (let [entry (if (= :sheet/execution-value-referenced (:event/type event))
+                                 (resolve-source-entry source tenant-id (:source event))
+                                 (when (contains? event :value) (select-keys event [:value])))]
+                     (if entry (assoc acc (:key event) (:value entry)) acc)))
                  {}
                  (read-tick-writes source tenant-id tick-id))))
 

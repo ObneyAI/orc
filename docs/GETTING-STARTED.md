@@ -417,168 +417,87 @@ But is the output grounded in the actual contract text? Does it cover all the
 required provisions? Without judges, you can check manually or not at all. At
 scale, you need automation.
 
-Judges are functions that evaluate an LLM node's **trace** (inputs + outputs +
-instruction) and emit a score. ORC's built-in judges fire asynchronously as a
-side effect of the event log — no change to your workflow's execution path, zero
-latency added to `:execute`.
+Judges grade what a node did. A **judge** is a behaviour (an ordinary workflow) that grades one completed execution of a node, an **assessment subject**, against a **rubric** of described bands. Each judgment is recorded durably as an **assessment** that ends scored, failed or ungradable. A judge does not change how your tree runs: the node finishes and returns what it always returned, and the assessment is requested when the node completes and judged afterwards. Every block marked `;; docs-example: <id>` below is run by `components/evaluation/test/ai/obney/orc/evaluation/docs_examples_test.clj`.
 
 ### Declaring and attaching judges
 
-Judges are declared at the workflow level and attached to specific nodes by
-name. This is a two-step pattern:
-
-1. `(orc/judges {...})` — declare the judge configs on the sheet.
-2. `:judges [...]` on a node — reference declared judges by name.
+Declare judges at the workflow level with `(orc/judges {...})` and attach them to any node by name with `:judges [...]`. Attaching a judge enables it; no flag has to be turned on. The block uses the `sheet` alias for the ORC service interface (`orc` in the rest of this guide).
 
 ```clojure
-(def contract-analysis-judged
-  (orc/workflow "contract-analysis"
+;; docs-example: built-in-judge
+(def triage
+  (sheet/workflow "docs-ticket-triage"
+    (sheet/blackboard {:ticket-message :string :category :string})
+    (sheet/judges {:grounded {:type :grounding
+                              :purposes #{:monitoring :learning}}})
+    (sheet/llm "classify"
+      :instruction "Classify the ticket into one category."
+      :reads [:ticket-message]
+      :writes [:category]
+      :judges ["grounded"])))
 
-    (orc/blackboard
-      {:contract-v2     [:string {:description "The original contract text (version 2)."}]
-       :contract-v3     [:string {:description "The updated contract text (version 3)."}]
-       :reasoning       [:string {:description "Step-by-step reasoning before drawing conclusions."}]
-       :document-survey [:string {:description "Summary of structure and key provisions in both versions."}]
-       :section-diffs   [:string {:description "Specific clause-by-clause differences between versions."}]
-       :major-changes   [:string {:description "Classified list of material vs minor changes."}]
-       :impact-analysis [:string {:description "Business impact assessment of material changes."}]
-       :summary         [:string {:description "Executive summary of findings for a non-lawyer reader."}]})
+(defn run-triage [ctx]
+  (let [sheet-id (sheet/build-workflow! ctx triage)]
+    (sheet/execute ctx sheet-id {:ticket-message "URGENT: billing error on my account."})
+    sheet-id))
 
-    ;; Step 1 — declare the judge configs on the sheet.
-    ;; Judge names are keywords here; they're stored as strings internally.
-    (orc/judges
-      {:survey-grounding    {:type :grounding    :weight 0.5}
-       :survey-completeness {:type :completeness :weight 0.5}})
-
-    (orc/sequence "main"
-      ;; Step 2 — attach declared judges to the survey node by name.
-      ;; Judges fire AFTER the node completes, out of band. Zero latency
-      ;; on the execution hot path.
-      (orc/llm "survey"
-        :model "google/gemini-2.5-flash"
-        :instruction "Survey the structure and key provisions of both contracts."
-        :reads  [:contract-v2 :contract-v3]
-        :writes [:reasoning :document-survey]
-        :judges ["survey-grounding" "survey-completeness"])  ; <— attach here
-
-      (orc/llm "diff"
-        :model "google/gemini-2.5-flash"
-        :instruction "Compare specific clauses side-by-side and list all differences."
-        :reads  [:contract-v2 :contract-v3 :document-survey]
-        :writes [:reasoning :section-diffs])
-
-      (orc/llm "classify"
-        :model "google/gemini-2.5-flash"
-        :instruction "Classify each difference as material (changes obligations/rights/risk) or minor (editorial/formatting)."
-        :reads  [:section-diffs]
-        :writes [:reasoning :major-changes])
-
-      (orc/llm "impact"
-        :model "google/gemini-2.5-flash"
-        :instruction "Analyze the business impact of the material changes."
-        :reads  [:major-changes :section-diffs]
-        :writes [:reasoning :impact-analysis])
-
-      (orc/llm "summarize"
-        :model "google/gemini-2.5-flash"
-        :instruction "Write an executive summary of findings for a non-lawyer reader."
-        :reads  [:document-survey :major-changes :impact-analysis]
-        :writes [:reasoning :summary]))))
+(defn scored-assessments [ctx sheet-id]
+  (evaluation/get-assessments ctx {:sheet-id sheet-id :status :scored}))
 ```
 
-Rebuild (idempotent — no-op if unchanged):
-
-```clojure
-(def sheet-id (orc/build-workflow! ctx contract-analysis-judged))
-```
-
-Execute as before. The judges fire asynchronously after the `survey` node
-completes; the `:execute` return value is unaffected.
+The four built-in judges are `:grounding`, `:instruction-following`, `:reasoning` and `:completeness`. Without a `:rubric` each uses its default rubric of five described bands and an adversarial reviewer stance. Rebuilding the workflow is idempotent; if you change a judge's definition and rebuild, the judge gets a new revision.
 
 ### What lands in the event store
 
-<p align="center"><img src="media/judges.gif" alt="Judges scoring a node's output" width="760"></p>
-<p align="center"><sub>Judges watch a node's executions, write evidence first, then commit to a 1–5 band; results land as <code>:judge/score-emitted</code> events. <i>Illustrative outputs and scores.</i></sub></p>
+Each judgment is an assessment, read with `evaluation/get-assessments` (narrow by `:sheet-id :node-id :tick-id :judge-name :status`). A scored assessment carries `:band`, `:score` (derived from the band as `(band - lowest) / (highest - lowest)`, never reported by the model), `:feedback`, `:judge-revision-number` and `:model-provenance`. A failed or ungradable assessment carries a `:reason` and `:message` and never a score. In the example above a scored band 4 of 1 to 5 gives 0.75.
 
-Each judge emits a `:judge/score-emitted` event per successful invocation.
-These are accumulated in the `:evaluation/judge-scores` read-model keyed by
-`[sheet-id tick-id node-id]`. Query them after execution:
+A judge with `:purposes #{:monitoring :learning}` also emits the legacy `:judge/score-emitted` event that Living Descriptions and harvest read. A score-only **monitoring judge** records assessments and performance per node version but never reaches those loops:
 
 ```clojure
-(require '[ai.obney.orc.evaluation.interface :as eval])
+;; docs-example: monitoring-judge
+(def category-rubric
+  {:criterion "Is the category the one a support agent would choose?"
+   :stance "Be strict: a plausible but wrong category is a failure."
+   :bands {1 "Wrong category."
+           2 "Defensible, but not the best category."
+           3 "The category a support agent would choose."}
+   :feedback :none})
 
-;; get-judge-scores: (ctx sheet-id node-id tick-id)
-;; tick-id is available from execute-stream (see docs/STREAMING.md).
-(eval/get-judge-scores ctx sheet-id survey-node-id tick-id)
+(def monitored-triage
+  (sheet/workflow "docs-monitored-triage"
+    (sheet/blackboard {:ticket-message :string :category :string})
+    (sheet/judges {:category-check {:type :instruction-following
+                                    :rubric category-rubric
+                                    :purposes #{:monitoring}}})
+    (sheet/llm "classify"
+      :instruction "Classify the ticket into one category."
+      :reads [:ticket-message]
+      :writes [:category]
+      :judges ["category-check"])))
 ```
 
-**Source-verified shape from `judge_runtime.clj:get-judge-scores`** (not a live
-run — requires a live execution with ticket IDs):
-
-```clojure
-;; => [{:sheet-id   #uuid "..."
-;;      :tick-id    #uuid "..."
-;;      :node-id    #uuid "..."
-;;      :judge-name "survey-grounding"
-;;      :judge-config {:type :grounding :weight 0.5}
-;;      :score      0.75
-;;      :feedback   "Well grounded. Every substantive claim traces to the source..."
-;;      :dimensions []
-;;      :emitted-at "2024-01-15T10:23:45.123Z"}
-;;     {:judge-name "survey-completeness"
-;;      :score      0.5
-;;      :feedback   "Mixed coverage. The arbitration clause is mentioned but no timeline..."
-;;      ...}]
-```
+Performance per node version (`evaluation/get-node-performance`) is collected for every judge. See [EVALUATION-COMPONENT.md](EVALUATION-COMPONENT.md).
 
 ### Evaluating a trace off-line
 
-You can also run judges directly against a trace without an active execution.
-This is useful for debugging, building evaluation datasets, or testing judge
-behavior with `with-mock-llm`:
+The retained synchronous judge function runs a judge directly on a trace map. It records nothing and is not an assessment. This is useful for debugging, building evaluation datasets, or trying a judge with `with-mock-llm`:
 
 ```clojure
-(require '[ai.obney.orc.evaluation.core.judges :as judges])
-
-(let [trace {:inputs  {:contract-v2 "This Agreement shall be governed by California law."
-                       :contract-v3 "This Agreement shall be governed by California law.
-                                     Disputes subject to binding arbitration."}
-             :outputs {:document-survey "Both versions establish California law.
-                                         Version 3 adds mandatory arbitration clause."}
-             :instruction "Survey the structure and key provisions of both contracts."}]
+;; docs-example: synchronous-functions
+(defn mock-grounding-check []
   (judges/with-mock-llm
-    (prn (eval/evaluate-single :grounding trace))))
+    (judges/evaluate-single
+     :grounding
+     {:inputs {:context "FAQ: The gym is open Monday to Friday, 6am to 10pm."}
+      :response "The gym is open Monday to Friday."
+      :instruction "Answer from the FAQ only."})))
 ```
 
-**Real captured output** (run with `judges/with-mock-llm`; mock assigns level 4
-to each dimension → score 0.75):
+It returns `{:grounding-result {:score :level :reasoning :feedback ...}}`; the model picks the band (`:level`) and ORC derives the score.
 
-```
-#ai.obney.orc.evaluation.core.feedback.ScoreWithFeedback{:score 0.75, :feedback "Good (75%): 4 dimension(s) need improvement: Source Grounding, Instruction Following, Reasoning Quality, Completeness", :dimensions [{:name "Source Grounding", :weight 0.35, :score 0.75, :feedback "Mock evaluation. In production, this analyzes actual grounding against the source."} {:name "Instruction Following", :weight 0.25, :score 0.75, :feedback "Mock evaluation. In production, this audits compliance with each instruction directive."} {:name "Reasoning Quality", :weight 0.2, :score 0.75, :feedback "Mock evaluation. In production, this attacks the weakest link in the inference chain."} {:name "Completeness", :weight 0.2, :score 0.75, :feedback "Mock evaluation. In production, this audits coverage of every required aspect."}]}
-```
+### Where the details live
 
-The `ScoreWithFeedback` record shape:
-
-| Field | Type | What it is |
-|-------|------|------------|
-| `:score` | `double [0,1]` | Weighted aggregate across all dimension judges |
-| `:feedback` | `string` | Human-readable summary; dimensions listed weakest first in the GEPA learning path |
-| `:dimensions` | `vector` | Per-dimension `{:name :weight :score :feedback}` |
-
-The `:score` is **never self-reported** by the model. The model chooses a
-discrete band (1–5); ORC computes `(level - 1) / 4` deterministically. See
-[JUDGE-ARCHITECTURE.md](JUDGE-ARCHITECTURE.md) Properties 2 and 8.
-
-### Coming soon
-
-The four built-in judges (`:grounding`, `:completeness`, `:instruction-following`,
-`:reasoning`) have sealed 1–5 band descriptions defined in `rubrics.clj`.
-Consumers wanting different domain-specific band wording must write a custom
-judge (Phase 3). **Coming soon:** the ability to supply a custom `Scale`
-artifact directly to a built-in judge type — e.g.
-`{:type :grounding :scale my-domain-scale}` — without rewriting the stance,
-output fields, or instruction composition. See
-[COMPONENT-MAP.md § Pluggable judge scales](COMPONENT-MAP.md).
+Rubrics and bands, custom judges, evidence, purposes and performance alerts are in [EVALUATION-COMPONENT.md](EVALUATION-COMPONENT.md); the design is in [JUDGE-ARCHITECTURE.md](JUDGE-ARCHITECTURE.md).
 
 ---
 

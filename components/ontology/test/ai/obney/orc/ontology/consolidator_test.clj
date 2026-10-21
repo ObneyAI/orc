@@ -166,8 +166,15 @@
                     :target-type :node-type
                     :target-id :llm
                     :on-demand? true}))
-          (Thread/sleep 500)
-          (let [body (ontology/get-description ctx :node-type :llm)]
+          ;; The first consolidation in a JVM also loads the embedding
+          ;; tokenizer, so it can take longer than any fixed sleep on a busy
+          ;; machine (measured 470-558 ms cold, ~200 ms warm). Wait for the
+          ;; event, bounded, instead of guessing.
+          (let [body (loop [waited 0]
+                       (or (ontology/get-description ctx :node-type :llm)
+                           (when (< waited 10000)
+                             (Thread/sleep 50)
+                             (recur (+ waited 50)))))]
             (is (some? body)
                 "Consolidator should have emitted a :ontology/node-type-description-updated event")
             (is (= "Sample LLM-authored description body." (:summary body))

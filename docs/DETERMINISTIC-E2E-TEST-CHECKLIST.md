@@ -273,6 +273,43 @@ that verifies the stated observable results.
   Verified by `real_llm_arc_e2e_test.clj` (1 test / 15 assertions). Also verified out of band: a
   two-JVM crash/restart probe on one SQLite file (an abruptly halted owner's leaf is left alone
   under its live lease, then resumed exactly once by another worker after expiry, completing).
+- [x] **DET-E2E-310 — Shipped judge workflows build.** Every exported judge sheet and suite builds;
+  a recursive blackboard schema snapshots with its definitions (shadowed and mixed-type ids keep
+  their meaning) and a stable hash. `recursive_schema_snapshot_test.clj`, `shipped_workflows_build_test.clj`.
+- [x] **DET-E2E-311 — Banded decisions.** `llm-decision :bands-from` reads a rubric from the
+  blackboard; a native decision model answers a Score question, an exact tie fails `:undecided`
+  without retry, and a chat model answers a described string band. `model_decision_bands_test.clj`.
+- [x] **DET-E2E-312 — Provider boundary honesty.** A provider finish error is `:provider-finish-error`;
+  metadata is never written as output; input descriptions reach function calling; declared string
+  keys stay strings; requested and resolved models are both recorded. `provider_finish_error_test.clj`,
+  `declared_string_keys_test.clj`, `resolved_model_test.clj`, llm `core_test.clj`.
+- [x] **DET-E2E-313 — Judges are behaviours.** Built-in judges run as workflows grading against a
+  rubric value; nothing is invented (out-of-rubric band, blank required feedback after retry,
+  incomplete dimension, unresolved model all fail). `judges_are_behaviours_test.clj`.
+- [x] **DET-E2E-314 — Durable assessments.** One assessment per (completion, judge, revision);
+  redelivery and restart judge nothing twice; the request set is fixed at first processing; only
+  learning judges with feedback emit learning records. `assessment_lifecycle_test.clj`.
+- [x] **DET-E2E-315 — Assessment origin.** Work done for an assessment is never auto-assessed, across
+  delegates, generated children and a processor restart. `assessment_origin_test.clj`.
+- [x] **DET-E2E-316 — Judges on any node.** Judges attach to composites, delegates and the root; a
+  judged composite runs durably; published versions are judged through their source node.
+  `judge_attachment_scope_test.clj`, `judged_composites_durable_test.clj`, `published_versions_judged_test.clj`.
+- [x] **DET-E2E-317 — Behaviour-level evidence and waits.** Composite judges see the whole and the
+  original task; family and child assessments are opt-in; a parent waits for its children; the
+  composite is per subject with coverage. `behaviour_judging_test.clj`, `execution_family_test.clj`.
+- [x] **DET-E2E-318 — Performance and alerts.** Performance per node version; opt-in alerts signal
+  crossings once and degraded coverage separately. `node_performance_test.clj`.
+- [x] **DET-E2E-319 — Failed subjects.** Failed, timed-out and blocked executions are ungradable
+  `:subject-failed` without a judge call; partial ones are judged. `failed_subjects_test.clj`.
+- [x] **DET-E2E-320 — Production-like processor delivery in tests.** Checkpointed processors are
+  delivered one event at a time; an earlier slow effect is not lost behind a later one.
+  `test_helpers_delivery_test.clj`. A rejected completion fails its node instead of hanging the run:
+  `completion_rejection_test.clj`.
+- [x] **DET-E2E-321 — REAL-model judging end to end.** Under `ORC_OPENROUTER_E2E_TESTS`: grounding
+  (learning, with an alert) and a Jev score-only monitor on map-each leaves, completeness on a
+  delegate, a custom root judge reading child assessments, and a published-version rerun.
+  `real_llm_judging_arc_e2e_test.clj` (7 of 8 live runs green; the eighth surfaced the
+  failed-subject rule now covered by DET-E2E-319).
 
 ## P1 — Observability and streaming
 
@@ -295,7 +332,7 @@ that verifies the stated observable results.
 
 - [x] **DET-E2E-073 — Command → event → projection.** A real code-only build and execution verifies that every scoped mutation event has a registered passing Malli schema and reconstructs sheet, nodes, blackboard, and durable trace through public queries.
 - [x] **DET-E2E-074 — Projection replay.** Clean reductions of the complete event stream through the production sheet, node, blackboard, and trace reducers exactly match their live public query results.
-- [x] **DET-E2E-075 — Judge opt-in disabled.** An attached heuristic structural judge produces no score event while Living Description evaluation remains disabled.
+- [x] **DET-E2E-075 — Attached judge assesses with evaluation disabled.** An explicitly attached heuristic structural judge produces exactly one score while Living Description evaluation remains disabled; only the default researcher judges are opt-in.
 - [x] **DET-E2E-076 — Deterministic structural judge.** A known sequence → map-each → final tree emits the exact 0.5 structural score, two perfect dimensions, and the same projected judge-score entry.
 - [x] **DET-E2E-077 — Multiple deterministic judges.** A throwing custom code judge is isolated while its sibling heuristic judge emits the sole valid score and the host execution remains successful.
 - [x] **DET-E2E-078 — Judge score idempotency.** Re-appending the real leaf completion retains exactly one score for the sheet/node/tick/judge identity tuple.
@@ -759,3 +796,91 @@ prove isolation, lineage, terminal fencing, or durable recovery.
   counts, with elapsed time only as supporting evidence.
 - Existing unit/integration coverage may supply helpers, but each checked item
   must prove its complete workflow-level contract.
+
+## Reconciled experiment runtime
+
+- [x] RECON-1: shown nested input meanings reach marker, function, strict JSON and native boolean/choice/score requests.
+- [x] RECON-2: strict ordered-band decisions retain declared order, meanings and exact decoding; malformed annotations fail.
+- [x] RECON-3: prediction metadata remains separate; absent/null output envelopes cannot fabricate required nullable writes.
+- [x] RECON-4: described enums, required null, optional absence and declared string keys survive delegated values and cold readback.
+- [x] RECON-5: provider failures preserve observations and exact invocation ownership without accepted generated writes.
+- [x] RECON-6: score-only and feedback assessments retain exact node/composite subjects across parallel/repeated executions and cold readback.
+
+- [x] RECON-7: missing required writes have explicit durable key evidence without fabricated rejected values; judges retain missing-feedback classification and retry behavior.
+
+- [x] RECON-8: test-context processor restart handles both checkpoint pollers and pubsub systems through their matching lifecycle APIs. The public workflow still executes a code node after restart, returns its declared output, and records its durable terminal event. Verified by `processor-restart-retains-executable-context` together with `trace-assembly-test`: 13 tests, 78 assertions, zero failures/errors (`evidence/reconciliation/root-ci-harness-green.log` in the reconciliation lab). This verifies the deterministic test harness and trace readiness; it does not establish live GEPA resume success.
+
+- [x] RECON-9: native decision requests preserve absent optional inputs as absent, explicit null/false/empty inputs as present, and exclude undeclared inputs; the guide describes exactly the supplied declared fields. Verify through public `llm/predict` and the registered transport seam. The old coupon=nil snapshot was a test-translation bug. Separately, SIO `validate-inputs` currently skips absent/nil/false inputs through `when-let`; required-input validation is not repaired or proven by this request-rendering test. Marker prompt ordering is reconciled as a specification correction to the existing golden-layout contract, not a rendering change.
+
+Reconciliation proof ledger: RECON-1/2/3/5/7 are covered by the changed
+ORC namespaces (157 tests/976 assertions), the SIO/compiler gate (114/1405),
+the client boundary gate (283/1009), and the judge compatibility gate (93/492).
+RECON-4 additionally executes `delegated_structured_contract_test.clj` (1/30):
+strict HTTP adapter, described enum, required null, optional absence, literal
+string keys, delegate ownership and typed consumer, followed by SQLite close/reopen
+with a fresh cache. Existing nullable continuation also verifies fresh-process
+readback. RECON-6 uses the real-model compatibility run (9 calls, 7 assessments)
+and exact fresh-process event/family/assessment/report/provider-attempt equality.
+RECON-8's deterministic lifecycle/trace gate is 13/78. RECON-9's native public
+prediction and workflow guide gate is 25/125. Counts overlap, not a unique total.
+No paid provider is hidden inside the deterministic gates; captured real-model
+evidence is separate. Full repository CI and live GEPA remain separate gates.
+
+## Retained provider usage in learning provenance
+
+- [x] **RECON-10 — Description provenance preserves rich provider usage.** Public description commands and real consolidation execution persist decimal cost and nested provider details, project the successor, and reject malformed token counts without appending an event.
+- [x] **RECON-11 — Claim-delta provenance preserves rich provider usage.** Public claim recording persists the same usage and projects the claim; malformed token counts remain rejected. The retired anti-recency event shares the additive usage contract; its absent producer is audited rather than inventing a new writer.
+
+## Parallel reconciliation verification
+
+- [x] **RECON-12 — Ordinary absent outputs retain diagnostic identity.** A public workflow fails without accepted or fabricated rejected writes, records the missing required key in its completion and public trace, and preserves the ordinary retry policy. Explicit nullable values and the separate schema-error retry policy retain their existing coverage.
+- [x] **RECON-13 — Parallel children honor their own contracts in either invocation order.** The real tree executor returns exact distinct child values and canonical producer ownership with a bounded, contract-aware model fake. The original arrival-order fake remains documented as failed diagnostic evidence rather than production behavior.
+
+RECON-12/13: independent public-boundary verification passed 39 tests / 214 assertions
+across reconciled contracts, generated-tree execution and provider failures.
+The ordinary diagnostic regression first failed both completion and trace metadata
+assertions, then passed without changing retry policy. The corrected parallel test
+passes 24 assertions across both arrival orders, including no cross-owner writes.
+These deterministic fakes prove execution contracts, not provider HTTP behavior.
+
+## Living-description CI evidence
+
+These obligations verify test-only diagnostics. Production behavior, Allium
+specifications, model configuration, prompts, and live assertions are unchanged.
+
+- [x] **LIVE-EVIDENCE-1 — Exact asynchronous HTTP evidence.** A local HTTP server proves request and response entity bodies are retained without changing successful JSON decoding, malformed JSON failures, or HTTP error behavior.
+- [x] **LIVE-EVIDENCE-2 — Failure snapshots precede teardown.** A real Grain fixture retains tenant events and public trace evidence when its test body fails; separate cases do not overwrite one another.
+- [x] **LIVE-EVIDENCE-3 — Credentials never enter artifacts.** Header/configuration secrets and exception payloads are excluded; a credential found inside an otherwise capturable body produces an explicit withheld marker.
+
+3 obligations, 3 covered, 0 uncovered. The focused diagnostic namespace passes
+7 tests / 32 assertions using real local HTTP and Grain boundaries, including
+malformed JSON, HTTP errors, unavailable artifact storage, synthetic credential
+withholding, actual leaf ownership, unrelated-request exclusion, command-failure
+capture, and snapshots before teardown. Provider completions are controlled test
+responses; this is not a live-model proof or a diagnosis of the historical CI failure.
+
+## Replay observation boundary
+
+- [x] REPLAY-074: A real sequence/code execution whose terminal command returns after its initial trace is published must retain exact full replay equality after the final routing summary is projected. Exercise a bounded command-return gate; preserve the original projection assertions, and verify both composite evidence and leaf parent linkage before freezing the event prefix. No production behavior or specification changes.
+
+REPLAY-074: **1 obligation, 1 covered, 0 uncovered**. The original test fails
+under a controlled legal ordering: replay sees six source events while the later
+query sees seven, including the final routing summary. The corrected test waits
+for both node traces and their parent link before freezing its event prefix.
+Every original full projection comparison remains. Independent restoration of
+the old test in memory makes the durable regression fail at that same equality
+(9 passing assertions, 1 failure, 0 errors). The corrected controlled probe
+passes 1 test / 7 assertions. Independent execution of the complete event/evaluation
+and diagnostic namespaces passes 16 tests / 108 assertions.
+
+## Nullable continuation fresh-process harness
+
+- [x] NULLABLE-CP-1: The existing required-null sequence/SQLite test must retain every nullable and complete cold-replay assertion when run in Polylith's real isolated project classloader; the child inherits effective project paths rather than only the tool bootstrap classpath. Child failures expose captured diagnostics. No production or specification behavior changes.
+
+NULLABLE-CP-1: **1 obligation, 1 covered, 0 uncovered**. The original launch
+fails through Polylith's actual isolated loader because the child cannot locate
+the test namespace (10 passing assertions, 1 failure). The corrected launch
+passes 1 test / 15 assertions, independently repeated on the main thread. All
+original nullable, complete event equality, replay, digest and timeout checks
+remain. Allium check/analyse retain 114 information diagnostics, 39 warnings,
+zero errors and no analysis findings. No production code changes.

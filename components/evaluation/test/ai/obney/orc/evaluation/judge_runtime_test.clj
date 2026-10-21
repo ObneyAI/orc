@@ -12,6 +12,7 @@
             ;; :judge/composite-score-computed).
             [ai.obney.orc.evaluation.core.commands]
             [ai.obney.orc.evaluation.core.judges :as judges]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
@@ -27,6 +28,7 @@
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
+            [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.time.interface :as time]
@@ -113,33 +115,13 @@
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   ::cache-dir cache-dir}
-        processors (reduce-kv
-                     (fn [acc proc-name {:keys [handler-fn topics]}]
-                       (assoc acc proc-name
-                              ;; Only the evaluation judge processors take a
-                              ;; :processor-name. They use the :result/effect
-                              ;; path, which checkpoints per-event — a distinct
-                              ;; name keeps each processor's replay-guard
-                              ;; watermark separate (mirrors production, where
-                              ;; the control plane assigns names) so a slow
-                              ;; effect isn't skipped. The other (pure-path)
-                              ;; processors stay name-less exactly as before:
-                              ;; naming them would switch their pure
-                              ;; :result/events path into the checkpointed
-                              ;; branch, whose monotonic replay-guard
-                              ;; FALSE-POSITIVES under the concurrent sub-ticks
-                              ;; that custom-judge orc/execute fans out (e.g.
-                              ;; complete-tree-tick getting :already-processed
-                              ;; and never delivering the completion promise).
-                              (tp/start (cond-> {:event-pubsub ps :topics topics
-                                                 :handler-fn handler-fn :context base-ctx}
-                                          (= "evaluation" (namespace proc-name))
-                                          (assoc :processor-name proc-name)))))
-                     {} @tp/processor-registry*)]
+        ;; The same delivery production uses: checkpointed (evaluation/*) processors
+        ;; are polled one event at a time, the rest ride pubsub unnamed.
+        processors (h/start-test-processors base-ctx)]
     (assoc base-ctx :processors processors)))
 
 (defn- stop-context [ctx]
-  (doseq [[_ p] (:processors ctx)] (tp/stop p))
+  (h/stop-test-processors! ctx)
   (when-let [ps (:event-pubsub ctx)] (pubsub/stop ps))
   (when-let [c (:cache ctx)] (kv/stop c))
   (when-let [es (:event-store ctx)] (es/stop es))
@@ -152,6 +134,28 @@
 (defmacro with-test-ctx [[sym] & body]
   `(let [~sym (create-context)]
      (try ~@body (finally (stop-context ~sym)))))
+
+;; S6b: the built-in judges are ORC workflows whose model call goes through the
+;; same provider seam as every other node's (`llm/predict`), so a test of the
+;; processor path stands in for the MODEL, not for a judge function. (The
+;; legacy `judges/*use-mock-llm*` flag only mocks the direct judge functions.)
+(defn- fake-judge-model
+  "A stand-in provider answering any built-in judge's grading call with band 4
+   and neutral values of each declared output's shape."
+  [_provider module _inputs _options]
+  {:outputs (into {}
+                  (map (fn [{:keys [name spec]}]
+                         [name (cond
+                                 (= :band name) 4
+                                 (= :feedback name) "Mock evaluation of the host node."
+                                 (and (vector? spec) (= :vector (first spec))) []
+                                 :else "Mock reasoning.")]))
+                  (:outputs module))
+   :usage {:total-tokens 1}
+   :model "fake-judge-model"})
+
+(defn- grounding-call? [module]
+  (boolean (some #(= :grounded-claims (:name %)) (:outputs module))))
 
 (defn- count-score-emitted-events [ctx]
   (count (into [] (es/read (:event-store ctx)
@@ -372,7 +376,7 @@
 ;; emit exactly one :judge/score-emitted event with judge-name "grounding"
 ;; and a structured score/feedback.
 ;;
-;; Uses evaluation/judges/*use-mock-llm* dynamic var to skip real LLM —
+;; Uses a stub provider (`llm/predict`, see fake-judge-model) to skip the real LLM —
 ;; the judge function returns the mock score map.
 
 (defn- setup-sheet-with-judges!
@@ -455,10 +459,10 @@
   (testing "Opt-in ON + node with [:grounding] attached + mock LLM mode → exactly one :judge/score-emitted event lands"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      ;; *use-mock-llm* is a dynamic var; `binding` doesn't propagate across
+      ;; llm/predict is stubbed with with-redefs (not `binding`): a binding doesn't propagate across
       ;; the processor's async/thread boundary. with-redefs mutates the var's
       ;; root value globally for the body's lifetime, which DOES propagate.
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [{:keys [sheet-id node-id]} (setup-sheet-with-judges!
                                             ctx "my-grounding"
                                             {:type :grounding})
@@ -492,7 +496,7 @@
   (testing "All 4 LLM judge types attached → 4 :judge/score-emitted events with correct judge-names"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [{:keys [sheet-id node-id]}
               (setup-sheet-with-multiple-judges!
                 ctx
@@ -525,10 +529,12 @@
   (testing "Two judges attached, one throws → exactly one event lands (the surviving judge)"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true
-                    ;; Force grounding-judge to throw; reasoning-judge passes through
-                    judges/grounding-judge (fn [_ctx]
-                                             (throw (ex-info "synthetic grounding failure" {})))]
+      (with-redefs [;; Force the grounding judge's model call to throw; the
+                    ;; reasoning judge's passes through
+                    llm/predict (fn [provider module inputs options]
+                                  (if (grounding-call? module)
+                                    (throw (ex-info "synthetic grounding failure" {}))
+                                    (fake-judge-model provider module inputs options)))]
         (let [{:keys [sheet-id node-id]}
               (setup-sheet-with-multiple-judges!
                 ctx
@@ -584,7 +590,7 @@
   (testing ":custom judge type: no event emitted, no crash, sibling judges still fire"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         ;; Attach a :custom judge alongside an LLM judge. The custom one
         ;; should silently no-op; the LLM one should emit normally.
         (let [{:keys [sheet-id node-id]}
@@ -614,7 +620,7 @@
   (testing "After 2 judges fire on a node, get-judge-scores returns both"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [{:keys [sheet-id node-id]}
               (setup-sheet-with-multiple-judges!
                 ctx
@@ -742,7 +748,7 @@
   (testing "repl-researcher node + opt-in ON + no explicit judges → all 5 defaults fire"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [sheet-id (create-bare-sheet! ctx)
               node-id (create-repl-researcher-node! ctx sheet-id)
               tick-id (random-uuid)
@@ -786,7 +792,7 @@
   (testing ":leaf node (not :repl-researcher) + opt-in ON + no explicit judges → zero events"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [sheet-id (create-bare-sheet! ctx)
               node-result (cp/process-command
                             (assoc ctx :command
@@ -811,7 +817,7 @@
   (testing "repl-researcher node + opt-in OFF + no explicit judges → zero events"
     (with-test-ctx [ctx]
       ;; Flag default OFF — no explicit set call
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [sheet-id (create-bare-sheet! ctx)
               node-id (create-repl-researcher-node! ctx sheet-id)
               tick-id (random-uuid)
@@ -917,7 +923,7 @@
   (testing "Mixed judges (2 LLM + heuristic-structural) attached → all emit + queryable"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [{:keys [sheet-id node-id]}
               (setup-sheet-with-multiple-judges!
                 ctx
@@ -1575,6 +1581,94 @@
                 (str "Opt-in OFF must produce ZERO new judge events. "
                      "Before: " before ", After: " after))))))))
 
+(deftest s13w-tree-shape-path-honours-judge-purposes
+  (testing "a tree-shape judge whose purposes exclude :learning emits no legacy :judge/score-emitted; learning and default-purposes judges on the same tree emit exactly one each (EvaluationFeedsLearningOnlyByPurpose)"
+    (with-test-ctx [ctx]
+      (set-living-description-enabled! ctx true)
+      (let [sheet-id (create-bare-sheet! ctx)
+            node-id (create-repl-researcher-node! ctx sheet-id)
+            tick-id (random-uuid)
+            declare! (fn [judge-name config]
+                       (cp/process-command
+                         (assoc ctx :command
+                                {:command/name :sheet/declare-judge
+                                 :command/id (random-uuid)
+                                 :command/timestamp (time/now)
+                                 :sheet-id sheet-id
+                                 :judge-name judge-name
+                                 :judge-config config})))
+            _ (declare! "shape-monitor" {:type :heuristic-structural :purposes #{:monitoring}})
+            _ (declare! "shape-learn" {:type :heuristic-structural :purposes #{:learning}})
+            _ (declare! "shape-default" {:type :heuristic-structural})
+            _ (cp/process-command
+                (assoc ctx :command
+                       {:command/name :sheet/set-node-judges
+                        :command/id (random-uuid)
+                        :command/timestamp (time/now)
+                        :sheet-id sheet-id
+                        :node-id node-id
+                        :judges ["shape-monitor" "shape-learn" "shape-default"]}))
+            _ (Thread/sleep 100)
+            tree-dsl [:sequence
+                      [:chunk-document {:from :doc :into :chunks}]
+                      [:final {:keys [:chunks]}]]]
+        (emit-node-execution-started! ctx sheet-id tick-id node-id {:doc "x"})
+        (Thread/sleep 100)
+        (emit-rlm-tree-generated! ctx sheet-id tick-id tree-dsl)
+        (Thread/sleep 1500)
+        (let [events (filter #(= tick-id (:tick-id %))
+                             (into [] (es/read (:event-store ctx)
+                                               {:types #{:judge/score-emitted}
+                                                :tenant-id (:tenant-id ctx)})))
+              names (frequencies (map :judge-name events))]
+          (is (= {"shape-learn" 1 "shape-default" 1} names)
+              (str "only learning-purpose judges feed the legacy score on the tree-shape path. Got: "
+                   (pr-str names))))))))
+
+(deftest s13w-one-legacy-score-per-tick-and-judge-across-tree-shape-and-assessment-paths
+  (testing "a heuristic-structural judge grading the tree on :rlm/tree-generated AND the node's completion for the same tick writes ONE legacy :judge/score-emitted for (sheet, node, tick, judge), whichever path lands first"
+    (doseq [order [:tree-first :completion-first]]
+      (with-test-ctx [ctx]
+        (set-living-description-enabled! ctx true)
+        (let [sheet-id (create-bare-sheet! ctx)
+              node-id (create-repl-researcher-node! ctx sheet-id)
+              tick-id (random-uuid)
+              _ (cp/process-command
+                  (assoc ctx :command
+                         {:command/name :sheet/declare-judge
+                          :command/id (random-uuid)
+                          :command/timestamp (time/now)
+                          :sheet-id sheet-id
+                          :judge-name "shape"
+                          :judge-config {:type :heuristic-structural}}))
+              _ (cp/process-command
+                  (assoc ctx :command
+                         {:command/name :sheet/set-node-judges
+                          :command/id (random-uuid)
+                          :command/timestamp (time/now)
+                          :sheet-id sheet-id
+                          :node-id node-id
+                          :judges ["shape"]}))
+              _ (Thread/sleep 100)
+              tree-dsl [:sequence
+                        [:chunk-document {:from :doc :into :chunks}]
+                        [:final {:keys [:chunks]}]]
+              tree! #(emit-rlm-tree-generated! ctx sheet-id tick-id tree-dsl)
+              done! #(emit-node-execution-with-tree-output! ctx sheet-id tick-id node-id tree-dsl)]
+          (emit-node-execution-started! ctx sheet-id tick-id node-id {:doc "x"})
+          (Thread/sleep 100)
+          (if (= order :tree-first)
+            (do (tree!) (Thread/sleep 1500) (done!))
+            (do (done!) (Thread/sleep 1500) (tree!)))
+          (Thread/sleep 2000)
+          (let [events (filter #(= tick-id (:tick-id %))
+                               (into [] (es/read (:event-store ctx)
+                                                 {:types #{:judge/score-emitted}
+                                                  :tenant-id (:tenant-id ctx)})))]
+            (is (= 1 (count events))
+                (str order ": exactly one legacy score for the tick and judge. Got "
+                     (count events) ": " (pr-str (mapv #(select-keys % [:judge-name :assessment-id]) events))))))))))
+
 ;; =============================================================================
 ;; Gap-4 RED#1 (tracer) — :custom judge sub-executes a consumer eval sheet
 ;; =============================================================================
@@ -2145,59 +2239,44 @@
                 "The score event is from the valid judge, not the bogus one")))))))
 
 ;; =============================================================================
-;; Gap-4 RED#5 — recursion safeguard (depth-1 max)
+;; Gap-4 RED#5 — a judge's run is durably marked as assessment work (S8)
 ;; =============================================================================
 ;;
-;; A maliciously-configured custom judge sheet could attach its OWN
-;; :custom judges to its internal nodes, potentially spawning a
-;; runaway chain of sub-ticks. The runtime tracks :judge-depth in
-;; context; default max-depth = 1 (a judge sheet's internal nodes'
-;; judges are SKIPPED).
+;; A maliciously-configured custom judge sheet could attach judges to its own
+;; internal nodes, spawning a runaway chain of sub-ticks. The old guard was a
+;; private in-memory depth that the async Grain hop lost (J15). The rule is now
+;; durable: the judge's run carries an assessment origin that every child run
+;; inherits, and completions under an origin request no assessment
+;; (assessment-origin-test proves the behavior end to end).
 ;;
-;; This test exercises invoke-custom-judge directly to verify the
-;; depth-1 guard fires before sub-executing. Verifies the safeguard's
-;; CONTRACT: at depth = max, invoke-custom-judge returns nil without
-;; calling orc/execute.
+;; This test pins the seam on the judge side: invoke-custom-judge executes the
+;; judge's workflow marked with an assessment origin, and the judge still runs
+;; normally.
 
-(deftest gap4-recursion-safeguard-skips-at-max-depth
-  (testing "Gap-4 RED#5: when ctx ::judge-depth is already at max-depth, invoke-custom-judge returns nil WITHOUT calling orc/execute (preventing infinite recursion)"
+(deftest gap4-judge-runs-are-marked-as-assessment-work
+  (testing "Gap-4 RED#5 (S8): invoke-custom-judge runs the judge workflow marked with an assessment origin, with no in-memory depth guard"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
       (let [invoke-custom-judge @#'ai.obney.orc.evaluation.core.judge-runtime/invoke-custom-judge
-            ;; Build any eval sheet — recursion guard fires BEFORE
-            ;; orc/execute would be called.
             eval-sheet-id (build-eval-workflow!
                             ctx
                             (str "gap4-recursion-" (random-uuid))
                             "ai.obney.orc.evaluation.judge-runtime-test/custom-judge-by-output-length")
             judge-config {:type :custom :eval-sheet-id eval-sheet-id}
             trace-data {:inputs {} :outputs {:answer "x"} :instruction ""}
-            ;; Track whether orc/execute would have been called by
-            ;; replacing the var temporarily.
-            execute-called? (atom false)]
-        (with-redefs [orc/execute (fn [& _]
-                                     (reset! execute-called? true)
+            execute-opts (atom nil)]
+        (with-redefs [orc/execute (fn [_ctx _sheet-id _inputs & opts]
+                                     (reset! execute-opts (apply hash-map opts))
                                      {:status :success
-                                      :outputs {:score 1.0 :feedback ""}})]
-          ;; depth = max-depth (1 by default) → recursion guard fires
+                                      :outputs {:score 1.0 :feedback "Fine."}})]
           (let [result (invoke-custom-judge
+                         ;; a stale in-memory depth no longer suppresses the judge
                          (assoc ctx
                                 :ai.obney.orc.evaluation.core.judge-runtime/judge-depth 1)
                          judge-config trace-data)]
-            (is (nil? result)
-                "Recursion guard returns nil at max-depth")
-            (is (false? @execute-called?)
-                "orc/execute is NOT called when depth >= max-depth"))
-          ;; depth < max-depth → normal execution
-          (reset! execute-called? false)
-          (let [result (invoke-custom-judge
-                         (assoc ctx
-                                :ai.obney.orc.evaluation.core.judge-runtime/judge-depth 0)
-                         judge-config trace-data)]
-            (is (some? result)
-                "At depth < max-depth, judge runs normally")
-            (is (true? @execute-called?)
-                "orc/execute IS called when depth < max-depth")))))))
+            (is (some? result) "the judge runs; nothing in memory can skip it")
+            (is (uuid? (get-in @execute-opts [:assessment-origin :assessment-id]))
+                "its workflow is executed marked as assessment work")))))))
 
 ;; =============================================================================
 ;; Gap-4 RED#6 — custom-judge scores flow into get-judge-scores
@@ -2417,7 +2496,7 @@
   (testing "Gap-8 RED#5: when 2 judges fire on a tick, the processor emits exactly 1 :judge/composite-score-computed event tagged with the same (sheet, node, tick) and a composite score derived from the judges' scores"
     (with-test-ctx [ctx]
       (set-living-description-enabled! ctx true)
-      (with-redefs [judges/*use-mock-llm* true]
+      (with-redefs [llm/predict fake-judge-model]
         (let [{:keys [sheet-id node-id]}
               (setup-sheet-with-multiple-judges!
                 ctx

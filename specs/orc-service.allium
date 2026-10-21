@@ -93,6 +93,29 @@ contract LeafExecutor {
         -- workflow consumer. Successful execution does not require that the
         -- callable be owned by ORC.
 
+    @invariant ModelLeafRecordsResolvedModel
+        -- Every model-backed leaf durably records the model it was configured
+        -- to use, when one was configured, and separately the model the
+        -- provider reports it actually used, when one was reported. Neither
+        -- stands in for the other, and a failed call does not invent a
+        -- resolved model.
+
+    @invariant RejectedCompletionFailsTheNode
+        -- A completion the engine cannot record fails the node visibly, naming
+        -- what was rejected and keeping the attempted outcome as detail; a node
+        -- never waits for its run's deadline because its completion was refused.
+
+    @invariant JudgedCompositesAreDurable
+        -- A run whose composite nodes carry judges records those composites'
+        -- completions durably so they can be assessed; a run with no judged
+        -- composite keeps its ephemeral evaluation.
+
+    @invariant ProviderMetadataIsNeverOutput
+        -- Prediction metadata (usage, model identity, response text, provider
+        -- evidence) is never written to the blackboard as though it were a
+        -- declared output. A provider that finished with an error fails the
+        -- node with that classification and its evidence, and writes nothing.
+
     @invariant ConfiguredConsumerToolGateIsAuthoritative
         -- When a researcher names a consumer-supplied tool gate, every inline
         -- tool call and every tool call from its generated subtree uses that
@@ -180,9 +203,17 @@ contract LeafExecutor {
         -- A leaf receives only the blackboard values named by its read contract.
 
     @invariant DeclaredOutputsOnly
-        -- A successful leaf supplies a non-null value for every required key
+        -- Missing required outputs remain absent and carry explicit missing-write
+        -- key evidence through completion events and trace projections. This
+        -- diagnostic never fabricates a rejected or accepted output value.
+        -- A successful leaf supplies a present value for every required key
         -- named by its write contract, supplies no undeclared keys, and every
-        -- supplied value satisfies the key's declared schema. A leaf may name
+        -- supplied value satisfies the key's declared schema. Explicit null is
+        -- valid only when that required key's schema accepts null; absence is
+        -- distinct and never synthesized as null. A metadata envelope whose outputs
+        -- are absent or null cannot supply a required nullable value. Provider
+        -- observations remain metadata and never become authored writes. Nested all-null maps and empty
+        -- maps are judged by their full schema rather than a nil heuristic. A leaf may name
         -- top-level writes as optional according to that executor's documented
         -- absence-normalization policy; a value normalized to absence is not
         -- written durably.
@@ -266,6 +297,36 @@ contract LeafExecutor {
         -- exists, and excludes arbitrary provider payloads and tool arguments.
 }
 
+contract ProviderAttemptObservation {
+    start_attempt: (execution: Any, attempt: Any) -> Any
+    complete_attempt: (identity: Any, outcome: Any) -> Any
+    inspect_attempts: (execution: Any) -> Any
+
+    @invariant ExactExecutionOwnership
+        -- An observed physical provider invocation belongs to a canonical node
+        -- start event, tenant, sheet, tick, node and execution context. Internal
+        -- retries have distinct invocation identities and attempt ordinals;
+        -- identical parallel content is never used to infer ownership.
+    @invariant DurableAttemptLifecycle
+        -- Start is recorded before provider dispatch; the returned outcome is
+        -- recorded before any retry. A matching duplicate transition is idempotent;
+        -- conflicting reuse fails. An unmatched start remains incomplete evidence.
+        -- A completion cannot attach to a missing or foreign execution/attempt.
+    @invariant ObservationsRemainSeparate
+        -- Available provider observations retain exact presence, choice ordering,
+        -- opaque details and reported usage. Absent observations remain absent.
+        -- These records neither populate authored blackboard writes nor increment
+        -- existing token accounting. Invalid task output does not erase a received
+        -- observation. No credentials, request dumps or exception dumps are stored.
+    @invariant InspectableAfterReplay
+        -- Authorized tenant-scoped inspection reconstructs the same attempts and
+        -- observations from events, including failed attempts before a later
+        -- success. Downstream authors deliberately select typed evidence inputs.
+        -- Embedded command/query calls use the host's trusted Grain context and
+        -- require a tenant, not fabricated authentication claims. Request adapters
+        -- enforce the registered authorization predicate before invoking them.
+}
+
 contract ModelBackedCondition {
     assess: (configuration: NodeConfiguration, inputs: Any) -> Boolean
 
@@ -300,7 +361,10 @@ contract ModelDecision {
         -- A model decision writes its answer to exactly one declared
         -- blackboard key, and that key's schema determines the decision: a
         -- boolean schema asks whether a proposition holds; a finite enum
-        -- schema asks which one of its members applies. Options may instead be
+        -- schema asks which one of its members applies; a banded decision asks
+        -- which ordered band of a rubric applies, reading the rubric's
+        -- described bands from a declared read key so the rubric can be
+        -- changed without changing the workflow. Options may instead be
         -- supplied at run time by a declared read key holding identified,
         -- described options. A decision whose answer key is neither boolean
         -- nor finite is rejected when the workflow is built.
@@ -324,7 +388,8 @@ contract ModelDecision {
         -- obtained. When a floor is configured, a choice whose reported
         -- confidence is below it, or that reports none, writes the decision's
         -- declared abstention option instead and records the answer that was
-        -- set aside. The abstention option must be one of the offered options.
+        -- set aside. The abstention option must be one of the offered options,
+        -- and false is an offered option of a yes/no decision.
         -- A confidence value is the provider's own reported statistic for that
         -- primitive; it is never synthesised from a bare answer.
 
@@ -360,6 +425,19 @@ contract DelegationBoundary {
         -- Parent values reach the child's inputs by name. Two distinct parent
         -- keys that would supply the same child input are rejected when the
         -- workflow is built, never silently collapsed into one.
+
+    @invariant ExecutionFamilyIsQueryable
+        -- Every node execution beneath an execution, including the executions
+        -- of delegated workflows, is retrievable through the public interface
+        -- in order, each with its node, instruction, status, resolved inputs and
+        -- outputs, failure and tool evidence, so a consumer can read what a
+        -- whole behaviour did.
+
+    @invariant AssessmentWorkIsMarked
+        -- An execution started to perform an assessment, and every execution it
+        -- delegates to, is durably marked as assessment work, so the mark can
+        -- be read from the execution record after any asynchronous hand-off or
+        -- process restart.
 
     @invariant FamilyUsageIsQueryable
         -- The total provider usage of an execution together with all of its
@@ -2005,6 +2083,7 @@ surface WorkflowExecutionAccess {
     contracts:
         fulfils ExecutionEventStream
         fulfils ExecutionDurability
+        fulfils ProviderAttemptObservation
         fulfils ExecutionRecovery
         fulfils CheckpointedResearcherExecution
         fulfils ModelBackedCondition
@@ -2027,6 +2106,9 @@ surface WorkflowExecutionAccess {
     @guarantee ReferencedValueIntegrity
         -- If canonical bytes are stored outside the event record, ORC rejects
         -- missing or corrupted bytes rather than returning a partial value.
+        -- A schema-valid explicit null remains a present value through canonical
+        -- writes, forwarded references, seed inputs and public inspection. A
+        -- missing, foreign or cyclic reference must not fabricate a present null.
 
     @guarantee ExactNodeExecutionInspection
         -- Each independently durable node execution has a unique trace instance

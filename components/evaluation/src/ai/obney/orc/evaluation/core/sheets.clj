@@ -237,13 +237,17 @@
 (defn batch-evaluation-suite
   "Evaluation suite for processing multiple traces.
 
-   Uses map-each to iterate over a list of traces and evaluate each one.
+   Uses map-each to iterate over a list of traces and evaluate each one. The
+   current trace is the `:trace-data` key the judges read; the per-item body is
+   ONE code leaf with explicit writes, so a parallel iteration collects its own
+   result and never another's.
 
    Input:
      traces: Vector of trace-data maps
 
    Output:
-     results: Vector of aggregate-result maps
+     results: Vector, one entry per trace in input order: the trace itself
+              with `:current-aggregate`, the aggregate result of its four judges
 
    Example:
      (def batch-id (sheet/build-workflow! ctx (batch-evaluation-suite)))
@@ -254,49 +258,20 @@
   (dsl/workflow "evaluation-batch-suite"
     (dsl/blackboard
      {:traces [:vector TraceDataSchema]
-      :current-trace TraceDataSchema
-      :grounding-result GroundingResultSchema
-      :instruction-result InstructionResultSchema
-      :reasoning-result ReasoningResultSchema
-      :completeness-result CompletenessResultSchema
+      :trace-data TraceDataSchema
       :current-aggregate AggregateResultSchema
-      :results [:vector AggregateResultSchema]})
+      :results [:vector [:map [:current-aggregate AggregateResultSchema]]]})
 
     (dsl/map-each "evaluate-all"
       :from :traces
-      :as :current-trace
+      :as :trace-data
       :into :results
       :parallel 3  ;; Process 3 traces concurrently
 
-      (dsl/sequence "evaluate-one"
-        ;; Run all judges in parallel
-        (dsl/parallel "run-judges"
-          (dsl/code "grounding-judge"
-            :fn "ai.obney.orc.evaluation.core.judges/grounding-judge"
-            :reads [:current-trace]
-            :writes [:grounding-result])
-
-          (dsl/code "instruction-judge"
-            :fn "ai.obney.orc.evaluation.core.judges/instruction-following-judge"
-            :reads [:current-trace]
-            :writes [:instruction-result])
-
-          (dsl/code "reasoning-judge"
-            :fn "ai.obney.orc.evaluation.core.judges/reasoning-judge"
-            :reads [:current-trace]
-            :writes [:reasoning-result])
-
-          (dsl/code "completeness-judge"
-            :fn "ai.obney.orc.evaluation.core.judges/completeness-judge"
-            :reads [:current-trace]
-            :writes [:completeness-result]))
-
-        ;; Aggregate
-        (dsl/code "aggregate"
-          :fn "ai.obney.orc.evaluation.core.judges/aggregate-dimensions"
-          :reads [:grounding-result :instruction-result
-                  :reasoning-result :completeness-result]
-          :writes [:current-aggregate])))))
+      (dsl/code "evaluate-trace"
+        :fn "ai.obney.orc.evaluation.core.judges/evaluate-trace"
+        :reads [:trace-data]
+        :writes [:current-aggregate]))))
 
 ;; =============================================================================
 ;; Selective Judge Suite
