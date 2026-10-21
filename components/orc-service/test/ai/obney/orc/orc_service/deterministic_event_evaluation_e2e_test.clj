@@ -168,6 +168,21 @@
             _ (h/run-and-apply! ctx (h/make-set-key-value-command sheet-id :input "projected"))
             result (sheet/execute ctx sheet-id {})]
         (is (h/settle-until! #(h/trace-stored? ctx (:trace-id result))))
+        ;; Creation alone is not a replay barrier: the terminal event can be
+        ;; published before the final ephemeral routing summary. Wait for this
+        ;; workflow's complete evidence before freezing the event prefix.
+        (is (h/settle-until!
+             #(let [trace (get-in (h/run-query ctx (h/make-get-trace-query (:trace-id result)))
+                                 [:query/result :trace])
+                    nodes (:node-traces trace)
+                    main (first (filter (fn [node] (= "main" (:node-name node))) nodes))
+                    copy (first (filter (fn [node] (= "copy" (:node-name node))) nodes))]
+                (and (= 2 (count nodes))
+                     (= :success (:status main) (:status copy))
+                     (true? (:ephemeral? main))
+                     (some? (:trace-instance-id main))
+                     (= (:trace-instance-id main) (:parent-trace-instance-id copy)))))
+            "the routing summary and leaf parent link must be projected before replay")
         (let [events (all-events ctx)
               replayed-sheet (get (reduce rm/sheets* {} events) sheet-id)
               replayed-nodes (->> (vals (reduce rm/nodes* {} events))
@@ -186,6 +201,55 @@
                          [:query/result :trace])
                  replayed-trace))
           (is (= "projected" (get-in result [:outputs :output]))))))))
+
+
+(deftest det-e2e-074-replay-waits-for-final-routing-evidence
+  (testing "replay observes the refreshed trace when terminal publication precedes routing evidence"
+    (let [release (promise)
+          entered (promise)
+          observations (atom {})
+          original-command cp/process-command
+          original-query h/run-query]
+      (try
+        (with-redefs [cp/process-command
+                      (fn [context]
+                        (let [result (original-command context)]
+                          ;; Delay only the return, after the real command has
+                          ;; durably emitted its terminal event. The frontier's
+                          ;; summary cannot be appended until this returns.
+                          (when (= :sheet/emit-tick-completed
+                                   (get-in context [:command :command/name]))
+                            (deliver entered true)
+                            (when (= ::timeout (deref release 30000 ::timeout))
+                              (throw (ex-info "Replay test terminal gate timed out" {}))))
+                          result))
+                      h/run-query
+                      (fn [context query]
+                        (when (and (= :sheet/get-trace (:query/name query))
+                                   (not (realized? release)))
+                          (when (= ::timeout (deref entered 10000 ::timeout))
+                            (throw (ex-info "Replay test terminal gate was not entered" {})))
+                          (swap! observations assoc :initial
+                                 (get-in (original-query context query) [:query/result :trace]))
+                          (deliver release true)
+                          (when-not
+                           (h/settle-until!
+                            #(= 2 (count (get-in (original-query context query)
+                                                [:query/result :trace :node-traces]))))
+                            (throw (ex-info "Replay test routing evidence did not settle" {}))))
+                        (let [result (original-query context query)]
+                          (when (= :sheet/get-trace (:query/name query))
+                            (swap! observations assoc :final (:trace (:query/result result))))
+                          result))]
+          ;; Reuse every full projection equality from 074 under the controlled
+          ;; legal event ordering. In particular, do not normalize trace fields.
+          ((:test (meta #'det-e2e-074-projection-replay))))
+        (finally (deliver release true)))
+      (let [{:keys [initial final]} @observations]
+        (is (= 1 (count (:node-traces initial))))
+        (is (= 2 (count (:node-traces final))))
+        (is (< (:source-event-count initial) (:source-event-count final)))
+        (is (= (:trace-id initial) (:trace-id final)))))))
 
 (deftest det-e2e-075-attached-judge-assesses-with-evaluation-disabled
   ;; S7 (ADR 0008, AttachmentIsMonitoring): attaching a judge is what enables it.

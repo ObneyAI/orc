@@ -92,3 +92,13 @@ jobs:
 
       - name: Run and verify every live LLM test
         run: clojure -M:dev:test -m ai.obney.orc.live-test-runner
+        env:
+          ORC_LIVING_DESCRIPTION_EVIDENCE_DIR: ${{ runner.temp }}/orc-living-description-evidence
+
+      - name: Upload living-description diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orc-living-description-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/orc-living-description-evidence
+          if-no-files-found: warn

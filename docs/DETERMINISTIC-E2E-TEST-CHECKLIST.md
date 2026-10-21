@@ -842,3 +842,33 @@ The ordinary diagnostic regression first failed both completion and trace metada
 assertions, then passed without changing retry policy. The corrected parallel test
 passes 24 assertions across both arrival orders, including no cross-owner writes.
 These deterministic fakes prove execution contracts, not provider HTTP behavior.
+
+## Living-description CI evidence
+
+These obligations verify test-only diagnostics. Production behavior, Allium
+specifications, model configuration, prompts, and live assertions are unchanged.
+
+- [x] **LIVE-EVIDENCE-1 — Exact asynchronous HTTP evidence.** A local HTTP server proves request and response entity bodies are retained without changing successful JSON decoding, malformed JSON failures, or HTTP error behavior.
+- [x] **LIVE-EVIDENCE-2 — Failure snapshots precede teardown.** A real Grain fixture retains tenant events and public trace evidence when its test body fails; separate cases do not overwrite one another.
+- [x] **LIVE-EVIDENCE-3 — Credentials never enter artifacts.** Header/configuration secrets and exception payloads are excluded; a credential found inside an otherwise capturable body produces an explicit withheld marker.
+
+3 obligations, 3 covered, 0 uncovered. The focused diagnostic namespace passes
+7 tests / 32 assertions using real local HTTP and Grain boundaries, including
+malformed JSON, HTTP errors, unavailable artifact storage, synthetic credential
+withholding, actual leaf ownership, unrelated-request exclusion, command-failure
+capture, and snapshots before teardown. Provider completions are controlled test
+responses; this is not a live-model proof or a diagnosis of the historical CI failure.
+
+## Replay observation boundary
+
+- [x] REPLAY-074: A real sequence/code execution whose terminal command returns after its initial trace is published must retain exact full replay equality after the final routing summary is projected. Exercise a bounded command-return gate; preserve the original projection assertions, and verify both composite evidence and leaf parent linkage before freezing the event prefix. No production behavior or specification changes.
+
+REPLAY-074: **1 obligation, 1 covered, 0 uncovered**. The original test fails
+under a controlled legal ordering: replay sees six source events while the later
+query sees seven, including the final routing summary. The corrected test waits
+for both node traces and their parent link before freezing its event prefix.
+Every original full projection comparison remains. Independent restoration of
+the old test in memory makes the durable regression fail at that same equality
+(9 passing assertions, 1 failure, 0 errors). The corrected controlled probe
+passes 1 test / 7 assertions. Independent execution of the complete event/evaluation
+and diagnostic namespaces passes 16 tests / 108 assertions.

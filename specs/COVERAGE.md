@@ -1148,3 +1148,31 @@ scheduling and invalid-output evidence; real provider verification is separate.
 There are no generated skeletons, skipped obligations, or weakened assertions.
 Allium remains153 diagnostics (114 information,39 warnings), zero errors and no
 analysis findings. Full aggregate and live CI remain merge gates.
+
+## Living-description CI evidence
+
+Test-only diagnostics preserve the existing DET-E2E-103/104 assertions, prompts,
+models, options, execution deadlines, and teardown. Opt-in capture saves exact
+HTTP entity bodies, command failures, tenant events and public traces before
+teardown; CI uploads them even when the test step fails. Credentials are excluded
+or explicitly withheld. Production behavior and Allium specifications are
+unchanged. Historical CI failure causation remains unresolved.
+
+LIVE-EVIDENCE-1/2/3: **3 obligations, 3 covered, 0 uncovered**. The focused
+`living-description-evidence-test` namespace passes 7 tests / 32 assertions over
+local HTTP and real Grain. These tests do not establish live provider behavior.
+The existing Allium diagnostic baseline is unchanged; independent inspection and
+the next instrumented CI execution remain required before merge.
+
+## Replay observation boundary
+
+REPLAY-074: **1 obligation, 1 covered, 0 uncovered**. The specification's
+`TraceRefreshNeverRegresses` already permits later durable evidence to enrich a
+trace. The old test compared different evidence prefixes; production behavior
+and specifications require no change. The corrected test waits for this tree's
+complete routing evidence and retains every full projection comparison. A
+controlled regression fails with the old observation barrier restored in memory.
+Independent focused namespaces pass 16 tests / 108 assertions. No generated
+skeletons, weakened assertions, or excluded production domains were introduced.
+Allium check and analyse retain 153 diagnostics (114 information, 39 warnings),
+zero errors and no analysis findings. Full CI remains the merge gate.

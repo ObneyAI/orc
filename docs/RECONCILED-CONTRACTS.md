@@ -119,3 +119,40 @@ raw response decoded to its own canonical writes and durable provider invocation
 The joined values matched the supplied records. A fresh process reconstructed the
 closed snapshot exactly without adding events (153 events). This bounded witness
 verifies parallel dataflow, not general-agent quality.
+
+## Diagnosing living-description CI failures
+
+DET-E2E-103/104 support opt-in `ORC_LIVING_DESCRIPTION_EVIDENCE_DIR` evidence.
+Each case saves exact HTTP request and response entity bodies, execution identity,
+command failures, and tenant event/trace snapshots before existing fixture
+teardown. A snapshot may show a pending reflection; it is not relabeled a terminal
+failure or success. No model, prompt, output cap, timeout or assertion is changed.
+
+The HTTP observer retains Hato asynchronous results and original JSON/error
+handling. Requests outside the observed execution are excluded. Headers and
+configuration are never persisted; credential-bearing payloads receive an explicit
+withheld marker. Artifact-write failures emit a bounded warning without replacing
+the application result. CI uploads evidence even after test failure.
+
+Deterministic local HTTP/Grain checks pass 7 tests / 32 assertions. The historical
+CI consolidation failure remains unexplained; the next instrumented CI execution
+is evidence gathering, not confirmation of a production repair.
+
+## Replay uses a complete evidence prefix
+
+The replay test previously waited only for initial trace publication. A terminal
+event can precede its final routing summary, so that wait allowed an old event
+prefix to be compared with a newer public projection. A controlled command-return
+gate reproduces the six-source-event versus seven-source-event mismatch.
+
+The test now waits for the expected composite and leaf traces, including their
+parent linkage, before taking the snapshot. Full sheet, node, blackboard and
+trace equality checks remain. A durable regression forces the original ordering.
+It fails when the old test is restored in memory and passes with the correction.
+This is a test synchronization repair; runtime scheduling and projections are
+unchanged. The test and trace-refresh mechanism both predate reconciliation.
+
+Independent focused verification passes 16 tests / 108 assertions, including
+the diagnostic tests. Allium remains at 114 information diagnostics and 39
+warnings, with zero errors and no analysis findings. The historical live
+consolidation failure remains unresolved pending instrumented CI evidence.
