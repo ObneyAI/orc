@@ -1124,3 +1124,27 @@ test translation error, corrected by asserting both boundaries without changing
 the executor. Direct provenance commands preserve their complete supplied usage.
 The root's separate replay of a real captured provider response and final CI are
 independent verification, not inferred from these deterministic results.
+
+## Parallel contracts and ordinary missing-output evidence
+
+`DeclaredOutputsOnly` already requires missing-key evidence in completions and
+traces. The ordinary unparseable-output branch omitted that metadata although the
+schema-error policy retained it. This is a code bug, corrected without changing
+failure classification, retry policy, raw response, or supplied-value evidence.
+No specification change is needed. Required nullable absence remains distinct
+from explicit null; no absent value is fabricated as a rejected value.
+
+The generated parallel test's ordinal fake predates reconciliation. A forced
+right-first comparison at base1851212 accepted two wrong-owner writes. At
+reconciled07f220d7 the same fake failed, and canonical writes rejected the wrong
+owner. This is a test defect exposed by required-output validation, not evidence
+that valid parallel responses fail. The corrected fake follows each requested
+module contract, and both orders verify exact canonical producer ownership.
+
+RECON-12/13: 2 obligations, 2 covered, 0 uncovered. Independent focused verification
+passed 39 tests / 214 assertions. The new metadata test was RED at both durable
+completion and public trace, then GREEN. The model fake is intentional for forced
+scheduling and invalid-output evidence; real provider verification is separate.
+There are no generated skeletons, skipped obligations, or weakened assertions.
+Allium remains153 diagnostics (114 information,39 warnings), zero errors and no
+analysis findings. Full aggregate and live CI remain merge gates.

@@ -2088,7 +2088,7 @@
                                       (min 1000 raw-len) " of " raw-len " chars) ---\n"
                                       preview)
                                  " No raw response text was returned by the provider."))
-                result {:status :failure :error error-msg
+                result (cond-> {:status :failure :error error-msg
                         :raw-response raw-response
                         :outputs outputs
                         :duration-ms (- (System/currentTimeMillis) start-time)
@@ -2096,7 +2096,9 @@
                         ;; and must not vanish from Phase-2 accounting.
                         :usage total-usage :model model
                         :resolved-model resolved-model
-                        :provider-evidence provider-evidence}]
+                        :provider-evidence provider-evidence}
+                         (seq missing-output-keys)
+                         (assoc :missing-write-keys missing-output-keys))]
             (obs/log-unparseable-output!
               {:node-id (:id node) :node-name (:name node) :model model
                :nil-keys nil-keys :raw-length raw-len

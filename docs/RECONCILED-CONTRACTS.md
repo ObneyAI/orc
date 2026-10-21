@@ -97,3 +97,25 @@ some execution-family summary/explicit-null limitations, and SIO's independent
 required-input validation behavior. Canonical tick-local value-log evidence is
 the verified source used here. This reconciliation does not finish the broader
 complex-agent research or establish superiority over another agent framework.
+
+## Parallel responses and missing-output diagnosis
+
+Each parallel child must supply its own declared outputs. A controlled predictor
+must choose fields from the requested module, not from invocation order. The
+regression exercises both arrival orders and verifies exact canonical values and
+producer identity. Required-output validation remains enabled.
+
+Ordinary missing-output failures now retain `:missing-write-keys` through the
+completion event and public trace, matching the schema-error policy's existing
+diagnostic contract. Retry behavior is unchanged. Present invalid values are not
+classified as absent, and required nullable values must actually be supplied.
+The response retained on a failed completion is diagnostic evidence; accepted
+blackboard writes must be verified from the canonical value log.
+
+A real-provider witness ran two parallel LLM leaves with disjoint described
+inputs and strict output contracts, followed by a code join. Both calls succeeded.
+The captured wire requests included the declared descriptions and schemas; each
+raw response decoded to its own canonical writes and durable provider invocation.
+The joined values matched the supplied records. A fresh process reconstructed the
+closed snapshot exactly without adding events (153 events). This bounded witness
+verifies parallel dataflow, not general-agent quality.

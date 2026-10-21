@@ -830,3 +830,15 @@ evidence is separate. Full repository CI and live GEPA remain separate gates.
 
 - [x] **RECON-10 — Description provenance preserves rich provider usage.** Public description commands and real consolidation execution persist decimal cost and nested provider details, project the successor, and reject malformed token counts without appending an event.
 - [x] **RECON-11 — Claim-delta provenance preserves rich provider usage.** Public claim recording persists the same usage and projects the claim; malformed token counts remain rejected. The retired anti-recency event shares the additive usage contract; its absent producer is audited rather than inventing a new writer.
+
+## Parallel reconciliation verification
+
+- [x] **RECON-12 — Ordinary absent outputs retain diagnostic identity.** A public workflow fails without accepted or fabricated rejected writes, records the missing required key in its completion and public trace, and preserves the ordinary retry policy. Explicit nullable values and the separate schema-error retry policy retain their existing coverage.
+- [x] **RECON-13 — Parallel children honor their own contracts in either invocation order.** The real tree executor returns exact distinct child values and canonical producer ownership with a bounded, contract-aware model fake. The original arrival-order fake remains documented as failed diagnostic evidence rather than production behavior.
+
+RECON-12/13: independent public-boundary verification passed 39 tests / 214 assertions
+across reconciled contracts, generated-tree execution and provider failures.
+The ordinary diagnostic regression first failed both completion and trace metadata
+assertions, then passed without changing retry policy. The corrected parallel test
+passes 24 assertions across both arrival orders, including no cross-owner writes.
+These deterministic fakes prove execution contracts, not provider HTTP behavior.

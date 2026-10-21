@@ -35,6 +35,30 @@
         (is (empty? (written-values ctx (:trace-id result)))
             "An absent response creates neither an authored null nor metadata writes.")))))
 
+(deftest ordinary-missing-output-retains-durable-key-evidence
+  (h/with-async-test-context [ctx]
+    (let [calls (atom 0)]
+      (with-redefs [llm/predict (fn [& _]
+                                (swap! calls inc)
+                                {:outputs {} :model "controlled/model"})]
+        (let [sheet (bt/build-workflow! ctx (nullable-workflow "ordinary-missing-key-evidence" {}))
+              result (bt/execute (assoc ctx :llm-provider :controlled) sheet {}
+                                 :max-ticks 1 :timeout-ms 30000 :llm-call-budget 1)
+              completion (first (filter #(= :sheet/node-execution-completed (:event/type %))
+                                        (h/read-tick-events ctx (:trace-id result))))
+              leaf-trace (fn []
+                           (some #(when (= (:node-id completion) (:node-id %)) %)
+                                 (get-in (h/run-query ctx (h/make-get-trace-query (:trace-id result)))
+                                         [:query/result :trace :node-traces])))]
+          (is (= :failure (:status result)))
+          (is (= 1 @calls) "Ordinary missing output retains its existing retry policy.")
+          (is (empty? (written-values ctx (:trace-id result))))
+          (is (= [:answer] (:missing-write-keys completion)))
+          (is (not (contains? completion :rejected-write-keys))
+              "Absence does not manufacture a rejected value.")
+          (is (h/settle-until! #(= :failure (:status (leaf-trace)))))
+          (is (= [:answer] (:missing-write-keys (leaf-trace)))))))))
+
 (deftest schema-error-policy-rejects-missing-nullable-writes-without-fabricating-them
   (h/with-async-test-context [ctx]
     (let [calls (atom 0)]
