@@ -752,16 +752,29 @@
   (vals (rmp/project ctx :sheet/blackboard {:partition-key sheet-id})))
 
 (defn get-blackboard-by-key
-  "Get the blackboard for a sheet as a map keyed by key name.
+  "Get the blackboard for a sheet as a map keyed by key name, from the
+   :sheet/blackboard projection. Cheap while the sheet is being built: each
+   call only applies the events appended since the previous one."
+  [ctx sheet-id]
+  (into {}
+        (map (juxt :key identity))
+        (vals (rmp/project ctx :sheet/blackboard {:partition-key sheet-id}))))
 
-   Folds the sheet's own blackboard events directly. Every blackboard event is
-   tagged [:sheet sheet-id], so this reads exactly the events the
-   :sheet/blackboard partition for the sheet is built from, with the same
-   reducer (`blackboard`). Going through rmp/project :sheet/blackboard
-   {:partition-key ..} instead re-evaluates every OTHER sheet's key-declared
-   events (the single-partition read never advances its watermark past events
-   that belong to no partition it holds) and decodes each source partition
-   from the L2 cache: about 5 s per call with 600 foreign events."
+(defn get-blackboard-by-key-from-events
+  "The same map as `get-blackboard-by-key`, folded directly from the sheet's
+   own events.
+
+   Every blackboard event is tagged [:sheet sheet-id], so this reads exactly the
+   events the sheet's partition is built from, with the same reducer
+   (`blackboard`), and costs one read of THIS sheet's events however many other
+   sheets the tenant holds. The single-partition projection instead re-evaluates
+   every other sheet's key-declared events after its watermark on each call and
+   decodes each source partition (about 5 s per call with 600 foreign events).
+
+   Use it for a one-off read of a settled sheet, such as the snapshot a child
+   execution starts from. Do NOT call it once per command while a sheet is being
+   built: each call re-reads the whole sheet, so building n keys reads O(n^2)
+   events; the projection is incremental and is the right read there."
   [ctx sheet-id]
   (let [events (into [] (es/read (:event-store ctx)
                                  {:tenant-id (:tenant-id ctx)
