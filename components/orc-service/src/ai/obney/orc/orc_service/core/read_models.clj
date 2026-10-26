@@ -752,11 +752,24 @@
   (vals (rmp/project ctx :sheet/blackboard {:partition-key sheet-id})))
 
 (defn get-blackboard-by-key
-  "Get the blackboard for a sheet as a map keyed by key name"
+  "Get the blackboard for a sheet as a map keyed by key name.
+
+   Folds the sheet's own blackboard events directly. Every blackboard event is
+   tagged [:sheet sheet-id], so this reads exactly the events the
+   :sheet/blackboard partition for the sheet is built from, with the same
+   reducer (`blackboard`). Going through rmp/project :sheet/blackboard
+   {:partition-key ..} instead re-evaluates every OTHER sheet's key-declared
+   events (the single-partition read never advances its watermark past events
+   that belong to no partition it holds) and decodes each source partition
+   from the L2 cache: about 5 s per call with 600 foreign events."
   [ctx sheet-id]
-  (into {}
-        (map (juxt :key identity))
-        (vals (rmp/project ctx :sheet/blackboard {:partition-key sheet-id}))))
+  (let [events (into [] (es/read (:event-store ctx)
+                                 {:tenant-id (:tenant-id ctx)
+                                  :tags #{[:sheet sheet-id]}
+                                  :types blackboard-events}))]
+    (into {}
+          (map (juxt :key identity))
+          (vals (blackboard {} events)))))
 
 (defn get-judges
   "Get all judges declared for a sheet as a map keyed by judge name"
