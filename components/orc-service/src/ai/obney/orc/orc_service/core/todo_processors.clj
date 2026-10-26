@@ -327,12 +327,35 @@
               (recur (:parent-tick-id started)
                      (conj seen candidate-tick-id)))))))))
 
+(defn- tick-ctx-of
+  "The tick's execution context for a handler running inside a delivery.
+
+   The todo processors resolve the context ONCE per delivery (see
+   `with-resolved-tick-ctx`) and every projection the handler would repeat in
+   its synchronous prologue reuses it: each projection decodes the tick's whole
+   cached context, and one delivery used to take up to seven. Falls back to a
+   projection when the delivery carried none (direct callers, recovery) or when
+   it was resolved for another tick. Never call this from work that runs after
+   the handler has appended, or from a future: those must read fresh."
+  [context tick-id]
+  (let [r (::resolved-tick-ctx context)]
+    (if (and r (= tick-id (:tick-id r)))
+      (:ctx r)
+      (rm/get-tick-execution-context context tick-id))))
+
+(defn- with-resolved-tick-ctx
+  "Attach the delivery's tick context (one projection) to `context`."
+  [{:keys [event] :as context}]
+  (let [tick-id (:tick-id event)]
+    (assoc context ::resolved-tick-ctx
+           {:tick-id tick-id :ctx (rm/get-tick-execution-context context tick-id)})))
+
 (defn- node-execution-tags
   "Tag checkpointed descendant node starts for the budget root's atomic CAS.
 
    Non-checkpointed events retain their exact historical tag set."
   [context sheet-id tick-id node-id]
-  (let [tick-ctx (rm/get-tick-execution-context context tick-id)
+  (let [tick-ctx (tick-ctx-of context tick-id)
         options (:options tick-ctx)
         node (get (:nodes-by-id tick-ctx) node-id)
         checkpointed? (or (true? (:checkpointed-campaign? options))
@@ -368,7 +391,7 @@
 (defn- resolve-nodes-by-id
   "Get nodes-by-id for a tick from tick-scoped execution context."
   [ctx _sheet-id tick-id]
-  (rm/get-tick-nodes-by-id ctx tick-id))
+  (:nodes-by-id (tick-ctx-of ctx tick-id)))
 
 (defn- resolve-blackboard
   "Get blackboard METADATA for a tick from tick-scoped execution context.
@@ -376,7 +399,7 @@
    :source — but NO :value. Use hydrate-values when values are
    needed."
   [ctx _sheet-id tick-id]
-  (rm/get-tick-blackboard ctx tick-id))
+  (:blackboard (tick-ctx-of ctx tick-id)))
 
 (defn- hydrate-values
   "Fill in :value on a metadata blackboard for `ks` (nil = every key),
@@ -2644,7 +2667,7 @@
         ;; :sheet/tick-execution-contexts projection decodes the tick's cached
         ;; blob, and this fn used to take five of them (nodes-by-id, overrides,
         ;; blackboard, tool-context, budget) for a single leaf.
-        tick-ctx (rm/get-tick-execution-context context tick-id)
+        tick-ctx (tick-ctx-of context tick-id)
         nodes-by-id (:nodes-by-id tick-ctx)
         overrides (:instruction-overrides tick-ctx)
         node (-> (get nodes-by-id node-id)
@@ -2987,7 +3010,7 @@
         node-id (:node-id event)
         event-inputs (:inputs event)
         ;; ONE projection for the whole handler — see execute-leaf-node.
-        tick-ctx (rm/get-tick-execution-context context tick-id)
+        tick-ctx (tick-ctx-of context tick-id)
         nodes-by-id (:nodes-by-id tick-ctx)
         overrides (:instruction-overrides tick-ctx)
         ;; RR-1 (ADR 0020): the node as it comes off the tick snapshot. The
@@ -4039,7 +4062,7 @@
                                event-inputs)
             exec-context (extract-execution-context event-inputs)
             correlation-id (:correlation-id
-                            (rm/get-tick-execution-context context tick-id))
+                            (tick-ctx-of context tick-id))
 
             target-sheet-id (:target-sheet-id node)
             target-checkpointed-campaign?
@@ -4048,7 +4071,7 @@
                    (vals (rm/get-nodes-by-id context target-sheet-id))))
             read-keys (:reads node)
             write-keys (:writes node)
-            parent-tick-ctx (rm/get-tick-execution-context context tick-id)
+            parent-tick-ctx (tick-ctx-of context tick-id)
             ;; FamilyBudgetIsShared: every delegate child, whatever its target,
             ;; draws on the family's durable budget root. Only checkpointed
             ;; targets additionally take the durable-reservation path.
@@ -4296,7 +4319,7 @@
       ;; execute-llm-condition assembles its prompt from (:reads node) only.
       ;; A GEPA candidate's instruction for this node (the tick's instruction
       ;; overrides) replaces the authored one, exactly as on the leaf path.
-      (let [tick-ctx (rm/get-tick-execution-context context tick-id)
+      (let [tick-ctx (tick-ctx-of context tick-id)
             node (apply-instruction-override node (:instruction-overrides tick-ctx))
             blackboard (resolve-blackboard-values context sheet-id tick-id
                                                   (or (:reads node) []))
@@ -4373,7 +4396,7 @@
       :else nil)))
 
 (defn- ephemeral-routing-active? [context tick-id nodes-by-id]
-  (and (not= :legacy (get-in (rm/get-tick-execution-context context tick-id)
+  (and (not= :legacy (get-in (tick-ctx-of context tick-id)
                              [:options :durability-mode]))
        (ephemeral-routing-tree? nodes-by-id)))
 
@@ -4451,7 +4474,7 @@
   [{:keys [event event-store tenant-id] :as context}]
   (let [sheet-id (:sheet-id event)
         tick-id (:tick-id event)
-        tick-ctx (rm/get-tick-execution-context context tick-id)
+        tick-ctx (tick-ctx-of context tick-id)
         nodes-by-id (:nodes-by-id tick-ctx)
         root-id (:root-node-id tick-ctx)
         iteration (or (:iteration event) (get-in event [:inputs ::tick-iteration]) 1)
@@ -6820,19 +6843,30 @@
    of the stream — re-executing every historical node-execution-started
    event. The six retired names leave inert checkpoints behind."
   [context]
-  (or (execute-leaf-node context)
-      (execute-condition-node context)
-      (execute-composite-node context)
-      (execute-parallel-node context)
-      (execute-map-each-node context)
-      (execute-repl-researcher-node context)
-      (execute-delegate-node context)))
+  ;; Resolve the tick context and the node ONCE, then run the one executor
+  ;; whose node type matches. The chain this replaces tried all seven in turn
+  ;; and each projected the whole tick context before testing the type. Node
+  ;; types are disjoint, so at most one executor ever acted; an unknown type or
+  ;; a missing node still yields nil, as the chain did.
+  (let [context (with-resolved-tick-ctx context)
+        {:keys [event]} context
+        tick-ctx (:ctx (::resolved-tick-ctx context))
+        node (get (:nodes-by-id tick-ctx) (:node-id event))]
+    (case (:type node)
+      :leaf (execute-leaf-node context)
+      (:condition :llm-condition) (execute-condition-node context)
+      (:sequence :fallback) (execute-composite-node context)
+      :parallel (execute-parallel-node context)
+      :map-each (execute-map-each-node context)
+      :repl-researcher (execute-repl-researcher-node context)
+      :delegate (execute-delegate-node context)
+      nil)))
 
 (defprocessor :sheet handle-child-completion
   {:topics #{:sheet/node-execution-completed}}
   "Handle child completion for composite nodes."
   [context]
-  (handle-child-completion context))
+  (handle-child-completion (with-resolved-tick-ctx context)))
 
 (defprocessor :sheet handle-map-each-child-completion
   {:topics #{:sheet/node-execution-completed}}
