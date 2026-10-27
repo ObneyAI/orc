@@ -30,6 +30,8 @@
                   :with-provider-evidence?
                   :use-function-calling?
                   :force-tool-choice?
+                  :prompt-cache?
+                  :generic-tool-description?
                   :output-mode
                   :on-chunk
                   :debounce-ms
@@ -206,6 +208,44 @@
   [spec inputs]
   (update spec :inputs (fn [fields] (filterv #(contains? inputs (:name %)) fields))))
 
+;; --------------------------------------------------------------------------- ;;
+;; Opt-in prompt caching
+;; --------------------------------------------------------------------------- ;;
+;; Providers that cache by prefix (Anthropic, directly or through OpenRouter)
+;; only reuse a prompt up to an explicit breakpoint. A node's instruction is
+;; the same on every call; the inputs are not. With `:prompt-cache? true` the
+;; instruction travels as its own text part, marked `cache_control ephemeral`,
+;; ahead of a second part holding the field guide and inputs, so the stable
+;; prefix (tool definition, then instruction) is reused across calls with
+;; different inputs. The tool definition is marked too, for providers that read
+;; a marker there. Off by default: the request is then byte-identical to before.
+;; A provider that does not cache ignores the marker.
+;;
+;; `:generic-tool-description? true` (function mode) stops the instruction being
+;; sent a second time as the tool's description; the message already carries it.
+
+(def ^:private cache-marker {:type "ephemeral"})
+
+(defn- message-content
+  "The user message content. With `:prompt-cache?` and an instruction, a vector
+   of parts: the instruction (marked for caching), then the rest of the prompt
+   and any images. Otherwise exactly what SIO builds for the whole prompt."
+  [spec inputs instructions after prompt options]
+  (if (and (:prompt-cache? options) (not (str/blank? instructions)))
+    (let [built (sio/build-message-content spec after inputs)]
+      (into [{:type "text" :text instructions :cache_control cache-marker}]
+            (if (string? built) [{:type "text" :text built}] built)))
+    (sio/build-message-content spec prompt inputs)))
+
+(defn- function-tool
+  "The submit_response tool, shaped by the opt-in request options."
+  [spec options]
+  (cond-> (sio/outputs->tool-definition (wire-spec-outputs spec))
+    (:generic-tool-description? options)
+    (assoc-in [:function :description] "Submit the structured response")
+    (:prompt-cache? options)
+    (assoc :cache_control cache-marker)))
+
 (defn- marker-request [spec inputs options]
   (let [prompt (str (sio/spec->prompt (wire-spec-outputs spec) inputs)
                     "\n\n"
@@ -220,16 +260,16 @@
         ;; request does not carry is named nowhere.
         shown-spec (update spec :inputs (fn [declared]
                                           (filterv #(contains? inputs (:name %)) declared)))
-        prompt (str (when-let [instructions (:instructions spec)]
-                      (str instructions "\n\n"))
-                    (when-let [guide (sio/input-field-guide (:inputs spec) inputs)]
-                      (str guide "\n\n"))
-                    "Given the following inputs:\n"
-                    (input-section shown-spec inputs false)
-                    "\n\nCall the submit_response function with your answer.")]
+        instructions (:instructions spec)
+        after (str (when-let [guide (sio/input-field-guide (:inputs spec) inputs)]
+                     (str guide "\n\n"))
+                   "Given the following inputs:\n"
+                   (input-section shown-spec inputs false)
+                   "\n\nCall the submit_response function with your answer.")
+        prompt (str (when instructions (str instructions "\n\n")) after)]
     (merge (cond-> {:messages [{:role :user
-                                :content (sio/build-message-content spec prompt inputs)}]
-                    :tools [(sio/outputs->tool-definition (wire-spec-outputs spec))]}
+                                :content (message-content spec inputs instructions after prompt options)}]
+                    :tools [(function-tool spec options)]}
              ;; OPT-IN, default OFF. See below — forcing this is not safe for every
              ;; tool schema, and every workload built on ORC to date has run without it.
              (:force-tool-choice? options)
@@ -238,14 +278,15 @@
            (request-options options))))
 
 (defn- json-schema-request [spec inputs options compiled]
-  (let [prompt (str (:instructions spec) "\n\n"
-                    (sio/input-field-guide (:inputs spec) inputs) "\n\n"
-                    "Given the following inputs:\n"
-                    (input-section (shown-inputs spec inputs) inputs false)
-                    "\n\n" (structured-output/output-guide compiled))]
+  (let [instructions (:instructions spec)
+        after (str (sio/input-field-guide (:inputs spec) inputs) "\n\n"
+                   "Given the following inputs:\n"
+                   (input-section (shown-inputs spec inputs) inputs false)
+                   "\n\n" (structured-output/output-guide compiled))
+        prompt (str instructions "\n\n" after)]
     (-> (request-options options)
         (assoc :messages [{:role :user
-                           :content (sio/build-message-content spec prompt inputs)}]
+                           :content (message-content spec inputs instructions after prompt options)}]
                :response-format {:type "json_schema"
                                  :json_schema {:name "response" :strict true
                                                :schema (:schema compiled)}})

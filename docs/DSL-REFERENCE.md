@@ -281,6 +281,23 @@ Execute an LLM call with structured input/output.
   add `:force-tool-choice? true` when the provider must call ORC's generated
   `submit_response` tool. Forced choice is opt-in because provider/schema
   compatibility varies.
+  Two more opt-in controls help a node whose instruction is the same on every
+  call (default off; requests are then unchanged):
+  `:prompt-cache? true` sends the instruction as its own text part marked
+  `cache_control {:type "ephemeral"}`, ahead of a second part holding the input
+  guide and values, and marks the `submit_response` tool the same way. Providers
+  that cache by prefix (Anthropic, directly or through OpenRouter) then reuse the
+  tool definition and instruction across calls with different inputs; it pays
+  when the instruction is long (the provider's minimum cacheable size applies,
+  for example 4,096 tokens on some models) and the node runs many times within
+  the cache lifetime. It applies to function-calling and strict JSON requests,
+  not to marker prompts. A provider that does not cache ignores the marker. The
+  tool-level marker reaches the wire only if the HTTP client keeps it; the
+  message marker alone already covers the tool definition, which precedes the
+  messages in the cached prefix.
+  `:generic-tool-description? true` (function calling) gives `submit_response`
+  the generic description instead of repeating the instruction, which the
+  message already carries; this saves the duplicate tokens on every call.
 
 **Structured Output:**
 
