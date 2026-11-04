@@ -10,6 +10,7 @@
    3. Apply business rules
    4. Emit events or return anomaly"
   (:require [ai.obney.orc.gepa.core.read-models :as rm]
+            [ai.obney.orc.gepa.core.task-ledger :as ledger]
             [ai.obney.orc.gepa.core.pareto :as pareto]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :as command-processor :refer [defcommand]]
@@ -45,10 +46,15 @@
    Emits two events:
    1. :gepa/optimization-started - Metadata about the optimization
    2. :gepa/datasets-stored - Full trainset and valset for evaluation"
-  [{{:keys [sheet-id trainset valset config optimization-id]} :command
+  [{{:keys [sheet-id trainset valset config optimization-id metric-descriptor]} :command
     :keys [event-store] :as ctx}]
   (let [optimization-id (or optimization-id (random-uuid))
         merged-config (merge-config (or config {}))
+        metric-descriptor (or metric-descriptor
+                              (when-not (:gepa/metric-fn ctx)
+                                {:kind :default :metric-id "orc/default" :revision "1"
+                                 :configuration {} :retry-safe? true
+                                 :max-attempts 3 :timeout-ms 300000}))
         now (time/now)
         ;; Normalize trainset/valset to use string keys for JSON compatibility
         normalize-keys (fn [m] (into {} (map (fn [[k v]] [(name k) v]) m)))
@@ -59,12 +65,13 @@
       (->event {:type :gepa/optimization-started
                 :tags #{[:optimization optimization-id]
                         [:sheet sheet-id]}
-                :body {:optimization-id optimization-id
+                :body (cond-> {:optimization-id optimization-id
                        :sheet-id sheet-id
                        :config merged-config
                        :trainset-size (count trainset)
                        :valset-size (count valset)
-                       :started-at now}})
+                       :started-at now}
+                        metric-descriptor (assoc :metric-descriptor metric-descriptor))})
       ;; Event 2: Store full datasets for evaluation and cross-run persistence
       (->event {:type :gepa/datasets-stored
                 :tags #{[:optimization optimization-id]}
@@ -74,6 +81,31 @@
                        :stored-at now}})]
      :command/result {:optimization-id optimization-id
                       :config merged-config}}))
+
+(defcommand :gepa select-metric
+  {:authorized? (fn [ctx] (uuid? (:tenant-id ctx)))}
+  "Adopt an explicitly restored legacy metric once, before evaluation effects."
+  [{{:keys [optimization-id metric-descriptor]} :command :as ctx}]
+  (let [events (into [] (es/read (:event-store ctx)
+                         {:tenant-id (:tenant-id ctx)
+                          :types #{:gepa/optimization-started :gepa/metric-selected}
+                          :tags #{[:optimization optimization-id]}}))
+        existing (some :metric-descriptor events)]
+    (cond
+      (empty? events) {::anom/category ::anom/not-found ::anom/message "Optimization not found"}
+      existing
+      (if (= existing metric-descriptor)
+        {:command-result/events [] :command/result {:status :selected :metric-descriptor existing}}
+        {::anom/category ::anom/conflict ::anom/message "Optimization metric identity is immutable"})
+      :else
+      {:command-result/events
+       [(->event {:type :gepa/metric-selected :tags #{[:optimization optimization-id]}
+                  :body {:optimization-id optimization-id :metric-descriptor metric-descriptor}})]
+       :command-result/cas
+       {:types #{:gepa/optimization-started :gepa/metric-selected}
+        :tags #{[:optimization optimization-id]}
+        :predicate-fn (fn [current] (not-any? :metric-descriptor (into [] current)))}
+       :command/result {:status :selected :metric-descriptor metric-descriptor}})))
 
 ;; =============================================================================
 ;; Create Candidate
@@ -169,15 +201,79 @@
 ;; Record Evaluation Result
 ;; =============================================================================
 
+(defn- boundary-identities [ctx optimization-id boundary]
+  (into #{} (keep (fn [[id entry]] (when (= boundary (:boundary entry)) id)))
+        (:boundaries (ledger/get-state ctx optimization-id))))
+
+(defn- same-admitted-boundaries? [events boundary expected]
+  (= expected
+     (into #{} (keep (fn [event]
+                       (when (and (= :gepa/task-boundary-opened (:event/type event))
+                                  (= boundary (:boundary event)))
+                         (:boundary-id event)))) events)))
+
+(defn- managed-boundary? [ctx optimization-id boundary]
+  (boolean (some #(= boundary (:boundary %))
+                 (vals (:boundaries (ledger/get-state ctx optimization-id))))))
+
+(defn- managed-tasks
+  "Resolve complete, unique membership from the original frozen manifests."
+  [ctx optimization-id boundary call-ids]
+  (let [state (ledger/get-state ctx optimization-id)
+        manifest (vec (mapcat (fn [[id entry]]
+                               (when (= boundary (:boundary entry))
+                                 (map #(assoc % :boundary-id id) (:tasks entry))))
+                             (:boundaries state)))
+        expected-ids (mapv :call-id manifest)
+        tasks (mapv #(get-in state [:tasks (:call-id %)]) manifest)]
+    (when (and (seq manifest)
+               (= (count call-ids) (count (set call-ids)) (count expected-ids))
+               (= (set expected-ids) (set call-ids))
+               (every? true?
+                 (map (fn [entry task]
+                        (and (= :completed (:status task))
+                             (= (select-keys entry [:boundary-id :role :example-index])
+                                (select-keys task [:boundary-id :role :example-index]))))
+                      manifest tasks)))
+      tasks)))
+
+(defn- managed-candidate-evidence [ctx command]
+  (let [{:keys [optimization-id candidate-id task-call-ids]} command
+        tasks (managed-tasks ctx optimization-id
+                            {:kind :candidate :candidate-id candidate-id} task-call-ids)]
+    {:outputs (into {} (map (fn [task] [(:example-index task) (get-in task [:result :output])])) tasks)
+     :feedbacks (into {} (keep (fn [task]
+                                (when-some [feedback (get-in task [:result :feedback])]
+                                  [(:example-index task) feedback]))) tasks)}))
+
+(defn- valid-managed-candidate? [ctx command]
+  (let [{:keys [optimization-id candidate-id task-call-ids scores trace-ids metric-calls]} command
+        tasks (sort-by :example-index
+                (managed-tasks ctx optimization-id
+                  {:kind :candidate :candidate-id candidate-id} task-call-ids))]
+    (and (seq tasks)
+         (every? (fn [[k v]] (or (not (contains? command k)) (= v (get command k))))
+                 (managed-candidate-evidence ctx command))
+         (every? #(= :candidate (:role %)) tasks)
+         (= (vec (range (count tasks))) (mapv :example-index tasks))
+         (= scores (mapv #(get-in % [:result :score]) tasks))
+         (= trace-ids (mapv :trace-id tasks))
+         (= metric-calls (reduce + (map :attempt-count tasks))))))
+
 (defcommand :gepa record-evaluation-result
   "Record the results of a candidate evaluation.
 
    Called after workflow execution and trace collection.
    Updates the population with scores and triggers frontier update."
-  [{{:keys [optimization-id candidate-id scores trace-ids feedbacks outputs metric-calls]} :command
+  [{{:keys [optimization-id candidate-id scores trace-ids feedbacks outputs metric-calls accounting-mode task-call-ids]} :command
     :keys [event-store] :as ctx}]
-  (let [candidate (rm/get-candidate ctx optimization-id candidate-id)]
+  (let [candidate (rm/get-candidate ctx optimization-id candidate-id)
+        boundary {:kind :candidate :candidate-id candidate-id}
+        admitted-boundaries (boundary-identities ctx optimization-id boundary)]
     (cond
+      (#{:completed :failed} (:status (rm/get-optimization-summary ctx optimization-id)))
+      {::anom/category ::anom/conflict ::anom/message "Optimization is terminal"}
+
       ;; Candidate not found
       (nil? candidate)
       {::anom/category ::anom/not-found
@@ -188,16 +284,28 @@
       {::anom/category ::anom/conflict
        ::anom/message "Candidate already has evaluation results"}
 
+      (and (or (= :tasks accounting-mode)
+               (managed-boundary? ctx optimization-id
+                                  {:kind :candidate :candidate-id candidate-id}))
+           (or (not= :tasks accounting-mode)
+               (not (valid-managed-candidate? ctx (:command ctx)))))
+      {::anom/category ::anom/conflict
+       ::anom/message "Managed evaluation requires completed task evidence"}
+
       ;; Record results
       :else
-      (let [aggregate-score (if (seq scores)
+      (let [evidence (when (= :tasks accounting-mode)
+                       (managed-candidate-evidence ctx (:command ctx)))
+            feedbacks (if evidence (:feedbacks evidence) feedbacks)
+            outputs (if evidence (:outputs evidence) outputs)
+            aggregate-score (if (seq scores)
                               (/ (reduce + scores) (count scores))
                               0.0)]
         {:command-result/events
          [(->event {:type :gepa/candidate-evaluated
                     :tags #{[:optimization optimization-id]
                             [:candidate candidate-id]}
-                    :body {:optimization-id optimization-id
+                    :body (cond-> {:optimization-id optimization-id
                            :candidate-id candidate-id
                            :scores (vec scores)
                            :aggregate-score aggregate-score
@@ -214,7 +322,22 @@
                            ;; the proposer's "Generated Outputs" slot.
                            :outputs (or outputs {})
                            :metric-calls metric-calls
-                           :evaluated-at (time/now)}})]
+                           :evaluated-at (time/now)}
+                            accounting-mode (assoc :accounting-mode accounting-mode :task-call-ids task-call-ids))})]
+         ;; Two handlers may both observe an unevaluated candidate. The
+         ;; event-store append, not the preceding projection read, chooses
+         ;; which result becomes the immutable candidate evaluation.
+         :command-result/cas
+         {:types #{:gepa/candidate-evaluated :gepa/task-boundary-opened
+                   :gepa/optimization-completed :gepa/optimization-failed}
+          :tags #{[:optimization optimization-id]}
+          :predicate-fn
+          (fn [existing]
+            (let [facts (into [] existing)]
+              (and (not-any? #(#{:gepa/optimization-completed :gepa/optimization-failed} (:event/type %)) facts)
+                   (same-admitted-boundaries? facts boundary admitted-boundaries)
+                   (not-any? #(and (= :gepa/candidate-evaluated (:event/type %))
+                                   (= candidate-id (:candidate-id %))) facts))))}
          :command/result {:aggregate-score aggregate-score
                           :num-scores (count scores)}}))))
 
@@ -329,6 +452,39 @@
 ;; Record Subsample Result (Python GEPA Parity)
 ;; =============================================================================
 
+(defn- valid-managed-subsample? [ctx command]
+  (let [{:keys [optimization-id parent-id iteration task-call-ids subsample-indices
+                parent-scores proposed-scores proposed-instructions accepted?
+                parent-perfect-skip? metric-calls]} command
+        tasks (managed-tasks ctx optimization-id
+                {:kind :subsample :parent-id parent-id :iteration iteration} task-call-ids)
+        roles (group-by :role tasks)
+        parents (:subsample-parent roles)
+        proposals (:subsample-proposed roles)
+        indices-match? (fn [entries]
+                         (and (= (count subsample-indices) (count entries))
+                              (= (set subsample-indices) (set (map :example-index entries)))))
+        ordered-scores (fn [entries]
+                         (let [by-index (into {} (map (juxt :example-index identity) entries))]
+                           (mapv #(get-in by-index [% :result :score]) subsample-indices)))
+        config (:config (rm/get-optimization-summary ctx optimization-id))]
+    (and (seq tasks) (seq subsample-indices)
+         (= (count subsample-indices) (count (set subsample-indices)))
+         (every? #{:subsample-parent :subsample-proposed} (keys roles))
+         (indices-match? parents)
+         (= parent-scores (ordered-scores parents))
+         (= metric-calls (reduce + (map :attempt-count tasks)))
+         (if parent-perfect-skip?
+           (and (get config :skip-perfect-score true)
+                (empty? proposals)
+                (every? #(= 1.0 %) parent-scores)
+                (= parent-scores proposed-scores)
+                (false? accepted?))
+           (and (indices-match? proposals)
+                (every? #(= proposed-instructions (:instructions %)) proposals)
+                (= proposed-scores (ordered-scores proposals))
+                (= accepted? (> (reduce + proposed-scores) (reduce + parent-scores))))))))
+
 (defcommand :gepa record-subsample-result
   "Record the result of subsample evaluation.
 
@@ -339,9 +495,11 @@
    The acceptance criterion matches Python GEPA:
    proposed_sum > parent_sum (strict improvement, not >=)"
   [{{:keys [optimization-id proposal-id parent-id proposed-instructions component-updated
-            subsample-indices iteration parent-scores proposed-scores accepted? metric-calls]} :command
+            subsample-indices iteration parent-scores proposed-scores accepted? metric-calls accounting-mode task-call-ids parent-perfect-skip?]} :command
     :keys [event-store tenant-id] :as ctx}]
   (let [opt-state (rm/get-optimization-summary ctx optimization-id)
+        boundary {:kind :subsample :parent-id parent-id :iteration iteration}
+        admitted-boundaries (boundary-identities ctx optimization-id boundary)
         parent-sum (reduce + parent-scores)
         proposed-sum (reduce + proposed-scores)
         already-recorded?
@@ -352,10 +510,21 @@
                                 {:tenant-id tenant-id
                                  :types #{:gepa/subsample-evaluated}})))]
     (cond
+      (#{:completed :failed} (:status opt-state))
+      {::anom/category ::anom/conflict ::anom/message "Optimization is terminal"}
+
       ;; Optimization not found
       (nil? (:optimization-id opt-state))
       {::anom/category ::anom/not-found
        ::anom/message "Optimization not found"}
+
+      (and (or (= :tasks accounting-mode)
+               (managed-boundary? ctx optimization-id
+                                  {:kind :subsample :parent-id parent-id :iteration iteration}))
+           (or (not= :tasks accounting-mode)
+               (not (valid-managed-subsample? ctx (:command ctx)))))
+      {::anom/category ::anom/conflict
+       ::anom/message "Managed subsample requires complete original comparison evidence"}
 
       already-recorded?
       {:command-result/events []
@@ -369,7 +538,7 @@
        [(->event {:type :gepa/subsample-evaluated
                   :tags #{[:optimization optimization-id]
                           [:parent parent-id]}
-                  :body {:optimization-id optimization-id
+                  :body (cond-> {:optimization-id optimization-id
                          :parent-id parent-id
                          :proposed-instructions proposed-instructions
                          :component-updated component-updated
@@ -381,7 +550,22 @@
                          :proposed-sum proposed-sum
                          :accepted? accepted?
                          :metric-calls metric-calls
-                         :evaluated-at (time/now)}})]
+                         :evaluated-at (time/now)}
+                          accounting-mode (assoc :accounting-mode accounting-mode :task-call-ids task-call-ids
+                                                 :parent-perfect-skip? (boolean parent-perfect-skip?)))})]
+       ;; The read above handles sequential replay; only the atomic append
+       ;; guard can arbitrate a resume worker and subscriber finishing together.
+       :command-result/cas
+       {:types #{:gepa/subsample-evaluated :gepa/task-boundary-opened
+                 :gepa/optimization-completed :gepa/optimization-failed}
+        :tags #{[:optimization optimization-id]}
+        :predicate-fn (fn [existing]
+                        (let [facts (into [] existing)]
+                          (and (not-any? #(#{:gepa/optimization-completed :gepa/optimization-failed} (:event/type %)) facts)
+                   (same-admitted-boundaries? facts boundary admitted-boundaries)
+                               (not-any? #(and (= :gepa/subsample-evaluated (:event/type %))
+                                               (= parent-id (:parent-id %))
+                                               (= iteration (:iteration %))) facts))))}
        :command/result {:accepted? accepted?
                         :parent-sum parent-sum
                         :proposed-sum proposed-sum
@@ -496,32 +680,60 @@
                        :resumed-at (time/now)}})]
      :command/result {:status :resumed}}))
 
+(defn- managed-call? [events call-id]
+  (some #(and (= :gepa/task-boundary-opened (:event/type %))
+              (some (fn [task] (= call-id (:call-id task))) (:tasks %)))
+        events))
+
 (defcommand :gepa record-task-call
   "Persist one completed GEPA workflow/metric evaluation under a stable call
-   identity so restart can reuse it without another model call or charge."
+   identity so restart can reuse it without another model call or charge.
+   Exact replay is a no-op; different evidence for the same call conflicts."
   [{{:keys [optimization-id call-id role example-index trace-id output score
             feedback model usage]} :command
     :keys [event-store tenant-id]}]
-  (if (some #(= call-id (:call-id %))
-            (into [] (es/read event-store {:tenant-id tenant-id
-                                           :types #{:gepa/task-call-completed}})))
-    {:command-result/events [] :command/result {:call-id call-id :reused? true}}
+  (let [body {:optimization-id optimization-id
+              :call-id call-id
+              :role role
+              :example-index example-index
+              :trace-id trace-id
+              :output output
+              :score score
+              :feedback feedback
+              :model model
+              :usage usage}
+        existing (some #(when (= call-id (:call-id %)) %)
+                       (into [] (es/read event-store {:tenant-id tenant-id
+                                                      :types #{:gepa/task-call-completed}
+                                                      :tags #{[:call call-id]}})))]
+    (cond
+      (managed-call? (into [] (es/read event-store
+                               {:tenant-id tenant-id :types #{:gepa/task-boundary-opened}})) call-id)
+      {::anom/category ::anom/conflict
+       ::anom/message "Managed task completion must use the owned ledger attempt"
+       :call-id call-id}
+
+      existing
+      (if (every? (fn [[k v]] (= v (get existing k))) body)
+        {:command-result/events [] :command/result {:call-id call-id :reused? true}}
+        {::anom/category ::anom/conflict
+         ::anom/message "Task call already has different evaluation results"
+         :call-id call-id})
+      :else
     {:command-result/events
      [(->event {:type :gepa/task-call-completed
                 :tags #{[:optimization optimization-id]
                         [:call call-id]}
-                :body {:optimization-id optimization-id
-                       :call-id call-id
-                       :role role
-                       :example-index example-index
-                       :trace-id trace-id
-                       :output output
-                       :score score
-                       :feedback feedback
-                       :model model
-                       :usage usage
-                       :completed-at (time/now)}})]
-     :command/result {:call-id call-id}}))
+                :body (assoc body :completed-at (time/now))})]
+     :command-result/cas
+     {:types #{:gepa/task-call-completed :gepa/task-boundary-opened}
+      ;; Manifest admission and legacy completion must arbitrate atomically,
+      ;; even when a conflicting call belongs to another optimization.
+      :predicate-fn (fn [existing]
+                      (let [facts (into [] existing)]
+                        (and (not (managed-call? facts call-id))
+                             (not-any? #(= call-id (:call-id %)) facts))))}
+     :command/result {:call-id call-id}})))
 
 (defcommand :gepa record-proposal-ready
   "Persist the complete proposal before its first evaluation. This is the
@@ -623,13 +835,40 @@
 ;; Complete Optimization
 ;; =============================================================================
 
+(defn- ready-unpublished-comparison? [state config]
+  (some (fn [[boundary entries]]
+          (let [manifest (mapcat :tasks entries)
+                tasks (map #(get-in state [:tasks (:call-id %)]) manifest)
+                roles (group-by :role tasks)
+                parents (:subsample-parent roles)
+                proposals (:subsample-proposed roles)
+                ready? (case (:kind boundary)
+                         :candidate true
+                         :subsample
+                         (or (and (seq parents) (seq proposals)
+                                  (= (frequencies (map :example-index parents))
+                                     (frequencies (map :example-index proposals))))
+                             (and (seq parents) (empty? proposals)
+                                  (get config :skip-perfect-score true)
+                                  (every? #(= 1.0 (get-in % [:result :score])) parents)))
+                         false)]
+            (and ready?
+                 (not (contains? (:completed-boundaries state) boundary))
+                 (seq manifest)
+                 (every? #(= :completed (:status %)) tasks))))
+        (group-by :boundary (vals (:boundaries state)))))
+
 (defcommand :gepa complete-optimization
   "Mark an optimization run as completed.
 
    Calculates final statistics and identifies the best candidate."
   [{{:keys [optimization-id]} :command
-    :keys [event-store] :as ctx}]
-  (let [opt-state (rm/get-optimization-summary ctx optimization-id)
+    :keys [event-store tenant-id] :as ctx}]
+  (let [managed-events (into [] (es/read event-store
+                                       {:tenant-id tenant-id :types ledger/event-types
+                                        :tags #{[:optimization optimization-id]}}))
+        managed-state (reduce ledger/reduce-event nil managed-events)
+        opt-state (rm/get-optimization-summary ctx optimization-id)
         pop-state (rm/get-population-state ctx optimization-id)
         ;; Find best candidate
         evaluated-candidates (->> (vals (:candidates pop-state))
@@ -642,9 +881,17 @@
         final-score (or (:aggregate-score best-candidate) 0.0)
         improvement (- final-score initial-score)]
     (cond
-      (= :completed (:status opt-state))
+      (#{:completed :failed} (:status opt-state))
       {::anom/category ::anom/conflict
-       ::anom/message "Optimization already completed"}
+       ::anom/message "Optimization is already terminal"}
+
+      (some #(not= :completed (:status %)) (vals (:tasks managed-state)))
+      {::anom/category ::anom/conflict
+       ::anom/message "Optimization has admitted unfinished managed tasks"}
+
+      (ready-unpublished-comparison? managed-state (:config opt-state))
+      {::anom/category ::anom/conflict
+       ::anom/message "Optimization has completed task evidence awaiting comparison publication"}
 
       (nil? best-candidate)
       {::anom/category ::anom/incorrect
@@ -664,6 +911,13 @@
                          :num-candidates (count (:candidates pop-state))
                          :improvement improvement
                          :completed-at (time/now)}})]
+       :command-result/cas
+       {:types ledger/event-types :tags #{[:optimization optimization-id]}
+        :predicate-fn (fn [current]
+                        (let [facts (into [] current)]
+                          (and (not-any? #(#{:gepa/optimization-completed :gepa/optimization-failed}
+                                           (:event/type %)) facts)
+                               (= (mapv :event/id managed-events) (mapv :event/id facts)))))}
        :command/result {:best-candidate-id (:candidate-id best-candidate)
                         :final-score final-score
                         :improvement improvement}})))
@@ -675,8 +929,11 @@
 (defcommand :gepa fail-optimization
   "Mark an optimization run as failed."
   [{{:keys [optimization-id error-message]} :command
-    :keys [event-store] :as ctx}]
-  (let [opt-state (rm/get-optimization-summary ctx optimization-id)]
+    :keys [event-store tenant-id] :as ctx}]
+  (let [managed-events (into [] (es/read event-store
+                                       {:tenant-id tenant-id :types ledger/event-types
+                                        :tags #{[:optimization optimization-id]}}))
+        opt-state (rm/get-optimization-summary ctx optimization-id)]
     (cond
       (= :completed (:status opt-state))
       {::anom/category ::anom/conflict
@@ -693,6 +950,13 @@
                   :body {:optimization-id optimization-id
                          :error-message error-message
                          :failed-at (time/now)}})]
+       :command-result/cas
+       {:types ledger/event-types :tags #{[:optimization optimization-id]}
+        :predicate-fn (fn [current]
+                        (let [facts (into [] current)]
+                          (and (not-any? #(#{:gepa/optimization-completed :gepa/optimization-failed}
+                                           (:event/type %)) facts)
+                               (= (mapv :event/id managed-events) (mapv :event/id facts)))))}
        :command/result {:status :failed}})))
 
 ;; =============================================================================

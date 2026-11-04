@@ -884,3 +884,36 @@ passes 1 test / 15 assertions, independently repeated on the main thread. All
 original nullable, complete event equality, replay, digest and timeout checks
 remain. Allium check/analyse retain 114 information diagnostics, 39 warnings,
 zero errors and no analysis findings. No production code changes.
+
+## Concurrent GEPA result publication
+
+- [x] GEPA-RESULT-1: Two actual public result commands whose empty dedup reads overlap publish one durable terminal result and charge the metric budget once, under DurableOptimizationLifecycle.ResumeFromRecordedBoundary.
+
+- [x] GEPA-RESULT-2: Public resume plus the real subsample pubsub processor both complete their result-command paths without worker faults; one durable start produces one terminal result. Other optimization stages remain outside this focused boundary, and task-call ledger evidence is retained separately.
+
+GEPA result verification: budget namespace3tests19assertions; actual resume/subscriber integration1test9assertions.2obligations,2covered,0uncovered for result publication only. Independent root inspection pending. A separate task-ownership gap is proven: the integration emits4task-call facts for2stable IDs and executes4trees; atomic result publication does not repair concurrent task dispatch or its accounting. Full resume safety remains open.
+
+## GEPA recovery integration
+
+- [x] GEPA-RECOVERY-1: Concurrent resume/subscriber share two intended task trees and metric calls, two task records, one aggregate, and correct projected spend.
+- [x] GEPA-RECOVERY-2: Durable task admission, last-slot competition, renewable ownership and stale-owner fencing through real Grain commands.
+- [x] GEPA-RECOVERY-3: Restart before dispatch, during execution, after tree completion, and after task completion preserves original work and charges.
+- [x] GEPA-RECOVERY-4: Same metric identity survives cold restart; missing custom registration requires visible recovery.
+- [x] GEPA-RECOVERY-5: Safe metric retry uses original outputs and new charged attempt; unsafe unknown outcomes require attention; errors are not invented scores.
+- [x] GEPA-RECOVERY-6: Legacy adoption and new accounting agree across all public budget views without double charge.
+- [x] GEPA-RECOVERY-7: Periodic recovery discovers abandoned GEPA tasks, including post-tree work, without manual resume or stealing healthy ownership.
+- [x] GEPA-RECOVERY-8: Public durable tree-result lookup is read-only, tenant-isolated, and reconstructs exact outputs after SQLite restart.
+
+Implementation briefs: docs/issues/gepa-recovery/. Existing GEPA-RESULT checks cover terminal publication only, not execution exclusivity.
+
+- [x] GEPA-RECOVERY-9: Concurrent candidate-result and legacy task-result commands append one result for each durable identity; candidate spend increments once, with actual command/projection evidence.
+
+- [x] GEPA-RECOVERY-10: Managed aggregate commands reject unfinished, unrelated or mismatched task evidence; legitimate parent-perfect skips are explicit; terminal completion preserves admitted unfinished work.
+
+- [x] GEPA-RECOVERY-11: Built-in metrics select canonical keyword blackboard answer fields rather than echoed inputs; configured reflection generation limits reach the provider request.
+
+- [x] GEPA-RECOVERY-12: After SQLite close/reopen before task-manifest creation, the actual named GEPA evaluation processor catches up the durable evaluation-start event without manual resume; one task, workflow, metric invocation and aggregate result survive repeated named startup. Existing-behavior verification for DurableOptimizationLifecycle.ResumeFromRecordedBoundary; expected green, with no production changes.
+
+Recovery obligation evidence: `docs/issues/gepa-recovery/09-final-verification.md`
+records the independent command, workflow, named-startup and separate-process
+proofs. These completed obligations do not imply a completed full CI gate.

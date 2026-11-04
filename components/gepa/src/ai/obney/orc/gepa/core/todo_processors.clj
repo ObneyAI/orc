@@ -27,6 +27,11 @@
             [ai.obney.orc.gepa.core.proposer :as proposer]
             [ai.obney.orc.gepa.core.sampler :as sampler]
             [ai.obney.orc.gepa.core.optimization :as optimization]
+            [ai.obney.orc.gepa.core.task-ledger :as task-ledger]
+            [ai.obney.orc.gepa.core.task-execution :as task-execution]
+            [ai.obney.orc.gepa.core.recovery :as recovery]
+            [ai.obney.orc.gepa.core.metric-runtime :as metric-runtime]
+            [ai.obney.orc.gepa.core.metrics :as metrics]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.grain.command-processor-v2.interface :as command-processor]
             [ai.obney.grain.event-store-v3.interface :as event-store]
@@ -208,9 +213,9 @@
          (map (fn [{:keys [instance-id score]}]
                 (let [input (get trainset instance-id {})
                       ;; Get expected answer from trainset
-                      expected (or (get input "answer")
-                                   (get input "expected")
-                                   (get input "label")
+                      expected (or (metrics/field-value input "answer")
+                                   (metrics/field-value input "expected")
+                                   (metrics/field-value input "label")
                                    "")
                       ;; Prefer the judges' rich feedback; else legacy string.
                       feedback (reflective-feedback-for-instance
@@ -250,14 +255,14 @@
   [context sheet-id instructions]
   (assoc context :gepa/patched-instructions instructions))
 
-(defn execute-workflow-with-instructions
+(defn execute-unmanaged-workflow
   "Execute a workflow with specific instructions on a single input.
 
    Returns {:output map :trace-id uuid :score double :feedback string-or-nil
             :success? bool}. The :feedback is the judges' rich per-example
    feedback when the metric is the judge metric, else nil (back-compat)."
   ([context sheet-id instructions input metric-fn]
-   (execute-workflow-with-instructions context sheet-id instructions input metric-fn nil))
+   (execute-unmanaged-workflow context sheet-id instructions input metric-fn nil))
   ([context sheet-id instructions input metric-fn
     {:keys [optimization-id role example-index call-scope]}]
   (let [call-id (when optimization-id
@@ -339,6 +344,69 @@
              :usage (:usage provenance)}))
         completed-result)))))))
 
+(defn- metric-descriptor-for [context optimization-id]
+  (or (:metric-descriptor (rm/get-optimization-summary context optimization-id))
+      (when-let [binding (or (optimization/get-metric-fn optimization-id)
+                            (:gepa/metric-fn context))]
+        (let [descriptor (metric-runtime/prepare! context optimization-id {:metric-fn binding})
+              selected (run-command! context
+                         {:command/id (random-uuid) :command/timestamp (time/now)
+                          :command/name :gepa/select-metric :optimization-id optimization-id
+                          :metric-descriptor descriptor})]
+          (or (get-in selected [:command/result :metric-descriptor])
+              ;; A concurrent delivery may have adopted the same identity first.
+              (some :metric-descriptor
+                    (into [] (event-store/read (:event-store context)
+                               {:tenant-id (:tenant-id context)
+                                :types #{:gepa/optimization-started :gepa/metric-selected}
+                                :tags #{[:optimization optimization-id]}}))))))))
+
+(defn- prepare-task-batch! [context sheet-id instructions indexed-examples call-context]
+  (if-not (:optimization-id call-context)
+    call-context
+    (let [{:keys [optimization-id role call-scope]} call-context
+          descriptor (metric-descriptor-for context optimization-id)
+          boundary-id (stable-call-id :gepa/boundary optimization-id role call-scope)
+          boundary (if (= role :candidate)
+                     {:kind :candidate :candidate-id call-scope}
+                     {:kind :subsample :parent-id (first call-scope) :iteration (second call-scope)})
+          tasks (mapv (fn [[index input]]
+                        (let [call-id (stable-call-id :gepa/task optimization-id call-scope role index)]
+                          {:call-id call-id :trace-id (stable-call-id :gepa/trace call-id)
+                           :role role :example-index index :input input :instructions instructions
+                           :sheet-id sheet-id :metric-retry-safe? (true? (:retry-safe? descriptor))
+                           :max-metric-attempts (:max-attempts descriptor 3)}))
+                      indexed-examples)
+          opened (task-ledger/open-boundary! context
+                   {:optimization-id optimization-id :boundary-id boundary-id
+                    :boundary boundary :tasks tasks})]
+      (when-not (= :opened (:status opened))
+        (throw (ex-info "Evaluation boundary cannot execute"
+                        {:gepa/evaluation-status (or (:status opened) :recovery-required)
+                         :boundary-id boundary-id :result opened})))
+      (assoc call-context :boundary-id boundary-id :metric-descriptor descriptor))))
+
+(defn execute-workflow-with-instructions
+  "Evaluate an unmanaged example or execute a previously admitted durable task."
+  ([context sheet-id instructions input metric-fn]
+   (execute-unmanaged-workflow context sheet-id instructions input metric-fn))
+  ([context sheet-id instructions input metric-fn
+    {:keys [optimization-id role example-index call-scope boundary-id metric-descriptor] :as call-context}]
+   (if-not boundary-id
+     (execute-unmanaged-workflow context sheet-id instructions input metric-fn call-context)
+     (let [call-id (stable-call-id :gepa/task optimization-id call-scope role example-index)
+           outcome (task-execution/execute-task! context
+                     {:optimization-id optimization-id :boundary-id boundary-id :call-id call-id}
+                     metric-descriptor)]
+       (if (= :completed (:status outcome))
+         (merge (:result outcome)
+                {:trace-id (get-in outcome [:task :trace-id]) :success? true
+                 :task-call-id call-id :attempt-count (get-in outcome [:task :attempt-count])
+                 :charged? false})
+         (throw (ex-info "Evaluation task has not produced a complete grade"
+                         {:gepa/evaluation-status (or (:status outcome) :recovery-required)
+                          :task outcome})))))))
+
 (defn evaluate-candidate-on-valset
   "Evaluate a candidate's instructions on the full validation set.
 
@@ -352,7 +420,9 @@
   ([context sheet-id instructions valset metric-fn]
    (evaluate-candidate-on-valset context sheet-id instructions valset metric-fn nil))
   ([context sheet-id instructions valset metric-fn call-context]
-  (let [results (doall  ;; Force evaluation for side effects
+  (let [call-context (prepare-task-batch! context sheet-id instructions
+                       (map-indexed vector valset) call-context)
+        results (doall  ;; Force evaluation for side effects
                   (map-indexed
                     (fn [idx example]
                       (u/log ::evaluating-example
@@ -370,7 +440,11 @@
      :outputs (into {} (keep-indexed (fn [idx r]
                                        (when (some? (:output r)) [idx (:output r)]))
                                      results))
-     :metric-calls (count (filter :charged? results))})))
+     :metric-calls (if (:boundary-id call-context)
+                     (reduce + (map :attempt-count results))
+                     (count (filter :charged? results)))
+     :task-call-ids (when (:boundary-id call-context) (mapv :task-call-id results))
+     :accounting-mode (when (:boundary-id call-context) :tasks)})))
 
 (defn evaluate-candidate-on-subsample
   "Evaluate a candidate's instructions on a subsample (minibatch) of trainset.
@@ -393,6 +467,8 @@
    (evaluate-candidate-on-subsample context sheet-id instructions trainset indices metric-fn nil))
   ([context sheet-id instructions trainset indices metric-fn call-context]
   (let [subsample (mapv #(nth trainset %) indices)
+        call-context (prepare-task-batch! context sheet-id instructions
+                       (map vector indices subsample) call-context)
         results (doall
                   (map-indexed
                     (fn [idx example]
@@ -406,22 +482,29 @@
                     subsample))]
     {:scores (mapv :score results)
      :trace-ids (mapv :trace-id results)
-     :metric-calls (count (filter :charged? results))})))
+     :metric-calls (if (:boundary-id call-context)
+                     (reduce + (map :attempt-count results))
+                     (count (filter :charged? results)))
+     :task-call-ids (when (:boundary-id call-context) (mapv :task-call-id results))
+     :accounting-mode (when (:boundary-id call-context) :tasks)})))
 
 (defn default-metric-fn
   "Default metric: exact string match on 'answer' or 'expected' field.
 
    Returns 1.0 if output matches expected, 0.0 otherwise."
   [input output]
-  (let [expected (or (get input "answer")
-                     (get input "expected")
-                     (get input "label"))
-        ;; Look for output in common locations
-        actual (or (get output "answer")
-                   (get output "output")
-                   (get output "result")
-                   ;; Take first string value if single output
-                   (first (filter string? (vals output))))]
+  (let [expected (or (metrics/field-value input "answer")
+                     (metrics/field-value input "expected")
+                     (metrics/field-value input "label"))
+        ;; A named output, even nil/false, takes precedence over other values.
+        missing (Object.)
+        named (reduce (fn [_ k]
+                        (let [v (metrics/field-value output k missing)]
+                          (if (identical? missing v) missing (reduced v))))
+                      missing ["answer" "output" "result"])
+        actual (if (identical? missing named)
+                 (when (= 1 (count output)) (first (vals output)))
+                 named)]
     (if (and expected actual)
       (if (= (str expected) (str actual))
         1.0
@@ -463,10 +546,11 @@
     (fn [prompt]
       (u/log ::calling-llm :model model-name :prompt-length (count prompt))
       (let [result (llm/predict provider module {:prompt prompt}
-                     {:model model-name
-                      :use-function-calling? true
-                      :validate? false
-                      :with-metadata? true})
+                     (merge (:gepa/reflection-options context)
+                            {:model model-name
+                             :use-function-calling? true
+                             :validate? false
+                             :with-metadata? true}))
             outputs (or (:outputs result) result)
             response (str (:response outputs))]
         (when completed!
@@ -498,7 +582,12 @@
                                  reflective-examples model-name nil nil nil))
   ([context parent-instructions component reflective-examples model-name
     optimization-id parent-candidate-id iteration]
-  (let [current-instruction (get parent-instructions component)
+  (let [context (if optimization-id
+                  (assoc context :gepa/reflection-options
+                         (get-in (rm/get-optimization-summary context optimization-id)
+                                 [:config :reflection-options]))
+                  context)
+        current-instruction (get parent-instructions component)
         formatted-examples (reflection/format-reflective-examples reflective-examples)
         call-id (when (and optimization-id parent-candidate-id (some? iteration))
                   (stable-call-id :gepa/proposer optimization-id parent-candidate-id
@@ -629,6 +718,22 @@
 ;; On Candidate Evaluation Started
 ;; =============================================================================
 
+(defn- finish-at-admission-budget-exhaustion!
+  [context optimization-id]
+  (let [tasks (vals (:tasks (task-ledger/get-state context optimization-id)))]
+    (if (some #(not= :completed (:status %)) tasks)
+      (u/log ::budget-exhausted-with-unfinished-work :optimization-id optimization-id)
+      (let [winner (rm/get-best-candidate context optimization-id)]
+        (run-command! context
+          (cond-> {:command/id (random-uuid)
+                   :command/timestamp (time/now)
+                   :command/name (if (some? (:aggregate-score winner))
+                                   :gepa/complete-optimization
+                                   :gepa/fail-optimization)
+                   :optimization-id optimization-id}
+            (nil? (:aggregate-score winner))
+            (assoc :error-message "Metric budget exhausted before a complete candidate evaluation")))))))
+
 (defn on-candidate-evaluation-started
   "Handle candidate-evaluation-started event.
 
@@ -708,12 +813,15 @@
                   (u/log ::evaluation-error
                          :error (.getMessage e)
                          :candidate-id candidate-id)
+                  (when (= :budget-exhausted (:gepa/evaluation-status (ex-data e)))
+                    (finish-at-admission-budget-exhaustion! context optimization-id))
+                  (when-not (:gepa/evaluation-status (ex-data e))
                   (run-command! context
                     {:command/id (random-uuid)
                      :command/timestamp (time/now)
                      :command/name :gepa/fail-optimization
                      :optimization-id optimization-id
-                     :error-message (str "Candidate evaluation failed: " (.getMessage e))})
+                     :error-message (str "Candidate evaluation failed: " (.getMessage e))}))
                   nil))
               (do
                 (run-command! context
@@ -743,7 +851,8 @@
                      :candidate-id candidate-id
                      :scores (:scores eval-result)
                      :trace-ids (:trace-ids eval-result)
-                     :metric-calls (:metric-calls eval-result)}
+                     :metric-calls (:metric-calls eval-result)
+                     :accounting-mode :tasks :task-call-ids (:task-call-ids eval-result)}
               (:feedbacks eval-result) (assoc :feedbacks (:feedbacks eval-result))
               (:outputs eval-result) (assoc :outputs (:outputs eval-result)))))))))
 
@@ -970,7 +1079,9 @@
                    :parent-scores parent-scores
                    :proposed-scores parent-scores  ;; Use parent scores (didn't evaluate proposed)
                    :accepted? false                 ;; Not accepted - parent was perfect
-                   :metric-calls (:metric-calls parent-result)}))  ;; Only counted parent evals
+                   :metric-calls (:metric-calls parent-result)
+                   :accounting-mode :tasks :task-call-ids (:task-call-ids parent-result)
+                   :parent-perfect-skip? true}))  ;; Only counted parent evals
 
               ;; Normal case - evaluate proposed and compare
               (let [;; Evaluate PROPOSED on same subsample
@@ -1013,41 +1124,27 @@
                    :parent-scores parent-scores
                    :proposed-scores proposed-scores
                    :accepted? accepted?
-                   :metric-calls metric-calls}))))
+                   :metric-calls metric-calls
+                   :accounting-mode :tasks
+                   :task-call-ids (into (:task-call-ids parent-result) (:task-call-ids proposed-result))}))))
 
         (catch Exception e
           (u/log ::subsample-evaluation-error
                  :error (.getMessage e)
                  :parent-id parent-id)
+          (when (= :budget-exhausted (:gepa/evaluation-status (ex-data e)))
+            (finish-at-admission-budget-exhaustion! context optimization-id))
           ;; On error, skip this mutation and let the system continue
           nil))
 
-      ;; No trainset - simulate subsample evaluation
-      (let [simulated-parent-scores (vec (repeatedly (count subsample-indices) #(+ 0.3 (* 0.4 (rand)))))
-            simulated-proposed-scores (vec (repeatedly (count subsample-indices) #(+ 0.35 (* 0.45 (rand)))))
-            parent-sum (reduce + simulated-parent-scores)
-            proposed-sum (reduce + simulated-proposed-scores)
-            accepted? (> proposed-sum parent-sum)]
-
-        (u/log ::simulating-subsample-evaluation
-               :parent-sum parent-sum
-               :proposed-sum proposed-sum
-               :accepted? accepted?)
-
-        (run-command! context
-          {:command/id (random-uuid)
-           :command/timestamp (time/now)
-           :command/name :gepa/record-subsample-result
-           :optimization-id optimization-id
-           :parent-id parent-id
-           :proposed-instructions proposed-instructions
-           :component-updated component-updated
-           :subsample-indices subsample-indices
-           :iteration iteration
-           :parent-scores simulated-parent-scores
-           :proposed-scores simulated-proposed-scores
-           :accepted? accepted?
-           :metric-calls (* 2 (count subsample-indices))})))))) ;; Close outer let for skip-perfect?
+      ;; Missing observations cannot justify a comparison or consume metric
+      ;; budget. Surface the unavailable prerequisite as durable failure.
+      (run-command! context
+        {:command/id (random-uuid)
+         :command/timestamp (time/now)
+         :command/name :gepa/fail-optimization
+         :optimization-id optimization-id
+         :error-message "Subsample evaluation requires a persisted non-empty training set and workflow"})))))
 
 ;; =============================================================================
 ;; On Subsample Evaluated
@@ -1319,3 +1416,18 @@
   "Handle optimization-failed: deliver failure to waiting callers."
   [context]
   (on-optimization-failed context))
+
+(defprocessor :gepa on-recovery-scan-triggered
+  {:topics #{:gepa/recovery-scan-triggered}}
+  "Discover abandoned evaluations using canonical task ownership."
+  [context]
+  (recovery/recover-in-progress! context)
+  {})
+
+(defprocessor :gepa on-optimization-recovery-requested
+  {:topics #{:gepa/optimization-recovery-requested}}
+  "Resume the original durable boundary on the normal Grain processor pool."
+  [context]
+  ((requiring-resolve 'ai.obney.orc.gepa.interface/resume!)
+    context (get-in context [:event :optimization-id]))
+  {})
