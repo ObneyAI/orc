@@ -4,6 +4,7 @@
    Contains the main optimize! entry point, completion registry
    for sync callers, and command dispatch helpers."
   (:require [ai.obney.orc.gepa.core.metrics :as metrics]
+            [ai.obney.orc.gepa.core.metric-runtime :as metric-runtime]
             [ai.obney.grain.command-processor-v2.interface :as command-processor]
             [ai.obney.grain.time.interface :as time]
             [cognitect.anomalies :as anom]))
@@ -113,9 +114,11 @@
    ```"
   [context {:keys [sheet-id trainset valset metric-fn judges config
                    inherit-from-previous inherit-from block? timeout-ms]
-            :or {inherit-from-previous true block? false timeout-ms 300000}}]
+            :or {inherit-from-previous true block? false timeout-ms 300000}
+            :as opts}]
   (let [optimization-id (random-uuid)
         start-time (System/currentTimeMillis)
+        metric-descriptor (metric-runtime/prepare! context optimization-id opts)
 
         ;; Build metric function from judges if provided
         effective-metric-fn (cond
@@ -143,10 +146,11 @@
                                       :command/timestamp (time/now)
                                       :command/name :gepa/start-optimization
                                       :optimization-id optimization-id
+                                      :metric-descriptor metric-descriptor
                                       :sheet-id sheet-id
                                       :trainset trainset
                                       :valset valset
-                                      :config config
+                                      :config (or config {})
                                       :inherit-from-previous inherit-from-previous
                                       :inherit-from inherit-from}))]
 

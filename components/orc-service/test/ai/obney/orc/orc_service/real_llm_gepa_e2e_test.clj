@@ -3,7 +3,8 @@
 
    Nothing in this namespace replaces task-model or proposer behavior. When
    the explicit live gate is closed the tests do not register a provider."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [ai.obney.orc.orc-service.gepa-recovery-evidence :as evidence]
             [ai.obney.orc.orc-service.complex-e2e-support :as live]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
@@ -13,6 +14,8 @@
             [ai.obney.orc.gepa.core.read-models]
             [ai.obney.orc.gepa.core.todo-processors]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]))
+
+(use-fixtures :each evidence/capture-test)
 
 (def deliberately-bad-instruction
   "Always answer with exactly BANANA. The input is an opaque identifier: do not interpret it and never answer anything except BANANA.")
@@ -34,7 +37,7 @@
       :instruction deliberately-bad-instruction
       :reads [:question]
       :writes [:answer]
-      :options {:use-function-calling? true})))
+      :options {:use-function-calling? true :max-tokens 65536})))
 
 (defn- optimization-events
   [ctx optimization-id]
@@ -86,7 +89,7 @@
 
 (deftest det-e2e-110-real-llm-gepa-lifecycle-to-pareto-completion
   (live/with-real-openrouter
-    (live/register-openrouter!)
+    (live/register-openrouter-model! live/openrouter-model {:timeout 120000})
     (h/with-async-test-context [ctx]
       (let [ctx (assoc ctx :llm-provider :openrouter)
             sheet-id (sheet/build-workflow! ctx (live-gepa-workflow))
@@ -99,6 +102,7 @@
                           :config {:max-metric-calls configured-budget
                                    :reflection-minibatch-size 1
                                    :reflection-lm live/openrouter-model
+                                   :reflection-options {:max-tokens 65536}
                                    :use-merge true
                                    :skip-perfect-score false}
                           :inherit-from-previous false
@@ -161,7 +165,7 @@
 
 (deftest det-e2e-112-real-llm-optimized-instruction-publication-isolation
   (live/with-real-openrouter
-    (live/register-openrouter!)
+    (live/register-openrouter-model! live/openrouter-model {:timeout 120000})
     (h/with-async-test-context [ctx]
       (let [ctx (assoc ctx :llm-provider :openrouter)
             sheet-id (sheet/build-workflow! ctx (live-gepa-workflow))
@@ -177,6 +181,7 @@
                           :config {:max-metric-calls 20
                                    :reflection-minibatch-size 1
                                    :reflection-lm live/openrouter-model
+                                   :reflection-options {:max-tokens 65536}
                                    :use-merge false
                                    :skip-perfect-score false}
                           :inherit-from-previous false
@@ -227,7 +232,7 @@
 
 (deftest det-e2e-111-real-llm-gepa-failure-and-resumability-boundary
   (live/with-real-openrouter
-    (live/register-openrouter!)
+    (live/register-openrouter-model! live/openrouter-model {:timeout 120000})
     (h/with-async-test-context [original-ctx]
       (let [ctx (assoc original-ctx :llm-provider :openrouter)
             sheet-id (sheet/build-workflow! ctx (live-gepa-workflow))
@@ -239,6 +244,7 @@
                          :config {:max-metric-calls budget
                                   :reflection-minibatch-size 1
                                   :reflection-lm live/openrouter-model
+                                   :reflection-options {:max-tokens 65536}
                                   :use-merge false
                                   :skip-perfect-score false
                                   :pause-after-proposal? true}

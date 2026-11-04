@@ -42,6 +42,10 @@
       (assoc response :body (ByteArrayInputStream. bytes)))
     response))
 
+(def write-evidence!
+  "Write opt-in diagnostic evidence with the same credential protection as HTTP capture."
+  write!)
+
 (defn capture-http
   "Run f with per-request observers. The original Future, callbacks, request
    options, HTTP error behavior and JSON decoder remain Hato's responsibility."
@@ -79,7 +83,9 @@
                           observed-stack (vec (mapcat #(if (= % middleware/wrap-output-coercion)
                                                         [wrapper %] [%]) stack))]
                       (write! directory (str id "-request")
-                              {:request-body (:body options) :execution *execution*} secrets)
+                              {:request-body (:body options)
+                               :transport-options (select-keys options [:timeout :connect-timeout :read-timeout])
+                               :execution *execution*} secrets)
                       (apply post url (assoc options :middleware observed-stack) callbacks))))]
       (f)))))
 

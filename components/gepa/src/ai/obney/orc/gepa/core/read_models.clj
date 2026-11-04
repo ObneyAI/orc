@@ -12,6 +12,7 @@
 
    Uses defreadmodel + rmp/project for L1/L2 cached projections."
   (:require [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
+            [ai.obney.orc.gepa.core.task-ledger :as task-ledger]
             [clojure.set :as set]
             [com.brunobonacci.mulog :as u]))
 
@@ -57,6 +58,7 @@
 (def optimization-state-event-types
   "Events that affect the optimization state read model."
   #{:gepa/optimization-started
+    :gepa/metric-selected
     :gepa/candidate-created
     :gepa/candidate-evaluated
     :gepa/subsample-evaluated
@@ -399,6 +401,7 @@
           :gepa/optimization-started
           {:optimization-id (:optimization-id event)
            :sheet-id (:sheet-id event)
+           :metric-descriptor (:metric-descriptor event)
            :config (:config event)
            :status :running
            :started-at (str (:started-at event))
@@ -407,6 +410,9 @@
            :best-candidate-id nil
            :total-candidates 0
            :total-metric-calls 0}
+
+          :gepa/metric-selected
+          (assoc opt :metric-descriptor (:metric-descriptor event))
 
           :gepa/candidate-created
           (update opt :total-candidates inc)
@@ -443,7 +449,7 @@
     events))
 
 (defreadmodel :gepa optimization-state
-  {:events optimization-state-event-types :version 1}
+  {:events optimization-state-event-types :version 3}
   [state event] (optimization-state state [event]))
 
 ;; =============================================================================
@@ -506,15 +512,28 @@
 ;; Query Helpers
 ;; =============================================================================
 
+(defn- with-accounting
+  "Compose completed-evaluation statistics with authoritative attempt spend.
+   The internal domain reducers retain historical aggregate counters; callers
+   must use these getters for budget accounting, including unfinished work."
+  [ctx optimization-id state]
+  (when state
+    (let [{:keys [spent reserved available]} (task-ledger/get-accounting ctx optimization-id)]
+      (assoc state :total-metric-calls spent
+                   :reserved-metric-calls reserved
+                   :available-metric-calls available))))
+
 (defn get-gepa-state
   "Get the full GEPA state for an optimization (Python-compatible)."
   [ctx optimization-id]
-  (rmp/project ctx :gepa/gepa-state {:tags #{[:optimization optimization-id]}}))
+  (with-accounting ctx optimization-id
+    (rmp/project ctx :gepa/gepa-state {:tags #{[:optimization optimization-id]}})))
 
 (defn get-population-state
   "Get the current population state for an optimization."
   [ctx optimization-id]
-  (rmp/project ctx :gepa/population {:tags #{[:optimization optimization-id]}}))
+  (with-accounting ctx optimization-id
+    (rmp/project ctx :gepa/population {:tags #{[:optimization optimization-id]}})))
 
 (defn get-pareto-frontier-state
   "Get the current Pareto frontier for an optimization."
@@ -524,7 +543,8 @@
 (defn get-optimization-summary
   "Get the overall optimization state summary."
   [ctx optimization-id]
-  (rmp/project ctx :gepa/optimization-state {:tags #{[:optimization optimization-id]}}))
+  (with-accounting ctx optimization-id
+    (rmp/project ctx :gepa/optimization-state {:tags #{[:optimization optimization-id]}})))
 
 (defn get-candidate
   "Get a specific candidate from the population."

@@ -14,6 +14,17 @@
             [ai.obney.orc.evaluation.interface :as judges]
             [com.brunobonacci.mulog :as u]))
 
+(defn field-value
+  "Read an exact field first, then its string/keyword equivalent. Presence,
+   including explicit nil or false, wins over the equivalent spelling."
+  ([fields k] (field-value fields k nil))
+  ([fields k not-found]
+   (let [equivalent (cond (string? k) (keyword k)
+                         (keyword? k) (subs (str k) 1))]
+     (cond (contains? fields k) (get fields k)
+           (and equivalent (contains? fields equivalent)) (get fields equivalent)
+           :else not-found))))
+
 (defn make-exact-match-metric
   "Create a metric function that checks for exact match on a key.
 
@@ -21,12 +32,13 @@
    (make-exact-match-metric \"answer\")
    ;; Returns 1.0 if output[\"answer\"] == expected[\"answer\"], else 0.0"
   [output-key]
-  (fn [expected actual]
-    (let [exp-val (get expected output-key)
-          act-val (get actual output-key)]
+  (with-meta (fn [expected actual]
+    (let [exp-val (field-value expected output-key)
+          act-val (field-value actual output-key)]
       (if (and exp-val act-val (= (str exp-val) (str act-val)))
         1.0
-        0.0))))
+        0.0)))
+    {::descriptor {:kind :exact-match :configuration {:output-key output-key}}}))
 
 (defn make-contains-metric
   "Create a metric function that checks if output contains expected.
@@ -35,14 +47,15 @@
    (make-contains-metric \"answer\")
    ;; Returns 1.0 if expected is substring of output, else 0.0"
   [output-key]
-  (fn [expected actual]
-    (let [exp-val (str (get expected output-key ""))
-          act-val (str (get actual output-key ""))]
+  (with-meta (fn [expected actual]
+    (let [exp-val (str (field-value expected output-key ""))
+          act-val (str (field-value actual output-key ""))]
       (if (and (seq exp-val)
                (seq act-val)
                (.contains (.toLowerCase act-val) (.toLowerCase exp-val)))
         1.0
-        0.0))))
+        0.0)))
+    {::descriptor {:kind :contains :configuration {:output-key output-key}}}))
 
 ;; =============================================================================
 ;; Judge Metric — weighted tier-1 judges with rich feedback
@@ -120,9 +133,8 @@
 
 (defn- run-judge-dimension
   "Run a single tier-1 judge on the trace-data and extract its score + feedback.
-   Returns {:dim :score :feedback :reasoning :weight}. On any judge failure,
-   degrades to score 0.0 with the error as feedback (so one flaky dimension
-   can't sink the whole metric call)."
+   Returns {:dim :score :feedback :reasoning :weight}. A failed judge is an
+   evaluation failure, never a fabricated zero grade."
   [dim weight trace-data]
   (let [{:keys [fn result-key]} (dimension->judge dim)]
     (try
@@ -130,16 +142,13 @@
                        (get result-key))]
         {:dim dim
          :weight weight
-         :score (double (or (:score result) 0.0))
+         :score (double (:score result))
          :feedback (str (or (:feedback result) ""))
          :reasoning (str (or (:reasoning result) ""))})
-      (catch Throwable t
+      (catch Exception t
         (u/log ::judge-dimension-error :dim dim :error (.getMessage t))
-        {:dim dim
-         :weight weight
-         :score 0.0
-         :feedback (str "Judge error: " (.getMessage t))
-         :reasoning ""}))))
+        (throw (ex-info "Judge dimension did not produce a grade"
+                        {:reason :judge-dimension-failed :dimension dim} t))))))
 
 (defn- input-key-set
   "The set of input keys (both string and keyword forms) so we can tell the
@@ -231,12 +240,19 @@
    the :feedback into the reflective dataset."
   [judges]
   (let [{:keys [weights task]} (normalize-judge-config judges)]
-    (fn judge-metric
+    (with-meta (fn judge-metric
       [input output]
       (let [trace-data (->trace-data input output task)
             futs (mapv (fn [[dim weight]]
                          [dim (future (run-judge-dimension dim weight trace-data))])
-                       weights)
-            dimension-results (mapv (fn [[_dim fut]] @fut) futs)]
-        {:score (weighted-combine dimension-results)
-         :feedback (format-judge-feedback dimension-results)}))))
+                       weights)]
+        (try
+          (let [dimension-results (mapv (fn [[_dim fut]] @fut) futs)]
+            {:score (weighted-combine dimension-results)
+             :feedback (format-judge-feedback dimension-results)})
+          (finally
+            ;; Cancellation requests stop unnecessary local work; they do not
+            ;; establish that an already-sent provider request was cancelled.
+            (doseq [[_dim fut] futs]
+              (when-not (realized? fut) (future-cancel fut)))))))
+      {::descriptor {:kind :judges :configuration {:weights weights :task task}}})))
