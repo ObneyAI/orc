@@ -46,4 +46,3 @@ This is verification of implemented behavior; an initially passing checkpoint is
   "done / all green" report — re-run the proof, re-read the code, try to break the claims, demand proof. **Run the
   `/inspect` skill** for this.
 - **Report faithfully** — including your own mis-steps and anything you couldn't verify.
-

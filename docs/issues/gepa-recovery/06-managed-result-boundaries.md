@@ -56,4 +56,3 @@ Root rereads patch, reruns focused tests and actual resume/subscriber trace, che
   "done / all green" report — re-run the proof, re-read the code, try to break the claims, demand proof. **Run the
   `/inspect` skill** for this.
 - **Report faithfully** — including your own mis-steps and anything you couldn't verify.
-
