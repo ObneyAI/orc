@@ -211,15 +211,14 @@
 ;; --------------------------------------------------------------------------- ;;
 ;; Opt-in prompt caching
 ;; --------------------------------------------------------------------------- ;;
-;; Providers that cache by prefix (Anthropic, directly or through OpenRouter)
-;; only reuse a prompt up to an explicit breakpoint. A node's instruction is
-;; the same on every call; the inputs are not. With `:prompt-cache? true` the
+;; A node can reuse its instruction across calls with different inputs.
+;; With `:prompt-cache? true` the
 ;; instruction travels as its own text part, marked `cache_control ephemeral`,
 ;; ahead of a second part holding the field guide and inputs, so the stable
 ;; prefix (tool definition, then instruction) is reused across calls with
 ;; different inputs. The tool definition is marked too, for providers that read
 ;; a marker there. Off by default: the request is then byte-identical to before.
-;; A provider that does not cache ignores the marker.
+;; Cache support and admission depend on the provider; inspect response usage.
 ;;
 ;; `:generic-tool-description? true` (function mode) stops the instruction being
 ;; sent a second time as the tool's description; the message already carries it.

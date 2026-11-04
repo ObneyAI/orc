@@ -1176,3 +1176,72 @@ Independent focused namespaces pass 16 tests / 108 assertions. No generated
 skeletons, weakened assertions, or excluded production domains were introduced.
 Allium check and analyse retain 153 diagnostics (114 information, 39 warnings),
 zero errors and no analysis findings. Full CI remains the merge gate.
+
+## GEPA result publication concurrency
+
+`DurableOptimizationLifecycle.ResumeFromRecordedBoundary` now has a deterministic overlapping-public-command witness: the result append uses Grain CAS, preserving one terminal fact and one charge for that fact. Existing sequential replay assertions remain. The budget namespace passed3tests19assertions; the real resume/subscriber boundary passed1test9assertions. No specification changes; Allium baseline remains114info39warning0errors0findings.
+
+Coverage is deliberately limited: the real integration additionally proved duplicate task executions and duplicate task-ledger IDs across resume/subscriber workers. Result CAS does not establish task-level ownership, exactly-once execution, or complete budget safety. Those remain an implementation gap under the same recovery contract, with full event evidence retained in `/private/tmp/gepa-result-race/resume-green-v4.edn` for the current investigation. No test assertions were weakened to hide that scope.
+
+
+## Durable GEPA task recovery
+
+GEPA-RECOVERY: **12 obligations, 12 covered, 0 uncovered** for the newly tracked
+recovery contracts. This count does not claim exhaustive coverage of every rule
+in the broader GEPA specification.
+
+| Obligations | Independent evidence |
+|---|---|
+| 1: concurrent delivery | `gepa_resume_result_race_test.clj`; two original tasks, one aggregate |
+| 2: admission and ownership | `task_ledger_test.clj`; public command races, renewal and stale-owner fencing |
+| 3: original execution recovery | `gepa_cold_recovery_test.clj`; separate JVMs before dispatch, during execution, after tree completion, and after grading |
+| 4: metric identity | metric-runtime and metric-identity tests plus custom cold recovery; 10 preparation and 40 recovery assertions |
+| 5: safe metric retry | `gepa_metric_recovery_test.clj`; original outputs, charged retries, unsafe and exhausted outcomes |
+| 6: accounting and adoption | public-accounting and task-ledger tests plus cold recovery's five public views |
+| 7: scheduled recovery | `gepa_periodic_recovery_test.clj`; actual registered schedule, expired work and untouched healthy ownership |
+| 8: durable readback | `durable_execution_result_test.clj`; SQLite reopen, exact result, no writes, tenant isolation |
+| 9: publication races | `atomic_result_publication_test.clj`; concurrent public commands and projected totals |
+| 10: aggregate and terminal integrity | managed-result and partial-budget tests; final terminal set passed 18 tests and 187 assertions |
+| 11: canonical fields and options | metric-blackboard tests and captured live requests with the configured generation cap |
+| 12: named startup before manifest | `gepa_named_startup_recovery_test.clj`; SQLite reopen and repeated named startup |
+
+The running-tree crash proof passed 12 preparation and 30 recovery assertions.
+It preserves the completed leaf verbatim and resumes only the interrupted pure
+leaf on the original tick. It does not establish exactly-once external effects.
+The targeted live GEPA proof passed 1 test and 37 assertions with 24 complete
+request/response captures. Exact logs and scope are in
+`docs/issues/gepa-recovery/09-final-verification.md`.
+
+The local aggregate was intentionally stopped after 78 completed namespaces,
+687 tests and 3,668 assertions without recorded failures. It is not a passing
+aggregate gate. Full deterministic and live CI on the pushed revision remain
+required before merge. No production domain or existing assertion was removed;
+scripted capabilities in deterministic tests are not claimed as live-model proof.
+No generated mock, TODO or skeleton remains in these twelve obligations.
+Allium retains 114 informational diagnostics, 39 warnings, zero errors and zero
+analysis findings.
+
+
+## Opt-in request layout
+
+PROMPT-CACHE: **2 obligations, 2 covered, 0 uncovered**. The function and marker
+request tests plus `strict_contract_e2e_test.clj` preserve default requests,
+explicitly enabled cache/generic-description behavior, full serialized schemas
+and field descriptions, exact image payloads, required null values, absent
+optional values, and durable strict-workflow writes. Local controls are absent
+from provider requests. Marker-mode requests remain unchanged.
+
+The three affected namespaces passed 26 tests and 288 assertions. Independent
+execution of the three added checks passed 3 tests and 44 assertions. Evidence:
+`/private/tmp/orc-pr47-cache-checks.log` and
+`/private/tmp/orc-pr47-root-wire-proof.log`. These checks were expected-green
+verification of the existing feature; no missing-feature RED claim is made.
+Existing assertions were preserved. The HTTP fixture replaces only transport
+and preserves the pinned serializer; it is not evidence of provider cache hits.
+No generated TODO or skeleton remains in these two obligations.
+
+The pinned client drops tool-level cache markers and preserves the message
+marker. Documentation now states this limitation and provider-dependent cache
+eligibility without promising a hit or savings. The Allium annotations capture
+opt-in layout and unchanged structured contracts; no new diagnostic is expected
+beyond the recorded baseline. Final full CI remains the merge gate.

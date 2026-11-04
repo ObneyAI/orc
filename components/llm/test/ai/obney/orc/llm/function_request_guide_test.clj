@@ -323,3 +323,39 @@
                                                {:prompt-cache? true}))]
     (is (= ["text" "text" "image_url"] (mapv :type content)))
     (is (= {:type "ephemeral"} (:cache_control (first content))))))
+
+
+(deftest cached-generic-function-contract-survives-the-pinned-wire-serializer
+  (let [spec (update triage :inputs into
+                     [{:name :front :type :image :spec :string}
+                      {:name :back :type :image :spec :string}])
+        values {:subject "Refund please"
+                :front "data:image/png;base64,AAAA"
+                :back "data:image/jpeg;base64,BBBB"}
+        options {:prompt-cache? true :generic-tool-description? true}
+        plain (:body (capture-wire-body spec values {}))
+        {:keys [raw body]} (capture-wire-body spec values options)
+        changed (:body (capture-wire-body spec (assoc values :subject "Where is my parcel") options))
+        parts (get-in body ["messages" 0 "content"])
+        plain-parts (get-in plain ["messages" 0 "content"])]
+    (is (= ["text" "text" "image_url" "image_url"] (mapv #(get % "type") parts)))
+    (is (= {"type" "text" "text" "Triage the ticket."
+            "cache_control" {"type" "ephemeral"}} (first parts)))
+    (is (= (first parts) (get-in changed ["messages" 0 "content" 0])))
+    (is (not= (second parts) (get-in changed ["messages" 0 "content" 1])))
+    (is (= (get-in plain-parts [0 "text"])
+           (str (get-in parts [0 "text"]) "\n\n" (get-in parts [1 "text"]))))
+    (is (= [{"type" "image_url" "image_url" {"url" (:front values)}}
+            {"type" "image_url" "image_url" {"url" (:back values)}}]
+           (subvec parts 2)))
+    (is (= (subvec plain-parts 1) (subvec parts 2)))
+    (is (= (get-in plain ["tools" 0 "function" "parameters"])
+           (get-in body ["tools" 0 "function" "parameters"])))
+    (is (= "The reply to send"
+           (get-in body ["tools" 0 "function" "parameters" "properties" "reply" "description"])))
+    (is (= "Submit the structured response" (get-in body ["tools" 0 "function" "description"])))
+    (is (= (get body "tools") (get changed "tools")))
+    (is (not (contains? (get-in body ["tools" 0]) "cache_control"))
+        "the pinned serializer drops tool-level markers; the message marker survives")
+    (doseq [flag ["prompt-cache?" "generic-tool-description?"]]
+      (is (not (str/includes? raw flag))))))

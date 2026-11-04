@@ -76,6 +76,20 @@
 ;; Re-exports: Judges
 ;; =============================================================================
 
+(defn current-judge-config
+  "Return the resolved provider/model used by retained synchronous judges.
+   Consumers may persist this configuration to preserve judging across restart."
+  []
+  {:provider judges/*judge-provider* :model judges/*judge-model*})
+
+(defn call-with-judge-config
+  "Invoke f with the supplied provider/model. Other judge bindings, including
+   mock mode, remain unchanged; futures created by f inherit these bindings."
+  [config f]
+  (binding [judges/*judge-provider* (or (:provider config) judges/*judge-provider*)
+            judges/*judge-model* (or (:model config) judges/*judge-model*)]
+    (f)))
+
 (def get-judge
   "Get a retained synchronous judge function by key (not an assessment).
    Available keys: :grounding, :instruction-following, :reasoning, :completeness, :aggregate"

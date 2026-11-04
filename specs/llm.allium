@@ -75,6 +75,24 @@ contract StructuredPrediction {
         -- response. It is not a declared model output, an accounting increment,
         -- a request/credential dump, or permission to invent unavailable reasoning.
 
+    @invariant RequestOptimizationsAreOptIn
+        -- Absent or disabled cache and generic-description controls preserve
+        -- the ordinary request. In function and strict JSON modes, opting into
+        -- caching separates a nonblank instruction into a stable marked
+        -- prefix before dynamic input meanings, values and images. Blank or
+        -- absent instructions do not introduce an empty marked prefix. Marker
+        -- mode keeps its existing content. These local construction controls
+        -- are consumed by ORC rather than forwarded as provider options.
+
+    @invariant CachedInstructionPreservesContract
+        -- Cache layout preserves the instruction, descriptions, actual input
+        -- values, image payloads, output schema and decoded result semantics.
+        -- A generic function-tool description replaces only the duplicate
+        -- instruction in that tool's description; the message still carries
+        -- the instruction and field descriptions remain in the schema.
+        -- A requested cache marker is not proof of provider cache admission,
+        -- a cache hit, or savings; those require provider evidence.
+
     @invariant StrictOutputProtocolIsPaired
         -- An explicitly selected supported strict JSON output profile derives
         -- its request schema and response decoder from the same declared contract.

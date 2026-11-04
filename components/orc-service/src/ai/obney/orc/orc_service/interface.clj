@@ -192,6 +192,15 @@
      (sheet/execute ctx sheet-id inputs :use-version 2)  ;; Execute specific version"
   runtime/execute)
 
+(def get-execution-result
+  "Read a terminal execution result from durable tenant-scoped events.
+
+   Returns nil when the tick has no terminal result. Otherwise returns its
+   original status, trace ID, canonical outputs and output sources, and the
+   executed version when recorded. This operation does not start execution,
+   register a completion waiter, resume work, or append events."
+  runtime/durable-terminal-result)
+
 (def resume-in-progress!
   "Resume abandoned leaf, delegate, and researcher frontiers after processors
    restart against the same durable event store. Repeated calls are idempotent."

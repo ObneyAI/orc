@@ -7,7 +7,7 @@
             [ai.obney.orc.orc-service.interface :as bt]
             [ai.obney.orc.orc-service.test-helpers :as h]))
 
-(defn- run-strict [content finish-reason refusal]
+(defn- run-strict [content finish-reason refusal & [options]]
   (llm/register-provider! :strict-contract
     {:provider :openrouter :model "controlled/model" :output-mode :json-schema
      :config {:api-key "synthetic-not-sent"}})
@@ -35,7 +35,7 @@
                              :instruction "Report the known source and its status."
                              :reads [:request] :writes [:answer-reasoning :answer]
                              :retry {:max-attempts 1 :backoff-ms []}
-                             :options {:max-retries 0 :max-tokens 256})))
+                             :options (merge {:max-retries 0 :max-tokens 256} options))))
               result (bt/execute ctx workflow {:request "REF-24"}
                                  :timeout-ms 30000 :max-ticks 1 :llm-call-budget 1)
               tick-id (:trace-id result)
@@ -91,3 +91,31 @@
     (is (empty? (filter #(and (= :sheet/execution-value-written (:event/type %))
                              (contains? #{:answer :answer-reasoning} (:key %))) events)))
     (is (= 1 (count requests)))))
+
+
+(deftest cached-strict-workflow-preserves-the-wire-contract-and-durable-writes
+  (let [plain (run-strict valid-content "stop" nil)
+        plain-request (first (:requests plain))]
+    (doseq [options [{:prompt-cache? true}
+                     {:prompt-cache? true :generic-tool-description? true}]]
+      (let [{:keys [result tick completion requests writes]}
+            (run-strict valid-content "stop" nil options)
+            request (first requests)
+            [prefix dynamic :as parts] (get-in request [:messages 0 :content])]
+        (is (= 1 (count requests)))
+        (is (= :success (:status result) (:root-status tick) (:status completion)))
+        (is (= {:source-id "REF-24" :coolant-status nil} (:answer writes)))
+        (is (= (:writes plain) writes))
+        (is (= "The source is known; its status is not." (:answer-reasoning writes)))
+        (is (= (:response_format plain-request) (:response_format request))
+            "all output schema properties and descriptions survive unchanged")
+        (is (= 2 (count parts)))
+        (is (= {:type "text" :text "Report the known source and its status."
+                :cache_control {:type "ephemeral"}} prefix))
+        (is (= {:type "text"} (dissoc dynamic :text)))
+        (is (= (get-in plain-request [:messages 0 :content])
+               (str (:text prefix) "\n\n" (:text dynamic)))
+            "input guide, output meanings and actual values survive unchanged")
+        (is (not (contains? request :tools)))
+        (doseq [flag ["prompt-cache?" "generic-tool-description?"]]
+          (is (not (str/includes? (json/generate-string request) flag))))))))

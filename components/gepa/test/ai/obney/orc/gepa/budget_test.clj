@@ -144,3 +144,51 @@
         (let [calls (:total-metric-calls (rm/get-optimization-summary ctx opt-id))]
           (is (pos? calls) "metric calls should be > 0 after evaluation")
           (is (>= calls 2) "should include at least the 2 metric calls from record-evaluation-result"))))))
+
+(deftest concurrent-subsample-results-have-one-durable-terminal-fact
+  (tu/with-test-context [ctx]
+    (let [started (tu/process-command! ctx {:command/name :gepa/start-optimization
+                                          :sheet-id (random-uuid)
+                                          :trainset [{"question" "q"}]
+                                          :valset [{"question" "q"}]
+                                          :config {:max-metric-calls 10}})
+          opt-id (get-in started [:command/result :optimization-id])
+          parent-id (random-uuid)
+          command {:command/name :gepa/record-subsample-result
+                   :optimization-id opt-id :parent-id parent-id
+                   :proposed-instructions {"instruction" "improved"}
+                   :component-updated "instruction" :subsample-indices [0]
+                   :iteration 3 :parent-scores [0.0] :proposed-scores [1.0]
+                   :accepted? true :metric-calls 2}
+          arrived (java.util.concurrent.CountDownLatch. 2)
+          original-read es/read
+          results
+          (with-redefs [es/read
+                        (fn [store options]
+                          (let [actual (original-read store options)]
+                            (if (and (identical? store (:event-store ctx))
+                                     (= #{:gepa/subsample-evaluated} (:types options))
+                                     (nil? (:tags options)))
+                              (let [snapshot (into [] actual)]
+                                (.countDown arrived)
+                                (when-not (.await arrived 10 java.util.concurrent.TimeUnit/SECONDS)
+                                  (throw (ex-info "Concurrent result reads did not meet" {})))
+                                snapshot)
+                              actual)))]
+            (let [a (future (tu/process-command! ctx command))
+                  b (future (tu/process-command! ctx command))]
+              [(deref a 15000 ::timeout) (deref b 15000 ::timeout)]))
+          facts (into [] (es/read (:event-store ctx)
+                                  {:tenant-id (:tenant-id ctx)
+                                   :types #{:gepa/subsample-evaluated}
+                                   :tags #{[:optimization opt-id]}}))]
+      (is (uuid? opt-id))
+      (is (not-any? #{::timeout} results))
+      (is (= 1 (count (filter #(= :cognitect.anomalies/conflict
+                                  (:cognitect.anomalies/category %)) results)))
+          "The losing concurrent append is rejected by Grain CAS")
+      (is (not-any? #(= :cognitect.anomalies/fault (:cognitect.anomalies/category %)) results)
+          "Worker faults cannot masquerade as successful deduplication")
+      (is (= 1 (count facts)) "Concurrent deliveries publish exactly one result")
+      (is (= 2 (:total-metric-calls (rm/get-optimization-summary ctx opt-id)))
+          "Duplicate completion cannot double-charge the metric budget"))))

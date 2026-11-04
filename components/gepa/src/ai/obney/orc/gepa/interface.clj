@@ -56,6 +56,9 @@
             [ai.obney.orc.gepa.core.todo-processors :as todo]
             [ai.obney.orc.gepa.core.metrics :as metrics]
             [ai.obney.orc.gepa.core.optimization :as optimization]
+            [ai.obney.orc.gepa.core.recovery :as recovery]
+            [ai.obney.orc.gepa.core.periodic-tasks]
+            [ai.obney.orc.gepa.core.metric-runtime :as metric-runtime]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.grain.command-processor-v2.interface :as command-processor]
             [ai.obney.grain.query-processor.interface :as query-processor]
@@ -369,7 +372,9 @@
   [context optimization-id]
   (query-processor/process-query
     (assoc context
-           :query {:query/name :gepa/get-optimization-progress
+           :query {:query/id (random-uuid)
+                   :query/timestamp (time/now)
+                   :query/name :gepa/get-optimization-progress
                    :optimization-id optimization-id})))
 
 (defn get-best-candidate
@@ -391,7 +396,9 @@
   [context optimization-id]
   (query-processor/process-query
     (assoc context
-           :query {:query/name :gepa/get-population
+           :query {:query/id (random-uuid)
+                   :query/timestamp (time/now)
+                   :query/name :gepa/get-population
                    :optimization-id optimization-id})))
 
 (defn get-pareto-frontier
@@ -406,7 +413,9 @@
   [context optimization-id]
   (query-processor/process-query
     (assoc context
-           :query {:query/name :gepa/get-pareto-frontier
+           :query {:query/id (random-uuid)
+                   :query/timestamp (time/now)
+                   :query/name :gepa/get-pareto-frontier
                    :optimization-id optimization-id})))
 
 (defn list-optimizations
@@ -423,7 +432,9 @@
   [context & {:keys [sheet-id status limit]}]
   (query-processor/process-query
     (assoc context
-           :query {:query/name :gepa/list-optimizations
+           :query {:query/id (random-uuid)
+                   :query/timestamp (time/now)
+                   :query/name :gepa/list-optimizations
                    :sheet-id sheet-id
                    :status status
                    :limit limit})))
@@ -660,3 +671,11 @@
   "Manually complete an optimization (for testing)."
   [context optimization-id]
   (commands/complete-optimization! context optimization-id))
+
+(def recover-in-progress!
+  "Request tenant-scoped recovery for abandoned GEPA tasks through Grain processors."
+  recovery/recover-in-progress!)
+
+(def register-metric!
+  "Restore a custom metric by its persisted tenant-scoped identity and revision."
+  metric-runtime/register!)

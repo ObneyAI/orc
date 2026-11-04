@@ -527,6 +527,93 @@ publishes a distinct version, and records `:gepa/winner-applied` linking the
 candidate and both fingerprints. Missing source versions, incomplete runs, and
 winners naming nonexistent workflow components are rejected explicitly.
 
+#### Durable task recovery and metric identity
+
+Each managed evaluation claims a durable task before executing its tree. Duplicate
+resume/subscriber deliveries share the task and original tick identity. A completed
+tree is read back from the event store when grading or aggregate publication is
+missing; recovery does not execute that completed tree again.
+
+Applications own runtime startup. Require `ai.obney.orc.gepa.interface` before
+starting Grain's registered processors and periodic triggers. Start the periodic
+trigger runtime with the application's event-store append capability and tenant
+enumeration, and stop it during application shutdown. Merely requiring GEPA does
+not start a scheduler. The registered `:gepa/recover-evaluations` task emits a scan
+every 30 seconds; ordinary Grain processors request and perform recovery.
+
+```clojure
+;; Optional explicit startup scan, with an active processor runtime and tenant UUID:
+(gepa/recover-in-progress! context)
+
+;; Read original terminal evidence without executing or resuming anything:
+(orc/get-execution-result context tick-id)
+;; nil means no terminal result; otherwise status, trace-id, outputs and provenance.
+```
+
+Use a persistent event store for process recovery. Healthy leases are left alone;
+abandoned ownership becomes recoverable after expiry. Before deploying this
+managed-task version over an older worker version, quiesce the old GEPA workers
+so they cannot dispatch evaluations outside the ownership protocol.
+
+Custom metric functions are process-local capabilities. Their tenant-scoped
+identity, revision, retry policy and limits are durable. Supply stable identities
+when starting an optimization:
+
+```clojure
+(gepa/optimize! context
+  {:sheet-id sheet-id :trainset trainset :valset valset
+   :metric-fn score-response
+   :metric-id "application/response-quality" :metric-revision "1"
+   :metric-retry-safe? true ; only if repeated invocation has safe effects
+   :config {:max-metric-calls 50
+            :metric-max-attempts 3
+            :metric-timeout-ms 300000
+            :reflection-lm reflection-model
+            :reflection-options {:max-tokens 65536}}})
+
+;; Rebind the SAME implementation/revision when rebuilding the application:
+(let [descriptor (:metric-descriptor
+                   (gepa/get-optimization-summary context optimization-id))]
+  (gepa/register-metric! context descriptor score-response))
+(gepa/recover-in-progress! context)
+```
+
+The example token cap must be supported by the chosen reflection model. Reflection
+options persist with the run and reach resumed proposals; model selection and
+structured-response/metadata requirements remain authoritative. Temperature is
+not forced. Task-node options remain separate from reflection options.
+
+Anonymous custom functions receive a generated identity; after restart the
+application must deliberately restore that exact descriptor. Missing custom
+registration or an unsupported/missing descriptor produces recovery-required
+evidence, never a substituted default metric. Built-in exact-match, contains,
+default and judge metrics reconstruct from their descriptors; judge configuration
+is retained with the run.
+
+Metric attempts default to **three attempts, 300000 ms per attempt**; both limits
+must be positive integers. Built-in read-only metrics are retry-safe. Custom
+metrics default to unsafe unless explicitly declared safe. A timeout is an
+unknown outcome: cancelling the local wait does not prove a remote request
+stopped. Only safe metrics can be retried automatically, using the original tree
+output and a newly charged attempt. Exceptions and invalid results do not become
+fabricated zero scores. Inspect `:gepa/task-recovery-required` events and their
+reason when intervention is needed; an optimization still marked running is not
+proof that work can progress without restoring a missing capability.
+
+Task admission reserves budget atomically; dispatch charges it, and metric retries
+consume additional capacity. Aggregate publication does not charge those attempts
+again. Summary/state/population/progress views use the same task accounting. If
+remaining capacity cannot complete a candidate, GEPA selects an already fully
+evaluated winner when available, or durably fails if none exists. It preserves
+completed partial-task evidence without inventing a partial candidate score, and
+never discards admitted unfinished work to declare completion.
+
+Structural metrics accept the exact configured key or its string/keyword
+equivalent, preserving namespaces. Exact spelling takes precedence, even for nil.
+The default metric selects named answer/output/result fields; it only falls back
+to an unnamed value when the output has one entry. An echoed input among several
+fields is not a substitute answer.
+
 ### 2. Algorithm Implementation
 
 The shipped implementation is **native Clojure**. All optimization logic runs in the JVM, event-sourced through Grain.
@@ -750,7 +837,7 @@ The LLM provider is determined by the model string prefix:
 
 #### Budget Control
 
-`:max-metric-calls` (in `:config`) caps the total number of candidate evaluations:
+`:max-metric-calls` (in `:config`) caps charged task attempts, including safe metric retries; it is not a count of candidates or a provider-token budget:
 
 ```clojure
 :config {:max-metric-calls 20}    ;; quick test (fewer iterations)
