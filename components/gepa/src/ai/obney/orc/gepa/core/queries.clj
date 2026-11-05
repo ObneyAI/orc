@@ -48,7 +48,9 @@
                       :candidates (vals (:candidates pop-state))
                       :total (count (:candidates pop-state))
                       :evaluated (count (:evaluated pop-state))
-                      :total-metric-calls (:total-metric-calls pop-state)}}
+                      :total-metric-calls (:total-metric-calls pop-state)
+                      :reserved-metric-calls (:reserved-metric-calls pop-state)
+                      :available-metric-calls (:available-metric-calls pop-state)}}
       {::anom/category ::anom/not-found
        ::anom/message "Optimization not found"})))
 
@@ -119,6 +121,8 @@
                         :status (:status opt-state)
                         :progress-percentage (min 100.0 budget-pct)
                         :metric-calls {:used (:total-metric-calls opt-state)
+                                       :reserved (:reserved-metric-calls opt-state)
+                                       :available (:available-metric-calls opt-state)
                                        :budget (:max-metric-calls config)}
                         :candidates {:total (:total-candidates opt-state)
                                      :evaluated (count (:evaluated pop-state))}

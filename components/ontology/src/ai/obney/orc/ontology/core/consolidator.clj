@@ -1951,7 +1951,12 @@
                                                  :tags #{[:tick (:trace-id exec-result)]}})))
         model-provenance (when model-completion
                            {:trace-id (:trace-id exec-result)
-                            :model (:model model-completion)
+                            ;; The model the call was configured with when
+                            ;; one was (the pin this provenance has always
+                            ;; recorded); :model alone now reports the
+                            ;; provider-resolved model when one was reported.
+                            :model (or (:requested-model model-completion)
+                                       (:model model-completion))
                             :usage (:usage model-completion)})
         operations (get-in exec-result [:outputs :operations])]
     (cond
@@ -2089,7 +2094,12 @@
                                                  :tags #{[:tick (:trace-id exec-result)]}})))
         model-provenance (when model-completion
                            {:trace-id (:trace-id exec-result)
-                            :model (:model model-completion)
+                            ;; The model the call was configured with when
+                            ;; one was (the pin this provenance has always
+                            ;; recorded); :model alone now reports the
+                            ;; provider-resolved model when one was reported.
+                            :model (or (:requested-model model-completion)
+                                       (:model model-completion))
                             :usage (:usage model-completion)})
         outputs (:outputs exec-result)
         ;; Assemble the description-body from the six separate :writes

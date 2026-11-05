@@ -1042,16 +1042,28 @@
 ;; Real benchmark-blocking bug surfaced when document_analysis under
 ;; gemini-3-flash-preview chose :parallel and Phase-2 crashed every time.
 
-(deftest tree-with-parallel-node-executes-children
-  (testing "U13: A tree containing [:parallel ...] compiles and executes,
-            running children to completion. Without U13, this fails with
-            'Unknown tree node type: sheet/parallel'."
-    (with-provider-context [ctx]
+(defn- execute-ordered-parallel-probe
+  "Run the real generated-tree boundary with a bounded predictor arrival order.
+   The response function receives the actual requested field and call ordinal."
+  [first-key response-fn]
+  (with-provider-context [ctx]
+    (let [released (promise)
+          calls (atom [])
+          arrivals (atom 0)
+          gate-timeouts (atom [])]
       (with-redefs [llm/predict
-                    (let [c (atom 0)]
-                      (fn [_provider _module _inputs _opts]
-                        (let [n (swap! c inc)]
-                          {:outputs {(if (= n 1) :left-result :right-result) (str "ans-" n)}
+                    (fn [_provider module inputs _opts]
+                      (let [requested (mapv :name (:outputs module))
+                            k (first requested)]
+                        (when (not= k first-key)
+                          (when (= ::expired (deref released 5000 ::expired))
+                            (swap! gate-timeouts conj k)
+                            (throw (ex-info "Parallel test arrival gate expired" {:requested requested}))))
+                        (let [ordinal (swap! arrivals inc)
+                              outputs (response-fn k ordinal)]
+                          (swap! calls conj {:ordinal ordinal :requested requested :module module :inputs inputs :outputs outputs})
+                          (when (= k first-key) (deliver released true))
+                          {:outputs outputs
                            :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})))]
         (let [tree (rlm-dsl/rlm-dsl->orc-dsl
                      [:sequence
@@ -1061,16 +1073,41 @@
                        [:llm {:instruction "right" :reads [:input] :writes [:right-result]
                               :output-schemas {:right-result :string}}]]
                       [:final {:keys [:left-result :right-result]}]])
-              blackboard {:input "hello"}
               result (tree-executor/execute-tree tree ctx
-                       {:blackboard blackboard
-                        :timeout-ms 10000})]
-          (is (= :success (:status result))
-              (str "Expected :success, got: " (:status result) " error: " (:error result)))
-          (is (contains? (:outputs result) :left-result)
-              "Should populate :left-result write key")
-          (is (contains? (:outputs result) :right-result)
-              "Should populate :right-result write key"))))))
+                       {:blackboard {:input "hello"} :timeout-ms 10000})
+              events (h/read-all-events ctx)]
+          {:result result :events events :calls (vec (sort-by :ordinal @calls))
+           :gate-timeouts @gate-timeouts})))))
+
+(deftest tree-with-parallel-node-executes-children
+  (testing "Generated parallel children preserve their contracts in either predictor arrival order"
+    (doseq [first-key [:left-result :right-result]]
+      (testing (str first-key " arrives first")
+        (let [expected {:left-result "left-answer" :right-result "right-answer"}
+              {:keys [result events calls gate-timeouts]}
+              (execute-ordered-parallel-probe first-key
+                (fn [k _ordinal] {k (get expected k)}))
+              owners (into {} (for [event events
+                                    :when (= :sheet/node-io-set (:event/type event))
+                                    k (:writes event)
+                                    :when (contains? expected k)]
+                                [k (:node-id event)]))
+              writes (filter #(= :sheet/execution-value-written (:event/type %)) events)]
+          (is (empty? gate-timeouts) "A gate timeout is a harness failure, never an accepted ordering.")
+          (is (= [[first-key] [(if (= first-key :left-result) :right-result :left-result)]]
+                 (mapv :requested calls)) "Each child calls its predictor once in the forced order.")
+          (is (= :success (:status result)) (pr-str result))
+          (is (contains? (:outputs result) :left-result))
+          (is (contains? (:outputs result) :right-result))
+          (is (= expected (select-keys (:outputs result) (keys expected))))
+          (is (= 2 (count (set (vals owners)))) "Distinct children own the two declared writes.")
+          (is (every? #(= (get owners (:key %)) (:node-id %))
+                      (filter #(contains? expected (:key %)) writes))
+              "No sibling writes a value owned by the other child.")
+          (doseq [[k value] expected]
+            (let [owned-writes (filter #(and (= k (:key %)) (= (get owners k) (:node-id %))) writes)]
+              (is (= 1 (count owned-writes)) (str "Exactly one canonical write by the owner of " k))
+              (is (= value (:value (first owned-writes))) (str "Correct owned value for " k)))))))))
 
 (comment
   ;; Run individual test

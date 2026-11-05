@@ -133,7 +133,7 @@
    :outputs output-fields
    :instructions prompt})
 
-(defn- grounding-output-fields
+(defn grounding-output-fields
   "PA-3 tier-1 grounding output fields, ordered to FORCE reason-before-score:
    the model fills :reasoning and the claim lists BEFORE it commits to a
    :level band. Field order in the ORC LLM tool schema is the generation
@@ -193,7 +193,7 @@
        "then `grounded-claims` and `ungrounded-claims`, then choose `level`, "
        "then write `feedback`."))
 
-(defn- coerce-source-string
+(defn coerce-source-string
   "Render the producer's inputs/source into a single string for the judge's
    typed `source` input field. Maps/collections are pretty-printed so the
    judge sees structured context; strings pass through."
@@ -234,7 +234,7 @@
 ;; json-in-prompt and never by a permissive :output-schemas override.
 ;; -----------------------------------------------------------------------------
 
-(defn- instruction-following-output-fields []
+(defn instruction-following-output-fields []
   [{:name :reasoning
     :spec :string
     :description (str "Your adversarial compliance audit: enumerate the "
@@ -256,7 +256,7 @@
     :spec :string
     :description "Specific, actionable feedback the producer can act on to better follow the instruction."}])
 
-(defn- reasoning-output-fields []
+(defn reasoning-output-fields []
   [{:name :reasoning
     :spec :string
     :description (str "Your adversarial logical analysis: trace the inference "
@@ -276,7 +276,7 @@
     :spec :string
     :description "Specific, actionable feedback the producer can act on to improve reasoning rigor."}])
 
-(defn- completeness-output-fields []
+(defn completeness-output-fields []
   [{:name :reasoning
     :spec :string
     :description (str "Your adversarial coverage audit: enumerate the distinct "
@@ -386,7 +386,7 @@
                               :model (or (:model result) model)
                               :usage (:usage result)})))
 
-(defn- compose-task
+(defn compose-task
   "RR-33: compose the task string a judge is told, in priority order: the
    node's own instruction when non-blank; else the judge's declared
    :criteria when non-blank; else a synthesized task naming the node's
@@ -703,34 +703,60 @@
      feedback-summary: Combined feedback string
      dimensions: Vector of dimension details"
   [{:keys [inputs] :as _executor-context}]
-  (let [grounding (:grounding-result inputs)
-        instruction (:instruction-result inputs)
-        reasoning (:reasoning-result inputs)
-        completeness (:completeness-result inputs)
-
-        dimensions [(feedback/->metric-dimension
-                     (default-judge-dimension-names :grounding) 0.35
-                     (or (:score grounding) 0.5)
-                     (or (:feedback grounding) "No feedback"))
-                    (feedback/->metric-dimension
-                     (default-judge-dimension-names :instruction-following) 0.25
-                     (or (:score instruction) 0.5)
-                     (or (:feedback instruction) "No feedback"))
-                    (feedback/->metric-dimension
-                     (default-judge-dimension-names :reasoning) 0.20
-                     (or (:score reasoning) 0.5)
-                     (or (:feedback reasoning) "No feedback"))
-                    (feedback/->metric-dimension
-                     (default-judge-dimension-names :completeness) 0.20
-                     (or (:score completeness) 0.5)
-                     (or (:feedback completeness) "No feedback"))]
-
+  (let [;; Only judges whose result is PRESENT are aggregated: the
+        ;; denominator is the selected set. An unselected or failed judge is
+        ;; never given a score (J13 / NothingInvented), so the weights are
+        ;; re-normalised over the judges that actually ran.
+        candidates [[:grounding :grounding-result 0.35]
+                    [:instruction-following :instruction-result 0.25]
+                    [:reasoning :reasoning-result 0.20]
+                    [:completeness :completeness-result 0.20]]
+        dimensions (vec
+                    (for [[judge-key result-key weight] candidates
+                          :let [result (get inputs result-key)]
+                          :when (some? result)]
+                      (do
+                        (when-not (number? (:score result))
+                          (throw (ex-info "aggregate-dimensions: a judge result without a numeric :score cannot be aggregated"
+                                          {:judge judge-key :result result})))
+                        (feedback/->metric-dimension
+                         (default-judge-dimension-names judge-key) weight
+                         (:score result)
+                         (or (:feedback result) "")))))
+        _ (when (empty? dimensions)
+            (throw (ex-info "aggregate-dimensions: no judge result was supplied; nothing to aggregate"
+                            {:supplied-keys (vec (keys inputs))})))
         result (feedback/combine-dimension-scores dimensions)]
 
     {:aggregate-score (:score result)
      :feedback-summary (feedback/aggregate-feedback-summary result)
      :dimensions (mapv #(select-keys % [:name :weight :score :feedback])
                        dimensions)}))
+
+(defn evaluate-trace
+  "Evaluate ONE trace on all four dimensions and aggregate: the per-item body
+   of the batch evaluation suite, as a single primitive code leaf with explicit
+   writes (a parallel map-each collects each iteration's own writes, so a
+   composite whose writes the collection depended on could be misattributed).
+
+   Input keys:
+     trace-data: Map with :inputs, :response, :instruction
+
+   Output keys:
+     current-aggregate: the aggregate result of this trace's four judges"
+  [{:keys [inputs] :as _executor-context}]
+  (let [ctx {:inputs {:trace-data (:trace-data inputs)}}
+        run (fn [judge-fn result-key] (future (get (judge-fn ctx) result-key)))
+        grounding (run grounding-judge :grounding-result)
+        instruction (run instruction-following-judge :instruction-result)
+        reasoning (run reasoning-judge :reasoning-result)
+        completeness (run completeness-judge :completeness-result)]
+    {:current-aggregate
+     (aggregate-dimensions
+      {:inputs {:grounding-result @grounding
+                :instruction-result @instruction
+                :reasoning-result @reasoning
+                :completeness-result @completeness}})}))
 
 ;; =============================================================================
 ;; Convenience Functions

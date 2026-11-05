@@ -59,16 +59,18 @@
 (defn register-openrouter-model!
   "Register one explicitly pinned model under both provider addressing forms
    used by ORC. Call only inside with-real-openrouter."
-  [model]
+  ([model] (register-openrouter-model! model {}))
+  ([model transport-options]
   {:pre [(real-llm-enabled?)]}
   (let [base-config {:provider :openrouter
                      :model model
-                     :config {:api-base "https://openrouter.ai/api/v1"
-                              :api-key (System/getenv openrouter-key-env)}}]
+                     :config (merge transport-options
+                                    {:api-base "https://openrouter.ai/api/v1"
+                                     :api-key (System/getenv openrouter-key-env)})}]
     (litellm-router/register! :openrouter base-config)
     (litellm-router/register! (keyword (str "openrouter/" model))
                               base-config)
-    model))
+    model)))
 
 (defn register-openrouter!
   "Register the default pinned model."

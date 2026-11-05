@@ -123,7 +123,7 @@
       ;; non-standard `:nullable true` the hand-rolled converter emitted. Same
       ;; meaning, standards-compliant spelling.
       (is (= {:oneOf [{:type "integer"} {:type "null"}]
-              :description "ACT composite score (integer (optional))"}
+              :description "ACT composite score (integer or null)"}
              (get-in tool-definition
                      [:function :parameters :properties "act_score"])))
       (is (= ["act_score"]

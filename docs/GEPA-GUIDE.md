@@ -527,6 +527,93 @@ publishes a distinct version, and records `:gepa/winner-applied` linking the
 candidate and both fingerprints. Missing source versions, incomplete runs, and
 winners naming nonexistent workflow components are rejected explicitly.
 
+#### Durable task recovery and metric identity
+
+Each managed evaluation claims a durable task before executing its tree. Duplicate
+resume/subscriber deliveries share the task and original tick identity. A completed
+tree is read back from the event store when grading or aggregate publication is
+missing; recovery does not execute that completed tree again.
+
+Applications own runtime startup. Require `ai.obney.orc.gepa.interface` before
+starting Grain's registered processors and periodic triggers. Start the periodic
+trigger runtime with the application's event-store append capability and tenant
+enumeration, and stop it during application shutdown. Merely requiring GEPA does
+not start a scheduler. The registered `:gepa/recover-evaluations` task emits a scan
+every 30 seconds; ordinary Grain processors request and perform recovery.
+
+```clojure
+;; Optional explicit startup scan, with an active processor runtime and tenant UUID:
+(gepa/recover-in-progress! context)
+
+;; Read original terminal evidence without executing or resuming anything:
+(orc/get-execution-result context tick-id)
+;; nil means no terminal result; otherwise status, trace-id, outputs and provenance.
+```
+
+Use a persistent event store for process recovery. Healthy leases are left alone;
+abandoned ownership becomes recoverable after expiry. Before deploying this
+managed-task version over an older worker version, quiesce the old GEPA workers
+so they cannot dispatch evaluations outside the ownership protocol.
+
+Custom metric functions are process-local capabilities. Their tenant-scoped
+identity, revision, retry policy and limits are durable. Supply stable identities
+when starting an optimization:
+
+```clojure
+(gepa/optimize! context
+  {:sheet-id sheet-id :trainset trainset :valset valset
+   :metric-fn score-response
+   :metric-id "application/response-quality" :metric-revision "1"
+   :metric-retry-safe? true ; only if repeated invocation has safe effects
+   :config {:max-metric-calls 50
+            :metric-max-attempts 3
+            :metric-timeout-ms 300000
+            :reflection-lm reflection-model
+            :reflection-options {:max-tokens 65536}}})
+
+;; Rebind the SAME implementation/revision when rebuilding the application:
+(let [descriptor (:metric-descriptor
+                   (gepa/get-optimization-summary context optimization-id))]
+  (gepa/register-metric! context descriptor score-response))
+(gepa/recover-in-progress! context)
+```
+
+The example token cap must be supported by the chosen reflection model. Reflection
+options persist with the run and reach resumed proposals; model selection and
+structured-response/metadata requirements remain authoritative. Temperature is
+not forced. Task-node options remain separate from reflection options.
+
+Anonymous custom functions receive a generated identity; after restart the
+application must deliberately restore that exact descriptor. Missing custom
+registration or an unsupported/missing descriptor produces recovery-required
+evidence, never a substituted default metric. Built-in exact-match, contains,
+default and judge metrics reconstruct from their descriptors; judge configuration
+is retained with the run.
+
+Metric attempts default to **three attempts, 300000 ms per attempt**; both limits
+must be positive integers. Built-in read-only metrics are retry-safe. Custom
+metrics default to unsafe unless explicitly declared safe. A timeout is an
+unknown outcome: cancelling the local wait does not prove a remote request
+stopped. Only safe metrics can be retried automatically, using the original tree
+output and a newly charged attempt. Exceptions and invalid results do not become
+fabricated zero scores. Inspect `:gepa/task-recovery-required` events and their
+reason when intervention is needed; an optimization still marked running is not
+proof that work can progress without restoring a missing capability.
+
+Task admission reserves budget atomically; dispatch charges it, and metric retries
+consume additional capacity. Aggregate publication does not charge those attempts
+again. Summary/state/population/progress views use the same task accounting. If
+remaining capacity cannot complete a candidate, GEPA selects an already fully
+evaluated winner when available, or durably fails if none exists. It preserves
+completed partial-task evidence without inventing a partial candidate score, and
+never discards admitted unfinished work to declare completion.
+
+Structural metrics accept the exact configured key or its string/keyword
+equivalent, preserving namespaces. Exact spelling takes precedence, even for nil.
+The default metric selects named answer/output/result fields; it only falls back
+to an unnamed value when the output has one entry. An echoed input among several
+fields is not a substitute answer.
+
 ### 2. Algorithm Implementation
 
 The shipped implementation is **native Clojure**. All optimization logic runs in the JVM, event-sourced through Grain.
@@ -547,22 +634,22 @@ calls.
 
 ### 3. Evaluation Judges
 
-**File:** `components/evaluation/src/ai/obney/workshop/evaluation/core/judges.clj`
+**File:** `components/evaluation/src/ai/obney/orc/evaluation/core/judges.clj`
 
-Four judges evaluate LLM outputs:
+GEPA's judge metric calls the built-in judge **functions** directly. It does not request, read or write assessments, so a judge's purposes and rubric declaration do not apply to it, and nothing GEPA scores is recorded as an assessment. Four judges evaluate LLM outputs:
 
-| Judge | Weight | Evaluates |
+| Judge | Default weight in `make-judge-metric` | Evaluates |
 |-------|--------|-----------|
-| `:grounding` | 0.35 | Is response grounded in inputs? No hallucinations? |
+| `:grounding` | 0.30 | Is response grounded in inputs? No hallucinations? |
 | `:instruction-following` | 0.25 | Did LLM follow the instruction? |
 | `:reasoning` | 0.20 | Is reasoning clear and logical? |
-| `:completeness` | 0.20 | Are all aspects of the task addressed? |
+| `:completeness` | 0.25 | Are all aspects of the task addressed? |
 
-Each tier-1 judge returns (ADR 0011 — adversarial, reason-before-score, discrete 1–5 band):
+The defaults apply when `:judges` is a bare set or `true`; a weight map you pass is normalized instead. Each judge function returns its result under a key such as `:grounding-result`:
 ```clojure
 {:score 0.75          ;; [0,1], derived deterministically from :level (NOT self-reported)
  :level 4             ;; the discrete 1–5 band the judge chose
- :reasoning "..."     ;; the adversarial analysis, written BEFORE the band
+ :reasoning "..."     ;; the analysis, written BEFORE the band
  :feedback "..."      ;; Actionable improvement suggestions
  ;; + dimension-specific evidence lists, e.g. :grounded-claims / :ungrounded-claims}
 ```
@@ -750,7 +837,7 @@ The LLM provider is determined by the model string prefix:
 
 #### Budget Control
 
-`:max-metric-calls` (in `:config`) caps the total number of candidate evaluations:
+`:max-metric-calls` (in `:config`) caps charged task attempts, including safe metric retries; it is not a count of candidates or a provider-token budget:
 
 ```clojure
 :config {:max-metric-calls 20}    ;; quick test (fewer iterations)
@@ -774,9 +861,9 @@ Each judge is an LLM-as-judge that evaluates trace data:
  :instruction "Answer concisely."}       ;; The instruction being evaluated
 ```
 
-### Judge Rubrics (tier-1: decoupled criteria × stance × discrete Scale)
+### Judge Rubrics (decoupled criteria × stance × discrete Scale)
 
-Rubrics are defined in `evaluation/core/rubrics.clj` and resolved via `get-tier1-rubric`. Each tier-1 rubric keeps three concerns **decoupled** (ADR 0011):
+The rubrics of the judge functions GEPA calls are defined in `evaluation/core/rubrics.clj` and resolved via `get-tier1-rubric`. (Judges attached to workflow nodes declare their own rubric instead; see [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#rubrics-and-bands).) Each rubric keeps three concerns **decoupled**:
 - **criteria** — *what* to evaluate;
 - **stance** — *how to behave* (an adversarial reviewer persona);
 - **scale** — *how to score* (a first-class discrete **1–5 `Scale`** with explicit per-level bands, mapped deterministically to `[0,1]`; 1→0.0 … 5→1.0).
@@ -792,38 +879,28 @@ The judge **reasons before it scores** (field order forces `:reasoning` + eviden
 1: Ungrounded / fabricated — contradicts the source or nearly all claims are inventions.
 ```
 
-> The old single-string soft-0–1 `*_RUBRIC` defs survive in `rubrics.clj` for legacy retrospective paths only. The live judges use the tier-1 rubrics above. Full detail: [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#tier-1-judge-model-2026-06-decoupled-discrete-scale--reason-before-score--all-four-llm-judges).
+> The old single-string soft-0–1 `*_RUBRIC` defs survive in `rubrics.clj` for legacy retrospective paths only. Full detail: [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#retained-synchronous-functions).
 
 ### Using Judges Directly
 
+`evaluate-single` runs one judge function on a trace map (`:inputs`, `:response` or `:outputs`, `:instruction`) and records nothing. The block below runs here with the mock model:
+
 ```clojure
-(require '[ai.obney.orc.evaluation.interface :as eval])
-
-;; Evaluate a single trace
-(def trace-data
-  {:inputs {:question "What is 2+2?"}
-   :outputs {:answer "4"}
-   :instruction "Answer math questions"})
-
-;; Single judge
-(eval/evaluate-single :grounding trace-data)
-;; => {:score 0.95 :feedback "All claims grounded..." :grounded-claims [...]}
-
-;; All judges at once, with aggregation, is the event-driven path: attach judges to the
-;; workflow's nodes and read the :judge/score-emitted and :judge/composite-score-computed
-;; events. The synchronous all-judges call was retired.
+;; docs-example: synchronous-functions
+(defn mock-grounding-check []
+  (judges/with-mock-llm
+    (judges/evaluate-single
+     :grounding
+     {:inputs {:context "FAQ: The gym is open Monday to Friday, 6am to 10pm."}
+      :response "The gym is open Monday to Friday."
+      :instruction "Answer from the FAQ only."})))
 ```
+
+It returns `{:grounding-result {:score :level :reasoning :feedback ...}}`. Running all judges with aggregation is the event-driven path: attach judges to the workflow's nodes and read `evaluation/get-assessments` and the `:judge/composite-score-computed` events. The synchronous all-judges call was removed.
 
 ### Judge Weights
 
-When aggregating scores, judges have different weights:
-
-| Judge | Weight | Rationale |
-|-------|--------|-----------|
-| Grounding | 0.35 | Most critical - no hallucinations |
-| Instruction Following | 0.25 | Task compliance |
-| Reasoning | 0.20 | Quality of thought |
-| Completeness | 0.20 | Thoroughness |
+`make-judge-metric` takes a weight map and normalizes it. The defaults for a bare `:judges` set are in the table under [Evaluation Judges](#3-evaluation-judges) above.
 
 ---
 
@@ -1034,17 +1111,7 @@ Create deterministic executors for testing without real LLM calls:
 
 ### Mock Judges
 
-Bind `*use-mock-llm*` to avoid real LLM calls during evaluation:
-
-```clojure
-(binding [judges/*use-mock-llm* true]
-  (let [trace-data {:inputs {:question "What is 2+2?"}
-                    :outputs {:answer "4"}
-                    :instruction "Answer accurately."}
-        result (eval/evaluate-single :grounding trace-data)] ; per-judge; the all-judges aggregate was retired
-    (is (number? (:score result)))
-    (is (<= 0.0 (:score result) 1.0))))
-```
+`judges/with-mock-llm` (which binds `*use-mock-llm*`) avoids real LLM calls from the judge functions GEPA's metric uses, as in the example under [Using Judges Directly](#using-judges-directly). It does not affect assessments of judges attached to workflow nodes; stub `llm/predict` for those.
 
 ### GEPA-Compatible Workflow Test Pattern
 

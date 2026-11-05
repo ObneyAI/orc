@@ -3,7 +3,8 @@
 
    Nothing in this namespace replaces task-model or proposer behavior. When
    the explicit live gate is closed the tests do not register a provider."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [ai.obney.orc.orc-service.gepa-recovery-evidence :as evidence]
             [ai.obney.orc.orc-service.complex-e2e-support :as live]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
@@ -12,8 +13,9 @@
             [ai.obney.orc.gepa.core.commands]
             [ai.obney.orc.gepa.core.read-models]
             [ai.obney.orc.gepa.core.todo-processors]
-            [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]))
+
+(use-fixtures :each evidence/capture-test)
 
 (def deliberately-bad-instruction
   "Always answer with exactly BANANA. The input is an opaque identifier: do not interpret it and never answer anything except BANANA.")
@@ -35,7 +37,7 @@
       :instruction deliberately-bad-instruction
       :reads [:question]
       :writes [:answer]
-      :options {:use-function-calling? true})))
+      :options {:use-function-calling? true :max-tokens 65536})))
 
 (defn- optimization-events
   [ctx optimization-id]
@@ -64,20 +66,15 @@
             (when (= component (:name node)) (:instruction node)))
           (get-in started [:execution-snapshot :nodes-by-id]))))
 
-(defn- restart-processors
+(defn restart-processors
   [ctx]
-  (doseq [[_ processor] (:processors ctx)] (tp/stop processor))
+  ;; Evaluation processors are checkpoint pollers, while execution processors
+  ;; are pubsub systems. Restart through the fixture's matching lifecycle so
+  ;; polling handles never reach Integrant halt! and replay keeps its checkpoints.
+  (h/stop-test-processors! ctx)
   (rmp/l1-clear!)
-  (let [base (dissoc ctx :processors)
-        processors (reduce-kv
-                     (fn [acc name {:keys [handler-fn topics]}]
-                       (assoc acc name
-                              (tp/start {:event-pubsub (:event-pubsub ctx)
-                                         :topics topics
-                                         :handler-fn handler-fn
-                                         :context base})))
-                     {} @tp/processor-registry*)]
-    (assoc ctx :processors processors)))
+  (let [base (dissoc ctx :processors)]
+    (assoc base :processors (h/start-test-processors base))))
 
 (defn- await-resume-terminal!
   [ctx optimization-id timeout-ms]
@@ -92,7 +89,7 @@
 
 (deftest det-e2e-110-real-llm-gepa-lifecycle-to-pareto-completion
   (live/with-real-openrouter
-    (live/register-openrouter!)
+    (live/register-openrouter-model! live/openrouter-model {:timeout 120000})
     (h/with-async-test-context [ctx]
       (let [ctx (assoc ctx :llm-provider :openrouter)
             sheet-id (sheet/build-workflow! ctx (live-gepa-workflow))
@@ -105,6 +102,7 @@
                           :config {:max-metric-calls configured-budget
                                    :reflection-minibatch-size 1
                                    :reflection-lm live/openrouter-model
+                                   :reflection-options {:max-tokens 65536}
                                    :use-merge true
                                    :skip-perfect-score false}
                           :inherit-from-previous false
@@ -167,7 +165,7 @@
 
 (deftest det-e2e-112-real-llm-optimized-instruction-publication-isolation
   (live/with-real-openrouter
-    (live/register-openrouter!)
+    (live/register-openrouter-model! live/openrouter-model {:timeout 120000})
     (h/with-async-test-context [ctx]
       (let [ctx (assoc ctx :llm-provider :openrouter)
             sheet-id (sheet/build-workflow! ctx (live-gepa-workflow))
@@ -183,6 +181,7 @@
                           :config {:max-metric-calls 20
                                    :reflection-minibatch-size 1
                                    :reflection-lm live/openrouter-model
+                                   :reflection-options {:max-tokens 65536}
                                    :use-merge false
                                    :skip-perfect-score false}
                           :inherit-from-previous false
@@ -233,7 +232,7 @@
 
 (deftest det-e2e-111-real-llm-gepa-failure-and-resumability-boundary
   (live/with-real-openrouter
-    (live/register-openrouter!)
+    (live/register-openrouter-model! live/openrouter-model {:timeout 120000})
     (h/with-async-test-context [original-ctx]
       (let [ctx (assoc original-ctx :llm-provider :openrouter)
             sheet-id (sheet/build-workflow! ctx (live-gepa-workflow))
@@ -245,6 +244,7 @@
                          :config {:max-metric-calls budget
                                   :reflection-minibatch-size 1
                                   :reflection-lm live/openrouter-model
+                                   :reflection-options {:max-tokens 65536}
                                   :use-merge false
                                   :skip-perfect-score false
                                   :pause-after-proposal? true}
@@ -273,29 +273,31 @@
                                            (= (:iteration proposal) (:iteration %)))
                                     before-events))
                     "Proposal has no terminal evaluation at the interruption point")
-              rebuilt (restart-processors ctx)
-              resume-result (gepa/resume! rebuilt optimization-id)
-              final-state (await-resume-terminal! rebuilt optimization-id 600000)
-              after-events (optimization-events rebuilt optimization-id)
-              proposer-calls (filter #(= :gepa/proposer-call-completed (:event/type %)) after-events)
-              task-calls (filter #(= :gepa/task-call-completed (:event/type %)) after-events)
-              proposal-results (filter #(and (= :gepa/subsample-evaluated (:event/type %))
-                                             (= (:parent-id proposal) (:parent-id %))
-                                             (= (:iteration proposal) (:iteration %)))
-                                       after-events)]
-          (is (= :proposal-ready (:boundary resume-result)))
-          (is (= :completed (:status final-state)) (pr-str final-state))
-          (is (= 1 (count proposal-results)) "Interrupted proposal evaluates once")
-          (is (= (count proposer-calls) (count (set (map :call-id proposer-calls))))
-              "No proposer call ID is repeated")
-          (is (= (count task-calls) (count (set (map :call-id task-calls))))
-              "No task call ID is repeated")
-          (is (every? (set (map :call-id proposer-calls)) before-proposer-ids))
-          (is (every? (set (map :call-id task-calls)) before-task-ids))
-          (doseq [call (concat proposer-calls task-calls)]
-            (when (:model call) (live/assert-pinned-model! call)))
-          (is (= (- budget (count before-task-ids))
-                 (:remaining-budget resume-result))
-              "Remaining metric budget subtracts only completed durable task calls")
-          (is (<= (:total-metric-calls final-state) budget))
-          (doseq [[_ processor] (:processors rebuilt)] (tp/stop processor)))))))
+              rebuilt (restart-processors ctx)]
+          (try
+            (let [resume-result (gepa/resume! rebuilt optimization-id)
+                  final-state (await-resume-terminal! rebuilt optimization-id 600000)
+                  after-events (optimization-events rebuilt optimization-id)
+                  proposer-calls (filter #(= :gepa/proposer-call-completed (:event/type %)) after-events)
+                  task-calls (filter #(= :gepa/task-call-completed (:event/type %)) after-events)
+                  proposal-results (filter #(and (= :gepa/subsample-evaluated (:event/type %))
+                                                 (= (:parent-id proposal) (:parent-id %))
+                                                 (= (:iteration proposal) (:iteration %)))
+                                           after-events)]
+              (is (= :proposal-ready (:boundary resume-result)))
+              (is (= :completed (:status final-state)) (pr-str final-state))
+              (is (= 1 (count proposal-results)) "Interrupted proposal evaluates once")
+              (is (= (count proposer-calls) (count (set (map :call-id proposer-calls))))
+                  "No proposer call ID is repeated")
+              (is (= (count task-calls) (count (set (map :call-id task-calls))))
+                  "No task call ID is repeated")
+              (is (every? (set (map :call-id proposer-calls)) before-proposer-ids))
+              (is (every? (set (map :call-id task-calls)) before-task-ids))
+              (doseq [call (concat proposer-calls task-calls)]
+                (when (:model call) (live/assert-pinned-model! call)))
+              (is (= (- budget (count before-task-ids))
+                     (:remaining-budget resume-result))
+                  "Remaining metric budget subtracts only completed durable task calls")
+              (is (<= (:total-metric-calls final-state) budget)))
+            (finally
+              (h/stop-test-processors! rebuilt))))))))

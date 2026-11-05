@@ -137,14 +137,14 @@
     @captured-inputs))
 
 (def ^:private grounding-fake-outputs
-  {:level 4
+  {:band 4
    :reasoning "Adversarial review: claims trace to the source."
    :grounded-claims ["cited"]
    :ungrounded-claims []
    :feedback "Well grounded."})
 
 (def ^:private instruction-following-fake-outputs
-  {:level 4
+  {:band 4
    :reasoning "Adversarial compliance audit: directives satisfied."
    :requirements-met ["followed the format"]
    :requirements-missed []
@@ -156,7 +156,7 @@
 ;; -----------------------------------------------------------------------------
 
 (deftest rr33-grounding-task-uses-criteria-when-no-instruction
-  (testing "grounding judge, node has NO instruction, judge declares :criteria -> :producer_instruction equals the criteria verbatim"
+  (testing "grounding judge, node has NO instruction, judge declares :criteria -> :host-instruction equals the criteria verbatim"
     (h/with-async-test-context [ctx]
       (let [criteria "Every routing claim must cite the ticket"
             inputs (run-judge-capturing-inputs!
@@ -164,12 +164,12 @@
                           :fake-llm-outputs grounding-fake-outputs
                           :host-writes {:answer "The ticket says billing."}})]
         (is (some? inputs) "the judge must call llm/predict")
-        (is (= criteria (:producer_instruction inputs))
-            (str "with no instruction and a declared :criteria, :producer_instruction must equal the criteria. Got: "
-                 (pr-str (:producer_instruction inputs))))))))
+        (is (= criteria (:host-instruction inputs))
+            (str "with no instruction and a declared :criteria, :host-instruction must equal the criteria. Got: "
+                 (pr-str (:host-instruction inputs))))))))
 
 (deftest rr33-tier1-task-uses-criteria-when-no-instruction
-  (testing "instruction-following judge, node has NO instruction, judge declares :criteria -> :instruction equals the criteria verbatim"
+  (testing "instruction-following judge, node has NO instruction, judge declares :criteria -> :host-instruction equals the criteria verbatim"
     (h/with-async-test-context [ctx]
       (let [criteria "Must follow triage protocol accurately"
             inputs (run-judge-capturing-inputs!
@@ -177,9 +177,9 @@
                           :fake-llm-outputs instruction-following-fake-outputs
                           :host-writes {:answer "Part 1... Part 2..."}})]
         (is (some? inputs) "the judge must call llm/predict")
-        (is (= criteria (:instruction inputs))
-            (str "with no instruction and a declared :criteria, :instruction must equal the criteria. Got: "
-                 (pr-str (:instruction inputs))))))))
+        (is (= criteria (:host-instruction inputs))
+            (str "with no instruction and a declared :criteria, :host-instruction must equal the criteria. Got: "
+                 (pr-str (:host-instruction inputs))))))))
 
 ;; -----------------------------------------------------------------------------
 ;; Cycle 5 — RED then GREEN: no instruction, no criteria -> the task names
@@ -187,13 +187,13 @@
 ;; -----------------------------------------------------------------------------
 
 (deftest rr33-grounding-task-names-declared-writes-when-no-instruction-no-criteria
-  (testing "grounding judge, node has NO instruction and the judge declares NO criteria -> :producer_instruction names the declared write keys and is not blank"
+  (testing "grounding judge, node has NO instruction and the judge declares NO criteria -> :host-instruction names the declared write keys and is not blank"
     (h/with-async-test-context [ctx]
       (let [inputs (run-judge-capturing-inputs!
                      ctx {:judge-config {:type :grounding}
                           :fake-llm-outputs grounding-fake-outputs
                           :host-writes {:answer "The ticket says billing." :category "billing"}})
-            task (:producer_instruction inputs)]
+            task (:host-instruction inputs)]
         (is (some? inputs) "the judge must call llm/predict")
         (is (not (str/blank? task)) "the task must never be blank")
         (is (str/includes? task "answer") (str "task must name write key :answer. Got: " (pr-str task)))
@@ -202,13 +202,13 @@
             "the sentinel must not fire when write keys are known")))))
 
 (deftest rr33-tier1-task-names-declared-writes-when-no-instruction-no-criteria
-  (testing "instruction-following judge, node has NO instruction and the judge declares NO criteria -> :instruction names the declared write keys and is not blank"
+  (testing "instruction-following judge, node has NO instruction and the judge declares NO criteria -> :host-instruction names the declared write keys and is not blank"
     (h/with-async-test-context [ctx]
       (let [inputs (run-judge-capturing-inputs!
                      ctx {:judge-config {:type :instruction-following}
                           :fake-llm-outputs instruction-following-fake-outputs
                           :host-writes {:summary "done" :status "ok"}})
-            task (:instruction inputs)]
+            task (:host-instruction inputs)]
         (is (some? inputs) "the judge must call llm/predict")
         (is (not (str/blank? task)) "the task must never be blank")
         (is (str/includes? task "summary") (str "task must name write key :summary. Got: " (pr-str task)))
@@ -224,7 +224,7 @@
 ;; -----------------------------------------------------------------------------
 
 (deftest rr33-grounding-task-is-exact-instruction-when-present
-  (testing "grounding judge, node HAS an instruction -> :producer_instruction equals that instruction exactly, even with :criteria also declared"
+  (testing "grounding judge, node HAS an instruction -> :host-instruction equals that instruction exactly, even with :criteria also declared"
     (h/with-async-test-context [ctx]
       (let [instruction "Summarize the ticket in one sentence."
             inputs (run-judge-capturing-inputs!
@@ -233,12 +233,12 @@
                           :host-writes {:answer "The ticket says billing."}
                           :node-instruction instruction})]
         (is (some? inputs) "the judge must call llm/predict")
-        (is (= instruction (:producer_instruction inputs))
-            (str "with an instruction present, :producer_instruction must be exactly that instruction. Got: "
-                 (pr-str (:producer_instruction inputs))))))))
+        (is (= instruction (:host-instruction inputs))
+            (str "with an instruction present, :host-instruction must be exactly that instruction. Got: "
+                 (pr-str (:host-instruction inputs))))))))
 
 (deftest rr33-tier1-task-is-exact-instruction-when-present
-  (testing "instruction-following judge, node HAS an instruction -> :instruction equals that instruction exactly, even with :criteria also declared"
+  (testing "instruction-following judge, node HAS an instruction -> :host-instruction equals that instruction exactly, even with :criteria also declared"
     (h/with-async-test-context [ctx]
       (let [instruction "Summarize the ticket in one sentence."
             inputs (run-judge-capturing-inputs!
@@ -247,9 +247,9 @@
                           :host-writes {:answer "Part 1... Part 2..."}
                           :node-instruction instruction})]
         (is (some? inputs) "the judge must call llm/predict")
-        (is (= instruction (:instruction inputs))
-            (str "with an instruction present, :instruction must be exactly that instruction. Got: "
-                 (pr-str (:instruction inputs))))))))
+        (is (= instruction (:host-instruction inputs))
+            (str "with an instruction present, :host-instruction must be exactly that instruction. Got: "
+                 (pr-str (:host-instruction inputs))))))))
 
 ;; =============================================================================
 ;; Cycle 2 — RED then GREEN: response framing, grounding module.

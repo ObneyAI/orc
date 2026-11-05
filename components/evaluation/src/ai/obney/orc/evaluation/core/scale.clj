@@ -58,6 +58,12 @@
                       {:missing-levels (vec missing)
                        :levels (vec levels)
                        :provided (vec (keys bands))})))
+    (let [blank (filterv #(let [d (get bands %)]
+                            (not (and (string? d) (not (str/blank? d)))))
+                         levels)]
+      (when (seq blank)
+        (throw (ex-info "discrete-scale: every band needs a non-blank description"
+                        {:blank-levels blank}))))
     {:kind :discrete
      :min min
      :max max

@@ -163,6 +163,14 @@
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id seq-id upcase exclaim]} (setup-pipeline! ctx)
             [result trace-id] (run! ctx sheet-id {:phrase "hello"})
+            ;; Creation can precede the terminal ephemeral routing summary.
+            ;; Require the expected evidence revision before taking the snapshot;
+            ;; every identity, timing and status assertion below remains intact.
+            _ (is (h/settle-until!
+                    #(= #{seq-id upcase exclaim}
+                        (set (map :node-id
+                                  (:node-traces (rm/get-trace ctx trace-id))))))
+                  "trace must settle with its sequence and both leaves")
             trace (rm/get-trace ctx trace-id)]
         (is (= :success (:status result)))
         (is (some? trace) "trace was stored and is retrievable by tick-id")

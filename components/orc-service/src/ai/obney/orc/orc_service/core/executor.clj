@@ -745,8 +745,11 @@
                                   opts (when (map? (first rest)) (first rest))
                                   field-schema (if opts (second rest) (first rest))
                                   optional? (:optional opts)]
+                              ;; Never mark optionality on the NAME (`name?:`): a function-calling
+                              ;; model copies the suffix into the key it returns, and the value is
+                              ;; then silently lost on decode. State it in words, outside the name.
                               (str (name field-key)
-                                   (when optional? "?")
+                                   (when optional? " (optional)")
                                    ": " (malli-schema->description field-schema))))]
           (str "object with {" (clojure.string/join ", " field-descs) "}"))
 
@@ -758,7 +761,7 @@
              (clojure.string/join ", " (map provider-enum-spelling args)))
 
         :maybe
-        (str (malli-schema->description (first args)) " (optional)")
+        (str (malli-schema->description (first args)) " or null")
 
         :or
         (str "either " (clojure.string/join " or " (map malli-schema->description args)))
@@ -793,12 +796,17 @@
      [:string {:description \"The question to answer\"}]
      [:map {:description \"A map of...\"} [:field :type]]
 
+   A recursive schema is persisted as `[:schema {:registry ..} <root>]`; the
+   registry wrapper carries no description of its own, so the root's
+   description is the key's description.
+
    Returns the description string or nil if not present."
   [schema]
-  (when (and (vector? schema)
-             (> (count schema) 1)
-             (map? (second schema)))
-    (:description (second schema))))
+  (when (vector? schema)
+    (or (when (and (> (count schema) 1) (map? (second schema)))
+          (:description (second schema)))
+        (when (and (= :schema (first schema)) (> (count schema) 2))
+          (extract-schema-description (last schema))))))
 
 ;; =============================================================================
 ;; Output Flattening (Python DSPy Alignment)
@@ -851,6 +859,9 @@
          {:name (keyword field-name)
           :original-key key-name
           :nested-key field-name
+          ;; A key the contract declares as a string stays a string on
+          ;; reassembly; keyword keys are read as keywords (llm.allium).
+          :string-key? (string? field-key)
           :spec field-spec
           :optional (true? (:optional opts))
           :description description})))
@@ -906,7 +917,9 @@
 
            nested-key
            ;; Nested field - assoc into nested map
-           (update acc original-key assoc (keyword nested-key) output-value)
+           (update acc original-key assoc
+                   (if (:string-key? mapping) nested-key (keyword nested-key))
+                   output-value)
 
            :else
            ;; Non-nested field - use directly
@@ -926,42 +939,27 @@
       (catch Exception _ nil))))
 
 (defn- build-field
-  "Build a ORC LLM field definition from a blackboard key and its entry.
-   Now uses Malli schemas directly instead of legacy field types.
+  "Build a ORC LLM INPUT field definition from a blackboard key and its entry.
 
-   If the Malli schema has a :description property (e.g., [:string {:description \"...\"}]),
-   it will be used as the field description, combined with type info.
-   This aligns with Python DSPy's InputField(desc=\"...\") pattern.
+   The field's :description is its declared meaning and nothing else: the
+   :description property of its Malli schema (e.g. [:string {:description \"...\"}]),
+   or no description at all when the schema declares none. The input field guide
+   states each shown field's name and type itself, and its nested fields only
+   where the request carries them, so a description that also spelled out the
+   declared type (or invented \"Blackboard key: ...\" text) would name nested
+   fields the request does not carry. Output fields are built elsewhere
+   (flatten-output-schema) and keep their type text.
 
    If the Malli schema has a :field-type property (e.g., [:vector {:field-type :image} :string]),
    it will be set as :type on the ORC LLM field definition, enabling multimodal support."
   [key-name blackboard-entry]
   (let [schema (:schema blackboard-entry)
         field-type (schema-field-type schema)
-        ;; Extract custom description from Malli schema properties
-        custom-desc (extract-schema-description schema)
-        type-desc (when schema (malli-schema->description schema))
-        ;; Combine: custom description + type info, or fallback to auto-generated
-        description (cond
-                      ;; Custom description provided - combine with type info
-                      (and custom-desc type-desc)
-                      (str custom-desc " (" type-desc ")")
-
-                      ;; Custom description only (no type info)
-                      custom-desc
-                      custom-desc
-
-                      ;; No custom description - use auto-generated
-                      type-desc
-                      (str "Blackboard key: " key-name " - " type-desc)
-
-                      ;; Fallback when no schema
-                      :else
-                      (str "Blackboard key: " key-name))]
+        description (extract-schema-description schema)]
     (cond-> {:name key-name
              :original-key key-name  ;; Keep original for mapping back
-             :spec (or schema :any)  ;; Use the Malli schema directly
-             :description description}
+             :spec (or schema :any)} ;; Use the Malli schema directly
+      description (assoc :description description)
       field-type (assoc :type field-type))))
 
 ;; =============================================================================
@@ -1022,6 +1020,7 @@
                                     [(:name o)
                                      {:original-key (:original-key o)
                                       :nested-key (:nested-key o)
+                                      :string-key? (:string-key? o)
                                       :optional (:optional o)
                                       :spec (:spec o)}])
                                   outputs))]
@@ -1588,6 +1587,37 @@
 ;; AI Execution
 ;; =============================================================================
 
+;; A map key the contract declares as a string stays a string; keys the contract
+;; leaves to convention are read as keywords (llm.allium). Malli's stock
+;; `key-transformer` keywordizes every key, which made `[:map ["0" :double]]`
+;; unsatisfiable for code leaves. Mirrors the provider path in llm core.
+(def ^:private declared-string-key-transformer
+  (mt/transformer
+   {:decoders
+    {:map
+     {:compile
+      (fn [schema _]
+        (let [string-keys (into #{} (filter string?) (map first (m/children schema)))]
+          (fn [x]
+            (if (map? x)
+              (reduce-kv (fn [m k v]
+                           (assoc m
+                                  (cond
+                                    (and (string? k) (not (contains? string-keys k)))
+                                    (keyword k)
+                                    ;; A declared string key may arrive as the same
+                                    ;; un-namespaced keyword (SIO parses provider JSON
+                                    ;; with :key-fn keyword). Namespaced keywords and
+                                    ;; undeclared names never map.
+                                    (and (keyword? k) (nil? (namespace k))
+                                         (contains? string-keys (name k)))
+                                    (name k)
+                                    :else k)
+                                  v))
+                         {}
+                         x)
+              x))))}}}))
+
 (defn validate-leaf-outputs
   "Decode provider JSON values and normalize object keys according to each
    declared Malli schema, then reject an invalid successful leaf result before
@@ -1599,7 +1629,7 @@
   ([blackboard result provider-output?]
    (if (not= :success (:status result))
      result
-     (let [key-transformer (mt/key-transformer {:decode keyword :encode name})
+     (let [key-transformer declared-string-key-transformer
            rejected-writes (:outputs result)
            normalized (reduce-kv
                        (fn [outputs key value]
@@ -1628,13 +1658,33 @@
                     :rejected-writes rejected-writes))
          (assoc result :outputs normalized))))))
 
-(defn- outputs-have-nil?
-  "Check if any output values are nil, including nested maps where all values are nil."
-  [outputs]
-  (some (fn [v]
-          (or (nil? v)
-              (and (map? v) (every? nil? (vals v)))))
-        (vals outputs)))
+(def ^:private prediction-envelope-keys
+  "Keys llm/predict adds around :outputs when called with :with-metadata?."
+  #{:outputs :usage :model :raw-response :provider-evidence :decisions :provider-observations})
+
+(defn- prediction-envelope?
+  "True when `result` is llm/predict's metadata envelope rather than a direct
+   flat output map: it has an :outputs key and every key is prediction metadata."
+  [result]
+  (and (map? result)
+       (contains? result :outputs)
+       (every? prediction-envelope-keys (keys result))))
+
+(defn- unparseable-output-keys
+  "Nil-shaped results are missing-value evidence only when their actual declared
+   schema rejects them. Required nullable values and valid all-null/empty maps
+   must cross the normal schema boundary without being relabelled as absence."
+  [blackboard outputs]
+  (into []
+        (keep (fn [[k value]]
+                (when (and (or (nil? value)
+                               (and (map? value) (every? nil? (vals value))))
+                           (not (when-let [schema (get-in blackboard [k :schema])]
+                                  (try
+                                    (m/validate schema (llm/decode-provider-value schema value))
+                                    (catch Exception _ false)))))
+                  k)))
+        outputs))
 
 (defn- strip-nil-optional-writes
   "Drop declared-OPTIONAL writes that parsed to nil, so a node can mark a
@@ -1660,6 +1710,22 @@
   [acc usage]
   (when (or acc usage)
     (merge-with + (or acc {}) (or usage {}))))
+
+(def ^:private non-retryable-failure-kinds
+  "Failures that are the provider's or the configuration's deterministic answer:
+   an exact decision tie, and a provider that was never configured. Another
+   invocation cannot change them, only spend budget."
+  #{:undecided :provider-not-configured})
+
+(defn- persist-provider-attempt
+  "Run the injected durable transition. Return a bounded failure marker only;
+   persistence exceptions must not leak transport/configuration details."
+  [callback attempt]
+  (when callback
+    (try
+      (let [result (callback attempt)]
+        (when (:cognitect.anomalies/category result) :observation-persistence-failed))
+      (catch Exception _ :observation-persistence-failed))))
 
 (defn execute-ai
   "Execute a leaf node using ORC LLM AI.
@@ -1704,8 +1770,8 @@
         internal-option-keys #{:execution-deadline-ms :reserve-llm-call!
                                :reserve-provider-attempt! :provider-reservation-context
                                :tick-id :node-attempt :max-node-attempts
-                               :exec-context
-                               :max-retries :retry-delay-ms :validate?}
+                               :exec-context :start-provider-attempt! :complete-provider-attempt!
+                               :max-retries :retry-delay-ms :validate? :unparseable-is-schema-error?}
         llm-options (merge {:validate? false
                                :with-metadata? true
                                :with-provider-evidence? true
@@ -1715,6 +1781,12 @@
         ;; Retry config - defaults to 1 retry with 500ms delay
         max-retries (get options :max-retries 1)
         retry-delay-ms (get options :retry-delay-ms 500)
+        ;; Opt-in (node `:options`): an output the provider omitted (nil) is
+        ;; validated against its declared schema like any other answer, so it is
+        ;; retried under the same budget and, once exhausted, fails with
+        ;; :schema-validation-failed naming the rejected write - instead of the
+        ;; un-retried "unparseable" failure. Default off: other nodes unchanged.
+        unparseable-is-schema-error? (boolean (:unparseable-is-schema-error? options))
 
         ;; Token streaming (Stage 2). Active when a subscriber asked for
         ;; deltas on this tick and the node is not using function calling
@@ -1753,7 +1825,12 @@
                                               :fields (reassemble-flattened-outputs
                                                        (:fields ev) output-mapping)}))
                               (recur terminal))
-                  :error (recur {:error (str "LLM stream error: " (pr-str (:error ev)))})
+                  :error (recur (let [{:keys [failure-kind provider-evidence]} (:error ev)]
+                                  (cond-> {:error (str "LLM stream error: " (pr-str (:error ev)))}
+                                    failure-kind (assoc :failure-kind failure-kind)
+                                    provider-evidence
+                                    (assoc :provider-evidence
+                                           (update provider-evidence :usage normalize-usage)))))
                   :final (let [outputs (reassemble-flattened-outputs (:outputs ev) output-mapping)]
                            (when (:fields? stream)
                              (emit-delta! attempt
@@ -1763,6 +1840,7 @@
                            (recur {:outputs outputs
                                    :usage (normalize-usage (:usage ev))
                                    :model (or (:model ev) (:model node))
+                                   :resolved-model (:model ev)
                                    :raw-response (:raw-response ev)}))
                   (recur terminal))
                 (or terminal {:error "LLM stream ended without a final result"})))))
@@ -1772,13 +1850,28 @@
                    (if predict-stream-v2
                      (try-once-streaming attempt attempt-options)
                      (let [result (llm/predict provider llm-module inputs attempt-options)
-                           ;; ORC LLM returns outputs directly as a flat map, not wrapped in {:outputs ...}
-                           raw-outputs (or (:outputs result) result)
+                           ;; Unwrap EXPLICITLY. A metadata envelope is recognised by
+                           ;; its shape (an :outputs key and nothing but prediction
+                           ;; metadata keys); its :outputs are the node's writes even
+                           ;; when nil. Anything else is a direct flat output map. A nil
+                           ;; :outputs must never promote the envelope's metadata
+                           ;; (:usage, :raw-response, ...) into declared writes.
+                           raw-outputs (if (prediction-envelope? result)
+                                         (:outputs result)
+                                         result)
                            ;; Reassemble flattened outputs back into nested structure
+                           ;; Missing envelope outputs stay missing. A nullable
+                           ;; write is present only when the provider supplied
+                           ;; that declared key explicitly with a null value.
                            outputs (reassemble-flattened-outputs raw-outputs output-mapping)]
                        {:outputs outputs
                         :usage (normalize-usage (:usage result))
                         :model (or (:model result) (:model node))
+                        ;; What the provider REPORTED, apart from the
+                        ;; configured fallback above (ModelLeafRecordsResolvedModel).
+                        ;; Only a metadata envelope can report one: a bare
+                        ;; outputs map may carry a declared write named :model.
+                        :resolved-model (when (prediction-envelope? result) (:model result))
                         :provider-evidence
                         (some-> (:provider-evidence result)
                                 (update :usage normalize-usage))
@@ -1789,13 +1882,16 @@
                         ;; A native decision model reports per-question
                         ;; evidence (distribution, confidence) beside its
                         ;; outputs; carried so a decision can record it.
-                        :decisions (:decisions result)})))
+                        :decisions (:decisions result)
+                        :provider-observations (:provider-observations result)})))
 
         ;; Compute backoff delay for a given attempt
         backoff-for (fn [attempt]
                       (if (sequential? retry-delay-ms)
                         (nth retry-delay-ms (min attempt (dec (count retry-delay-ms))))
                         retry-delay-ms))
+        start-provider-attempt! (:start-provider-attempt! options)
+        complete-provider-attempt! (:complete-provider-attempt! options)
         deadline-ms (:execution-deadline-ms options)
         reserve-call! (:reserve-llm-call! options)
         tick-id (:tick-id options)
@@ -1856,37 +1952,77 @@
     (loop [attempt 0
            accumulated-usage nil]
       (let [{:keys [options timeout-error]} (prepare-attempt attempt)
-            {:keys [outputs usage model error raw-response failure-kind provider-evidence
-                    decisions]}
-            (if timeout-error
-              {:error timeout-error :budget-timeout? true}
+            invocation (when-not timeout-error
+                         {:invocation-id (random-uuid)
+                          :node-attempt node-attempt :provider-attempt (inc attempt)})
+            start-error (when invocation (persist-provider-attempt start-provider-attempt! invocation))
+            {:keys [outputs usage model resolved-model error raw-response failure-kind provider-evidence
+                    decisions provider-observations]}
+            (cond
+              timeout-error {:error timeout-error :budget-timeout? true}
+              start-error {:error "Provider attempt start could not be persisted"}
+              :else
               (try
                 (try-once attempt options)
                 (catch Exception e
-                  (let [{:keys [failure-kind provider-evidence]} (ex-data e)
+                  (let [{:keys [failure-kind provider-evidence provider-observations]} (ex-data e)
                         provider-evidence (some-> provider-evidence
                                                   (update :usage normalize-usage))]
                     (cond-> {:error (.getMessage e)}
+                      provider-observations (assoc :provider-observations provider-observations)
                       failure-kind (assoc :failure-kind failure-kind)
                       provider-evidence
                       (assoc :provider-evidence provider-evidence
                              :usage (normalize-usage (:usage provider-evidence))
-                             :model (or (:model provider-evidence) (:model node))))))))
+                             :model (or (:model provider-evidence) (:model node))
+                             :resolved-model (:model provider-evidence)))))))
             budget-timeout? (boolean timeout-error)
             ;; Drop nil best-effort writes so an omitted evidence array is the
             ;; node's declared-optional absence, not a nil-gate failure.
             outputs (strip-nil-optional-writes outputs optional-writes)
+            ;; Prediction skips input validation because gathered complex inputs
+            ;; are serialized. Presence is a separate obligation from value
+            ;; validation: an omitted nullable write must not become explicit null.
+            missing-output-keys (vec (remove #(or (contains? optional-writes %)
+                                                  (contains? outputs %))
+                                            (:writes node)))
+            unparseable-keys (into missing-output-keys
+                                   (unparseable-output-keys blackboard outputs))
             total-usage (merge-usage accumulated-usage usage)
             schema-result (when (and (not error)
-                                     (not (outputs-have-nil? outputs)))
-                            (validate-leaf-outputs
-                             blackboard
-                             (cond-> {:status :success :outputs outputs}
-                               raw-response (assoc :raw-response raw-response))
-                             true))
+                                     (or unparseable-is-schema-error?
+                                         (empty? unparseable-keys)))
+                            (if (seq missing-output-keys)
+                              ;; Keep the judge's schema-error/retry policy without
+                              ;; inserting values that the provider never returned.
+                              {:status :failure :outputs {} :missing-write-keys missing-output-keys :rejected-writes (or outputs {})
+                               :error (str "Missing required output keys " missing-output-keys)}
+                              (validate-leaf-outputs
+                               blackboard
+                               (cond-> {:status :success :outputs outputs}
+                                 raw-response (assoc :raw-response raw-response))
+                               true)))
             schema-error (when (= :failure (:status schema-result))
-                           (:error schema-result))]
+                           (:error schema-result))
+            completion-error
+            (when (and invocation (not start-error))
+              (persist-provider-attempt
+               complete-provider-attempt!
+               (assoc invocation :outcome
+                      (cond-> {:status (if (or error (seq unparseable-keys) schema-error) :failure :success)}
+                        failure-kind (assoc :failure-kind failure-kind)
+                        (and (nil? failure-kind) (or (seq unparseable-keys) schema-error))
+                        (assoc :failure-kind :schema-validation-failed)
+                        provider-observations (assoc :provider-observations provider-observations)))))]
         (cond
+          (or start-error completion-error)
+          {:status :failure :retryable? false
+           :error (if start-error
+                    "Provider attempt start could not be persisted; provider was not dispatched"
+                    "Provider attempt outcome could not be persisted; dispatch will not be repeated")
+           :duration-ms (- (System/currentTimeMillis) start-time)
+           :usage total-usage}
+
           budget-timeout?
           {:status :timeout
            :error error
@@ -1894,7 +2030,9 @@
            :usage total-usage}
 
           ;; Exception — retry with backoff (handles rate limits, transient errors)
-          (and error (< attempt max-retries))
+          ;; An :undecided tie is the provider's answer, not a transient failure:
+          ;; retrying would only spend another paid call fishing for a different grade.
+          (and error (not (contains? non-retryable-failure-kinds failure-kind)) (< attempt max-retries))
           (let [backoff (backoff-for attempt)
                 remaining (execution-budget/remaining-ms deadline-ms)]
             (if (and remaining (<= remaining backoff))
@@ -1915,6 +2053,7 @@
                                 :duration-ms (- (System/currentTimeMillis) start-time)}
                          total-usage (assoc :usage total-usage)
                          model (assoc :model model)
+                         resolved-model (assoc :resolved-model resolved-model)
                          failure-kind (assoc :failure-kind failure-kind)
                          provider-evidence (assoc :provider-evidence provider-evidence))]
             (obs/log-ai-execution!
@@ -1934,11 +2073,8 @@
           ;; outputs that fail their declared schemas. A node-level :retry can
           ;; still retry this parse failure. The verbatim raw response is
           ;; carried on the result and logged in full so it is diagnosable.
-          (outputs-have-nil? outputs)
-          (let [nil-keys (vec (for [[k v] outputs
-                                    :when (or (nil? v)
-                                              (and (map? v) (every? nil? (vals v))))]
-                                k))
+          (and (seq unparseable-keys) (not unparseable-is-schema-error?))
+          (let [nil-keys unparseable-keys
                 raw-len (count (str raw-response))
                 preview (when raw-response
                           (subs raw-response 0 (min 1000 (count raw-response))))
@@ -1952,14 +2088,17 @@
                                       (min 1000 raw-len) " of " raw-len " chars) ---\n"
                                       preview)
                                  " No raw response text was returned by the provider."))
-                result {:status :failure :error error-msg
+                result (cond-> {:status :failure :error error-msg
                         :raw-response raw-response
                         :outputs outputs
                         :duration-ms (- (System/currentTimeMillis) start-time)
                         ;; Usage is preserved — these tokens were really spent
                         ;; and must not vanish from Phase-2 accounting.
                         :usage total-usage :model model
-                        :provider-evidence provider-evidence}]
+                        :resolved-model resolved-model
+                        :provider-evidence provider-evidence}
+                         (seq missing-output-keys)
+                         (assoc :missing-write-keys missing-output-keys))]
             (obs/log-unparseable-output!
               {:node-id (:id node) :node-name (:name node) :model model
                :nil-keys nil-keys :raw-length raw-len
@@ -1994,6 +2133,7 @@
                               :duration-ms (- (System/currentTimeMillis) start-time)
                               :usage total-usage
                               :model model
+                              :resolved-model resolved-model
                               :failure-kind :schema-validation-failed
                               :provider-evidence provider-evidence)]
             (obs/log-ai-execution!
@@ -2006,7 +2146,8 @@
           :else
           (let [result (cond-> {:status :success :outputs (:outputs schema-result)
                                 :duration-ms (- (System/currentTimeMillis) start-time)
-                                :usage total-usage :model model}
+                                :usage total-usage :model model
+                                :resolved-model resolved-model}
                          raw-response (assoc :raw-response raw-response)
                          (seq decisions) (assoc :decisions decisions))]
             (obs/log-ai-execution!
@@ -2103,6 +2244,13 @@
    (`[{:id :description}]`). Every option id and description is rendered into
    the provider-facing instruction.
 
+   Banded (:bands-from): the run-time rubric on that read key is validated
+   (an invalid rubric fails the node, writes nothing), rendered into the
+   instruction, and offered as an ORDERED string enum of band numbers; the
+   chosen band is written as an integer. A native decision model reports its
+   distribution, kept in :decision :band-distribution; an exact tie for most
+   probable band fails with :failure-kind :undecided.
+
    Returns the `execute-ai` result shape plus :decision
    `{:offered [...] :answer v :abstained? bool [:set-aside v]}`.
    A valid answer is :status :success with :outputs {answer-key value}. A
@@ -2118,14 +2266,20 @@
                 :error error
                 :duration-ms 0
                 :decision {:offered (vec offered) :abstained? false}})
+        banded? (some? (:bands-from node))
+        banded (when banded?
+                 (decision/rubric (get-in blackboard [(:bands-from node) :value])))
+        band-levels (mapv (comp str first) (get-in banded [:rubric :bands]))
         runtime? (some? (:options-from node))
         runtime-opts (when runtime?
                        (decision/runtime-options
                         (get-in blackboard [(:options-from node) :value])))
-        static (when-not runtime?
+        static (when-not (or runtime? banded?)
                  (decision/schema-options (get-in blackboard [answer-key :schema])))
-        kind (if runtime? :enum (:kind static))
+        kind (cond banded? :band runtime? :enum :else (:kind static))
         option-list (cond
+                      banded? (mapv (fn [[level description]] {:id (str level) :description description})
+                                    (get-in banded [:rubric :bands]))
                       runtime? runtime-opts
                       (= :enum kind) (mapv (fn [id] {:id id
                                                      :description (get (:descriptions static) id)})
@@ -2133,6 +2287,11 @@
                       :else nil)
         offered (if (= :boolean kind) [true false] (mapv :id option-list))]
     (cond
+      (and banded? (:error banded))
+      (fail (str "Decision '" (:name node) "' read key " (pr-str (:bands-from node))
+                 " holds an invalid rubric: " (:error banded))
+            [])
+
       (nil? kind)
       (fail (str "Decision '" (:name node) "' offers no valid options: answer key "
                  (pr-str answer-key) " is not boolean or a finite enum"
@@ -2151,9 +2310,26 @@
             offered)
 
       :else
-      (let [offer-text (decision/render-options kind option-list)
-            answer-schema (if (= :boolean kind)
+      (let [offer-text (if banded?
+                         (decision/render-bands (:rubric banded))
+                         (decision/render-options kind option-list))
+            ;; Bands travel as STRINGS on the wire (one route returned empty
+            ;; tool arguments for an integer enum); the chosen band string is
+            ;; converted to its integer after the answer returns.
+            answer-schema (cond
+                            (= :boolean kind)
                             [:boolean {:description (str "The decision's answer. " offer-text)}]
+
+                            banded?
+                            (into [:enum {:ordered-bands true
+                                          :description (str "The chosen band number. " offer-text)
+                                          :descriptions (into {}
+                                                              (map (fn [{:keys [id description]}]
+                                                                     [id description]))
+                                                              option-list)}]
+                                  offered)
+
+                            :else
                             (into [:enum {:description (str "The chosen option id. " offer-text)
                                           :descriptions (into {}
                                                               (keep (fn [{:keys [id description]}]
@@ -2169,6 +2345,9 @@
                                 (:reads node))
             leaf (-> node
                      (select-keys [:id :name :reads :model :options])
+                     ;; The rubric is rendered into the instruction (and is the
+                     ;; decision model's criteria); it is not also evidence.
+                     (update :reads #(if banded? (vec (remove #{(:bands-from node)} %)) %))
                      (assoc :instruction (str (:instruction node) "\n\n" offer-text)
                             :writes [answer-key]))
             ;; Structured (function-calling) response by default — found live:
@@ -2182,7 +2361,16 @@
             ;; The decision has exactly one provider-facing output, so its
             ;; evidence is the single entry the provider reported (if any).
             reported (some-> (:decisions result) vals first)
-            reported-record (select-keys reported [:probabilities :confidence :probability])
+            reported-record (if banded?
+                              {}
+                              (select-keys reported [:probabilities :confidence :probability]))
+            band-record (fn [{:keys [probabilities expected-position confidence]}]
+                          (when (and probabilities (some? expected-position))
+                            {:band-distribution
+                             (cond-> {:probabilities probabilities
+                                      :expected-position expected-position}
+                               (some? confidence) (assoc :confidence confidence))}))
+            ->level (fn [x] (if (and banded? (string? x)) (Long/parseLong x) x))
             base (dissoc result :outputs :rejected-writes :decisions)]
         (if (= :success (:status result))
           (let [{:keys [valid? value record]}
@@ -2191,16 +2379,27 @@
                                  :min-confidence (:min-confidence node)}
                                 answer
                                 (:confidence reported))
-                record (merge record reported-record)]
+                record (merge record reported-record
+                              (when banded? (band-record reported)))
+                record (if banded?
+                         (cond-> (update record :offered #(mapv ->level %))
+                           (contains? record :answer) (update :answer ->level))
+                         record)]
             (if valid?
-              (assoc base :outputs {answer-key value} :decision record)
+              (assoc base :outputs {answer-key (->level value)} :decision record)
               (assoc base :status :failure
                      :failure-kind :schema-validation-failed
                      :error (str "Model decision '" (:name node)
                                  "' returned no answer among the offered options "
                                  (pr-str offered))
                      :decision record)))
-          (cond-> (assoc base :decision {:offered (vec offered) :abstained? false})
+          (cond-> (assoc base :decision
+                         (merge {:offered (mapv ->level offered) :abstained? false}
+                                ;; An exact tie keeps the distribution the
+                                ;; provider reported, so the undecided node is
+                                ;; auditable from its own record.
+                                (when banded?
+                                  (band-record (get-in result [:provider-evidence :band-distribution])))))
             (and (= :failure (:status result)) (nil? (:failure-kind result))
                  (contains? result :outputs))
             (assoc :failure-kind :schema-validation-failed)))))))
@@ -5362,6 +5561,7 @@
      (loop [attempt 0]
        (let [result (execute-fn)]
          (if (or (contains? #{:success :timeout :blocked} (:status result))
+                 (false? (:retryable? result))
                  (>= (inc attempt) max-attempts))
            result
            (do
@@ -5400,7 +5600,11 @@
   [node blackboard provider & {:keys [context options stream] :or {context {} options {}}}]
   (let [executor-type (or (:executor node) :ai)
         retry-config (:retry node)
-        execution-options (merge options (:options node))
+        execution-options (merge options (:options node)
+                                 ;; Durable observation capabilities belong to the
+                                 ;; host, not to model/node request configuration.
+                                 (select-keys options [:start-provider-attempt!
+                                                       :complete-provider-attempt!]))
         max-node-attempts (or (get-in retry-config [:max-attempts]) 1)
         node-attempt (atom 0)
         execute-fn (fn []
