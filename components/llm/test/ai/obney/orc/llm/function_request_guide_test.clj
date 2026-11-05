@@ -264,3 +264,98 @@
                 "Given the following inputs:\nq: why\n\n"
                 "Call the submit_response function with your answer.")
            (user-message (capture-request spec {:q "why"} {}))))))
+
+;; ---------------------------------------------------------------------------
+;; Opt-in prompt caching and generic tool description. Off by default.
+;; ---------------------------------------------------------------------------
+
+(deftest the-opt-in-controls-leave-a-default-request-untouched
+  (let [plain (capture-request triage {:subject "Refund please"} {})
+        off (capture-request triage {:subject "Refund please"}
+                             {:prompt-cache? false :generic-tool-description? false})]
+    (is (= plain off) "explicitly off equals absent")
+    (is (string? (user-message plain)) "content is the single prompt string")
+    (is (not (str/includes? (json/generate-string plain) "cache_control")))
+    (is (not (contains? plain :prompt-cache?)) "the option never reaches the provider")
+    (is (not (contains? plain :generic-tool-description?)))
+    (is (= triage-tools-before-the-guide (json/generate-string (:tools plain))))))
+
+(deftest prompt-cache-puts-the-instruction-first-in-its-own-marked-part
+  (let [plain (capture-request triage {:subject "Refund please"} {})
+        cached (capture-request triage {:subject "Refund please"} {:prompt-cache? true})
+        [head tail & more] (user-message cached)]
+    (is (nil? more))
+    (is (= {:type "text" :text "Triage the ticket." :cache_control {:type "ephemeral"}} head))
+    (is (= {:type "text"} (dissoc tail :text)) "second part is unmarked text")
+    (is (= (user-message plain) (str (:text head) "\n\n" (:text tail)))
+        "the same words in the same order")
+    (is (= {:type "ephemeral"} (get-in cached [:tools 0 :cache_control])))
+    (is (= (get-in plain [:tools 0 :function])
+           (get-in cached [:tools 0 :function])) "the tool function itself is unchanged")
+    (is (not (contains? cached :prompt-cache?)))))
+
+(deftest the-cached-prefix-is-the-same-across-different-inputs
+  (let [a (capture-request triage {:subject "Refund please"} {:prompt-cache? true})
+        b (capture-request triage {:subject "Where is my parcel"} {:prompt-cache? true})]
+    (is (= (first (user-message a)) (first (user-message b))))
+    (is (= (:tools a) (:tools b)))
+    (is (not= (second (user-message a)) (second (user-message b))))))
+
+(deftest generic-tool-description-stops-the-instruction-being-sent-twice
+  (let [plain (capture-request triage {:subject "x"} {})
+        generic (capture-request triage {:subject "x"} {:generic-tool-description? true})]
+    (is (= "Submit the structured response" (get-in generic [:tools 0 :function :description])))
+    (is (= (get-in plain [:tools 0 :function :parameters])
+           (get-in generic [:tools 0 :function :parameters])))
+    (is (= (user-message plain) (user-message generic)) "the message still carries the instruction")
+    (is (not (str/includes? (json/generate-string (:tools generic)) "Triage the ticket.")))))
+
+(deftest prompt-cache-without-an-instruction-keeps-a-single-string
+  (let [bare (dissoc triage :instructions)
+        cached (capture-request bare {:subject "x"} {:prompt-cache? true})]
+    (is (string? (user-message cached)))))
+
+(deftest prompt-cache-keeps-image-parts-after-the-text
+  (let [spec {:instructions "Describe it."
+              :inputs [{:name :photo :type :image :spec :string}]
+              :outputs [{:name :caption :spec :string}]}
+        content (user-message (capture-request spec {:photo "data:image/png;base64,AAAA"}
+                                               {:prompt-cache? true}))]
+    (is (= ["text" "text" "image_url"] (mapv :type content)))
+    (is (= {:type "ephemeral"} (:cache_control (first content))))))
+
+
+(deftest cached-generic-function-contract-survives-the-pinned-wire-serializer
+  (let [spec (update triage :inputs into
+                     [{:name :front :type :image :spec :string}
+                      {:name :back :type :image :spec :string}])
+        values {:subject "Refund please"
+                :front "data:image/png;base64,AAAA"
+                :back "data:image/jpeg;base64,BBBB"}
+        options {:prompt-cache? true :generic-tool-description? true}
+        plain (:body (capture-wire-body spec values {}))
+        {:keys [raw body]} (capture-wire-body spec values options)
+        changed (:body (capture-wire-body spec (assoc values :subject "Where is my parcel") options))
+        parts (get-in body ["messages" 0 "content"])
+        plain-parts (get-in plain ["messages" 0 "content"])]
+    (is (= ["text" "text" "image_url" "image_url"] (mapv #(get % "type") parts)))
+    (is (= {"type" "text" "text" "Triage the ticket."
+            "cache_control" {"type" "ephemeral"}} (first parts)))
+    (is (= (first parts) (get-in changed ["messages" 0 "content" 0])))
+    (is (not= (second parts) (get-in changed ["messages" 0 "content" 1])))
+    (is (= (get-in plain-parts [0 "text"])
+           (str (get-in parts [0 "text"]) "\n\n" (get-in parts [1 "text"]))))
+    (is (= [{"type" "image_url" "image_url" {"url" (:front values)}}
+            {"type" "image_url" "image_url" {"url" (:back values)}}]
+           (subvec parts 2)))
+    (is (= (subvec plain-parts 1) (subvec parts 2)))
+    (is (= (get-in plain ["tools" 0 "function" "parameters"])
+           (get-in body ["tools" 0 "function" "parameters"])))
+    (is (= "The reply to send"
+           (get-in body ["tools" 0 "function" "parameters" "properties" "reply" "description"])))
+    (is (= "Submit the structured response" (get-in body ["tools" 0 "function" "description"])))
+    (is (= (get body "tools") (get changed "tools")))
+    (is (not (contains? (get-in body ["tools" 0]) "cache_control"))
+        "the pinned serializer drops tool-level markers; the message marker survives")
+    (doseq [flag ["prompt-cache?" "generic-tool-description?"]]
+      (is (not (str/includes? raw flag))))))

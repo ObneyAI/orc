@@ -918,6 +918,12 @@ Recovery obligation evidence: `docs/issues/gepa-recovery/09-final-verification.m
 records the independent command, workflow, named-startup and separate-process
 proofs. These completed obligations do not imply a completed full CI gate.
 
+
+## Opt-in prompt request layout
+
+- [x] PROMPT-CACHE-1: Public prediction through the pinned HTTP serializer preserves function schemas, described fields, dynamic values and exact image payloads with cache/generic flags enabled; local flags do not reach the body, defaults remain unchanged, and marker mode keeps its existing content.
+- [x] PROMPT-CACHE-2: A real ORC strict-output workflow with caching enabled preserves the exact output schema, input/output meanings, required nullable values, absent optional values and durable writes. The generic-description flag does not change strict-mode results. Provider cache hits are outside this deterministic contract.
+
 ## Public accounting absence
 
 - [x] GEPA-ACCOUNTING-ABSENCE-1: An optimization created through a public command in tenant B remains absent from tenant A summary/full/population views and queries; unknown IDs also remain absent, while existing tenant B accounting stays intact. Verify `absent-optimizations-remain-absent-in-public-accounting-views` and existing positive accounting controls.

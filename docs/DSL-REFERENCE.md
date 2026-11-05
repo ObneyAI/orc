@@ -281,6 +281,24 @@ Execute an LLM call with structured input/output.
   add `:force-tool-choice? true` when the provider must call ORC's generated
   `submit_response` tool. Forced choice is opt-in because provider/schema
   compatibility varies.
+  Two optional controls apply when a node reuses its instruction across calls.
+  With both absent or false, request layout stays unchanged.
+  `:prompt-cache? true` places a nonblank instruction in its own text part with
+  `cache_control {:type "ephemeral"}`, before the input guide, values and images.
+  This applies to function-calling and strict JSON requests. Marker prompts keep
+  their existing layout. Blank or absent instructions do not create an empty
+  cacheable message part.
+  `:generic-tool-description? true` applies to function calling: it replaces the
+  duplicate instruction in `submit_response`'s description with a generic
+  description. The message retains the instruction; output schemas and their
+  field descriptions stay unchanged. ORC consumes both flags before transport.
+
+  Cache support, minimum prefix size, lifetime and actual savings depend on the
+  provider and model. Inspect the serialized request and provider usage rather
+  than assuming a marker guarantees a cache hit. The pinned OpenRouter adapter
+  preserves the message marker but drops the tool-level marker that ORC also
+  constructs. The original provider experiment used the message breakpoint;
+  tool-level cache control is not an established transport capability.
 
 **Structured Output:**
 

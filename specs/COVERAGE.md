@@ -1221,6 +1221,31 @@ No generated mock, TODO or skeleton remains in these twelve obligations.
 Allium retains 114 informational diagnostics, 39 warnings, zero errors and zero
 analysis findings.
 
+
+## Opt-in request layout
+
+PROMPT-CACHE: **2 obligations, 2 covered, 0 uncovered**. The function and marker
+request tests plus `strict_contract_e2e_test.clj` preserve default requests,
+explicitly enabled cache/generic-description behavior, full serialized schemas
+and field descriptions, exact image payloads, required null values, absent
+optional values, and durable strict-workflow writes. Local controls are absent
+from provider requests. Marker-mode requests remain unchanged.
+
+The three affected namespaces passed 26 tests and 288 assertions. Independent
+execution of the three added checks passed 3 tests and 44 assertions. Evidence:
+`/private/tmp/orc-pr47-cache-checks.log` and
+`/private/tmp/orc-pr47-root-wire-proof.log`. These checks were expected-green
+verification of the existing feature; no missing-feature RED claim is made.
+Existing assertions were preserved. The HTTP fixture replaces only transport
+and preserves the pinned serializer; it is not evidence of provider cache hits.
+No generated TODO or skeleton remains in these two obligations.
+
+The pinned client drops tool-level cache markers and preserves the message
+marker. Documentation now states this limitation and provider-dependent cache
+eligibility without promising a hit or savings. The Allium annotations capture
+opt-in layout and unchanged structured contracts; no new diagnostic is expected
+beyond the recorded baseline. Final full CI remains the merge gate.
+
 ## Public accounting absence follow-up
 
 GEPA-ACCOUNTING-ABSENCE-1: 1 obligation, 1 covered, 0 uncovered. RED: 1 test/16 assertions, 6 expected failures; independent root GREEN: complete public-accounting namespace 5 tests/62 assertions, no failures/errors, exit 0. Evidence: /private/tmp/gepa-absent-accounting-{red,green,root}.log. Allium baseline remains 114 info/39 warnings/0 errors and no analysis findings. Public views must not invent an optimization by attaching zero accounting to an empty projection. Existing tenant-scoped accounting remains required.

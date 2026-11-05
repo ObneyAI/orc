@@ -81,13 +81,13 @@
 (defn- marker-request-for
   "The request `predict` builds in marker mode, captured at the provider
   completion."
-  [spec raw-values]
+  [spec raw-values & [options]]
   (let [captured (atom nil)]
     (with-redefs [router/completion (fn [_provider request]
                                       (reset! captured request)
                                       reply-response)]
       (llm/predict :test spec (executor-values raw-values)
-                   {:validate? false :use-function-calling? false}))
+                   (merge {:validate? false :use-function-calling? false} options)))
     @captured))
 
 (def ^:private shown-meanings
@@ -270,3 +270,12 @@
     (testing "an absent image input sends no image part and is named nowhere"
       (is (= ["text"] (mapv :type (-> absent :messages first :content))))
       (is (not (str/includes? (pr-str absent) "damage-photo"))))))
+
+
+(deftest request-optimization-flags-leave-marker-mode-unchanged
+  (let [plain (marker-request-for support shown-values)]
+    (doseq [options [{:prompt-cache? false :generic-tool-description? false}
+                     {:prompt-cache? true}
+                     {:generic-tool-description? true}
+                     {:prompt-cache? true :generic-tool-description? true}]]
+      (is (= plain (marker-request-for support shown-values options))))))
