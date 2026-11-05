@@ -133,9 +133,26 @@
    ;; selected (distinct from a malformed answer).
    :undecided])
 
+(def provider-transport-evidence
+  [:and
+   [:map {:closed true}
+    [:type {:optional true}
+     [:enum :litellm/invalid-request :litellm/invalid-config
+      :litellm/authentication-error :litellm/authorization-error
+      :litellm/provider-not-found :litellm/model-not-found
+      :litellm/unsupported-feature :litellm/quota-exceeded
+      :litellm/rate-limit :litellm/timeout :litellm/connection-error
+      :litellm/server-error :litellm/provider-error
+      :litellm/invalid-response :litellm/streaming-error :litellm/content-filter
+      :litellm/internal-error :litellm/resource-exhausted]]
+    [:http-status {:optional true} [:int {:min 100 :max 599}]]]
+   ;; Absent classification is omitted, never an empty or fabricated record.
+   [:fn seq]])
+
 (def provider-failure-evidence
   [:map
    [:provider :string]
+   [:transport {:optional true} provider-transport-evidence]
    [:model {:optional true} [:maybe :string]]
    [:response-id {:optional true} [:maybe :string]]
    [:finish-reason {:optional true} [:maybe :string]]

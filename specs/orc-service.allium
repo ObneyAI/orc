@@ -415,6 +415,10 @@ contract DelegationBoundary {
         -- root execution's LLM-call budget and remaining wall-clock budget; no
         -- provider invocation anywhere in the family begins once the family
         -- budget is spent.
+        -- A child's recorded absolute deadline is no later than its parent's
+        -- deadline. Dispatch delay cannot renew the inherited time allowance;
+        -- a shorter local allowance may tighten it. An already spent parent
+        -- deadline remains spent when the child starts.
 
     @invariant DelegateToolContextCrosses
         -- The parent execution's durable consumer tool context reaches the

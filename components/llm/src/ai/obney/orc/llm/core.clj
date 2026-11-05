@@ -635,6 +635,26 @@
   (let [data (ex-data e)]
     (and (contains? data :config-name) (contains? data :available))))
 
+(def ^:private transport-error-types
+  ;; Explicit public allowlist from the pinned client; arbitrary exception data
+  ;; and future client categories do not silently expand the durable contract.
+  #{:litellm/invalid-request :litellm/invalid-config
+    :litellm/authentication-error :litellm/authorization-error
+    :litellm/provider-not-found :litellm/model-not-found
+    :litellm/unsupported-feature :litellm/quota-exceeded
+    :litellm/rate-limit :litellm/timeout :litellm/connection-error
+    :litellm/server-error :litellm/provider-error
+    :litellm/invalid-response :litellm/streaming-error :litellm/content-filter
+    :litellm/internal-error :litellm/resource-exhausted})
+
+(defn- transport-evidence [^Exception e]
+  (let [{:keys [type http-status]} (ex-data e)]
+    (not-empty
+     (cond-> {}
+       (contains? transport-error-types type) (assoc :type type)
+       (and (integer? http-status) (<= 100 http-status 599))
+       (assoc :http-status http-status)))))
+
 (defn- call-failure
   "The failure of one provider invocation. A provider that was never configured
    is its own kind, so a caller can say how to configure one; every other
@@ -642,11 +662,16 @@
   [provider ^Exception e]
   (let [evidence {:provider (provider-name provider)}]
     (if (provider-not-configured? e)
-      (structured-failure (str "LLM provider " (pr-str provider) " is not configured; "
-                               "register it, or declare a model the runtime can reach"
-                               " (available: " (pr-str (vec (:available (ex-data e)))) ")")
-                          :provider-not-configured evidence e)
-      (structured-failure (.getMessage e) :transport-failure evidence e))))
+      (structured-failure (str "LLM provider is not configured; register it, "
+                               "or declare a model the runtime can reach")
+                          :provider-not-configured evidence)
+      (let [{:keys [type http-status] :as transport} (transport-evidence e)]
+        (structured-failure
+         (str "LLM provider call failed"
+              (when type (str " [" (name type) "]"))
+              (when http-status (str " (HTTP " http-status ")")))
+         :transport-failure
+         (cond-> evidence transport (assoc :transport transport)))))))
 
 (defn- selected-output-mode [provider options]
   (let [mode (or (:output-mode options) (:output-mode (router/get-config provider)))]
@@ -971,12 +996,16 @@
       (and (some? in) (some? out)) (assoc :total_tokens (+ in out))
       (some? cost) (assoc :cost cost))))
 
-(defn- transport-summary [^Throwable e]
-  ;; Allowlisted: class name and an integer HTTP status only. The exception
-  ;; message and data are never copied (they may echo request headers).
-  (let [status (:status (ex-data e))]
-    (str "Decision transport failed (" (.getName (class e))
-         (when (integer? status) (str ", HTTP " status)) ")")))
+(defn- decision-call-failure [base-evidence ^Throwable e]
+  ;; Direct native HTTP supplies :status, not a litellm category. Preserve
+  ;; only that bounded field; never infer rate-limit from 429 or retain the
+  ;; upstream message/data/cause. Custom transport classification is separate.
+  (let [raw-status (:status (ex-data e))
+        status (when (and (integer? raw-status) (<= 100 raw-status 599)) raw-status)]
+    (structured-failure
+     (str "Decision transport failed" (when status (str " (HTTP " status ")")))
+     :transport-failure
+     (cond-> base-evidence status (assoc :transport {:http-status status})))))
 
 (defn- predict-decision [provider config spec inputs options]
   (let [validate? (get options :validate? true)
@@ -996,8 +1025,7 @@
           request (decision-request (or (:model options) (:model config)) spec inputs kinds)
           response (try (transport request)
                         (catch Exception e
-                          (throw (structured-failure (transport-summary e)
-                                                     :transport-failure base-evidence))))
+                          (throw (decision-call-failure base-evidence e))))
           evidence (assoc base-evidence
                           :model (diagnostic-string (field response :model))
                           :response-id (diagnostic-string (field response :id))

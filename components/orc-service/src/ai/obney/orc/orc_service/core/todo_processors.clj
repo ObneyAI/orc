@@ -4166,6 +4166,7 @@
                   child-result (runtime/execute child-exec-context target-sheet-id
                                            target-inputs
                                            :timeout-ms timeout-ms
+                                           :execution-deadline-ms parent-deadline-ms
                                            :max-ticks max-ticks
                                            :tick-id child-tick-id
                                            :parent-tick-id tick-id
