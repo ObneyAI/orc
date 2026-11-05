@@ -50,7 +50,8 @@
    - All nodes must have unique names within a workflow
    - Reordering nodes preserves their IDs
    - Renaming a node = new identity"
-  (:require [ai.obney.orc.orc-service.test-helpers :as h]
+  (:require [ai.obney.orc.orc-service.core.model-fallback :as model-fallback]
+            [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.decision :as decision]
             [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.read-models :as rm]
@@ -550,10 +551,55 @@
      :judges - Vector of judge names (defined in sheet/judges)"
   [name & args]
   (let [[opts children] (split-leading-options args)]
-    (with-judges {:node-type :fallback
-                  :name name
-                  :children children}
+    (with-judges (cond-> {:node-type :fallback
+                         :name name :children children}
+                   (:model-fallback-policy opts)
+                   (assoc :model-fallback-policy (:model-fallback-policy opts)))
       (:judges opts))))
+
+(defn llm-fallback
+  "One typed task with ordered ordinary LLM candidates. Policy defaults to
+   :temporary-transport; :all-transport is explicit compatibility behavior.
+   Candidate options may override generation and bounded retry knobs only.
+   Candidates default to one node attempt and zero provider retries."
+  [name & args]
+  (let [config (apply hash-map args)
+        {:keys [candidates policy instruction reads writes options judges]
+         :or {policy :temporary-transport options {}}} config]
+  (when-not (every? #{:candidates :policy :instruction :reads :writes :options :judges} (keys config))
+    (throw (ex-info "Unknown model fallback option" {:type :invalid-model-fallback})))
+  (when-not (and (string? name) (not (clojure.string/blank? name))
+                 (vector? candidates) (seq candidates)
+                 (#{:temporary-transport :all-transport} policy)
+                 (string? instruction) (seq writes)
+                 (every? keyword? (concat reads writes)) (map? options))
+    (throw (ex-info "Invalid model fallback task configuration" {:type :invalid-model-fallback})))
+  (when (model-fallback/invalid-options? options)
+    (throw (ex-info "Model fallback options cannot replace runtime capabilities or model identity"
+                    {:type :invalid-model-fallback})))
+  (assoc
+    (apply fallback name :judges judges
+      (map-indexed
+        (fn [i candidate]
+          (let [{:keys [model retry] candidate-options :options} candidate
+                retry (or retry {:max-attempts 1 :backoff-ms []})]
+            (when-not (and (map? candidate)
+                           (every? #{:model :options :retry} (keys candidate))
+                           (string? model) (not (clojure.string/blank? model))
+                           (or (nil? candidate-options)
+                               (and (map? candidate-options)
+                                    (every? model-fallback/candidate-option-keys (keys candidate-options))))
+                           (model-fallback/valid-retry? retry)
+                           (vector? (:backoff-ms retry))
+                           (every? #(and (integer? %) (<= 0 %)) (:backoff-ms retry)))
+              (throw (ex-info "Invalid model fallback candidate" {:type :invalid-model-fallback :candidate-index i})))
+            (let [generation (merge {:max-retries 0} options candidate-options)]
+              (when-not (and (model-fallback/valid-generation? generation))
+                (throw (ex-info "Model fallback retries must be bounded nonnegative integers"
+                                {:type :invalid-model-fallback :candidate-index i})))
+              (llm (str name "/candidate-" i) :model model :instruction instruction
+                   :reads reads :writes writes :retry retry :options generation)))) candidates))
+    :model-fallback-policy policy)))
 
 (defn parallel
   "Define a parallel node (runs all children concurrently).
@@ -766,6 +812,11 @@
     (when node-name
       (run-build-command! ctx (h/make-set-node-name-command sheet-id node-id node-name)))
 
+    (when-let [policy (:model-fallback-policy node)]
+      (run-build-command! ctx {:command/id (random-uuid) :command/timestamp (time/now)
+                       :command/name :sheet/set-model-fallback-policy
+                       :sheet-id sheet-id :node-id node-id :model-fallback-policy policy}))
+
     ;; Configure based on node type
     (case node-type
       :leaf
@@ -949,6 +1000,7 @@
     (when (seq duplicate-names)
       (throw (ex-info (str "Workflow node names must be unique: " duplicate-names)
                       {:duplicate-node-names duplicate-names})))
+    (doseq [node nodes] (model-fallback/validate-node! node (:children node)))
     (doseq [node nodes
             :when (= :decision (:executor node))
             :let [error (decision/declaration-error node blackboard-schema)]
@@ -1099,6 +1151,7 @@
         (cond-> {:id (:id node)
                  :type (:type node)
                  :name (:name node)}
+          (:model-fallback-policy node) (assoc :model-fallback-policy (:model-fallback-policy node))
           ;; Any node may carry attached judges
           (seq (:judges node)) (assoc :judges (vec (:judges node)))
           ;; Leaf-specific fields
@@ -1106,6 +1159,7 @@
           (merge (cond-> {}
                    (:executor node) (assoc :executor (:executor node))
                    (:model node) (assoc :model (:model node))
+                   (:options node) (assoc :options (:options node))
                    (:fn node) (assoc :fn (:fn node))
                    (and (= :tool (:executor node)) (:tool node))
                    (assoc :tool (:tool node))
@@ -1135,7 +1189,8 @@
           (merge (cond-> {}
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))
-                   (:model node) (assoc :model (:model node))))
+                   (:model node) (assoc :model (:model node))
+                   (:options node) (assoc :options (:options node))))
           ;; Parallel-specific
           (= :parallel (:type node))
           (merge {:success-policy (or (:success-policy node) :all)
@@ -1159,6 +1214,7 @@
                    (:tool-caller-fn node) (assoc :tool-caller-fn (:tool-caller-fn node))
                    (seq (:browser-tools node)) (assoc :browser-tools (:browser-tools node))
                    (:model node) (assoc :model (:model node))
+                   (:options node) (assoc :options (:options node))
                    (:max-iterations node) (assoc :max-iterations (:max-iterations node))
                    (some? (:rlm node)) (assoc :rlm (:rlm node))
                    (:context node) (assoc :context (:context node))
@@ -1218,6 +1274,11 @@
     ;; Set name if provided
     (when (:name node)
       (h/run-and-apply! ctx (h/make-set-node-name-command sheet-id node-id (:name node))))
+
+    (when-let [policy (:model-fallback-policy node)]
+      (h/run-and-apply! ctx {:command/id (random-uuid) :command/timestamp (time/now)
+                       :command/name :sheet/set-model-fallback-policy
+                       :sheet-id sheet-id :node-id node-id :model-fallback-policy policy}))
 
     ;; Configure based on node type
     (case node-type
@@ -1336,6 +1397,8 @@
   (let [sheet-name (get-in exported [:sheet :name])
         blackboard-schema (:blackboard-schema exported)
         root-node (:nodes exported)
+        _ (doseq [node (tree-seq #(seq (:children %)) :children root-node)]
+            (model-fallback/validate-node! node (:children node)))
 
         ;; Create new sheet
         sheet-result (h/run-and-apply! ctx
@@ -1465,6 +1528,7 @@
     (case executor
       :ai (let [opts (build-keyword-args
                        {:model (:model node)
+                        :options (:options node)
                         :instruction (:instruction node)
                         :reads (:reads node)
                         :writes (:writes node)
@@ -1584,7 +1648,8 @@
   [fn-sym node]
   (let [name (:name node)
         children (mapv node->dsl-form (:children node))
-        opts (build-keyword-args {:judges (:judges node)})]
+        opts (build-keyword-args (cond-> {:judges (:judges node)}
+                                         (:model-fallback-policy node) (assoc :model-fallback-policy (:model-fallback-policy node))))]
     (apply list (dsl-sym fn-sym) name (concat opts children))))
 
 (defn- parallel-node->form

@@ -269,6 +269,7 @@
 (def llm-decision dsl/llm-decision)
 (def sequence dsl/sequence)
 (def fallback dsl/fallback)
+(def llm-fallback dsl/llm-fallback)
 (def parallel dsl/parallel)
 (def map-each dsl/map-each)
 (def repl-researcher dsl/repl-researcher)

@@ -501,6 +501,18 @@
                   (:tools node) (assoc :previous-tools (:tools node))
                   (:options node) (assoc :previous-options (:options node)))})]})))
 
+(defcommand :sheet set-model-fallback-policy
+  {:authorized? authenticated?}
+  "Set admission policy on an ordered model fallback."
+  [{{:keys [sheet-id node-id model-fallback-policy]} :command :as ctx}]
+  (if (= :fallback (:type (rm/get-node ctx sheet-id node-id)))
+    {:command-result/events
+     [(->event {:type :sheet/model-fallback-policy-set
+                :tags #{[:sheet sheet-id] [:node node-id]}
+                :body {:sheet-id sheet-id :node-id node-id
+                       :model-fallback-policy model-fallback-policy}})]}
+    {::anom/category ::anom/incorrect ::anom/message "Model fallback policy requires a fallback node"}))
+
 (defcommand :sheet set-node-retry
   {:authorized? authenticated?}
   "Set retry configuration for a leaf node."
@@ -2375,11 +2387,13 @@
                  :source-node-id (:id node)
                  :type (:type node)
                  :name (:name node)}
+          (:model-fallback-policy node) (assoc :model-fallback-policy (:model-fallback-policy node))
           ;; Leaf-specific fields
           (= :leaf (:type node))
           (merge (cond-> {}
                    (:executor node) (assoc :executor (:executor node))
                    (:model node) (assoc :model (:model node))
+                   (:options node) (assoc :options (:options node))
                    (:fn node) (assoc :fn (:fn node))
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))

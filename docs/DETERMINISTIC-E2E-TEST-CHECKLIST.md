@@ -944,3 +944,19 @@ proofs. These completed obligations do not imply a completed full CI gate.
 ## Rate-limit evidence
 
 - [x] **DET-E2E-326 — Actual rate-limit versus quota response.** Through public execution/delegation and the exact-owner gate, observe primary HTTP429 classified as rate-limit followed by one same-task alternative, and quota429 with no alternative. Independent verification:1 test/57 assertions, zero failures/errors; exactly three loopback requests, zero paid calls. Exact typed categories/status and predecessor ownership, unchanged task inputs/options except model, one fixture tool per task, and the original budget/deadline are retained. This characterizes the pinned client's response-body heuristic; it does not establish universal provider classification or streaming safety. Source: `ai.obney.orc.orc-service.rate-limit-model-alternative-e2e-test`. No new library behavior or missing-feature RED claim applies to this characterization.
+
+## Configured model alternatives
+
+- [x] MODEL-FALLBACK-1: Public constructor rejects invalid candidates/policies and preserves common contracts plus candidate model/options through build, snapshot and export/rebuild. Overlapping old/new configurations retain their respective candidate lists; candidate options cannot weaken common privacy or replace host runtime identity, budgets, deadlines or callbacks.
+- [x] MODEL-FALLBACK-2: Real Grain/local HTTP execution selects ordered candidates, preserves false success, rejects permanent/schema/unknown failures under temporary policy, and reports exact terminal exhaustion evidence. Explicit all-transport policy remains distinguishable.
+- [x] MODEL-FALLBACK-3: Concurrent users and parallel mapped/delegated work retain their own inputs and predecessor identity; duplicate/stale completion does not send an extra request; preceding effects run once.
+- [x] MODEL-FALLBACK-4: Actual shared call-budget and deadline exhaustion prevent further HTTP requests without renewing limits. Candidate retries are bounded and recorded.
+
+Configured fallback acceptance: independent focused run of
+`configured-model-fallback-test`, `configured-model-fallback-configuration-test`
+and the existing `scoped-model-alternative-e2e-test`: 11 tests, 288 assertions,
+zero failures/errors. Real Grain in-memory store/cache and local HTTP; 39
+physical fixture requests across the scoped cases. Shared-store tenant proof
+uses the production tenant poller; duplicate replay uses Grain's processor.
+No paid calls, restart/load or model-quality claim. See
+`docs/issues/model-fallback/INSPECTION.md` for scope and measurement corrections.

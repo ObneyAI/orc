@@ -1322,3 +1322,15 @@ behavior. An initial sandbox bind refusal preceded any HTTP and was separate fro
 the successful observation. No assertion was weakened; no generated skeleton remains.
 Source: `components/orc-service/test/ai/obney/orc/orc_service/rate_limit_model_alternative_e2e_test.clj`.
 Chat streaming and application policy migration remain outside scope.
+
+## Configured model alternatives
+
+`LeafExecutor.ConfiguredModelAlternativesAreOneTask`,
+`ModelAlternativeAdmissionUsesOwnedFailure` and
+`ModelAlternativesRetainLimitsAndEvidence` extend the ordinary blocking model
+contract. MODEL-FALLBACK-1 through 4 are independently verified: 11 focused
+tests/288 assertions, zero failures/errors, including the prior scoped regression.
+The new public constructor is exercised through real Grain and local HTTP, with
+shared-store tenant isolation, mapped attribution and published-version overlap. See
+`docs/issues/model-fallback/PLAN.md`. Streaming and custom native classification
+remain outside this scope.

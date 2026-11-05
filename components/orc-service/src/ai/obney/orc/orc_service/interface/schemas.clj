@@ -388,6 +388,7 @@
     [:parent-id {:optional true} :uuid]
     [:children-ids [:vector :uuid]]
     [:status node-status]
+    [:model-fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]
     ;; Leaf-only fields
     [:instruction {:optional true} :string]
     [:reads [:vector :keyword]]
@@ -490,6 +491,11 @@
 
    ::node-trace
    [:map
+    [:model-fallback {:optional true}
+     [:map [:policy [:enum :temporary-transport :all-transport]]
+      [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused]]
+      [:candidate-index :int] [:candidate-node-id :uuid]
+      [:requested-model :string] [:predecessor-event-id :uuid]]]
     [:node-id :uuid]
     [:delegate-child-tick-id {:optional true} :uuid]
     [:delegate-child-status {:optional true} :keyword]
@@ -786,6 +792,10 @@
     ;; generated (Phase-2) trees. Mirrors the node-level :tool-caller-fn hook.
     [:tool-caller-fn {:optional true} :string]
     [:tool-contracts {:optional true} tool-contracts]]
+
+   :sheet/set-model-fallback-policy
+   [:map [:sheet-id :uuid] [:node-id :uuid]
+    [:model-fallback-policy [:enum :temporary-transport :all-transport]]]
 
    :sheet/set-node-retry
    [:map
@@ -1520,6 +1530,10 @@
     [:previous-tools {:optional true} [:vector :keyword]]
     [:previous-options {:optional true} :map]]
 
+   :sheet/model-fallback-policy-set
+   [:map [:sheet-id :uuid] [:node-id :uuid]
+    [:model-fallback-policy [:enum :temporary-transport :all-transport]]]
+
    :sheet/node-retry-set
    [:map
     [:sheet-id :uuid]
@@ -1734,8 +1748,21 @@
               [:status [:enum :success :failure :running :partial :timeout :blocked]]
               [:node-type [:enum :condition :sequence :fallback]]]]]]
 
+   :sheet/model-fallback-transition-recorded
+   [:map [:sheet-id :uuid] [:tick-id :uuid] [:node-id :uuid]
+    [:candidate-node-id :uuid] [:candidate-index :int] [:predecessor-event-id :uuid]
+    [:next-node-id {:optional true} :uuid]
+    [:policy [:enum :temporary-transport :all-transport]]
+    [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused :eligible-transport]]
+    [:advanced? :boolean] [:inputs {:optional true} :map]]
+
    :sheet/node-execution-completed
    [:map
+    [:model-fallback {:optional true}
+     [:map [:policy [:enum :temporary-transport :all-transport]]
+      [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused]]
+      [:candidate-index :int] [:candidate-node-id :uuid]
+      [:requested-model :string] [:predecessor-event-id :uuid]]]
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]

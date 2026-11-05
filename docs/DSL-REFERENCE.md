@@ -1784,3 +1784,58 @@ Saves a sheet directly to a .clj file.
 4. **Build your own** — start with a simple workflow and iterate
 
 Happy workflow building!
+
+### Configured ordinary model fallback
+
+`llm-fallback` runs one typed task against an ordered, nonempty vector of model
+candidates. It constructs ordinary LLM leaves under a durable fallback; candidate
+failures and the selected result remain individual canonical executions.
+
+```clojure
+(orc/llm-fallback "assess"
+  :candidates [{:model "provider/primary"}
+               {:model "provider/backup" :options {:max-tokens 32768}}]
+  :policy :temporary-transport
+  :instruction "Assess the supplied evidence."
+  :reads [:request :evidence]
+  :writes [:assessment-reasoning :assessment]
+  :options {:output-mode :json-schema :max-tokens 32768})
+```
+
+The default policy advances only on recognized temporary transport evidence.
+Authentication, quota, missing/contradictory categories and invalid outputs stop
+it; a valid `false` answer succeeds. Explicit `:all-transport` instead admits
+any recorded transport failure, including permanent errors. Neither policy
+classifies error prose or bypasses call budgets, cancellation or deadlines.
+
+Each candidate requires an explicit model using the configured provider alias.
+Cross-provider credential routing is not supplied by this constructor. Candidate
+options may override `:temperature`, `:max-tokens`, `:top-p`, `:top-k`, penalties,
+`:seed`, `:reasoning`, `:max-retries` and `:timeout-ms`; output/privacy settings
+remain shared. Model capability compatibility still requires task-specific
+verification. Runtime identities, deadline overrides and callback capabilities
+are rejected in request options.
+
+Candidates default to one node attempt and zero provider retries. A candidate may
+set `:retry {:max-attempts 2 :backoff-ms [0]}` explicitly. All physical requests
+consume the existing execution-family budget. An alternative retains the original
+absolute deadline and canonical task reads, including mapped-item ownership.
+Retry backoff does not promise immediate wall-clock preemption; expired limits
+refuse the next provider admission.
+
+Keep completed tools outside this subtree. Inspect candidate traces and the
+fallback trace's `:model-fallback` record for its policy, terminal reason, candidate
+index/node, requested model and predecessor completion. `:policy-refused` points
+to the exact candidate's safe failure diagnosis; it does not turn limit failures
+into transport failures. A candidate's actual served identity is separate from
+its requested model and is never invented when unavailable.
+
+This constructor supports ordinary blocking generation. It is not a native
+client chain or partial-stream failover. Policy-bearing fallbacks use durable
+routing rather than the ephemeral composite optimization, so policy decisions
+remain observable and replayable.
+
+For configured fallback, call-budget exhaustion can cancel the whole execution
+family before a completed trace is stored. The public execute result retains the
+exact budget error; each cancelled tick records `:sheet/tick-cancelled` with that
+`:reason`. Inspect those records instead of waiting for a completed trace.
