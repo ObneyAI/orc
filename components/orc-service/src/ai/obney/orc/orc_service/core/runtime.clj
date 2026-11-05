@@ -317,7 +317,7 @@
                  :version-number (:version-number version-snapshot)})
               {:nodes-by-id (rm/get-nodes-by-id read-ctx sheet-id)
                :root-id (:root-node-id sheet)
-               :blackboard-entries (rm/get-blackboard-by-key read-ctx sheet-id)
+               :blackboard-entries (rm/get-blackboard-by-key-from-events read-ctx sheet-id)
                :version-number nil})]
         (if-not root-id
           {:cognitect.anomalies/category :cognitect.anomalies/not-found
