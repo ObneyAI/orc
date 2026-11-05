@@ -517,11 +517,12 @@
    The internal domain reducers retain historical aggregate counters; callers
    must use these getters for budget accounting, including unfinished work."
   [ctx optimization-id state]
-  (when state
+  (if (:optimization-id state)
     (let [{:keys [spent reserved available]} (task-ledger/get-accounting ctx optimization-id)]
       (assoc state :total-metric-calls spent
                    :reserved-metric-calls reserved
-                   :available-metric-calls available))))
+                   :available-metric-calls available))
+    state))
 
 (defn get-gepa-state
   "Get the full GEPA state for an optimization (Python-compatible)."

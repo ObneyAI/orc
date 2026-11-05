@@ -145,3 +145,34 @@
         (is (= 0 (get-in before [:population :evaluated])))
         (is (= 1 (get-in after [:population :evaluated])))
         (is (= 1 (get-in after [:progress :candidates :evaluated])))))))
+
+
+(deftest absent-optimizations-remain-absent-in-public-accounting-views
+  (tu/with-test-context [ctx]
+    (let [other-ctx (assoc ctx :tenant-id (random-uuid))
+          owned-opt (start! ctx 7)
+          foreign-opt (start! other-ctx 11)
+          unknown-opt (random-uuid)
+          state-getters {:state gepa/get-gepa-state
+                         :population gepa/get-population-state
+                         :summary gepa/get-optimization-summary}]
+      (doseq [[case-name opt] {:unknown unknown-opt :other-tenant foreign-opt}
+              [view getter] state-getters]
+        (is (= {} (getter ctx opt))
+            (str (name case-name) " " (name view) " preserves the empty projection")))
+      (doseq [opt [unknown-opt foreign-opt]
+              query [gepa/get-population gepa/get-progress]]
+        (is (= :cognitect.anomalies/not-found
+               (:cognitect.anomalies/category (query ctx opt)))
+            "Public queries still report an absent optimization as not found"))
+      (doseq [[_ getter] state-getters]
+        (is (= {:optimization-id owned-opt
+                :total-metric-calls 0 :reserved-metric-calls 0 :available-metric-calls 7}
+               (select-keys (getter ctx owned-opt)
+                            [:optimization-id :total-metric-calls
+                             :reserved-metric-calls :available-metric-calls])))
+        (is (= {:optimization-id foreign-opt
+                :total-metric-calls 0 :reserved-metric-calls 0 :available-metric-calls 11}
+               (select-keys (getter other-ctx foreign-opt)
+                            [:optimization-id :total-metric-calls
+                             :reserved-metric-calls :available-metric-calls])))))))

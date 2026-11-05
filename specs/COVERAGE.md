@@ -1245,3 +1245,7 @@ marker. Documentation now states this limitation and provider-dependent cache
 eligibility without promising a hit or savings. The Allium annotations capture
 opt-in layout and unchanged structured contracts; no new diagnostic is expected
 beyond the recorded baseline. Final full CI remains the merge gate.
+
+## Public accounting absence follow-up
+
+GEPA-ACCOUNTING-ABSENCE-1: 1 obligation, 1 covered, 0 uncovered. RED: 1 test/16 assertions, 6 expected failures; independent root GREEN: complete public-accounting namespace 5 tests/62 assertions, no failures/errors, exit 0. Evidence: /private/tmp/gepa-absent-accounting-{red,green,root}.log. Allium baseline remains 114 info/39 warnings/0 errors and no analysis findings. Public views must not invent an optimization by attaching zero accounting to an empty projection. Existing tenant-scoped accounting remains required.
