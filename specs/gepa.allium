@@ -198,6 +198,8 @@ contract DurableOptimizationLifecycle {
         -- and additional metric attempt is charged once before dispatch, including
         -- attempts with unknown outcomes. Reuse and aggregate publication do not
         -- charge again. Every public budget view agrees with durable accounting.
+        -- Accounting never creates an optimization view when no optimization exists
+        -- in the caller's tenant; absent views remain absent.
 
     @invariant CompleteComparisonsOnly
         -- An evaluation aggregate contains all required task outcomes. Pending,

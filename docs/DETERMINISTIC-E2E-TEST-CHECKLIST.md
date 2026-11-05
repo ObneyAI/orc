@@ -917,3 +917,7 @@ Implementation briefs: docs/issues/gepa-recovery/. Existing GEPA-RESULT checks c
 Recovery obligation evidence: `docs/issues/gepa-recovery/09-final-verification.md`
 records the independent command, workflow, named-startup and separate-process
 proofs. These completed obligations do not imply a completed full CI gate.
+
+## Public accounting absence
+
+- [x] GEPA-ACCOUNTING-ABSENCE-1: An optimization created through a public command in tenant B remains absent from tenant A summary/full/population views and queries; unknown IDs also remain absent, while existing tenant B accounting stays intact. Verify `absent-optimizations-remain-absent-in-public-accounting-views` and existing positive accounting controls.

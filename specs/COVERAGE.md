@@ -1220,3 +1220,7 @@ scripted capabilities in deterministic tests are not claimed as live-model proof
 No generated mock, TODO or skeleton remains in these twelve obligations.
 Allium retains 114 informational diagnostics, 39 warnings, zero errors and zero
 analysis findings.
+
+## Public accounting absence follow-up
+
+GEPA-ACCOUNTING-ABSENCE-1: 1 obligation, 1 covered, 0 uncovered. RED: 1 test/16 assertions, 6 expected failures; independent root GREEN: complete public-accounting namespace 5 tests/62 assertions, no failures/errors, exit 0. Evidence: /private/tmp/gepa-absent-accounting-{red,green,root}.log. Allium baseline remains 114 info/39 warnings/0 errors and no analysis findings. Public views must not invent an optimization by attaching zero accounting to an empty projection. Existing tenant-scoped accounting remains required.
