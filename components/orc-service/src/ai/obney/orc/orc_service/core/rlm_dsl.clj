@@ -65,8 +65,7 @@
         (apply list 'sheet/sequence (transform-children children)))
 
       :llm
-      (let [opts (-> (first args)
-                     (add-default-retry))]
+      (let [opts (first args)]
         (apply list 'sheet/llm (opts-map->keyword-args opts)))
 
       :map-each

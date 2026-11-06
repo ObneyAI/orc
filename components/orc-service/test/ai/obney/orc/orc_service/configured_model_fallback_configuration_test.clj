@@ -14,7 +14,7 @@
            [java.util.concurrent CountDownLatch Executors ExecutorService TimeUnit]))
 
 (def task
-  {:candidates [{:model "fixture/primary"} {:model "fixture/backup"}]
+  {:model "fixture/primary" :fallback-models [{:model "fixture/backup"}]
    :instruction "Assess the supplied evidence for this exact request."
    :reads [:request :evidence]
    :writes [:assessment-reasoning :assessment]})
@@ -26,7 +26,7 @@
    :assessment [:boolean {:description "Whether the request is supported; false is valid."}]})
 
 (defn construct [options]
-  (apply orc/llm-fallback "assess" (mapcat identity options)))
+  (apply orc/llm "assess" (mapcat identity options)))
 
 (defn rejected? [options]
   (try (construct options) false
@@ -35,28 +35,27 @@
 
 (deftest invalid-configurations-fail-before-execution
   (doseq [[label options]
-          [["missing candidates" (dissoc task :candidates)]
-           ["empty candidates" (assoc task :candidates [])]
-           ["unordered candidates" (assoc task :candidates #{{:model "fixture/primary"}})]
-           ["missing model" (assoc task :candidates [{}])]
-           ["blank model" (assoc task :candidates [{:model "  "}])]
-           ["non-string model" (assoc task :candidates [{:model :fixture/primary}])]
-           ["unknown policy" (assoc task :policy :any-failure)]
-           ["explicit nil policy" (assoc task :policy nil)]
-           ["candidate changes instruction" (assoc task :candidates [{:model "fixture/primary" :instruction "Different task"}])]
-           ["candidate changes reads" (assoc task :candidates [{:model "fixture/primary" :reads [:other]}])]
-           ["candidate changes writes" (assoc task :candidates [{:model "fixture/primary" :writes [:other]}])]
-           ["zero node attempts" (assoc task :candidates [{:model "fixture/primary" :retry {:max-attempts 0 :backoff-ms []}}])]
-           ["negative backoff" (assoc task :candidates [{:model "fixture/primary" :retry {:max-attempts 2 :backoff-ms [-1]}}])]
+          [["unordered candidates" (assoc task :fallback-models #{{:model "fixture/primary"}})]
+           ["missing model" (assoc task :fallback-models [{}])]
+           ["blank model" (assoc task :fallback-models [{:model "  "}])]
+           ["non-string model" (assoc task :fallback-models [{:model :fixture/primary}])]
+           ["unknown policy" (assoc task :fallback-policy :any-failure)]
+           ["explicit nil policy" (assoc task :fallback-policy nil)]
+           ["candidate changes instruction" (assoc task :fallback-models [{:model "fixture/primary" :instruction "Different task"}])]
+           ["candidate changes reads" (assoc task :fallback-models [{:model "fixture/primary" :reads [:other]}])]
+           ["candidate changes writes" (assoc task :fallback-models [{:model "fixture/primary" :writes [:other]}])]
+           ["zero node attempts" (assoc task :fallback-models [{:model "fixture/primary" :retry {:max-attempts 0 :backoff-ms []}}])]
+           ["negative backoff" (assoc task :fallback-models [{:model "fixture/primary" :retry {:max-attempts 2 :backoff-ms [-1]}}])]
            ["negative provider retries" (assoc task :options {:max-retries -1})]
            ["nil provider retries" (assoc task :options {:max-retries nil})]
-           ["nil candidate retries" (assoc task :candidates [{:model "fixture/primary" :options {:max-retries nil}}])]
+           ["nil candidate retries" (assoc task :fallback-models [{:model "fixture/primary" :options {:max-retries nil}}])]
            ["empty retry delays" (assoc task :options {:max-retries 1 :retry-delay-ms []})]
            ["negative retry delay" (assoc task :options {:max-retries 1 :retry-delay-ms -1})]
            ["negative delay in sequence" (assoc task :options {:max-retries 1 :retry-delay-ms [0 -1]})]
            ["nil retry delay" (assoc task :options {:max-retries 1 :retry-delay-ms nil})]
-           ["fractional candidate retries" (assoc task :candidates [{:model "fixture/primary" :options {:max-retries 0.5}}])]
-           ["unknown task option" (assoc task :polciy :all-transport)]]]
+           ["unknown task option" (assoc task :polciy :all-transport)]
+           ["fractional candidate retries" (assoc task :fallback-models [{:model "fixture/primary" :options {:max-retries 0.5}}])]
+]]
     (testing label (is (rejected? options)))))
 
 (deftest candidates-cannot-replace-runtime-ownership-or-common-privacy
@@ -73,29 +72,26 @@
     (testing (str "shared runtime option " k)
       (is (rejected? (assoc task :options {k value}))))
     (testing (str "candidate runtime option " k)
-      (is (rejected? (assoc task :candidates [{:model "fixture/primary" :options {k value}}])))))
+      (is (rejected? (assoc task :fallback-models [{:model "fixture/primary" :options {k value}}])))))
   (doseq [override [{:provider {:data_collection "allow"}}
                     {:store true}
                     {:output-mode :markers}
                     {:model "fixture/injected"}]]
     (is (rejected? (assoc task :options {:store false :provider {:data_collection "deny"}}
-                         :candidates [{:model "fixture/backup" :options override}])))))
+                         :fallback-models [{:model "fixture/backup" :options override}])))))
 
 (defn task-view [node]
-  {:policy (:model-fallback-policy node)
-   :candidates (mapv #(select-keys % [:name :model :instruction :reads :writes :retry :options])
-                     (:children node))})
+  (select-keys node [:provider :model :fallback-models :fallback-policy
+                     :instruction :reads :writes :options]))
 
 (deftest shared-task-and-generation-overrides-survive-public-roundtrips
   (h/with-test-context [ctx]
     (let [options (assoc task
-                        :policy :all-transport
+                        :fallback-policy :all-transport
                         :options {:output-mode :json-schema :max-tokens 65536
                                   :store false :provider {:data_collection "deny"}}
-                        :candidates [{:model "fixture/primary"}
-                                     {:model "fixture/backup"
-                                      :options {:max-tokens 32768 :temperature 0.2 :max-retries 1}
-                                      :retry {:max-attempts 2 :backoff-ms [0]}}])
+                        :fallback-models [{:model "fixture/backup"
+                                      :options {:max-tokens 32768 :temperature 0.2 :max-retries 1}}])
           authored (construct options)
           expected (task-view authored)
           definition (orc/workflow "model-fallback-config-source" (orc/blackboard board) authored)
@@ -107,16 +103,14 @@
                         (eval (read-string (orc/export-to-dsl exported))))
           rebuilt-id (orc/build-workflow! ctx (assoc regenerated :workflow-name "model-fallback-config-rebuilt"))
           imported-id (orc/import-sheet ctx (assoc-in exported [:sheet :name] "model-fallback-config-imported"))]
-      (is (= :all-transport (:policy expected)))
-      (is (= ["fixture/primary" "fixture/backup"] (mapv :model (:candidates expected))))
-      (doseq [candidate (:children authored)]
-        (is (= (select-keys task [:instruction :reads :writes])
-               (select-keys candidate [:instruction :reads :writes])))
-        (is (= false (get-in candidate [:options :store])))
-        (is (= {:data_collection "deny"} (get-in candidate [:options :provider]))))
-      (is (= {:max-attempts 1 :backoff-ms []} (get-in authored [:children 0 :retry])))
-      (is (= 0 (get-in authored [:children 0 :options :max-retries])))
-      (is (= 32768 (get-in authored [:children 1 :options :max-tokens])))
+      (is (= :all-transport (:fallback-policy expected)))
+      (is (= "fixture/primary" (:model expected)))
+      (is (= ["fixture/backup"] (mapv :model (:fallback-models expected))))
+      (is (= (select-keys task [:instruction :reads :writes])
+             (select-keys authored [:instruction :reads :writes])))
+      (is (= false (get-in authored [:options :store])))
+      (is (= {:data_collection "deny"} (get-in authored [:options :provider])))
+      (is (= 32768 (get-in authored [:fallback-models 0 :options :max-tokens])))
       (doseq [[label node] [["EDN export" (:nodes exported)]
                             ["published snapshot" (get-in version-before [:snapshot :nodes])]
                             ["DSL evaluated" (:root-node regenerated)]
@@ -126,24 +120,22 @@
       (testing "a subsequent source definition does not mutate the published candidate snapshot"
         (orc/build-workflow! ctx
           (orc/workflow "model-fallback-config-source" (orc/blackboard board)
-            (construct (assoc options :candidates [{:model "fixture/new-primary"}]))))
+            (construct (assoc options :model "fixture/new-primary" :fallback-models []))))
         (is (= version-before (orc/get-version ctx source-id 1)))
-        (is (= ["fixture/new-primary"]
-               (mapv :model (get-in (orc/export-sheet ctx source-id) [:nodes :children]))))))))
+        (is (= "fixture/new-primary"
+               (get-in (orc/export-sheet ctx source-id) [:nodes :model])))
+        (is (= [] (get-in (orc/export-sheet ctx source-id) [:nodes :fallback-models])))))))
 
 
 (deftest raw-policy-bearing-definitions-cannot-bypass-task-validation
   (h/with-test-context [ctx]
     (doseq [[label node]
-            [["unknown-policy" (assoc (construct task) :model-fallback-policy :any-failure)]
-             ["different-inputs" (assoc-in (construct task) [:children 1 :reads] [:evidence])]
-             ["different-privacy" (assoc-in (construct task) [:children 1 :options :store] true)]
-             ["nil-retry" (update (construct task) :children
-                                  #(mapv (fn [n] (assoc-in n [:options :max-retries] nil)) %))]
-             ["empty-delays" (update (construct task) :children
-                                     #(mapv (fn [n] (assoc n :options {:max-retries 1 :retry-delay-ms []})) %))]
-             ["negative-delays" (update (construct task) :children
-                                        #(mapv (fn [n] (assoc n :options {:max-retries 1 :retry-delay-ms -1})) %))]]]
+            [["unknown-policy" (assoc (construct task) :fallback-policy :any-failure)]
+             ["different-inputs" (assoc-in (construct task) [:fallback-models 0 :reads] [:evidence])]
+             ["different-privacy" (assoc-in (construct task) [:fallback-models 0 :options :store] true)]
+             ["nil-retry" (assoc-in (construct task) [:options :max-retries] nil)]
+             ["empty-delays" (assoc (construct task) :options {:max-retries 1 :retry-delay-ms []})]
+             ["negative-delays" (assoc (construct task) :options {:max-retries 1 :retry-delay-ms -1})]]]
       (let [name (str "invalid-model-fallback-" label)
             error (try
                     (orc/build-workflow! ctx (orc/workflow name (orc/blackboard board) node))
@@ -161,8 +153,7 @@
         (let [name (str "invalid-retry-import-" label)
               malformed (-> exported
                             (assoc-in [:sheet :name] name)
-                            (update-in [:nodes :children]
-                                       #(mapv (fn [n] (assoc n :options overrides)) %)))
+                            (assoc-in [:nodes :options] overrides))
               error (try (orc/import-sheet ctx malformed) nil
                          (catch clojure.lang.ExceptionInfo e (ex-data e)))]
           (is (= :invalid-model-fallback (:type error)))
@@ -218,9 +209,9 @@
       (orc/code "completed-once"
         :fn "ai.obney.orc.orc-service.scoped-model-alternative-e2e-test/completed-tool"
         :reads [:request] :writes [:tool-receipt])
-      (orc/llm-fallback "assess"
-        :candidates [{:model (str "fixture/" prefix "-primary")}
-                     {:model (str "fixture/" prefix "-backup")}]
+      (orc/llm "assess"
+        :model (str "fixture/" prefix "-primary")
+        :fallback-models [{:model (str "fixture/" prefix "-backup")}]
         :instruction fixture/instruction :reads fixture/task-reads :writes fixture/task-writes
         :options fixture/generation-options))))
 
@@ -253,7 +244,8 @@
                 requested (fn [item]
                             (mapv :model (filter #(= item (get-in % [:inputs :request :item-id])) @(:requests server))))
                 frozen-models (fn [context]
-                                (set (keep :model (vals (:nodes-by-id context)))))
+                                (set (mapcat (fn [node] (keep identity (cons (:model node) (map :model (:fallback-models node)))))
+                                             (vals (:nodes-by-id context)))))
                 events (fn [id] (orc/value-log-read-tick-events ctx (:tenant-id ctx) id))]
             (doseq [[result item] [[old-result "OLD"] [new-result "NEW"]]]
               (is (= :success (:status result)))
@@ -304,8 +296,8 @@
                              (orc/code "completed-once"
                                :fn "ai.obney.orc.orc-service.scoped-model-alternative-e2e-test/completed-tool"
                                :reads [:request] :writes [:tool-receipt])
-                             (orc/llm-fallback "models"
-                               :candidates [{:model "fixture/primary"} {:model "fixture/alternative"}]
+                             (orc/llm "models"
+                               :model "fixture/primary" :fallback-models [{:model "fixture/alternative"}]
                                :instruction fixture/instruction :reads fixture/task-reads :writes fixture/task-writes
                                :options fixture/generation-options)))
               sheet-a (orc/build-workflow! a definition)
@@ -330,8 +322,8 @@
                 candidate-ids (set (map :id (filter #(= :ai (:executor %))
                                                     (vals (orc/get-nodes-by-id a sheet-a)))))
                 models (fn [events]
-                         (mapv :requested-model
-                           (filter #(and (= :sheet/node-execution-completed (:event/type %))
+                         (mapv #(get-in % [:entry :requested-model])
+                           (filter #(and (= :sheet/model-candidate-recorded (:event/type %))
                                          (contains? candidate-ids (:node-id %))) events)))
                 requests-a (filter #(= "TASK-A" (get-in % [:inputs :request :item-id])) @(:requests server))
                 requests-b (filter #(= "TASK-B" (get-in % [:inputs :request :item-id])) @(:requests server))]
@@ -362,3 +354,34 @@
           (when @poller (tp/stop-tenant-poller @poller))
           (h/stop-async-context base)
           (http/stop-server! server))))))
+
+(deftest every-model-node-persists-routing-and-explicit-empty-overrides
+  (h/with-test-context [ctx]
+    (doseq [[kind constructor task-options]
+            [["llm" orc/llm {:writes [:assessment-reasoning :assessment]}]
+             ["decision" orc/llm-decision {:writes [:assessment]}]
+             ["condition" orc/llm-condition {}]
+             ["researcher" orc/repl-researcher
+              {:writes [:assessment]
+               :rlm {:recursive? true :checkpointed? true
+                     :sub-model "fixture/sub-primary" :sub-provider :sub-provider
+                     :sub-options {:max-tokens 32768}
+                     :sub-fallback-models [] :sub-fallback-policy :all-transport}}]]]
+      (let [opts (merge {:provider :primary-provider :model "fixture/primary"
+                         :fallback-models [] :fallback-policy :temporary-transport
+                         :options {:max-tokens 65536}
+                         :instruction "Assess this evidence." :reads [:request :evidence]}
+                        task-options)
+            node (apply constructor "assess" (mapcat identity opts))
+            id (orc/build-workflow! ctx (orc/workflow (str "model-config-" kind)
+                                         (orc/blackboard board) node))
+            exported (orc/export-sheet ctx id)
+            _ (h/run-and-apply! ctx (h/make-publish-version-command id))
+            version (orc/get-version ctx id 1)
+            regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.interface)]
+                          (eval (read-string (orc/export-to-dsl exported))))]
+        (doseq [actual [(:nodes exported) (get-in version [:snapshot :nodes])
+                       (:root-node regenerated)]]
+          (testing kind
+            (is (= (select-keys node [:provider :model :fallback-models :fallback-policy :options :rlm])
+                   (select-keys actual [:provider :model :fallback-models :fallback-policy :options :rlm])))))))))

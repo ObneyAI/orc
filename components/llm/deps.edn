@@ -5,7 +5,7 @@
 
         tech.unravel/litellm-clj
         {:git/url "https://github.com/ObneyAI/litellm-clj.git"
-         :git/sha "2b6781b8f98105fe07d17b289138103e5dd3a047"}
+         :git/sha "bc65561e974d5e35b80d3f842e190231476fdd10"}
 
         hato/hato {:mvn/version "0.9.0"}
 

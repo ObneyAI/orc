@@ -1334,3 +1334,11 @@ The new public constructor is exercised through real Grain and local HTTP, with
 shared-store tenant isolation, mapped attribution and published-version overlap. See
 `docs/issues/model-fallback/PLAN.md`. Streaming and custom native classification
 remain outside this scope.
+
+## Standard-node fallback revision
+
+The wrapper proof at dcf5fbe7 remains historical evidence only. Existing-node fallback, compatible provider routing, researcher-role inheritance and persisted selection, and pre-output streaming fallback are new obligations NODE-FALLBACK-1 through 6. All remain unverified until their integration-shaped proofs run. No SIO parsing change is assumed; the asynchronous client error boundary needs separate verification.
+
+Standard-node engine acceptance completed: 20 tests/371 assertions, zero failures/errors, including old scoped regression and local client SSE test. NODE-FALLBACK-1..5 are covered; fresh recipe remains separately tracked. Known limits: no remote quality/load claim, no arbitrary protocol adapter support, no stream replacement after output, and no separate-process hard-kill evidence.
+
+NODE-FALLBACK-6 complete: fresh-agent ordinary/refusal/researcher inherited-specialist exercise used seven local HTTP requests, with public query/trace evidence. All six scoped obligations covered.

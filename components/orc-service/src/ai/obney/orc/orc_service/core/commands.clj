@@ -10,6 +10,7 @@
             [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
             [ai.obney.orc.orc-service.core.judge-definition :as judge-definition]
             [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.model-fallback :as model-fallback]
             [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
@@ -501,17 +502,21 @@
                   (:tools node) (assoc :previous-tools (:tools node))
                   (:options node) (assoc :previous-options (:options node)))})]})))
 
-(defcommand :sheet set-model-fallback-policy
+(defcommand :sheet set-node-model-policy
   {:authorized? authenticated?}
-  "Set admission policy on an ordered model fallback."
-  [{{:keys [sheet-id node-id model-fallback-policy]} :command :as ctx}]
-  (if (= :fallback (:type (rm/get-node ctx sheet-id node-id)))
-    {:command-result/events
-     [(->event {:type :sheet/model-fallback-policy-set
-                :tags #{[:sheet sheet-id] [:node node-id]}
-                :body {:sheet-id sheet-id :node-id node-id
-                       :model-fallback-policy model-fallback-policy}})]}
-    {::anom/category ::anom/incorrect ::anom/message "Model fallback policy requires a fallback node"}))
+  "Persist provider routing and ordered backups for a model-capable node."
+  [{{:keys [sheet-id node-id] :as command} :command :as ctx}]
+  (if-let [node (rm/get-node ctx sheet-id node-id)]
+    (if (or (#{:llm-condition :repl-researcher} (:type node))
+            (and (= :leaf (:type node))
+                 (or (nil? (:executor node)) (#{:ai :decision} (:executor node)))))
+      {:command-result/events
+       [(->event {:type :sheet/node-model-policy-set
+                  :tags #{[:sheet sheet-id] [:node node-id]}
+                  :body (merge {:sheet-id sheet-id :node-id node-id}
+                               (select-keys (model-fallback/validate-config! command) [:provider :fallback-models :fallback-policy :options]))})]}
+      {::anom/category ::anom/incorrect ::anom/message "Node cannot call a model"})
+    {::anom/category ::anom/not-found ::anom/message "Node not found"}))
 
 (defcommand :sheet set-node-retry
   {:authorized? authenticated?}
@@ -1796,7 +1801,7 @@
   [{{:keys [sheet-id tick-id node-id completion-id researcher-ownership-epoch
             status writes rejected-writes missing-write-keys write-sources write-references? duration-ms
             observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage own-usage model
-            node-type completion-kind raw-response failure-kind provider-evidence
+            node-type completion-kind raw-response failure-kind provider-evidence model-fallback
             condition-answer decision block-payload read-sources
             requested-model resolved-model]} :command
     :as ctx}]
@@ -1937,6 +1942,7 @@
                                     ;; (node-output <node-id>) drill-down.
                                     raw-response (assoc :raw-response raw-response)
                                     failure-kind (assoc :failure-kind failure-kind)
+                                    model-fallback (assoc :model-fallback model-fallback)
                                     (boolean? condition-answer) (assoc :condition-answer condition-answer)
                                     decision (assoc :decision decision)
                                     provider-evidence (assoc :provider-evidence provider-evidence)
@@ -2387,6 +2393,7 @@
                  :source-node-id (:id node)
                  :type (:type node)
                  :name (:name node)}
+          true (merge (select-keys node [:provider :fallback-models :fallback-policy :options]))
           (:model-fallback-policy node) (assoc :model-fallback-policy (:model-fallback-policy node))
           ;; Leaf-specific fields
           (= :leaf (:type node))
@@ -2417,6 +2424,11 @@
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (:model node) (assoc :model (:model node))))
+          ;; Researcher definitions must freeze the complete execution contract.
+          (= :repl-researcher (:type node))
+          (merge (select-keys node [:instruction :reads :writes :model :options :rlm
+                                    :mcp-tools :browser-tools :tool-contracts :tool-caller-fn
+                                    :max-iterations :context :judges]))
           ;; Parallel-specific
           (= :parallel (:type node))
           (merge {:success-policy (or (:success-policy node) :all)

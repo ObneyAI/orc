@@ -248,8 +248,9 @@ contract LeafExecutor {
         -- budget failures retain their existing terminal semantics.
 
     @invariant ConfiguredModelAlternativesAreOneTask
-        -- An authored ordinary model task may declare a nonempty ordered list
-        -- of explicit models, with compatible candidate generation overrides.
+        -- Existing generation, condition, decision and researcher nodes may
+        -- configure ordered backup models and registered providers, with
+        -- compatible generation overrides. An empty list disables inheritance.
         -- Running executions retain their original candidate configuration even
         -- when a successor workflow configuration is built concurrently.
         -- All candidates retain the same instruction and described input and
@@ -277,7 +278,29 @@ contract LeafExecutor {
         -- selection remain retrievable through canonical execution traces.
         -- Denial or candidate exhaustion preserves a useful terminal reason.
         -- A failed request never invents a resolved model identity. Ordinary
-        -- blocking alternatives do not imply safe failover after streamed output.
+        -- and streaming alternatives may advance only before visible model output.
+        -- Once output is exposed, a failed stream terminates without replacement.
+
+    @invariant ResearcherModelFallbackPreservesProgress
+        -- Prime and specialist roles have separate defaults. Inline and emitted
+        -- specialists inherit specialist options and backups unless overridden;
+        -- a primary-only override retains backups and an empty list disables them.
+        -- A failed model call switches inside its logical action, never by
+        -- restarting the researcher or replaying completed external actions.
+        -- Successful backup selection persists for that run, role and effective
+        -- configuration. Later calls start there; concurrent older completions
+        -- cannot move selection backwards. Recovery retains recorded transitions.
+        -- New runs start at their primary. No selection crosses tenant/run scope.
+
+    @invariant ConfiguredFallbackHasBoundedPhysicalAttempts
+        -- Configured fallback defaults to one physical request per candidate.
+        -- Explicit bounded same-model retries precede switching. Exhaustion does
+        -- not restart the chain through implicit outer node retries. Every request
+        -- reserves remaining family budget and time before dispatch. A request
+        -- interrupted before its outcome is recorded may be repeated on recovery
+        -- only as a new counted attempt; completed tool effects are not replayed.
+        -- Compatible providers preserve the effective task and decision contract;
+        -- protocol conversion never invents confidence or weakens strict output.
 
     @invariant ProviderRetryCoversSchemaFailure
         -- The default provider retry applies when a returned structured output

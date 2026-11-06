@@ -388,6 +388,13 @@
     [:parent-id {:optional true} :uuid]
     [:children-ids [:vector :uuid]]
     [:status node-status]
+    [:provider {:optional true} :keyword]
+    [:fallback-models {:optional true}
+     [:vector [:map {:closed true}
+               [:model [:string {:min 1}]]
+               [:provider {:optional true} :keyword]
+               [:options {:optional true} [:map]]]]]
+    [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]
     [:model-fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]
     ;; Leaf-only fields
     [:instruction {:optional true} :string]
@@ -493,9 +500,11 @@
    [:map
     [:model-fallback {:optional true}
      [:map [:policy [:enum :temporary-transport :all-transport]]
-      [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused]]
-      [:candidate-index :int] [:candidate-node-id :uuid]
-      [:requested-model :string] [:predecessor-event-id :uuid]]]
+      [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused :output-exposed]]
+      [:candidate-index :int] [:candidate-node-id {:optional true} :uuid]
+      [:requested-model [:maybe :string]] [:provider {:optional true} :keyword]
+      [:attempts {:optional true} [:vector :map]]
+      [:predecessor-event-id {:optional true} :uuid]]]
     [:node-id :uuid]
     [:delegate-child-tick-id {:optional true} :uuid]
     [:delegate-child-status {:optional true} :keyword]
@@ -793,9 +802,16 @@
     [:tool-caller-fn {:optional true} :string]
     [:tool-contracts {:optional true} tool-contracts]]
 
-   :sheet/set-model-fallback-policy
+   :sheet/set-node-model-policy
    [:map [:sheet-id :uuid] [:node-id :uuid]
-    [:model-fallback-policy [:enum :temporary-transport :all-transport]]]
+    [:options {:optional true} [:map]]
+    [:provider {:optional true} :keyword]
+    [:fallback-models {:optional true}
+     [:vector [:map {:closed true}
+               [:model [:string {:min 1}]]
+               [:provider {:optional true} :keyword]
+               [:options {:optional true} [:map]]]]]
+    [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]]
 
    :sheet/set-node-retry
    [:map
@@ -1530,6 +1546,17 @@
     [:previous-tools {:optional true} [:vector :keyword]]
     [:previous-options {:optional true} :map]]
 
+   :sheet/node-model-policy-set
+   [:map [:sheet-id :uuid] [:node-id :uuid]
+    [:options {:optional true} [:map]]
+    [:provider {:optional true} :keyword]
+    [:fallback-models {:optional true}
+     [:vector [:map {:closed true}
+               [:model [:string {:min 1}]]
+               [:provider {:optional true} :keyword]
+               [:options {:optional true} [:map]]]]]
+    [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]]
+
    :sheet/model-fallback-policy-set
    [:map [:sheet-id :uuid] [:node-id :uuid]
     [:model-fallback-policy [:enum :temporary-transport :all-transport]]]
@@ -1760,9 +1787,11 @@
    [:map
     [:model-fallback {:optional true}
      [:map [:policy [:enum :temporary-transport :all-transport]]
-      [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused]]
-      [:candidate-index :int] [:candidate-node-id :uuid]
-      [:requested-model :string] [:predecessor-event-id :uuid]]]
+      [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused :output-exposed]]
+      [:candidate-index :int] [:candidate-node-id {:optional true} :uuid]
+      [:requested-model [:maybe :string]] [:provider {:optional true} :keyword]
+      [:attempts {:optional true} [:vector :map]]
+      [:predecessor-event-id {:optional true} :uuid]]]
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]

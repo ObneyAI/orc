@@ -129,7 +129,11 @@
           node-id (java.util.UUID/nameUUIDFromBytes
                    (.getBytes (str path) "UTF-8"))
           children (or (:children snapshot-node) [])
-          node-record {:id node-id
+          node-record (merge
+                       (select-keys snapshot-node [:provider :fallback-models :fallback-policy
+                                                   :model-fallback-policy :rlm :browser-tools
+                                                   :tool-contracts :tool-caller-fn :judges])
+                       {:id node-id
                        :type (:type snapshot-node)
                        :name (:name snapshot-node)
                        ;; The draft node this one was published from (absent on
@@ -183,7 +187,7 @@
                                             (:inherit-ontology? snapshot-node)
                                             true)
                        ;; Ontology context injection
-                       :context (:context snapshot-node)}
+                       :context (:context snapshot-node)})
           ;; Recursively parse children
           child-records (mapcat (fn [i child]
                                   (parse-snapshot-nodes child node-id i (str path "/" i)))

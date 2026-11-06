@@ -6,8 +6,7 @@
    - Handle sequence/fallback/parallel composite node logic
    - Handle map-each iteration
    - Update blackboard with node outputs"
-  (:require [ai.obney.orc.orc-service.core.model-fallback :as model-fallback]
-            [ai.obney.orc.orc-service.core.read-models :as rm]
+  (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
             [ai.obney.orc.orc-service.core.provider-observations :as provider-observations]
@@ -2523,7 +2522,15 @@
                     :logical-action-identity logical-action-identity
                     :provider-attempt-ordinal provider-attempt-ordinal))))]
     (cond->
-     {:execution-deadline-ms (get-in tick-options [:execution-deadline-ms])
+     {:model-role-context
+      {:context context
+       :owner {:sheet-id sheet-id :tick-id tick-id :node-id node-id
+               :node-start-id (get-in context [:event :event/id])
+               :exec-context exec-context
+               :role (if (:researcher-campaign-node-id tick-options) :subcall :node)
+               :selection-scope [tick-id node-id exec-context]
+               :logical-action-id (pr-str [tick-id node-id exec-context])}}
+      :execution-deadline-ms (get-in tick-options [:execution-deadline-ms])
       :reserve-llm-call! #(reserve-llm-call-or-cancel! context tick-ctx sheet-id tick-id)
       :tick-id tick-id
       :exec-context exec-context
@@ -2727,7 +2734,7 @@
                            (merge (campaign-effect-capabilities
                                    context (:options tick-ctx))))
             ;; Use provider from context, fall back to default, or use mock if nil
-            provider (or llm-provider *default-llm-provider*)
+            provider (or (:provider node) llm-provider *default-llm-provider*)
             executor-type (or (:executor node) :ai)
             ;; Extract execution context for correlation
             exec-context (extract-execution-context event-inputs)
@@ -2819,6 +2826,7 @@
               (when usage (add-usage! tick-id usage))
               ;; Use process-command to emit completion event. A REJECTED
               ;; completion fails the node visibly (S7w) instead of wedging.
+              (when-not (:model-call-in-flight? result)
               (complete-node-or-fail!
                 context
                        (cond-> {:command/id (random-uuid)
@@ -2871,6 +2879,7 @@
                                    (assoc :read-sources (read-sources (:reads node) blackboard exec-context)))))
                          (seq usage) (assoc :usage usage)
                          decision (assoc :decision decision)
+                         (:model-fallback result) (assoc :model-fallback (:model-fallback result))
                          ;; ModelLeafRecordsResolvedModel: every model call
                          ;; records the model the provider reported when it
                          ;; reported one, else the configured one, in :model.
@@ -2883,7 +2892,7 @@
                          (and is-llm-call? (:model node))
                          (assoc :requested-model (:model node))
                          (and is-llm-call? resolved-model)
-                         (assoc :resolved-model resolved-model)))
+                         (assoc :resolved-model resolved-model))))
               ;; ALSO emit the RLM-specific learning-signal event when an LLM
               ;; call has usage. Carries a precomputed structured node-path
               ;; and an :input-profile derived from the node's :reads so
@@ -4568,14 +4577,15 @@
         node (get nodes-by-id node-id)]
     (when (#{:sequence :fallback} (:type node))
       (let [children-ids (:children-ids node)
-            invalid? (try (model-fallback/validate-node! node (mapv nodes-by-id children-ids))
-                          false (catch clojure.lang.ExceptionInfo _ true))]
+            ;; Historical snapshots remain readable, but must not execute a
+            ;; removed admission policy as unrestricted generic fallback.
+            invalid? (contains? node :model-fallback-policy)]
         (if invalid?
           {:result/events
            [(->event {:type :sheet/node-execution-completed
                       :tags #{[:sheet sheet-id] [:node node-id] [:tick tick-id]}
                       :body (cond-> {:sheet-id sheet-id :tick-id tick-id :node-id node-id
-                                     :status :failure :error "Invalid model fallback candidate contract"}
+                                     :status :failure :error "Composite model fallback is obsolete; configure fallback-models on model nodes"}
                               (seq exec-context) (assoc :inputs exec-context))})]}
           (if (empty? children-ids)
           ;; No children - sequence succeeds, fallback fails
@@ -4757,81 +4767,7 @@
   [opts]
   (parallel-completion-strategy (assoc opts :strategy-id :boolean)))
 
-(defn- handle-model-fallback-completion
-  "Admit from the actual durable candidate completion. Progress is owned by
-   tenant/tick/parent/execution context and the predecessor event, never a name."
-  [{:keys [event event-store tenant-id] :as context} parent nodes-by-id exec-context]
-  (let [{:keys [sheet-id tick-id node-id status]} event
-        parent-id (:id parent)
-        candidates (:children-ids parent)
-        index (.indexOf (vec candidates) node-id)
-        next-id (get (vec candidates) (inc index))
-        same-context? #(= exec-context (extract-execution-context (:inputs %)))
-        events (into [] (es/read event-store {:tags #{[:tick tick-id]} :tenant-id tenant-id}))
-        starts (filter #(and (= :sheet/node-execution-started (:event/type %))
-                             (contains? (set candidates) (:node-id %))
-                             (same-context? %)) events)
-        latest-start (last starts)
-        canonical (first (filter #(= (:event/id event) (:event/id %)) events))
-        positions (into {} (map-indexed (fn [i e] [(:event/id e) i]) events))
-        latest-completion (last (filter #(and (= :sheet/node-execution-completed (:event/type %))
-                                              (= node-id (:node-id %)) (same-context? %)) events))
-        canonical? (and (= event canonical)
-                        (= (:event/id event) (:event/id latest-completion))
-                        (< (get positions (:event/id latest-start) Long/MAX_VALUE)
-                           (get positions (:event/id event) -1)))
-        continued? (some #(and (= :sheet/model-fallback-transition-recorded (:event/type %))
-                              (= parent-id (:node-id %)) (same-context? %)
-                              (= (:event/id event) (:predecessor-event-id %))) events)
-        decision (model-fallback/admission (:model-fallback-policy parent) event)
-        success? (= :success status)
-        advance? (and (:allowed? decision) next-id)
-        reason (cond success? :selected
-                     (= :blocked status) :blocked
-                     (= :timeout status) :timeout
-                     (and (:allowed? decision) (nil? next-id)) :candidates-exhausted
-                     :else (:reason decision))
-        evidence (select-keys event [:failure-kind :provider-evidence :model :requested-model :resolved-model])
-        outcome {:policy (:model-fallback-policy parent) :reason reason
-                 :candidate-index index :candidate-node-id node-id
-                 :requested-model (:model (get nodes-by-id node-id))
-                 :predecessor-event-id (:event/id event)}
-        transition (fn []
-                     (->event {:type :sheet/model-fallback-transition-recorded
-                               :tags #{[:sheet sheet-id] [:node parent-id] [:tick tick-id]}
-                               :body (cond-> {:sheet-id sheet-id :tick-id tick-id :node-id parent-id
-                                              :candidate-node-id node-id :candidate-index index
-                                              :predecessor-event-id (:event/id event)
-                                              :policy (:model-fallback-policy parent)
-                                              :reason (if advance? :eligible-transport reason)
-                                              :advanced? (boolean advance?)}
-                                       next-id (assoc :next-node-id next-id)
-                                       (seq exec-context) (assoc :inputs exec-context))}))]
-    (when (and canonical? (not continued?) (<= 0 index)
-               (= node-id (:node-id latest-start)))
-      (if advance?
-        (let [task-inputs (value-log/resolve-reads context tenant-id tick-id event)]
-          {:result/events
-           [(transition)
-            (->event {:type :sheet/node-execution-started
-                      :tags (node-execution-tags context sheet-id tick-id next-id)
-                      :body (execution-lease/stamp context (get nodes-by-id next-id)
-                              {:sheet-id sheet-id :tick-id tick-id :node-id next-id
-                               :inputs (merge task-inputs exec-context)})})]})
-        (let [sources (when success? (value-log/resolve-write-sources event-store tenant-id tick-id event))]
-          {:result/events
-           [(transition)
-            (->event {:type :sheet/node-execution-completed
-                      :tags #{[:sheet sheet-id] [:node parent-id] [:tick tick-id]}
-                      :body (cond-> (merge {:sheet-id sheet-id :tick-id tick-id :node-id parent-id
-                                            :model-fallback outcome
-                                            :status (if (#{:success :blocked :timeout} status) status :failure)}
-                                           evidence)
-                              (not success?) (assoc :error (str "Model fallback " (name reason)
-                                                               "; candidate " index))
-                              (contains? event :block-payload) (assoc :block-payload (:block-payload event))
-                              (seq sources) (assoc :write-keys (vec (keys sources)) :write-sources sources)
-                              (seq exec-context) (assoc :inputs exec-context))})]})))))
+
 
 (defn handle-child-completion
   "When a child node completes, handle the parent's logic.
@@ -4874,9 +4810,7 @@
                             :child-index child-index
                             :event event
                             :parent parent})]
-        (if (:model-fallback-policy parent)
-          (handle-model-fallback-completion context parent nodes-by-id exec-context)
-          (case (:type parent)
+        (case (:type parent)
           :sequence
           (cond
             ;; :success and :tree-generated both mean the child completed successfully.
@@ -5174,7 +5108,7 @@
           nil
 
           ;; Unknown parent type
-          nil)))))))
+          nil))))))
 
 ;; =============================================================================
 ;; Map-Each Node Execution Processor

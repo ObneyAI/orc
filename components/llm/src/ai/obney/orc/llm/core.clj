@@ -997,15 +997,18 @@
       (some? cost) (assoc :cost cost))))
 
 (defn- decision-call-failure [base-evidence ^Throwable e]
-  ;; Direct native HTTP supplies :status, not a litellm category. Preserve
-  ;; only that bounded field; never infer rate-limit from 429 or retain the
-  ;; upstream message/data/cause. Custom transport classification is separate.
-  (let [raw-status (:status (ex-data e))
-        status (when (and (integer? raw-status) (<= 100 raw-status 599)) raw-status)]
+  ;; Preserve only allowlisted native transport data, never raw messages/causes.
+  ;; Bare 429 remains unclassified; an explicit typed category may disambiguate it.
+  (let [data (ex-data e)
+        raw-status (or (:http-status data) (:status data))
+        status (when (and (integer? raw-status) (<= 100 raw-status 599)) raw-status)
+        transport (cond-> {}
+                    (transport-error-types (:type data)) (assoc :type (:type data))
+                    status (assoc :http-status status))]
     (structured-failure
      (str "Decision transport failed" (when status (str " (HTTP " status ")")))
      :transport-failure
-     (cond-> base-evidence status (assoc :transport {:http-status status})))))
+     (cond-> base-evidence (seq transport) (assoc :transport transport)))))
 
 (defn- predict-decision [provider config spec inputs options]
   (let [validate? (get options :validate? true)
@@ -1170,6 +1173,32 @@
                                :provider-observations observations)
                         error))))))
 
+(defn preflight-provider!
+  "Resolve a candidate and validate its structured contract without network I/O.
+   Does not certify remote model availability or semantic quality."
+  [provider spec options]
+  (let [explicit-provider? (:orc/explicit-provider? options)
+        options (dissoc (or options {}) :orc/explicit-provider?)
+        route (decision-route provider options)
+        [selected config resolved-options]
+        (or route [provider (registered-config provider) options])]
+    (when (and explicit-provider? route (not= selected provider))
+      (throw (structured-failure "Explicit provider conflicts with native model alias"
+                                 :configuration-error {:provider (provider-name provider)})))
+    (when-not config
+      (throw (structured-failure "LLM provider is not configured"
+                                 :provider-not-configured
+                                 {:provider (provider-name selected)})))
+    (if route
+      (when (some #(nil? (output-kind (:spec %))) (:outputs spec))
+        (throw (structured-failure "Decision provider cannot satisfy the output contract"
+                                   :schema-validation-failed
+                                   {:provider (provider-name selected)})))
+      (when (= :json-schema (selected-output-mode selected resolved-options))
+        (compile-strict-output selected spec resolved-options)))
+    {:provider selected :model (or (:model resolved-options) (:model config))
+     :protocol (if route :decision :chat) :options resolved-options}))
+
 (defn predict
   "Perform one structured provider invocation.
 
@@ -1195,6 +1224,15 @@
   (if (and prompt-tokens completion-tokens)
     (assoc usage :total-tokens (+ prompt-tokens completion-tokens))
     usage))
+
+(defn- safe-stream-failure [provider chunk]
+  (let [type (or (:error-type chunk) (:type chunk))
+        status (:http-status chunk)
+        transport (cond-> {}
+                    (transport-error-types type) (assoc :type type)
+                    (and (integer? status) (<= 100 status 599)) (assoc :http-status status))]
+    (structured-failure "LLM streaming transport failed" :transport-failure
+                        (cond-> {:provider (provider-name provider)} (seq transport) (assoc :transport transport)))))
 
 (defn- error-event [error]
   {:orc/event :error
@@ -1269,7 +1307,7 @@
           (if-let [chunk (<! stream-ch)]
             (if (streaming/is-error-chunk? chunk)
               (do
-                (>! output-ch (error-event (dissoc chunk :type)))
+                (>! output-ch (error-event (safe-stream-failure provider chunk)))
                 (close! stream-ch)
                 (close! output-ch))
               (do

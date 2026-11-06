@@ -960,3 +960,14 @@ physical fixture requests across the scoped cases. Shared-store tenant proof
 uses the production tenant poller; duplicate replay uses Grain's processor.
 No paid calls, restart/load or model-quality claim. See
 `docs/issues/model-fallback/INSPECTION.md` for scope and measurement corrections.
+
+## Standard-node model fallback (supersedes wrapper-only acceptance)
+
+- [x] NODE-FALLBACK-1: standard-node configuration, invalid combinations, inherited/disabled overrides, snapshot/export, overlapping versions.
+- [x] NODE-FALLBACK-2: ordinary/condition/decision provider routing, negative/abstain/schema refusal, ordered exhaustion and safe exact-owner attempt evidence.
+- [x] NODE-FALLBACK-3: physical retry counts, actual deadline/budget refusal, duplicates, mapped items and shared-store tenant isolation.
+- [x] NODE-FALLBACK-4: prime/inline/emitted calls retain options and progress; sticky role selection, concurrent ordering and checkpoint recovery without repeated tools.
+- [x] NODE-FALLBACK-5: native and streaming safe transport evidence; failover before first visible output only, no replacement after partial output.
+- [x] NODE-FALLBACK-6: independent fresh-agent standard-node and researcher recipe with public trace diagnosis.
+
+Standard-node independent acceptance: 20 tests/371 assertions passed with the local client repair. Source/client manifests matched after the run. SQLite recovery closes/reopens store/runtime after a persisted quantum; separate-process hard-kill recovery is not claimed.

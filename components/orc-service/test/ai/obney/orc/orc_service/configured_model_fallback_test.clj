@@ -1,16 +1,18 @@
 (ns ai.obney.orc.orc-service.configured-model-fallback-test
   (:require [clojure.test :refer [deftest is]]
+            [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.interface :as orc]))
 
 (deftest configured-model-fallback-is-public
-  (let [constructor (ns-resolve 'ai.obney.orc.orc-service.interface 'llm-fallback)]
-    (is (some? constructor) "The public constructor must exist")
-    (when constructor
-      (let [node (constructor "assessment" :candidates [{:model "fixture/one"} {:model "fixture/two"}]
-                              :instruction "Assess" :reads [:request] :writes [:answer])]
-        (is (= :fallback (:node-type node)))
-        (is (= :temporary-transport (:model-fallback-policy node)))
-        (is (= ["fixture/one" "fixture/two"] (mapv :model (:children node))))))))
+  (let [node (orc/llm "assessment" :model "fixture/one"
+                       :fallback-models [{:model "fixture/two"}]
+                       :instruction "Assess" :reads [:request] :writes [:answer])]
+    (is (nil? (ns-resolve 'ai.obney.orc.orc-service.interface 'llm-fallback))
+        "Fallback is configured on standard nodes, not a second constructor")
+    (is (= :leaf (:node-type node)))
+    (is (= :ai (:executor node)))
+    (is (= "fixture/one" (:model node)))
+    (is (= [{:model "fixture/two"}] (:fallback-models node)))))
 
 (require '[ai.obney.orc.llm.interface :as llm]
          '[ai.obney.orc.orc-service.test-helpers :as h]
@@ -22,7 +24,7 @@
 (defn package! [ctx]
   (let [task (orc/build-workflow! ctx
                (orc/workflow "configured-task" (orc/blackboard fixture/board)
-                 (orc/llm-fallback "models" :candidates [{:model "fixture/primary"} {:model "fixture/alternative"}]
+                 (orc/llm "models" :model "fixture/primary" :fallback-models [{:model "fixture/alternative"}]
                    :instruction fixture/instruction :reads fixture/task-reads :writes fixture/task-writes
                    :options fixture/generation-options)))
         parent (orc/build-workflow! ctx
@@ -122,11 +124,13 @@
      :url (str "http://127.0.0.1:" (.getPort (.getAddress server)))}))
 
 (defn chain-node [name retry]
-  (orc/llm-fallback name
-    :candidates [(cond-> {:model "fixture/first"} retry (assoc :retry retry))
-                 {:model "fixture/second"} {:model "fixture/third"}]
+  (orc/llm name
+    :model "fixture/first"
+    :fallback-models [{:model "fixture/second"} {:model "fixture/third"}]
     :instruction fixture/instruction :reads fixture/task-reads :writes fixture/task-writes
-    :options fixture/generation-options))
+    :options (cond-> fixture/generation-options
+               retry (assoc :max-retries (dec (:max-attempts retry))
+                            :retry-delay-ms (:backoff-ms retry)))))
 
 (defn run-record [ctx sheet inputs budget]
   (let [tick-id (random-uuid)
@@ -160,7 +164,7 @@
               mapped (run-record ctx mapped-sheet
                        {:requests [{:item-id "MAP-A" :question "First"} {:item-id "MAP-B" :question "Second"}]
                         :tool-receipt {:operation-id "shared-read" :item-id "shared" :ordinal 1}} 6)
-              transitions #(filter (fn [e] (= :sheet/model-fallback-transition-recorded (:event/type e))) (:events %))
+              transitions #(filter (fn [e] (= :sheet/model-candidate-recorded (:event/type e))) (:events %))
               models #(mapv :model (filter (fn [r] (= % (get-in r [:inputs :request :item-id]))) @(:requests server)))
               success-outcome (:model-fallback (first (filter :model-fallback (get-in success [:trace :node-traces]))))]
           (is (= :success (get-in success [:result :status])))
@@ -169,7 +173,7 @@
           (is (= :selected (:reason success-outcome)))
           (is (= "fixture/third" (:requested-model success-outcome)))
           (is (= :failure (get-in exhausted [:result :status])))
-          (is (= :candidates-exhausted (:reason (last (transitions exhausted)))))
+          (is (= :candidates-exhausted (get-in (last (transitions exhausted)) [:entry :reason])))
           (is (= 3 (count (models "EXHAUST"))))
           (is (= :success (get-in retry-run [:result :status])))
           (is (= ["fixture/first" "fixture/first"] (models "RETRY")))
@@ -179,13 +183,18 @@
           (doseq [id ["MAP-A" "MAP-B"]]
             (is (= ["fixture/first" "fixture/second" "fixture/third"] (models id)))
             (is (= 1 (count (set (map :inputs (filter #(= id (get-in % [:inputs :request :item-id])) @(:requests server))))))))
-          ;; Replay the exact already committed predecessor at the actual handler:
-          ;; no returned event means no provider request can be admitted again.
-          (let [event (first (filter #(and (= :sheet/node-execution-completed (:event/type %))
-                                          (= "fixture/first" (:requested-model %))) (:events success)))
-                before (count @(:requests server))]
+          ;; Exact completed candidate receipt is idempotent at its command boundary.
+          (let [event (first (transitions success))
+                before (count @(:requests server))
+                command (merge (select-keys event [:sheet-id :tick-id :node-id :node-start-id
+                                                   :exec-context :role :configuration-id
+                                                   :logical-action-id :entry])
+                               {:command/name :sheet/record-model-candidate
+                                :command/id (random-uuid) :command/timestamp (time/now)})
+                replay (h/run-command ctx command)]
             (is (some? event))
-            (is (nil? (processors/handle-child-completion (assoc ctx :event event))))
+            (is (empty? (:command-result/events replay)))
+            (is (not (contains? replay :cognitect.anomalies/category)))
             (is (= before (count @(:requests server)))))
           (is (empty? @(:errors server)))
           (swap! last-proof assoc :chain {:success success :exhausted exhausted :retry retry-run :mapped mapped
@@ -210,26 +219,30 @@
           (try
             (is (.await ^java.util.concurrent.CountDownLatch (:entered server) 20 java.util.concurrent.TimeUnit/SECONDS))
             (let [events (orc/value-log-read-tick-events ctx (:tenant-id ctx) tick-id)
-                  event (first (filter #(and (= :sheet/node-execution-completed (:event/type %))
-                                            (= "fixture/first" (:requested-model %))) events))
+                  event (first (filter #(= :sheet/node-execution-started (:event/type %)) events))
                   before (count @(:requests server))
-                  replay-context (assoc ctx :event event :processor-name :sheet/handle-child-completion
-                                        :handler-fn processors/handle-child-completion)
+                  replay-context (assoc ctx :event event :processor-name :sheet/execute-leaf-node
+                                        :handler-fn processors/execute-leaf-node)
                   a (future (todo/process-event replay-context))
                   b (future (todo/process-event replay-context))]
               (is (some? event))
               @a @b
               (is (= before (count @(:requests server))))
-              (is (= 1 (count (filter #(= :sheet/model-fallback-transition-recorded (:event/type %))
+              (is (= 1 (count (filter #(= :sheet/model-candidate-recorded (:event/type %))
                                       (orc/value-log-read-tick-events ctx (:tenant-id ctx) tick-id))))))
             (finally (.countDown ^java.util.concurrent.CountDownLatch (:release server))))
-          (is (= :success (:status @running)))
+          (let [result @running]
+            (swap! last-proof assoc :active-replay
+                   {:result result :tick-id tick-id
+                    :events (orc/value-log-read-tick-events ctx (:tenant-id ctx) tick-id)
+                    :requests @(:requests server)})
+            (is (= :success (:status result))))
           (is (= 3 (count (filter #(= "REPLAY" (get-in % [:inputs :request :item-id])) @(:requests server)))))
           (let [expiry-sheet (orc/build-workflow! ctx
                                (orc/workflow "expiry-chain" (orc/blackboard fixture/board)
-                                 (orc/llm-fallback "expiry-models"
-                                   :candidates [{:model "fixture/first"} {:model "fixture/second"}]
-                                   :policy :all-transport
+                                 (orc/llm "expiry-models"
+                                   :model "fixture/first" :fallback-models [{:model "fixture/second"}]
+                                   :fallback-policy :all-transport
                                    :instruction fixture/instruction :reads fixture/task-reads
                                    :writes fixture/task-writes :options fixture/generation-options)))
                 expiry-tick (random-uuid) deadline (+ 6000 (System/currentTimeMillis))

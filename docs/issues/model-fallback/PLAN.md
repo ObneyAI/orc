@@ -1,55 +1,23 @@
-# Configured model fallback
+# Standard-node model fallback revision
 
-## Problem and result
+This local revision supersedes the wrapper-only implementation at dcf5fbe7. No push, public PR update or merge without renewed user approval.
 
-Safe provider evidence alone leaves each consumer responsible for selecting the exact failed attempt and building a compatible candidate chain. Provide an ORC-owned configuration path for ordered ordinary LLM candidates, backed by durable behavior-tree execution. Extend PR #48; keep it open for review.
+## Accepted contract
 
-## Behavioral scope
+Existing llm, llm-condition, llm-decision and repl-researcher nodes accept :provider, :fallback-models (ordered maps requiring :model with optional :provider and generation :options), and :fallback-policy. Primary remains :model. Candidate provider omission resolves against the effective primary provider. Default policy temporary-transport; explicit all-transport remains available. Empty backup list disables inherited fallbacks. Remove the unmerged llm-fallback helper, preserving historical events.
 
-- One authored task supplies common instruction, described reads/writes, and generation defaults. Each ordered candidate supplies an explicit model and optional compatible generation overrides. Invalid configurations fail before execution.
-- Temporary-transport admission is the conservative default. A separately named all-transport policy is explicit compatibility behavior. Unknown or contradictory evidence, schema errors, valid negative answers, permission blocks, cancellation and exhausted budgets do not become temporary outages. No error-message matching in ORC.
-- Advance only from the exact candidate completion in the owning tenant, tick, node and execution context. Respect final node retry outcome; duplicate/stale deliveries cannot admit another request. Parallel items and concurrent users remain isolated.
-- Use existing execution-family call accounting and inherited absolute deadline. No new task, reset allowance, or replay of preceding effects when changing models.
-- Keep every attempted candidate and safe failure reason visible in canonical events and public projections. Preserve the selected candidate and useful terminal failure on denial/exhaustion. Never invent a served-model identity.
-- Ordinary blocking LLM generation is the delivery boundary. Partial streams, custom native client classification, cross-provider credential routing and arbitrary model compatibility are not silently promised. SIO changes require a demonstrated missing capability.
+Researchers keep prime settings on the node and specialist defaults in :rlm via :sub-provider, :sub-model, :sub-options, :sub-fallback-models and :sub-fallback-policy. Inline and emitted calls inherit these. Primary-only overrides retain backups. Sticky successful selection persists per run, role and effective configuration; concurrent older completions cannot move selection backwards. New runs start with primary.
 
-## Implementation sequence
+One physical request per candidate by default; explicit same-model retries precede switching. Outer retries must not restart an exhausted chain. Model switching remains inside the failed logical request, preserves contracts and progress, and consumes original budget/deadline. No completed tools are replayed. Interrupted unknown model requests may need a counted retry.
 
-1. Root records behavioral obligations in the existing Allium contract and test ledger. Inspect DSL persistence, snapshot/export and normal/ephemeral routing before finalizing the API.
-2. Build one reusable public constructor from existing ORC primitives. Centralize policy at the engine's exact completion boundary rather than copying consumer event scans. Keep ordinary fallback behavior compatible.
-3. Focused proof through public authoring/execution, real Grain datastore and local HTTP: ordered success/exhaustion; valid false and permanent/schema denial; concurrent ownership; mapped/delegated execution; call/deadline exhaustion; duplicate completion control. Check canonical inputs, outputs and public trace, not only return values. Add deterministic public configuration/round-trip checks where runtime proof cannot cover malformed definitions.
-4. Independently inspect source and rerun the focused proof once. Compare Allium diagnostics with the existing baseline and record uncovered obligations honestly. Do not run broad suites after each edit.
-5. Update the portable ORC skill with the proven public API, policy choices, model options, trace inspection, adoption/pin caveats and explicit support limits. Have a fresh agent follow the recipe. Update PR title/body using the PR description skill; do not merge.
+Compatible registered providers may differ in protocol when existing adapters preserve the effective task/decision contract. Invalid configurations fail before dispatch; no strict downgrade or invented confidence. Temporary evidence includes noncontradictory 5xx/408, typed timeouts/connections/rate limits; bare429 remains ambiguous. Semantic negative, abstain, tie, malformed outputs and limits never trigger switching.
 
-## Checkpoints and status
+Streaming switches before visible output only. First-output state prevents replacement after partial output, including recovery. Repair asynchronous client error evidence/sanitization at the producer boundary; do not assume a synchronous catch covers it.
 
-- Planning: source and original handoff review complete. Public `llm-fallback` compiles ordinary candidates under a durable policy-bearing fallback. Candidate configuration is frozen with each execution.
-- Implementation: complete and independently verified in the dedicated PR worktree.
-- Proof: 11 tests/288 assertions passed independently. Fresh-agent recipe passed with three local HTTP calls; public trace and canonical evidence agree. Skill promotion and PR publication follow this acceptance.
+## Work and acceptance
 
-## Work boundaries
+Root owns specs/checklist and independent acceptance. Configuration, shared runner and researcher integration are delegated with disjoint file sections. Streaming follows the produced shared API. NODE-FALLBACK-1 through 6 track focused real Grain/datastore/local HTTP/native/SSE proofs, including checkpoint recovery, ownership, limits and option propagation. No broad test sweeps after every edit. Compare Allium diagnostics with baseline. Update skills only after proof and have a fresh agent exercise the documented API. Prepare reviewable local changes and ask before publication.
 
-Worktree: `/private/tmp/orc-fallback-pr`, branch `fix/safe-provider-evidence`. Preserve the ontology checkout and all other lanes. Root owns Allium and acceptance records; delegated implementation must not edit specs or weaken existing tests. Use the smallest failing behavioral witness before implementation and one independent focused proof after it; no ritual per-edit suites. No paid model calls are needed to establish outage routing. Semantic quality of any chosen real backup requires its own task evaluation.
+## Local acceptance complete
 
-## Public authoring shape
-
-```clojure
-(orc/llm-fallback "assess"
-  :candidates [{:model "provider/primary"}
-               {:model "provider/backup" :options {:max-tokens 32768}}]
-  :policy :temporary-transport
-  :instruction instruction
-  :reads [:request :evidence]
-  :writes [:assessment-reasoning :assessment]
-  :options {:output-mode :json-schema})
-```
-
-Candidates default to one node attempt and zero provider retries. Explicit bounded retry configuration must retain physical-request accounting. Each running execution retains its original candidate snapshot while another version runs concurrently. Shared privacy settings must not disappear when candidate options merge. No candidate may override the shared task instruction/read/write contract.
-
-## Inspection discoveries addressed by this slice
-
-The existing generic fallback continues on every failure without a policy gate; its successor startup carries execution context but not all mapped task overrides; duplicate completion delivery lacks the sequence continuation guard. Its ephemeral evaluator also discards evidence. Policy-bearing fallback therefore needs a durable boundary, owned continuation, attributed write sources, and terminal reasons. Generic fallback semantics remain unchanged except any narrowly justified shared correctness fix.
-
-## Source handoffs
-
-Original portable contract: `orc-skills/handoffs/model-fallback/02-repair-handoff.md`; evidence/status: `experiments/model-fallback/ordinary-repair/HANDOFF-COVERAGE.md`. The historical consumer evidence is a reference, not new application migration authority.
+Independent integrated run: 20 tests/371 assertions, zero failures/errors. Fresh-agent ordinary/refusal/researcher inheritance recipe: seven controlled HTTP requests, observed outcomes and public diagnostics agree. Allium zero errors with baseline39 warnings/114 informational diagnostics and zero analysis findings. Source/client hashes match the tested files. Local skills and review package carry the support boundary. Publication awaits explicit user approval, including the companion client repair and dependency-pin step; no commit/push/PR update was performed.

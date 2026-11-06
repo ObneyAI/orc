@@ -132,6 +132,18 @@ contract StructuredPrediction {
         -- different model. Native decision and asynchronous streaming failure
         -- surfaces require separate verification.
 
+    @invariant CandidatePreflightDoesNotDispatch
+        -- Candidate preflight resolves registered routes and validates supported
+        -- structured contracts without a provider request. It does not certify
+        -- remote model availability or semantic suitability. A missing provider,
+        -- unsupported native output or incompatible strict adapter fails visibly.
+
+    @invariant StreamingFailureEvidenceIsSafe
+        -- Asynchronous transport failures preserve allowlisted type and status
+        -- through the terminal error. Raw exception messages, credentials and
+        -- throwable causes are not copied into the durable diagnostic boundary.
+        -- Status-only 429 is not evidence distinguishing quota from rate limit.
+
     @invariant OneInvocationPerPrediction
         -- One prediction attempt performs at most one provider invocation;
         -- retry policy and call-budget accounting remain with the caller.

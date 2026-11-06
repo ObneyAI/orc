@@ -1,6 +1,6 @@
 # Configured fallback acceptance record
 
-Status: accepted for ordinary blocking configured model fallback.
+Status: accepted for standard-node fallback. The wrapper-only sections below record earlier work; the final standard-node acceptance supersedes that scope.
 
 ## Obligations
 
@@ -91,3 +91,34 @@ Evidence archive: canonical `orc-skills/experiments/model-fallback/configured-mo
 The acceptance log, source hashes, synthetic HTTP/event receipts and fresh-agent
 report are retained there. Library tests themselves contain the durable
 regression assertions and no hardcoded private artifact output path.
+
+## Standard-node revision — initial findings (historical)
+
+The earlier wrapper acceptance did not establish this revised scope. The findings below preceded the final integrated verification recorded in the next section.
+
+Initial findings:
+- Published researcher snapshots omitted researcher settings; preserving new fallback fields exposed and repaired this existing omission.
+- Runtime snapshot decoding separately dropped those settings; configuration proof and execution proof are distinct.
+- Duplicate active starts sent no duplicate HTTP but could poison the original result; this must be repaired, not relaxed in the test.
+- Researcher sticky selection scope initially omitted mapped execution context. Root inspection requested per-run isolation and stable configuration hashing.
+- Inline generation options previously did not reach execution. Once strict options did, the inline helper's unconditional `:any` output schema failed preflight. It now needs declared blackboard contracts, not weaker strict validation.
+- The pinned client's asynchronous HTTP503 failure lost status. Root reproduced via local HTTP (one failed status assertion), then repaired safe structured evidence in an isolated client checkout. Root loopback test passed 1 test/5 assertions; an added category assertion awaits the final run.
+- Provider preflight passed 1 test/7 assertions after correcting the root's missing test classpath. No network calls were used for preflight.
+
+Source and artifact locations: ORC `/private/tmp/orc-fallback-pr`; client `/private/tmp/litellm-node-fallback`; focused logs under `/private/tmp/fallback-*`, `/private/tmp/standard-fallback-*`, `/private/tmp/researcher-fallback-*`. These are temporary execution artifacts, not a promoted portable proof archive yet.
+
+## Standard-node independent acceptance
+
+Root independently executed the final integrated set: **20 tests, 371 assertions, zero failures/errors**, process exit0. Source and client SHA256 manifests matched after execution. Configuration, ordinary/decision/condition, researcher, journal, stream and original scoped-alternative regressions ran together. Allium check/analyse retained 39 baseline warnings/114 information, zero errors/findings. No broad repository suite was rerun.
+
+5 engine obligations covered, 0 uncovered within NODE-FALLBACK-1 through 5. Fresh-agent recipe NODE-FALLBACK-6 follows separately. Restart evidence is actual SQLite close/reopen and new runtime after a saved quantum, not a hard-killed separate process. Controlled providers establish mechanics, not model quality or production capacity.
+
+Resolved code bugs: snapshot publication/decoding omissions, inline option/schema propagation, missing failure projection fields, active duplicate poisoning, mapped selection scope, unstable fingerprints, journal vector projection, physical receipt recovery, stream status loss and missing provider identity. Test/harness corrections: old child-leaf assertions moved to journal records, required query/command envelopes, classpath/loopback permissions, stale client override, and an unsuitable truncated-stream fixture. No assertions were relaxed to conceal those failures. Root strengthened the SSE check after a superficially passing status test hid rejected completion events.
+
+The companion client changes live at `/private/tmp/litellm-node-fallback`, based on 2b6781b8f98105fe07d17b289138103e5dd3a047. Integrated proof used an explicit local dependency override. The reviewed published client pin must replace that override before release. SIO is unchanged. Publication now uses client commit `bc65561e974d5e35b80d3f842e190231476fdd10`, reviewed in https://github.com/ObneyAI/litellm-clj/pull/3. The owner authorized publication after local acceptance; neither PR is merged.
+
+Fresh-agent acceptance completed independently: ordinary503 selects backup (2 HTTP), auth401 refuses (1), recursive prime emits a specialist that inherits its backup and finishes (4). Root inspected saved results, exact model order, public refusal evidence and child history. The recipe gap was a missing query-envelope example; the portable reference now includes it. **6 obligations, 6 covered, 0 uncovered** within the specified fixture scope.
+
+## Published dependency checkpoint
+
+The focused check against the Git dependency at `bc65561e974d5e35b80d3f842e190231476fdd10`, without a local override, passed **5 tests, 37 assertions, zero failures/errors**. It covers ordinary, decision, condition, researcher prime/inline/emitted fallback and streaming. The loaded resource resolved from the exact Git SHA. This supplements the 20-test integrated acceptance above.

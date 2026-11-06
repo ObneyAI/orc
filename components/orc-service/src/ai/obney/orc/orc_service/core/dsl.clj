@@ -233,10 +233,20 @@
 ;; Node Builders (Data Structures)
 ;; =============================================================================
 
+(defn- validate-model-config-keys! [config allowed]
+  (when (and (contains? config :fallback-models)
+             (not-every? allowed (keys config)))
+    (throw (ex-info "Unknown configured model node option" {:type :invalid-model-fallback})))
+  config)
+
 (defn llm
   "Define an LLM executor leaf node.
 
    Options:
+     :provider - Optional registered provider for this node's primary model
+     :fallback-models - Ordered backup maps {:model id :provider optional :options optional};
+       [] explicitly disables inherited backups
+     :fallback-policy - :temporary-transport (default) or explicit :all-transport
      :model - OpenRouter model ID (e.g., \"google/gemini-2.5-flash\")
      :instruction - Prompt for the LLM
      :reads - Vector of blackboard keys to read (e.g., [:student-profile :programs])
@@ -250,8 +260,11 @@
                  :tree-id uuid  ;; for self-learning
                  :self-learning? true}
      :options - Executor options passed through to ORC LLM for this node"
-  [name & {:keys [model instruction reads writes retry judges context options]}]
-  (cond-> {:node-type :leaf
+  [name & {:keys [model instruction reads writes retry judges context options provider fallback-models fallback-policy] :as config}]
+  (validate-model-config-keys! config #{:model :instruction :reads :writes :retry :judges :context :options :provider :fallback-models :fallback-policy})
+  (model-fallback/validate-config!
+   (merge (select-keys config [:provider :fallback-models :fallback-policy])
+         (cond-> {:node-type :leaf
            :name name
            :executor :ai
            :model model
@@ -261,7 +274,7 @@
     retry (assoc :retry retry)
     judges (assoc :judges (vec judges))
     context (assoc :context context)
-    options (assoc :options options)))
+    options (assoc :options options)))))
 
 (defn llm-decision
   "Define a model decision: a data-producing leaf that asks the model to choose
@@ -277,6 +290,10 @@
    writes nothing.
 
    Options:
+     :provider - Optional registered provider for this node's primary model
+     :fallback-models - Ordered backup maps {:model id :provider optional :options optional};
+       [] explicitly disables inherited backups
+     :fallback-policy - :temporary-transport (default) or explicit :all-transport
      :instruction - What the model is deciding
      :reads - Evidence keys (like every node); must include :options-from's key
      :writes - Exactly one answer key
@@ -293,8 +310,11 @@
      :retry - {:max-attempts n :backoff-ms [100 500]}
      :judges - Vector of judge names (defined in sheet/judges)
      :options - Executor options passed through to ORC LLM for this node"
-  [name & {:keys [model instruction reads writes options-from bands-from min-confidence abstain retry judges options]}]
-  (cond-> {:node-type :leaf
+  [name & {:keys [model instruction reads writes options-from bands-from min-confidence abstain retry judges options provider fallback-models fallback-policy] :as config}]
+  (validate-model-config-keys! config #{:model :instruction :reads :writes :options-from :bands-from :min-confidence :abstain :retry :judges :options :provider :fallback-models :fallback-policy})
+  (model-fallback/validate-config!
+   (merge (select-keys config [:provider :fallback-models :fallback-policy])
+         (cond-> {:node-type :leaf
            :name name
            :executor :decision
            :model model
@@ -307,7 +327,7 @@
     (some? abstain) (assoc :abstain abstain)
     retry (assoc :retry retry)
     judges (assoc :judges (vec judges))
-    options (assoc :options options)))
+    options (assoc :options options)))))
 
 (defn code
   "Define a code executor leaf node.
@@ -387,17 +407,25 @@
   "Define an LLM condition node - uses LLM to evaluate true/false.
 
    Options:
+     :provider - Optional registered provider for this node's primary model
+     :fallback-models - Ordered backup maps {:model id :provider optional :options optional};
+       [] explicitly disables inherited backups
+     :fallback-policy - :temporary-transport (default) or explicit :all-transport
      :model - OpenRouter model ID (e.g., \"google/gemini-2.5-flash\")
      :instruction - Prompt describing what to evaluate (should be a yes/no question)
      :reads - Vector of blackboard keys to read as context (e.g., [:student-profile])
+     :options - Shared generation settings, including bounded same-model retries
      :judges - Vector of judge names (defined in sheet/judges)"
-  [name & {:keys [model instruction reads judges]}]
-  (cond-> {:node-type :llm-condition
+  [name & {:keys [model instruction reads judges options provider fallback-models fallback-policy] :as config}]
+  (validate-model-config-keys! config #{:model :instruction :reads :judges :options :provider :fallback-models :fallback-policy})
+  (model-fallback/validate-config!
+   (merge (select-keys config [:provider :fallback-models :fallback-policy :options])
+         (cond-> {:node-type :llm-condition
            :name name
            :model model
            :instruction instruction
            :reads (vec reads)}
-    judges (assoc :judges (vec judges))))
+    judges (assoc :judges (vec judges))))))
 
 (defn repl-researcher
   "Define a repl-researcher node for iterative LLM+code research.
@@ -409,6 +437,10 @@
    4. Loop continues until FINAL_ANSWER or max iterations
 
    Options:
+     :provider - Optional registered provider for this node's primary model
+     :fallback-models - Ordered backup maps {:model id :provider optional :options optional};
+       [] explicitly disables inherited backups
+     :fallback-policy - :temporary-transport (default) or explicit :all-transport
      :model - OpenRouter model ID (e.g., \"google/gemini-2.5-flash\")
      :instruction - Research goal/question
      :reads - Vector of blackboard keys (metadata only shown to LLM, not values)
@@ -431,6 +463,12 @@
      open, snapshot, click, fill, type, press, scroll, wait,
      get-text, get-url, get-title, back, forward, screenshot
 
+   RLM model defaults:
+     Node routing config applies to prime calls. :rlm may separately declare
+     :sub-model, :sub-provider, :sub-options, :sub-fallback-models and
+     :sub-fallback-policy for inline/emitted specialists. Subcall overrides win;
+     overriding only :model retains inherited backups.
+
    RLM Mode:
      When :rlm true, the sandbox gains behavior tree primitives:
      - (llm \"name\" :instruction \"...\" :writes [:key]) - Execute sub-LLM call
@@ -443,8 +481,11 @@
      - (final! {:key value}) - Capture validated output
      - (get-input :key) - Load full input value
      - inputs - Preview map (metadata only)"
-  [name & {:keys [model instruction reads writes mcp-tools tool-contracts tool-caller-fn browser-tools max-iterations rlm judges context options]}]
-  (cond-> {:node-type :repl-researcher
+  [name & {:keys [model instruction reads writes mcp-tools tool-contracts tool-caller-fn browser-tools max-iterations rlm judges context options provider fallback-models fallback-policy] :as config}]
+  (validate-model-config-keys! config #{:model :instruction :reads :writes :mcp-tools :tool-contracts :tool-caller-fn :browser-tools :max-iterations :rlm :judges :context :options :provider :fallback-models :fallback-policy})
+  (model-fallback/validate-config!
+   (merge (select-keys config [:provider :fallback-models :fallback-policy])
+         (cond-> {:node-type :repl-researcher
            :name name
            :model model
            :instruction instruction
@@ -464,7 +505,7 @@
     ;; this DSL wedge plus the relaxed command-side guard wire it through
     ;; for :repl-researcher.
     context (assoc :context context)
-    options (assoc :options options)))
+    options (assoc :options options)))))
 
 (defn delegate
   "Define a delegate node for subworkflow execution.
@@ -551,55 +592,11 @@
      :judges - Vector of judge names (defined in sheet/judges)"
   [name & args]
   (let [[opts children] (split-leading-options args)]
-    (with-judges (cond-> {:node-type :fallback
-                         :name name :children children}
-                   (:model-fallback-policy opts)
-                   (assoc :model-fallback-policy (:model-fallback-policy opts)))
+    (when (contains? opts :model-fallback-policy)
+      (throw (ex-info "Configure fallback-models on a model node instead"
+                      {:type :invalid-model-fallback})))
+    (with-judges {:node-type :fallback :name name :children children}
       (:judges opts))))
-
-(defn llm-fallback
-  "One typed task with ordered ordinary LLM candidates. Policy defaults to
-   :temporary-transport; :all-transport is explicit compatibility behavior.
-   Candidate options may override generation and bounded retry knobs only.
-   Candidates default to one node attempt and zero provider retries."
-  [name & args]
-  (let [config (apply hash-map args)
-        {:keys [candidates policy instruction reads writes options judges]
-         :or {policy :temporary-transport options {}}} config]
-  (when-not (every? #{:candidates :policy :instruction :reads :writes :options :judges} (keys config))
-    (throw (ex-info "Unknown model fallback option" {:type :invalid-model-fallback})))
-  (when-not (and (string? name) (not (clojure.string/blank? name))
-                 (vector? candidates) (seq candidates)
-                 (#{:temporary-transport :all-transport} policy)
-                 (string? instruction) (seq writes)
-                 (every? keyword? (concat reads writes)) (map? options))
-    (throw (ex-info "Invalid model fallback task configuration" {:type :invalid-model-fallback})))
-  (when (model-fallback/invalid-options? options)
-    (throw (ex-info "Model fallback options cannot replace runtime capabilities or model identity"
-                    {:type :invalid-model-fallback})))
-  (assoc
-    (apply fallback name :judges judges
-      (map-indexed
-        (fn [i candidate]
-          (let [{:keys [model retry] candidate-options :options} candidate
-                retry (or retry {:max-attempts 1 :backoff-ms []})]
-            (when-not (and (map? candidate)
-                           (every? #{:model :options :retry} (keys candidate))
-                           (string? model) (not (clojure.string/blank? model))
-                           (or (nil? candidate-options)
-                               (and (map? candidate-options)
-                                    (every? model-fallback/candidate-option-keys (keys candidate-options))))
-                           (model-fallback/valid-retry? retry)
-                           (vector? (:backoff-ms retry))
-                           (every? #(and (integer? %) (<= 0 %)) (:backoff-ms retry)))
-              (throw (ex-info "Invalid model fallback candidate" {:type :invalid-model-fallback :candidate-index i})))
-            (let [generation (merge {:max-retries 0} options candidate-options)]
-              (when-not (and (model-fallback/valid-generation? generation))
-                (throw (ex-info "Model fallback retries must be bounded nonnegative integers"
-                                {:type :invalid-model-fallback :candidate-index i})))
-              (llm (str name "/candidate-" i) :model model :instruction instruction
-                   :reads reads :writes writes :retry retry :options generation)))) candidates))
-    :model-fallback-policy policy)))
 
 (defn parallel
   "Define a parallel node (runs all children concurrently).
@@ -812,10 +809,15 @@
     (when node-name
       (run-build-command! ctx (h/make-set-node-name-command sheet-id node-id node-name)))
 
-    (when-let [policy (:model-fallback-policy node)]
-      (run-build-command! ctx {:command/id (random-uuid) :command/timestamp (time/now)
-                       :command/name :sheet/set-model-fallback-policy
-                       :sheet-id sheet-id :node-id node-id :model-fallback-policy policy}))
+    (when (or (some #(contains? node %) [:provider :fallback-models :fallback-policy])
+              (and (= :llm-condition node-type) (contains? node :options)))
+      (run-build-command! ctx
+        (merge {:command/id (random-uuid) :command/timestamp (time/now)
+                :command/name :sheet/set-node-model-policy
+                :sheet-id sheet-id :node-id node-id}
+               (select-keys node [:provider :fallback-models :fallback-policy :options]))))
+
+
 
     ;; Configure based on node type
     (case node-type
@@ -1000,7 +1002,8 @@
     (when (seq duplicate-names)
       (throw (ex-info (str "Workflow node names must be unique: " duplicate-names)
                       {:duplicate-node-names duplicate-names})))
-    (doseq [node nodes] (model-fallback/validate-node! node (:children node)))
+    (doseq [node nodes]
+      (model-fallback/validate-config! node))
     (doseq [node nodes
             :when (= :decision (:executor node))
             :let [error (decision/declaration-error node blackboard-schema)]
@@ -1151,6 +1154,7 @@
         (cond-> {:id (:id node)
                  :type (:type node)
                  :name (:name node)}
+          true (merge (select-keys node [:provider :fallback-models :fallback-policy :options]))
           (:model-fallback-policy node) (assoc :model-fallback-policy (:model-fallback-policy node))
           ;; Any node may carry attached judges
           (seq (:judges node)) (assoc :judges (vec (:judges node)))
@@ -1275,10 +1279,15 @@
     (when (:name node)
       (h/run-and-apply! ctx (h/make-set-node-name-command sheet-id node-id (:name node))))
 
-    (when-let [policy (:model-fallback-policy node)]
-      (h/run-and-apply! ctx {:command/id (random-uuid) :command/timestamp (time/now)
-                       :command/name :sheet/set-model-fallback-policy
-                       :sheet-id sheet-id :node-id node-id :model-fallback-policy policy}))
+    (when (or (some #(contains? node %) [:provider :fallback-models :fallback-policy])
+              (and (= :llm-condition node-type) (contains? node :options)))
+      (run-build-command! ctx
+        (merge {:command/id (random-uuid) :command/timestamp (time/now)
+                :command/name :sheet/set-node-model-policy
+                :sheet-id sheet-id :node-id node-id}
+               (select-keys node [:provider :fallback-models :fallback-policy :options]))))
+
+
 
     ;; Configure based on node type
     (case node-type
@@ -1398,7 +1407,7 @@
         blackboard-schema (:blackboard-schema exported)
         root-node (:nodes exported)
         _ (doseq [node (tree-seq #(seq (:children %)) :children root-node)]
-            (model-fallback/validate-node! node (:children node)))
+            (model-fallback/validate-config! node))
 
         ;; Create new sheet
         sheet-result (h/run-and-apply! ctx
@@ -1510,7 +1519,7 @@
    keys explicitly named in preserve-empty-keys.
    Returns a flat sequence of [:key value :key value ...] sorted by key name."
   ([opts-map]
-   (build-keyword-args opts-map #{}))
+   (build-keyword-args opts-map #{:fallback-models}))
   ([opts-map preserve-empty-keys]
    (->> opts-map
         (remove (fn [[k v]] (or (nil? v)
@@ -1527,7 +1536,10 @@
         name (:name node)]
     (case executor
       :ai (let [opts (build-keyword-args
-                       {:model (:model node)
+                       {:provider (:provider node)
+                        :fallback-models (:fallback-models node)
+                        :fallback-policy (:fallback-policy node)
+                        :model (:model node)
                         :options (:options node)
                         :instruction (:instruction node)
                         :reads (:reads node)
@@ -1561,7 +1573,10 @@
               (apply list (dsl-sym 'tool) name opts))
 
       :decision (let [opts (build-keyword-args
-                             {:model (:model node)
+                             {:provider (:provider node)
+                        :fallback-models (:fallback-models node)
+                        :fallback-policy (:fallback-policy node)
+                        :model (:model node)
                               :instruction (:instruction node)
                               :reads (:reads node)
                               :writes (:writes node)
@@ -1598,7 +1613,11 @@
   "Convert an llm-condition node to DSL form."
   [node]
   (let [opts (build-keyword-args
-               {:model (:model node)
+               {:provider (:provider node)
+                        :fallback-models (:fallback-models node)
+                        :fallback-policy (:fallback-policy node)
+                        :model (:model node)
+                :options (:options node)
                 :instruction (:instruction node)
                 :reads (:reads node)
                 :judges (:judges node)})]
@@ -1610,7 +1629,10 @@
   "Convert a repl-researcher node to DSL form."
   [node]
   (let [opts (build-keyword-args
-               {:model (:model node)
+               {:provider (:provider node)
+                        :fallback-models (:fallback-models node)
+                        :fallback-policy (:fallback-policy node)
+                        :model (:model node)
                 :instruction (:instruction node)
                 :reads (:reads node)
                 :writes (:writes node)
@@ -1623,7 +1645,7 @@
                 :judges (:judges node)
                 :context (:context node)
                 :options (:options node)}
-               #{:rlm :context})]
+               #{:rlm :context :fallback-models})]
     (if (empty? opts)
       (list (dsl-sym 'repl-researcher) (:name node))
       (apply list (dsl-sym 'repl-researcher) (:name node) opts))))

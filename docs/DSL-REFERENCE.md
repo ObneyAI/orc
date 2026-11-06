@@ -1785,57 +1785,111 @@ Saves a sheet directly to a .clj file.
 
 Happy workflow building!
 
-### Configured ordinary model fallback
+### Model fallback on standard nodes
 
-`llm-fallback` runs one typed task against an ordered, nonempty vector of model
-candidates. It constructs ordinary LLM leaves under a durable fallback; candidate
-failures and the selected result remain individual canonical executions.
+**Local implementation in progress, not merged.** This API supersedes the
+unmerged `llm-fallback` wrapper. Integration and recovery acceptance must complete
+before consumers adopt it; this section describes the intended contract, not a
+claim that every path has passed its proof.
+
+Configure backups directly on `llm`, `llm-condition`, `llm-decision`, or
+`repl-researcher`. The node remains one task with one typed input/output contract.
 
 ```clojure
-(orc/llm-fallback "assess"
-  :candidates [{:model "provider/primary"}
-               {:model "provider/backup" :options {:max-tokens 32768}}]
-  :policy :temporary-transport
+(orc/llm "assess"
+  :provider :primary-provider
+  :model "provider/primary"
+  :fallback-models [{:provider :backup-provider
+                     :model "provider/backup"
+                     :options {:max-tokens 32768}}
+                    {:model "provider/another-backup"}]
+  :fallback-policy :temporary-transport
   :instruction "Assess the supplied evidence."
   :reads [:request :evidence]
   :writes [:assessment-reasoning :assessment]
-  :options {:output-mode :json-schema :max-tokens 32768})
+  :options {:output-mode :json-schema :max-tokens 65536})
 ```
 
-The default policy advances only on recognized temporary transport evidence.
-Authentication, quota, missing/contradictory categories and invalid outputs stop
-it; a valid `false` answer succeeds. Explicit `:all-transport` instead admits
-any recorded transport failure, including permanent errors. Neither policy
-classifies error prose or bypasses call budgets, cancellation or deadlines.
+`:provider` is a registered provider alias, not a model identifier. Omit it to
+use existing runtime selection. Each backup requires a model; an omitted backup
+provider means the primary's provider, never the preceding backup's provider.
+Register each selected provider in the worker/runtime context so resumed work can
+resolve it. Existing native decision registration names retain their established
+model-selection behavior; use unambiguous explicit provider/model pairs for new
+cross-provider definitions.
 
-Each candidate requires an explicit model using the configured provider alias.
-Cross-provider credential routing is not supplied by this constructor. Candidate
-options may override `:temperature`, `:max-tokens`, `:top-p`, `:top-k`, penalties,
-`:seed`, `:reasoning`, `:max-retries` and `:timeout-ms`; output/privacy settings
-remain shared. Model capability compatibility still requires task-specific
-verification. Runtime identities, deadline overrides and callback capabilities
-are rejected in request options.
+An omitted fallback list leaves existing behavior unchanged. An explicit `[]`
+disables inherited backups. Candidate generation overrides are `:temperature`,
+`:max-tokens`, `:top-p`, `:top-k`, `:frequency-penalty`, `:presence-penalty`,
+`:seed`, `:reasoning`, `:max-retries` and `:timeout-ms`. Keep shared output/privacy
+controls in node `:options`. Candidates cannot override instructions, read/write
+contracts, execution identities, budgets, deadlines or runtime callbacks.
 
-Candidates default to one node attempt and zero provider retries. A candidate may
-set `:retry {:max-attempts 2 :backoff-ms [0]}` explicitly. All physical requests
-consume the existing execution-family budget. An alternative retains the original
-absolute deadline and canonical task reads, including mapped-item ownership.
-Retry backoff does not promise immediate wall-clock preemption; expired limits
-refuse the next provider admission.
+The default `:temporary-transport` policy admits reliable connection, timeout,
+rate-limit and server failures. Unknown or contradictory evidence is refused;
+HTTP 429 alone does not distinguish rate limiting from exhausted quota. Explicit
+`:all-transport` admits other recorded transport failures, including permanent
+ones. Neither policy switches on valid false/negative answers, abstention, ties,
+invalid outputs, permission blocks, cancellation or exhausted execution limits.
+A false `llm-condition` still fails the condition semantically; it is not an
+outage and does not invoke backups.
 
-Keep completed tools outside this subtree. Inspect candidate traces and the
-fallback trace's `:model-fallback` record for its policy, terminal reason, candidate
-index/node, requested model and predecessor completion. `:policy-refused` points
-to the exact candidate's safe failure diagnosis; it does not turn limit failures
-into transport failures. A candidate's actual served identity is separate from
-its requested model and is never invented when unavailable.
+Candidates are checked against the effective output mode and decision contract
+before dispatch. Registration does not prove remote model availability or quality.
+Native/chat transitions must retain the offered choices, rubric and declared
+confidence/abstention behavior; missing confidence is never invented. An
+incompatible strict-output adapter is rejected, not silently downgraded.
 
-This constructor supports ordinary blocking generation. It is not a native
-client chain or partial-stream failover. Policy-bearing fallbacks use durable
-routing rather than the ephemeral composite optimization, so policy decisions
-remain observable and replayable.
+When backups are configured, the default is one request per candidate. Explicit
+`:options {:max-retries n}` permits bounded retries before moving on. All physical
+requests retain the family budget and absolute deadline. Exhaustion does not
+restart the candidate list through an outer node retry. Nodes without configured
+backups retain their existing retry behavior.
 
-For configured fallback, call-budget exhaustion can cancel the whole execution
-family before a completed trace is stored. The public execute result retains the
-exact budget error; each cancelled tick records `:sheet/tick-cancelled` with that
-`:reason`. Inspect those records instead of waiting for a completed trace.
+#### Researcher model roles
+
+Node-level model/provider/fallback configuration belongs to the researcher's
+prime model. Configure specialists separately under `:rlm`:
+
+```clojure
+(orc/repl-researcher "research"
+  :model prime-model
+  :fallback-models [{:model backup-prime-model}]
+  :instruction instruction
+  :reads [:sources] :writes [:findings]
+  :rlm {:recursive? true :checkpointed? true
+        :sub-provider :specialist-provider
+        :sub-model specialist-model
+        :sub-options {:max-tokens 32768}
+        :sub-fallback-models [{:model backup-specialist-model}]
+        :sub-fallback-policy :temporary-transport})
+```
+
+Inline and emitted model calls inherit these subcall defaults. An explicit
+subcall primary still inherits backups; a supplied list replaces them, and `[]`
+disables them. Changing models retries the failed model request, not the research
+iteration or completed tool actions. After a backup succeeds, later calls in that
+researcher run/role start there. Selection is durable and only advances; another
+run or tenant starts independently. An explicit subcall configuration has its
+own selection state.
+
+#### Evidence and streaming
+
+Inspect the node trace's `:model-fallback` summary and candidate journal query
+`:sheet/model-candidate-history` with `{:tick-id tick-id}` using the normal Grain
+query envelope. Candidate entries identify the logical call, role, candidate,
+requested provider/model, safe failure and transition reason. Provider-reported
+model identity is separate. They are attempts within one node, not artificial
+child leaves. Inspect physical request observations as well as candidate counts
+when retries are enabled.
+
+For streaming, fallback is allowed only before visible output. Once a delta or
+field reaches the caller, failure terminates that stream without substituting a
+new answer. Recovery must retain that boundary. A crash during a model request
+may require another counted model request when its outcome is unknown; completed
+external actions must not be repeated.
+
+Call-budget exhaustion may cancel the family before a completed trace exists.
+The public execute result retains the budget error, and cancelled ticks record
+`:sheet/tick-cancelled` with its reason. Inspect those records rather than waiting
+indefinitely for a completed trace.

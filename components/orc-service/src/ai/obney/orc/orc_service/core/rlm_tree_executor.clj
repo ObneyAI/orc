@@ -499,7 +499,14 @@
                  :sheet-id sheet-id
                  :node-id leaf-id
                  :executor :ai}
-          (:model opts) (assoc :model (:model opts))))
+          (:model opts) (assoc :model (:model opts))
+          (contains? opts :options) (assoc :options (:options opts))))
+      (when (some #(contains? opts %) [:provider :fallback-models :fallback-policy])
+        (run-command! context
+          (merge {:command/name :sheet/set-node-model-policy
+                  :command/id (random-uuid) :command/timestamp (time/now)
+                  :sheet-id sheet-id :node-id leaf-id}
+                 (select-keys opts [:provider :fallback-models :fallback-policy]))))
       {:node-id leaf-id
        :ephemeral-fn-keys []})
 
@@ -808,6 +815,7 @@
                                                        (assoc :researcher-campaign-sheet-id campaign-sheet-id
                                                               :researcher-campaign-tick-id campaign-tick-id
                                                               :researcher-campaign-node-id campaign-node-id
+                                                              :researcher-campaign-exec-context (or (:exec-context context) (value-log/exec-context (get-in context [:event :inputs])) {})
                                                               :researcher-iteration-index campaign-iteration-index
                                                               :researcher-ownership-epoch campaign-ownership-epoch)
                                                        durable-budget?
