@@ -363,9 +363,10 @@
                     (llm/predict :openrouter qa {:question "Capital?"}
                                  {:force-tool-choice? true :with-metadata? true})
                     (catch clojure.lang.ExceptionInfo e e))]
-      (is (= "upstream unavailable" (.getMessage failure)))
+      (is (= "LLM provider call failed" (.getMessage failure)))
       (is (= :transport-failure (:failure-kind (ex-data failure))))
-      (is (= {:provider "openrouter"} (:provider-evidence (ex-data failure)))))))
+      (is (= {:provider "openrouter"} (:provider-evidence (ex-data failure))))
+      (is (nil? (ex-cause failure))))))
 
 (deftest empty-structured-response-is-distinct
   (with-redefs [router/supports-function-calling? (constantly true)

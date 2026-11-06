@@ -385,7 +385,8 @@
   (and (seq nodes-by-id)
        (every? #(contains? #{:sequence :fallback :condition :leaf} (:type %))
                (vals nodes-by-id))
-       (not-any? #(and (not= :leaf (:type %)) (seq (:judges %)))
+       (not-any? #(or (:model-fallback-policy %)
+                       (and (not= :leaf (:type %)) (seq (:judges %))))
                  (vals nodes-by-id))))
 
 (defn- resolve-nodes-by-id
@@ -2521,7 +2522,15 @@
                     :logical-action-identity logical-action-identity
                     :provider-attempt-ordinal provider-attempt-ordinal))))]
     (cond->
-     {:execution-deadline-ms (get-in tick-options [:execution-deadline-ms])
+     {:model-role-context
+      {:context context
+       :owner {:sheet-id sheet-id :tick-id tick-id :node-id node-id
+               :node-start-id (get-in context [:event :event/id])
+               :exec-context exec-context
+               :role (if (:researcher-campaign-node-id tick-options) :subcall :node)
+               :selection-scope [tick-id node-id exec-context]
+               :logical-action-id (pr-str [tick-id node-id exec-context])}}
+      :execution-deadline-ms (get-in tick-options [:execution-deadline-ms])
       :reserve-llm-call! #(reserve-llm-call-or-cancel! context tick-ctx sheet-id tick-id)
       :tick-id tick-id
       :exec-context exec-context
@@ -2725,7 +2734,7 @@
                            (merge (campaign-effect-capabilities
                                    context (:options tick-ctx))))
             ;; Use provider from context, fall back to default, or use mock if nil
-            provider (or llm-provider *default-llm-provider*)
+            provider (or (:provider node) llm-provider *default-llm-provider*)
             executor-type (or (:executor node) :ai)
             ;; Extract execution context for correlation
             exec-context (extract-execution-context event-inputs)
@@ -2817,6 +2826,7 @@
               (when usage (add-usage! tick-id usage))
               ;; Use process-command to emit completion event. A REJECTED
               ;; completion fails the node visibly (S7w) instead of wedging.
+              (when-not (:model-call-in-flight? result)
               (complete-node-or-fail!
                 context
                        (cond-> {:command/id (random-uuid)
@@ -2869,6 +2879,7 @@
                                    (assoc :read-sources (read-sources (:reads node) blackboard exec-context)))))
                          (seq usage) (assoc :usage usage)
                          decision (assoc :decision decision)
+                         (:model-fallback result) (assoc :model-fallback (:model-fallback result))
                          ;; ModelLeafRecordsResolvedModel: every model call
                          ;; records the model the provider reported when it
                          ;; reported one, else the configured one, in :model.
@@ -2881,7 +2892,7 @@
                          (and is-llm-call? (:model node))
                          (assoc :requested-model (:model node))
                          (and is-llm-call? resolved-model)
-                         (assoc :resolved-model resolved-model)))
+                         (assoc :resolved-model resolved-model))))
               ;; ALSO emit the RLM-specific learning-signal event when an LLM
               ;; call has usage. Carries a precomputed structured node-path
               ;; and an :input-profile derived from the node's :reads so
@@ -4166,6 +4177,7 @@
                   child-result (runtime/execute child-exec-context target-sheet-id
                                            target-inputs
                                            :timeout-ms timeout-ms
+                                           :execution-deadline-ms parent-deadline-ms
                                            :max-ticks max-ticks
                                            :tick-id child-tick-id
                                            :parent-tick-id tick-id
@@ -4564,8 +4576,18 @@
         nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
         node (get nodes-by-id node-id)]
     (when (#{:sequence :fallback} (:type node))
-      (let [children-ids (:children-ids node)]
-        (if (empty? children-ids)
+      (let [children-ids (:children-ids node)
+            ;; Historical snapshots remain readable, but must not execute a
+            ;; removed admission policy as unrestricted generic fallback.
+            invalid? (contains? node :model-fallback-policy)]
+        (if invalid?
+          {:result/events
+           [(->event {:type :sheet/node-execution-completed
+                      :tags #{[:sheet sheet-id] [:node node-id] [:tick tick-id]}
+                      :body (cond-> {:sheet-id sheet-id :tick-id tick-id :node-id node-id
+                                     :status :failure :error "Composite model fallback is obsolete; configure fallback-models on model nodes"}
+                              (seq exec-context) (assoc :inputs exec-context))})]}
+          (if (empty? children-ids)
           ;; No children - sequence succeeds, fallback fails
           {:result/events
            [(->event
@@ -4595,7 +4617,7 @@
                        {:sheet-id sheet-id
                         :tick-id tick-id
                         :node-id first-child-id
-                        :inputs inputs})})]}))))))
+                        :inputs inputs})})]})))))))
 
 ;; =============================================================================
 ;; Parallel Node Execution Processor
@@ -4744,6 +4766,8 @@
 (defmethod parallel-completion-strategy :default
   [opts]
   (parallel-completion-strategy (assoc opts :strategy-id :boolean)))
+
+
 
 (defn handle-child-completion
   "When a child node completes, handle the parent's logic.
@@ -6415,6 +6439,8 @@
                               (assoc :delegate-child-tick-id (:completion-id completed)
                                      :delegate-child-status (:status completed)
                                      :completion-delivered? true)
+                              (:model-fallback completed)
+                              (assoc :model-fallback (:model-fallback completed))
                               (:failure-kind completed)
                               (assoc :failure-kind (:failure-kind completed))
                               (:provider-evidence completed)
@@ -6713,7 +6739,7 @@
                                                          (:model snapshot-node) (assoc :model (:model snapshot-node))
                                                          (:fn snapshot-node) (assoc :fn (:fn snapshot-node))
                                                          (:tools snapshot-node) (assoc :tools (:tools snapshot-node))
-                                                         (and (= :decision (:executor snapshot-node)) (:options snapshot-node))
+                                                         (:options snapshot-node)
                                                          (assoc :options (:options snapshot-node))
                                                          (:options-from snapshot-node) (assoc :options-from (:options-from snapshot-node))
                                                          (:bands-from snapshot-node) (assoc :bands-from (:bands-from snapshot-node))
@@ -6726,6 +6752,13 @@
                                                  :body {:sheet-id sheet-id
                                                         :node-id node-id
                                                         :retry (:retry snapshot-node)}}))])
+
+                                   :fallback
+                                   (if-let [policy (:model-fallback-policy snapshot-node)]
+                                     [(->event {:type :sheet/model-fallback-policy-set
+                                                :tags #{[:sheet sheet-id] [:node node-id]}
+                                                :body {:sheet-id sheet-id :node-id node-id :model-fallback-policy policy}})]
+                                     [])
 
                                    :condition
                                    (filterv some?

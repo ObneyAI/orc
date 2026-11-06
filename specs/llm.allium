@@ -115,6 +115,35 @@ contract StructuredPrediction {
         -- no tool was forced; its evidence includes the provider's own finish
         -- detail. Existing successful result shapes and values remain unchanged.
 
+    @invariant SafeOrdinaryTransportEvidence
+        -- A synchronous conversational provider invocation that fails before a
+        -- response retains its transport-failure kind and provider identity.
+        -- Its optional closed transport record contains only a recognized
+        -- top-level client error type and/or an integer HTTP status from 100 to
+        -- 599; unavailable or invalid fields are absent, and an empty record
+        -- is omitted. Unknown failures acquire no invented classification.
+        -- The public exception uses a fixed safe summary based only on those
+        -- recognized fields, without the upstream message, cause, request,
+        -- headers, body or arbitrary exception data. Missing provider
+        -- configuration remains a distinct safely summarized failure and does
+        -- not establish that an outbound request occurred. Existing schema,
+        -- parse, finish and semantic outcomes are not reclassified as outages.
+        -- Classification is evidence, not authorization to retry or choose a
+        -- different model. Native decision and asynchronous streaming failure
+        -- surfaces require separate verification.
+
+    @invariant CandidatePreflightDoesNotDispatch
+        -- Candidate preflight resolves registered routes and validates supported
+        -- structured contracts without a provider request. It does not certify
+        -- remote model availability or semantic suitability. A missing provider,
+        -- unsupported native output or incompatible strict adapter fails visibly.
+
+    @invariant StreamingFailureEvidenceIsSafe
+        -- Asynchronous transport failures preserve allowlisted type and status
+        -- through the terminal error. Raw exception messages, credentials and
+        -- throwable causes are not copied into the durable diagnostic boundary.
+        -- Status-only 429 is not evidence distinguishing quota from rate limit.
+
     @invariant OneInvocationPerPrediction
         -- One prediction attempt performs at most one provider invocation;
         -- retry policy and call-budget accounting remain with the caller.
@@ -133,6 +162,18 @@ contract StructuredPrediction {
 
 contract DecisionProtocolPrediction {
     predict_decision: (provider: Any, specification: Any, inputs: Any, options: Any) -> Any
+
+    @invariant NativeTransportStatusSurvivesPublicBoundaries
+        -- A native decision transport failure retains its known top-level HTTP
+        -- status, when it is an integer from 100 through 599, as optional
+        -- provider-evidence.transport.http-status. A status alone never invents
+        -- an error category or proves eligibility for another model. Missing or
+        -- malformed status is omitted. Public diagnostics use a safe summary
+        -- and never retain the original message, request, response body or cause.
+        -- The same evidence survives ordinary completion and the native
+        -- one-response streaming wrapper's single error terminal. That wrapper
+        -- closes after the error; this is not a contract for partial chat streams.
+        -- Invalid decision answers retain their distinct validation failure.
 
     @invariant ProtocolFollowsRegisteredProvider
         -- A registered provider declares whether it is a conversational model

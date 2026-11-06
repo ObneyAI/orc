@@ -30,6 +30,52 @@ tests are evidence for these domains rather than separately governed product
 domains. Any behavior found there that is not represented by a component is
 added to this ledger rather than silently excluded.
 
+## Provider failure evidence and bounded alternatives
+
+`StructuredPrediction.SafeOrdinaryTransportEvidence` specifies the synchronous
+conversational failure-evidence contract. DET-E2E-322 observes actual HTTP through
+canonical events and trace queries: three loopback requests, safe typed failure
+and a valid negative control (11 focused tests/158 assertions, zero failures/errors).
+The sources are `ai.obney.orc.orc-service.ordinary-transport-failure-e2e-test` and
+`ai.obney.orc.llm.transport-failure-evidence-test`.
+
+DET-E2E-323 is a scoped consumer example:1 test/108 assertions, zero failures/errors,
+seven loopback requests. It covers exact predecessor ownership, unchanged inputs,
+concurrent healthy work, no completed-tool replay, permanent/schema rejection and
+actual family call-budget exhaustion. Its frozen-deadline observations do not by
+themselves prove expiry; DET325 separately covers exact inherited caps and expired
+admission. Source: `ai.obney.orc.orc-service.scoped-model-alternative-e2e-test`.
+This example does not install a universal fallback policy. Chat streaming,
+delegating strict adapters and arbitrary model compatibility remain outside scope.
+
+`DecisionProtocolPrediction.NativeTransportStatusSurvivesPublicBoundaries` has
+separate coverage (DET-E2E-324). Direct hato top-level integer status100–599 survives
+as status-only transport evidence; no category is inferred. The same map reaches
+native completion, trace detail and the one-response wrapper's error terminal,
+followed by close. Author and independent observations each passed2 tests/51
+assertions, zero failures/errors, and exactly three loopback requests. The original
+witness passed eight harness assertions and failed three status-preservation
+assertions before the repair. Source: `ai.obney.orc.orc-service.native-transport-status-e2e-test`
+and the status-boundary checks in `ai.obney.orc.llm.decision-protocol-test`.
+Custom native-client type/status precedence, asynchronous chat errors, partial output
+and fallback eligibility remain outside that proof. Its structural check retained
+zero errors and one baseline warning; analysis reported zero findings.
+
+`DelegationBoundary.FamilyBudgetIsShared` preserves the inherited absolute cap
+(DET-E2E-325). Delegates pass their parent's frozen deadline to public `execute`,
+which stores the lesser of that cap and its local deadline. Four obligations are
+covered: propagation across child dispatch delay, tighter local allowance,
+preservation of a spent cap, and actual expired provider admission. The expiry
+observation uses the authenticated tick command without a blocking caller timer:
+one primary HTTP502, then exact deadline refusal before a second provider attempt;
+the completed fixture tool runs once. Effect-free cap checks demonstrate stored
+arithmetic, not interruption of arbitrary code. Blocking caller wait still uses
+the relative timeout. Source: `ai.obney.orc.orc-service.deadline-model-alternative-e2e-test`.
+The original witness exposed a252ms extension; each repaired author/independent
+observation passed3 tests/34 assertions, zero failures/errors and one loopback request.
+All these runtime proofs use real Grain events/projections in an in-memory store,
+with zero paid calls. They do not prove restart or disk persistence.
+
 ## Source audit
 
 The final audit enumerated every Clojure namespace under each component's
@@ -1249,3 +1295,50 @@ beyond the recorded baseline. Final full CI remains the merge gate.
 ## Public accounting absence follow-up
 
 GEPA-ACCOUNTING-ABSENCE-1: 1 obligation, 1 covered, 0 uncovered. RED: 1 test/16 assertions, 6 expected failures; independent root GREEN: complete public-accounting namespace 5 tests/62 assertions, no failures/errors, exit 0. Evidence: /private/tmp/gepa-absent-accounting-{red,green,root}.log. Allium baseline remains 114 info/39 warnings/0 errors and no analysis findings. Public views must not invent an optimization by attaching zero accounting to an empty projection. Existing tenant-scoped accounting remains required.
+
+## Deadline-cap verification
+
+DET-E2E-325:4 scoped obligations,4 covered,0 uncovered. The pre-repair witness
+passed27/28 assertions and exposed a252ms extension across a250ms dispatch barrier.
+Author and independent verification each passed3 tests/34 assertions with one
+loopback request. No existing assertion was weakened; no generated skeleton remains.
+The test source is `components/orc-service/test/ai/obney/orc/orc_service/deadline_model_alternative_e2e_test.clj`.
+The cap controls provider admission, not arbitrary-code interruption or shorter
+blocking waits. Streaming and other child construction paths are outside scope.
+Standalone `orc-service.allium` checks before/after remained0 errors,2 warnings,
+43 info; the missing WorkflowConsumer source hint and standalone unused StreamEnvelope
+are retained diagnostics. Analysis found0 findings. These counts do not replace
+the directory baseline above.
+
+## Rate-limit characterization
+
+DET-E2E-326:5 scoped obligations,5 covered,0 uncovered. Author and independent
+verification each passed1 test/57 assertions, exactly three loopback requests and
+zero paid calls. Owned rate-limit429 evidence admits the same-task alternative;
+quota429 denies it. Typed input/body identity, a valid negative answer, the original
+budget/deadline and one tool execution per task are retained. This characterizes
+the pinned client's heuristic, not universal provider categorization or new library
+behavior. An initial sandbox bind refusal preceded any HTTP and was separate from
+the successful observation. No assertion was weakened; no generated skeleton remains.
+Source: `components/orc-service/test/ai/obney/orc/orc_service/rate_limit_model_alternative_e2e_test.clj`.
+Chat streaming and application policy migration remain outside scope.
+
+## Configured model alternatives
+
+`LeafExecutor.ConfiguredModelAlternativesAreOneTask`,
+`ModelAlternativeAdmissionUsesOwnedFailure` and
+`ModelAlternativesRetainLimitsAndEvidence` extend the ordinary blocking model
+contract. MODEL-FALLBACK-1 through 4 are independently verified: 11 focused
+tests/288 assertions, zero failures/errors, including the prior scoped regression.
+The new public constructor is exercised through real Grain and local HTTP, with
+shared-store tenant isolation, mapped attribution and published-version overlap. See
+`docs/issues/model-fallback/PLAN.md`. Streaming and custom native classification
+remain outside this scope.
+
+## Standard-node fallback revision
+
+The wrapper proof at dcf5fbe7 remains historical evidence only. Existing-node fallback, compatible provider routing, researcher-role inheritance and persisted selection, and pre-output streaming fallback are new obligations NODE-FALLBACK-1 through 6. All remain unverified until their integration-shaped proofs run. No SIO parsing change is assumed; the asynchronous client error boundary needs separate verification.
+
+Standard-node engine acceptance completed: 20 tests/371 assertions, zero failures/errors, including old scoped regression and local client SSE test. NODE-FALLBACK-1..5 are covered; fresh recipe remains separately tracked. Known limits: no remote quality/load claim, no arbitrary protocol adapter support, no stream replacement after output, and no separate-process hard-kill evidence.
+
+NODE-FALLBACK-6 complete: fresh-agent ordinary/refusal/researcher inherited-specialist exercise used seven local HTTP requests, with public query/trace evidence. All six scoped obligations covered.

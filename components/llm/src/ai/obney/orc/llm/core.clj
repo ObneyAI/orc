@@ -635,6 +635,26 @@
   (let [data (ex-data e)]
     (and (contains? data :config-name) (contains? data :available))))
 
+(def ^:private transport-error-types
+  ;; Explicit public allowlist from the pinned client; arbitrary exception data
+  ;; and future client categories do not silently expand the durable contract.
+  #{:litellm/invalid-request :litellm/invalid-config
+    :litellm/authentication-error :litellm/authorization-error
+    :litellm/provider-not-found :litellm/model-not-found
+    :litellm/unsupported-feature :litellm/quota-exceeded
+    :litellm/rate-limit :litellm/timeout :litellm/connection-error
+    :litellm/server-error :litellm/provider-error
+    :litellm/invalid-response :litellm/streaming-error :litellm/content-filter
+    :litellm/internal-error :litellm/resource-exhausted})
+
+(defn- transport-evidence [^Exception e]
+  (let [{:keys [type http-status]} (ex-data e)]
+    (not-empty
+     (cond-> {}
+       (contains? transport-error-types type) (assoc :type type)
+       (and (integer? http-status) (<= 100 http-status 599))
+       (assoc :http-status http-status)))))
+
 (defn- call-failure
   "The failure of one provider invocation. A provider that was never configured
    is its own kind, so a caller can say how to configure one; every other
@@ -642,11 +662,16 @@
   [provider ^Exception e]
   (let [evidence {:provider (provider-name provider)}]
     (if (provider-not-configured? e)
-      (structured-failure (str "LLM provider " (pr-str provider) " is not configured; "
-                               "register it, or declare a model the runtime can reach"
-                               " (available: " (pr-str (vec (:available (ex-data e)))) ")")
-                          :provider-not-configured evidence e)
-      (structured-failure (.getMessage e) :transport-failure evidence e))))
+      (structured-failure (str "LLM provider is not configured; register it, "
+                               "or declare a model the runtime can reach")
+                          :provider-not-configured evidence)
+      (let [{:keys [type http-status] :as transport} (transport-evidence e)]
+        (structured-failure
+         (str "LLM provider call failed"
+              (when type (str " [" (name type) "]"))
+              (when http-status (str " (HTTP " http-status ")")))
+         :transport-failure
+         (cond-> evidence transport (assoc :transport transport)))))))
 
 (defn- selected-output-mode [provider options]
   (let [mode (or (:output-mode options) (:output-mode (router/get-config provider)))]
@@ -971,12 +996,19 @@
       (and (some? in) (some? out)) (assoc :total_tokens (+ in out))
       (some? cost) (assoc :cost cost))))
 
-(defn- transport-summary [^Throwable e]
-  ;; Allowlisted: class name and an integer HTTP status only. The exception
-  ;; message and data are never copied (they may echo request headers).
-  (let [status (:status (ex-data e))]
-    (str "Decision transport failed (" (.getName (class e))
-         (when (integer? status) (str ", HTTP " status)) ")")))
+(defn- decision-call-failure [base-evidence ^Throwable e]
+  ;; Preserve only allowlisted native transport data, never raw messages/causes.
+  ;; Bare 429 remains unclassified; an explicit typed category may disambiguate it.
+  (let [data (ex-data e)
+        raw-status (or (:http-status data) (:status data))
+        status (when (and (integer? raw-status) (<= 100 raw-status 599)) raw-status)
+        transport (cond-> {}
+                    (transport-error-types (:type data)) (assoc :type (:type data))
+                    status (assoc :http-status status))]
+    (structured-failure
+     (str "Decision transport failed" (when status (str " (HTTP " status ")")))
+     :transport-failure
+     (cond-> base-evidence (seq transport) (assoc :transport transport)))))
 
 (defn- predict-decision [provider config spec inputs options]
   (let [validate? (get options :validate? true)
@@ -996,8 +1028,7 @@
           request (decision-request (or (:model options) (:model config)) spec inputs kinds)
           response (try (transport request)
                         (catch Exception e
-                          (throw (structured-failure (transport-summary e)
-                                                     :transport-failure base-evidence))))
+                          (throw (decision-call-failure base-evidence e))))
           evidence (assoc base-evidence
                           :model (diagnostic-string (field response :model))
                           :response-id (diagnostic-string (field response :id))
@@ -1142,6 +1173,32 @@
                                :provider-observations observations)
                         error))))))
 
+(defn preflight-provider!
+  "Resolve a candidate and validate its structured contract without network I/O.
+   Does not certify remote model availability or semantic quality."
+  [provider spec options]
+  (let [explicit-provider? (:orc/explicit-provider? options)
+        options (dissoc (or options {}) :orc/explicit-provider?)
+        route (decision-route provider options)
+        [selected config resolved-options]
+        (or route [provider (registered-config provider) options])]
+    (when (and explicit-provider? route (not= selected provider))
+      (throw (structured-failure "Explicit provider conflicts with native model alias"
+                                 :configuration-error {:provider (provider-name provider)})))
+    (when-not config
+      (throw (structured-failure "LLM provider is not configured"
+                                 :provider-not-configured
+                                 {:provider (provider-name selected)})))
+    (if route
+      (when (some #(nil? (output-kind (:spec %))) (:outputs spec))
+        (throw (structured-failure "Decision provider cannot satisfy the output contract"
+                                   :schema-validation-failed
+                                   {:provider (provider-name selected)})))
+      (when (= :json-schema (selected-output-mode selected resolved-options))
+        (compile-strict-output selected spec resolved-options)))
+    {:provider selected :model (or (:model resolved-options) (:model config))
+     :protocol (if route :decision :chat) :options resolved-options}))
+
 (defn predict
   "Perform one structured provider invocation.
 
@@ -1167,6 +1224,15 @@
   (if (and prompt-tokens completion-tokens)
     (assoc usage :total-tokens (+ prompt-tokens completion-tokens))
     usage))
+
+(defn- safe-stream-failure [provider chunk]
+  (let [type (or (:error-type chunk) (:type chunk))
+        status (:http-status chunk)
+        transport (cond-> {}
+                    (transport-error-types type) (assoc :type type)
+                    (and (integer? status) (<= 100 status 599)) (assoc :http-status status))]
+    (structured-failure "LLM streaming transport failed" :transport-failure
+                        (cond-> {:provider (provider-name provider)} (seq transport) (assoc :transport transport)))))
 
 (defn- error-event [error]
   {:orc/event :error
@@ -1241,7 +1307,7 @@
           (if-let [chunk (<! stream-ch)]
             (if (streaming/is-error-chunk? chunk)
               (do
-                (>! output-ch (error-event (dissoc chunk :type)))
+                (>! output-ch (error-event (safe-stream-failure provider chunk)))
                 (close! stream-ch)
                 (close! output-ch))
               (do

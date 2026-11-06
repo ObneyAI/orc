@@ -10,10 +10,14 @@
             [cognitect.anomalies :as anom]))
 
 (def owner-keys [:sheet-id :tick-id :node-id :node-start-id :exec-context
-                 :node-attempt :provider-attempt :invocation-id])
+                 :node-attempt :provider-attempt :invocation-id
+                 :candidate-index :requested-provider :requested-model])
 (def owner-fields [[:sheet-id :uuid] [:tick-id :uuid] [:node-id :uuid] [:node-start-id :uuid]
                    [:exec-context [:fn map?]] [:node-attempt [:int {:min 1}]]
-                   [:provider-attempt [:int {:min 1}]] [:invocation-id :uuid]])
+                   [:provider-attempt [:int {:min 1}]] [:invocation-id :uuid]
+                   [:candidate-index {:optional true} [:int {:min 0}]]
+                   [:requested-provider {:optional true} :keyword]
+                   [:requested-model {:optional true} [:maybe :string]]])
 (def observation-schema
   [:map {:closed true}
    [:provider :string]
@@ -31,6 +35,7 @@
   [:map {:closed true}
    [:status [:enum :success :failure :timeout :cancelled]]
    [:failure-kind {:optional true} :keyword]
+   [:provider-evidence {:optional true} [:fn map?]]
    [:provider-observations {:optional true} observation-schema]])
 (defschemas provider-observation-commands
   {:sheet/start-provider-attempt (into [:map] owner-fields)

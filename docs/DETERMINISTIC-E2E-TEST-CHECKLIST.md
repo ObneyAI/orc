@@ -14,6 +14,11 @@ Do not mark a candidate complete solely because unit or component tests cover
 some of its behavior. Completion requires an integration-shaped workflow test
 that verifies the stated observable results.
 
+## Provider failure evidence and scoped model alternatives
+
+- [x] **DET-E2E-322 — Safe typed ordinary transport failure.** Through the real HTTP client, SIO, public ORC execution and Grain events, return a controlled non-JSON502. Verify recognized type/status survive command validation, node completion and trace readback, while a fictional credential marker and raw cause do not escape through the public failure. Preserve the valid strict-output control. Independent focused verification:11 tests/158 assertions, zero failures/errors; three local HTTP requests, zero paid calls. Source: `ai.obney.orc.orc-service.ordinary-transport-failure-e2e-test` and `ai.obney.orc.llm.transport-failure-evidence-test`. Native status has its separate DET324 proof; chat streaming is outside this proof.
+- [x] **DET-E2E-323 — Bounded same-task model alternative (scoped consumer example).** Independent verification:1 test/108 assertions, zero failures/errors; seven loopback requests, zero paid calls. Two concurrent roots reuse one delegated task: only its owned502 admits the alternative; the healthy root's valid false answer remains successful, and each completed fixture tool runs once. Exact quota429, authentication401, schema-validation failure and family call-budget exhaustion prevent an alternative request. Unknown, contradictory, wrong-owner and mapped-context mismatches are local predicate controls, not separate HTTP scenarios. Candidate inputs, contract and options remain unchanged except model. DET323 observes frozen deadlines; the separate DET325 proof covers exact parent-cap propagation and actual expiry. DET324 covers native status, and DET326 covers actual rate-limit429. Chat streaming, arbitrary model compatibility and consumer policy migration remain outside these proofs. Source: `ai.obney.orc.orc-service.scoped-model-alternative-e2e-test`. This is an example policy, not a global fallback policy.
+
 ## P0 — Core execution contract
 
 - [x] **DET-E2E-001 — Sequence success.** Three code nodes append markers. Verify left-to-right output, execution-event order, success status, and all three node traces.
@@ -919,6 +924,14 @@ records the independent command, workflow, named-startup and separate-process
 proofs. These completed obligations do not imply a completed full CI gate.
 
 
+## Execution deadline evidence
+
+- [x] **DET-E2E-325 — Original deadline across delegation and model alternatives.** Separately observe (A) a real-clock child-start barrier through public execution, asserting the child's frozen absolute deadline never exceeds its parent's, and (B) an explicitly deadline-bound public tick whose primary local HTTP failure precedes a code gate held until that recorded deadline expires. Require the alternate to fail for the exact deadline reason with no second HTTP request, retained deadline/budget identity and one completed fixture tool. The second observation must not rely on a blocking caller's cancellation timer. Real epoch clocks only; no paid calls. Propagation inflation and post-expiry provider admission are distinct claims. Independently verified after the local repair: 3 tests/34 assertions; delayed child retains exact parent cap, spent cap stays spent, shorter local allowance wins, expired alternative sends no second HTTP request. In-memory Grain store and loopback HTTP; no paid calls. Provider-admission cap only, not arbitrary-code preemption or shorter caller wait; streaming is outside scope.
+
+## Native decision failure evidence
+
+- [x] **DET-E2E-324 — Native status through direct execution and wrapper terminal.** Independent verification:2 tests/51 assertions, zero failures/errors; three loopback requests, zero paid calls. Direct hato status control, public native ORC execution with canonical completion/trace detail, and the native decision wrapper preserve bounded status-only transport evidence. No invented category, fixture marker or unsafe cause; exactly one wrapper error followed by close. Public prediction checks omit absent, malformed and out-of-range statuses. This does not establish custom-client category/status precedence, chat streaming, partial-output failover, temporary-only fallback eligibility, or a persistent streaming projection. Source: `ai.obney.orc.orc-service.native-transport-status-e2e-test` and the status-boundary checks in `ai.obney.orc.llm.decision-protocol-test`.
+
 ## Opt-in prompt request layout
 
 - [x] PROMPT-CACHE-1: Public prediction through the pinned HTTP serializer preserves function schemas, described fields, dynamic values and exact image payloads with cache/generic flags enabled; local flags do not reach the body, defaults remain unchanged, and marker mode keeps its existing content.
@@ -927,3 +940,34 @@ proofs. These completed obligations do not imply a completed full CI gate.
 ## Public accounting absence
 
 - [x] GEPA-ACCOUNTING-ABSENCE-1: An optimization created through a public command in tenant B remains absent from tenant A summary/full/population views and queries; unknown IDs also remain absent, while existing tenant B accounting stays intact. Verify `absent-optimizations-remain-absent-in-public-accounting-views` and existing positive accounting controls.
+
+## Rate-limit evidence
+
+- [x] **DET-E2E-326 — Actual rate-limit versus quota response.** Through public execution/delegation and the exact-owner gate, observe primary HTTP429 classified as rate-limit followed by one same-task alternative, and quota429 with no alternative. Independent verification:1 test/57 assertions, zero failures/errors; exactly three loopback requests, zero paid calls. Exact typed categories/status and predecessor ownership, unchanged task inputs/options except model, one fixture tool per task, and the original budget/deadline are retained. This characterizes the pinned client's response-body heuristic; it does not establish universal provider classification or streaming safety. Source: `ai.obney.orc.orc-service.rate-limit-model-alternative-e2e-test`. No new library behavior or missing-feature RED claim applies to this characterization.
+
+## Configured model alternatives
+
+- [x] MODEL-FALLBACK-1: Public constructor rejects invalid candidates/policies and preserves common contracts plus candidate model/options through build, snapshot and export/rebuild. Overlapping old/new configurations retain their respective candidate lists; candidate options cannot weaken common privacy or replace host runtime identity, budgets, deadlines or callbacks.
+- [x] MODEL-FALLBACK-2: Real Grain/local HTTP execution selects ordered candidates, preserves false success, rejects permanent/schema/unknown failures under temporary policy, and reports exact terminal exhaustion evidence. Explicit all-transport policy remains distinguishable.
+- [x] MODEL-FALLBACK-3: Concurrent users and parallel mapped/delegated work retain their own inputs and predecessor identity; duplicate/stale completion does not send an extra request; preceding effects run once.
+- [x] MODEL-FALLBACK-4: Actual shared call-budget and deadline exhaustion prevent further HTTP requests without renewing limits. Candidate retries are bounded and recorded.
+
+Configured fallback acceptance: independent focused run of
+`configured-model-fallback-test`, `configured-model-fallback-configuration-test`
+and the existing `scoped-model-alternative-e2e-test`: 11 tests, 288 assertions,
+zero failures/errors. Real Grain in-memory store/cache and local HTTP; 39
+physical fixture requests across the scoped cases. Shared-store tenant proof
+uses the production tenant poller; duplicate replay uses Grain's processor.
+No paid calls, restart/load or model-quality claim. See
+`docs/issues/model-fallback/INSPECTION.md` for scope and measurement corrections.
+
+## Standard-node model fallback (supersedes wrapper-only acceptance)
+
+- [x] NODE-FALLBACK-1: standard-node configuration, invalid combinations, inherited/disabled overrides, snapshot/export, overlapping versions.
+- [x] NODE-FALLBACK-2: ordinary/condition/decision provider routing, negative/abstain/schema refusal, ordered exhaustion and safe exact-owner attempt evidence.
+- [x] NODE-FALLBACK-3: physical retry counts, actual deadline/budget refusal, duplicates, mapped items and shared-store tenant isolation.
+- [x] NODE-FALLBACK-4: prime/inline/emitted calls retain options and progress; sticky role selection, concurrent ordering and checkpoint recovery without repeated tools.
+- [x] NODE-FALLBACK-5: native and streaming safe transport evidence; failover before first visible output only, no replacement after partial output.
+- [x] NODE-FALLBACK-6: independent fresh-agent standard-node and researcher recipe with public trace diagnosis.
+
+Standard-node independent acceptance: 20 tests/371 assertions passed with the local client repair. Source/client manifests matched after the run. SQLite recovery closes/reopens store/runtime after a persisted quantum; separate-process hard-kill recovery is not claimed.

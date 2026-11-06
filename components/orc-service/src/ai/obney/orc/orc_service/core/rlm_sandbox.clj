@@ -35,6 +35,7 @@
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
+            [ai.obney.orc.orc-service.core.researcher-models :as researcher-models]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [com.brunobonacci.mulog :as u])
   (:import [java.io StringWriter]))
@@ -174,7 +175,8 @@
    block rather than as inline text. This is the Phase-1 mirror of
    executor.clj's build-field behavior for Phase-2 leaf nodes."
   [name opts context]
-  (let [{:keys [instruction writes model reads]} opts
+  (let [opts (researcher-models/inherit (:model-defaults context) opts)
+        {:keys [instruction writes model reads]} opts
         {:keys [provider blackboard sandbox-vars usage-tracker reserve-llm-call!
                 reserve-provider-call!
                 durable-source-required? tick-id node-id researcher-iteration
@@ -187,7 +189,7 @@
         ;; Build inputs from reads - pass FULL values (no truncation)
         ;; The generated code manages chunk sizes; we don't second-guess it
         inputs (reduce (fn [acc k]
-                         (let [v (or (get sandbox-vars k)
+                         (let [v (if (contains? sandbox-vars k) (get sandbox-vars k)
                                      (get-in blackboard [k :value]))]
                            (if (some? v)
                              (assoc acc k v)  ;; Full value, no truncation
@@ -206,14 +208,16 @@
                                     ft (assoc :type ft))))
                               inputs)
                 :outputs (mapv (fn [k]
-                                 {:name k
-                                  :spec :any
-                                  :description (str "Output: " (clojure.core/name k))})
+                                 (let [schema (get-in blackboard [k :schema])]
+                                   {:name k
+                                    :spec (or schema :any)
+                                    :description (or (when schema (:description (m/properties schema)))
+                                                     (str "Output: " (clojure.core/name k)))}))
                                writes)
                 :instructions instruction}
         ;; The :model rides through llm into the litellm router as a
         ;; per-request override.
-        llm-options (cond-> {:validate? false :with-metadata? true}
+        llm-options (cond-> (merge {:validate? false :with-metadata? true} (:options opts))
                       model (assoc :model model))
         logical-action-identity
         (when durable-source-required?
@@ -224,7 +228,8 @@
             :generated-code-hash generated-code-hash
             :kind :provider
             :target (encode-effect-value
-                     {:provider provider :model model :name name})
+                     {:provider (or (:provider opts) provider) :model model :name name
+                      :fallback-models (:fallback-models opts) :fallback-policy (:fallback-policy opts)})
             :arguments (encode-effect-value
                         {:module module
                          :inputs inputs
@@ -255,23 +260,14 @@
                               {:claim-result claim-result
                                :logical-action-identity logical-action-identity
                                :attempt-identity attempt-identity})))))
-        (when-let [rejected
-                   (and (nil? completed-effect)
-                        (if reserve-provider-call!
-                          (reserve-provider-call!
-                           {:iteration-index researcher-iteration
-                            :logical-action-identity logical-action-identity
-                            :provider-attempt-ordinal effect-attempt-ordinal})
-                          (and reserve-llm-call! (reserve-llm-call!))))]
-          (throw (ex-info
-                  (or (:cognitect.anomalies/message rejected)
-                      (str "LLM call budget exceeded: "
-                           (:current rejected) "/" (:budget rejected)))
-                  rejected)))
         ;; :with-metadata? true ensures llm returns {:outputs ... :usage ...} instead of just outputs
         (let [result (if completed-effect
                        (:result completed-effect)
-                       (llm/predict provider module inputs llm-options))
+                       (let [call-context (or (:model-call-context context) context)
+                             logical-id (or logical-action-identity
+                                            (researcher-models/logical-id call-context :subcall name module inputs opts llm-options))]
+                         (researcher-models/predict opts provider module inputs llm-options
+                                                    call-context :subcall logical-id)))
               outputs (or (:outputs result) result)
               usage (:usage result)
               ;; Aggregate usage into tracker if provided
@@ -308,7 +304,8 @@
                   writes))
         (catch Exception e
           (throw (ex-info (str "LLM primitive '" name "' failed: " (.getMessage e))
-                          {:name name :instruction instruction :writes writes}
+                          (merge {:name name :writes writes}
+                                 (select-keys (ex-data e) [:failure-kind :provider-evidence :model-fallback :status]))
                           e)))))))
 
 ;; =============================================================================
@@ -429,6 +426,8 @@
 
         ;; Context for LLM primitive execution
         exec-context {:provider provider
+                      :model-defaults (:model-defaults context)
+                      :model-call-context (:model-call-context context)
                       :blackboard blackboard
                       :parent-trace-id parent-trace-id
                       :usage-tracker usage-tracker

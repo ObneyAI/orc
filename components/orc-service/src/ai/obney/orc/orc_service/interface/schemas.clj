@@ -133,9 +133,26 @@
    ;; selected (distinct from a malformed answer).
    :undecided])
 
+(def provider-transport-evidence
+  [:and
+   [:map {:closed true}
+    [:type {:optional true}
+     [:enum :litellm/invalid-request :litellm/invalid-config
+      :litellm/authentication-error :litellm/authorization-error
+      :litellm/provider-not-found :litellm/model-not-found
+      :litellm/unsupported-feature :litellm/quota-exceeded
+      :litellm/rate-limit :litellm/timeout :litellm/connection-error
+      :litellm/server-error :litellm/provider-error
+      :litellm/invalid-response :litellm/streaming-error :litellm/content-filter
+      :litellm/internal-error :litellm/resource-exhausted]]
+    [:http-status {:optional true} [:int {:min 100 :max 599}]]]
+   ;; Absent classification is omitted, never an empty or fabricated record.
+   [:fn seq]])
+
 (def provider-failure-evidence
   [:map
    [:provider :string]
+   [:transport {:optional true} provider-transport-evidence]
    [:model {:optional true} [:maybe :string]]
    [:response-id {:optional true} [:maybe :string]]
    [:finish-reason {:optional true} [:maybe :string]]
@@ -371,6 +388,14 @@
     [:parent-id {:optional true} :uuid]
     [:children-ids [:vector :uuid]]
     [:status node-status]
+    [:provider {:optional true} :keyword]
+    [:fallback-models {:optional true}
+     [:vector [:map {:closed true}
+               [:model [:string {:min 1}]]
+               [:provider {:optional true} :keyword]
+               [:options {:optional true} [:map]]]]]
+    [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]
+    [:model-fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]
     ;; Leaf-only fields
     [:instruction {:optional true} :string]
     [:reads [:vector :keyword]]
@@ -473,6 +498,13 @@
 
    ::node-trace
    [:map
+    [:model-fallback {:optional true}
+     [:map [:policy [:enum :temporary-transport :all-transport]]
+      [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused :output-exposed]]
+      [:candidate-index :int] [:candidate-node-id {:optional true} :uuid]
+      [:requested-model [:maybe :string]] [:provider {:optional true} :keyword]
+      [:attempts {:optional true} [:vector :map]]
+      [:predecessor-event-id {:optional true} :uuid]]]
     [:node-id :uuid]
     [:delegate-child-tick-id {:optional true} :uuid]
     [:delegate-child-status {:optional true} :keyword]
@@ -769,6 +801,17 @@
     ;; generated (Phase-2) trees. Mirrors the node-level :tool-caller-fn hook.
     [:tool-caller-fn {:optional true} :string]
     [:tool-contracts {:optional true} tool-contracts]]
+
+   :sheet/set-node-model-policy
+   [:map [:sheet-id :uuid] [:node-id :uuid]
+    [:options {:optional true} [:map]]
+    [:provider {:optional true} :keyword]
+    [:fallback-models {:optional true}
+     [:vector [:map {:closed true}
+               [:model [:string {:min 1}]]
+               [:provider {:optional true} :keyword]
+               [:options {:optional true} [:map]]]]]
+    [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]]
 
    :sheet/set-node-retry
    [:map
@@ -1503,6 +1546,21 @@
     [:previous-tools {:optional true} [:vector :keyword]]
     [:previous-options {:optional true} :map]]
 
+   :sheet/node-model-policy-set
+   [:map [:sheet-id :uuid] [:node-id :uuid]
+    [:options {:optional true} [:map]]
+    [:provider {:optional true} :keyword]
+    [:fallback-models {:optional true}
+     [:vector [:map {:closed true}
+               [:model [:string {:min 1}]]
+               [:provider {:optional true} :keyword]
+               [:options {:optional true} [:map]]]]]
+    [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]]
+
+   :sheet/model-fallback-policy-set
+   [:map [:sheet-id :uuid] [:node-id :uuid]
+    [:model-fallback-policy [:enum :temporary-transport :all-transport]]]
+
    :sheet/node-retry-set
    [:map
     [:sheet-id :uuid]
@@ -1717,8 +1775,23 @@
               [:status [:enum :success :failure :running :partial :timeout :blocked]]
               [:node-type [:enum :condition :sequence :fallback]]]]]]
 
+   :sheet/model-fallback-transition-recorded
+   [:map [:sheet-id :uuid] [:tick-id :uuid] [:node-id :uuid]
+    [:candidate-node-id :uuid] [:candidate-index :int] [:predecessor-event-id :uuid]
+    [:next-node-id {:optional true} :uuid]
+    [:policy [:enum :temporary-transport :all-transport]]
+    [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused :eligible-transport]]
+    [:advanced? :boolean] [:inputs {:optional true} :map]]
+
    :sheet/node-execution-completed
    [:map
+    [:model-fallback {:optional true}
+     [:map [:policy [:enum :temporary-transport :all-transport]]
+      [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused :output-exposed]]
+      [:candidate-index :int] [:candidate-node-id {:optional true} :uuid]
+      [:requested-model [:maybe :string]] [:provider {:optional true} :keyword]
+      [:attempts {:optional true} [:vector :map]]
+      [:predecessor-event-id {:optional true} :uuid]]]
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]

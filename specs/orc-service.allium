@@ -247,6 +247,61 @@ contract LeafExecutor {
         -- budget is exhausted. Provider, security, cancellation, and execution
         -- budget failures retain their existing terminal semantics.
 
+    @invariant ConfiguredModelAlternativesAreOneTask
+        -- Existing generation, condition, decision and researcher nodes may
+        -- configure ordered backup models and registered providers, with
+        -- compatible generation overrides. An empty list disables inheritance.
+        -- Running executions retain their original candidate configuration even
+        -- when a successor workflow configuration is built concurrently.
+        -- All candidates retain the same instruction and described input and
+        -- output contracts. Invalid candidate or policy configuration is
+        -- rejected before execution. No candidate can change the task or run
+        -- preceding completed effects again.
+
+    @invariant ModelAlternativeAdmissionUsesOwnedFailure
+        -- The default model-alternative policy advances only after a final
+        -- failed candidate attempt has typed, consistent temporary transport
+        -- evidence. Unknown evidence, authentication, quota, configuration and
+        -- output-schema failures are not temporary outages. An explicitly
+        -- selected all-transport policy may admit permanent transport failures.
+        -- Neither policy treats a valid negative answer, cancellation, a
+        -- permission block or exhausted execution limits as an outage.
+        -- Admission belongs to the exact tenant, tick, candidate and execution
+        -- context, including mapped item and iteration. Duplicate or stale
+        -- completion delivery cannot advance the chain again or borrow another
+        -- execution's failure. Candidate retries finish before advancement.
+
+    @invariant ModelAlternativesRetainLimitsAndEvidence
+        -- Every candidate consumes the existing family call budget and original
+        -- absolute deadline. Switching models cannot renew either limit.
+        -- Attempted model identities, safe failure evidence and successful
+        -- selection remain retrievable through canonical execution traces.
+        -- Denial or candidate exhaustion preserves a useful terminal reason.
+        -- A failed request never invents a resolved model identity. Ordinary
+        -- and streaming alternatives may advance only before visible model output.
+        -- Once output is exposed, a failed stream terminates without replacement.
+
+    @invariant ResearcherModelFallbackPreservesProgress
+        -- Prime and specialist roles have separate defaults. Inline and emitted
+        -- specialists inherit specialist options and backups unless overridden;
+        -- a primary-only override retains backups and an empty list disables them.
+        -- A failed model call switches inside its logical action, never by
+        -- restarting the researcher or replaying completed external actions.
+        -- Successful backup selection persists for that run, role and effective
+        -- configuration. Later calls start there; concurrent older completions
+        -- cannot move selection backwards. Recovery retains recorded transitions.
+        -- New runs start at their primary. No selection crosses tenant/run scope.
+
+    @invariant ConfiguredFallbackHasBoundedPhysicalAttempts
+        -- Configured fallback defaults to one physical request per candidate.
+        -- Explicit bounded same-model retries precede switching. Exhaustion does
+        -- not restart the chain through implicit outer node retries. Every request
+        -- reserves remaining family budget and time before dispatch. A request
+        -- interrupted before its outcome is recorded may be repeated on recovery
+        -- only as a new counted attempt; completed tool effects are not replayed.
+        -- Compatible providers preserve the effective task and decision contract;
+        -- protocol conversion never invents confidence or weakens strict output.
+
     @invariant ProviderRetryCoversSchemaFailure
         -- The default provider retry applies when a returned structured output
         -- violates its declared schema, as well as when the provider attempt
@@ -415,6 +470,10 @@ contract DelegationBoundary {
         -- root execution's LLM-call budget and remaining wall-clock budget; no
         -- provider invocation anywhere in the family begins once the family
         -- budget is spent.
+        -- A child's recorded absolute deadline is no later than its parent's
+        -- deadline. Dispatch delay cannot renew the inherited time allowance;
+        -- a shorter local allowance may tighten it. An already spent parent
+        -- deadline remains spent when the child starts.
 
     @invariant DelegateToolContextCrosses
         -- The parent execution's durable consumer tool context reaches the

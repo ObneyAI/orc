@@ -17,6 +17,8 @@
    - Blackboard values → ORC LLM input values
    - ORC LLM output values → Blackboard writes"
   (:require [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.orc-service.core.model-fallback :as model-fallback]
+            [ai.obney.orc.orc-service.core.model-call-journal :as model-call-journal]
             [clojure.string :as str]
             [clojure.set]
             [clojure.walk :as walk]
@@ -38,6 +40,7 @@
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
+            [ai.obney.orc.orc-service.core.researcher-models :as researcher-models]
             [ai.obney.orc.orc-service.core.researcher-mode :as researcher-mode]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
@@ -1092,6 +1095,15 @@
           node))
       tree)))
 
+(defn- inject-subcall-config [tree defaults]
+  (walk/postwalk
+   (fn [form]
+     (if (and (seq? form) (= 'sheet/llm (first form)))
+       (let [opts (apply hash-map (rest form))
+             effective (researcher-models/inherit defaults opts)]
+         (apply list 'sheet/llm (mapcat identity effective)))
+       form)) tree))
+
 (defn- inject-tool-caller-fn
   "Phase 4B: Walk a canonical-DSL emit-tree! tree and inject the parent
    repl-researcher's `:tool-caller-fn` (gated tool-caller builder FQN) into
@@ -1727,7 +1739,7 @@
         (when (:cognitect.anomalies/category result) :observation-persistence-failed))
       (catch Exception _ :observation-persistence-failed))))
 
-(defn execute-ai
+(defn- execute-ai-candidate
   "Execute a leaf node using ORC LLM AI.
 
    Args:
@@ -1771,7 +1783,8 @@
                                :reserve-provider-attempt! :provider-reservation-context
                                :tick-id :node-attempt :max-node-attempts
                                :exec-context :start-provider-attempt! :complete-provider-attempt!
-                               :max-retries :retry-delay-ms :validate? :unparseable-is-schema-error?}
+                               :max-retries :retry-delay-ms :validate? :unparseable-is-schema-error?
+                               :model-fallback-callbacks :model-role-context :model-candidate-index :mark-output-exposed!}
         llm-options (merge {:validate? false
                                :with-metadata? true
                                :with-provider-evidence? true
@@ -1795,12 +1808,22 @@
                                      (or (:fields? stream) (:raw? stream))
                                      (not (:use-function-calling? llm-options)))
                             llm/predict-stream-v2)
+        output-exposed? (atom false)
+        mark-output-exposed! (:mark-output-exposed! options)
+        expose! (fn []
+                  (when (compare-and-set! output-exposed? false true)
+                    (when mark-output-exposed!
+                      (let [r (mark-output-exposed!)]
+                        (when (:cognitect.anomalies/category r)
+                          (throw (ex-info "Stream exposure could not be persisted"
+                                          {:failure-kind :observation-persistence-failed})))))))
         emit-delta! (when predict-stream-v2
                       (let [base (cond-> (select-keys stream [:sheet-id :node-id])
                                    (:map-each stream) (assoc :map-each (:map-each stream)))]
                         ;; :attempt lets consumers detect a retry restart and
                         ;; reset their per-node delta accumulation.
                         (fn [attempt m]
+                          (expose!)
                           (streaming/emit! (:tick-id stream)
                                            (merge base {:attempt attempt} m)))))
 
@@ -1843,7 +1866,8 @@
                                    :resolved-model (:model ev)
                                    :raw-response (:raw-response ev)}))
                   (recur terminal))
-                (or terminal {:error "LLM stream ended without a final result"})))))
+                (assoc (or terminal {:error "LLM stream ended without a final result"})
+                       :output-exposed? @output-exposed?)))))
 
         ;; Single attempt function
         try-once (fn [attempt attempt-options]
@@ -1890,6 +1914,7 @@
                       (if (sequential? retry-delay-ms)
                         (nth retry-delay-ms (min attempt (dec (count retry-delay-ms))))
                         retry-delay-ms))
+        candidate-index (:model-candidate-index options)
         start-provider-attempt! (:start-provider-attempt! options)
         complete-provider-attempt! (:complete-provider-attempt! options)
         deadline-ms (:execution-deadline-ms options)
@@ -1953,8 +1978,11 @@
            accumulated-usage nil]
       (let [{:keys [options timeout-error]} (prepare-attempt attempt)
             invocation (when-not timeout-error
-                         {:invocation-id (random-uuid)
-                          :node-attempt node-attempt :provider-attempt (inc attempt)})
+                         (cond-> {:invocation-id (random-uuid)
+                                   :node-attempt node-attempt :provider-attempt (inc attempt)}
+                           (some? candidate-index)
+                           (assoc :candidate-index candidate-index
+                                  :requested-provider provider :requested-model (:model node))))
             start-error (when invocation (persist-provider-attempt start-provider-attempt! invocation))
             {:keys [outputs usage model resolved-model error raw-response failure-kind provider-evidence
                     decisions provider-observations]}
@@ -2011,6 +2039,7 @@
                (assoc invocation :outcome
                       (cond-> {:status (if (or error (seq unparseable-keys) schema-error) :failure :success)}
                         failure-kind (assoc :failure-kind failure-kind)
+                        provider-evidence (assoc :provider-evidence provider-evidence)
                         (and (nil? failure-kind) (or (seq unparseable-keys) schema-error))
                         (assoc :failure-kind :schema-validation-failed)
                         provider-observations (assoc :provider-observations provider-observations)))))]
@@ -2032,7 +2061,7 @@
           ;; Exception — retry with backoff (handles rate limits, transient errors)
           ;; An :undecided tie is the provider's answer, not a transient failure:
           ;; retrying would only spend another paid call fishing for a different grade.
-          (and error (not (contains? non-retryable-failure-kinds failure-kind)) (< attempt max-retries))
+          (and error (not @output-exposed?) (not (contains? non-retryable-failure-kinds failure-kind)) (< attempt max-retries))
           (let [backoff (backoff-for attempt)
                 remaining (execution-budget/remaining-ms deadline-ms)]
             (if (and remaining (<= remaining backoff))
@@ -2050,6 +2079,7 @@
           ;; Exception — retries exhausted
           error
           (let [result (cond-> {:status :failure :error error
+                                :output-exposed? @output-exposed?
                                 :duration-ms (- (System/currentTimeMillis) start-time)}
                          total-usage (assoc :usage total-usage)
                          model (assoc :model model)
@@ -2113,7 +2143,7 @@
           ;; violated the declared blackboard schema. This consumes the same
           ;; default retry budget as transport/provider exceptions. Only the
           ;; final exhausted attempt escapes as rejected-write evidence.
-          (and schema-error (< attempt max-retries))
+          (and schema-error (not @output-exposed?) (< attempt max-retries))
           (let [backoff (backoff-for attempt)
                 remaining (execution-budget/remaining-ms deadline-ms)]
             (if (and remaining (<= remaining backoff))
@@ -2155,6 +2185,60 @@
                :executor :ai :duration-ms (:duration-ms result)
                :status :success :usage total-usage :trace-id nil})
             result))))))
+
+(defn execute-ai
+  "Execute an ordinary model task, optionally selecting configured backups at
+   the request boundary. No subtree or upstream work is restarted."
+  [node blackboard provider & {:keys [options stream] :or {options {}}}]
+  (if-not (seq (:fallback-models node))
+    (do
+      (when (:provider node)
+        (llm/preflight-provider! (:provider node)
+          (dissoc (build-module node blackboard) :output-mapping)
+          (assoc options :model (:model node) :orc/explicit-provider? true)))
+      (execute-ai-candidate node blackboard (or (:provider node) provider)
+                            :options options :stream stream))
+    (let [_ (model-fallback/validate-config! node)
+          host-keys #{:execution-deadline-ms :reserve-llm-call! :reserve-provider-attempt!
+                      :provider-reservation-context :tick-id :node-attempt :max-node-attempts
+                      :exec-context :start-provider-attempt! :complete-provider-attempt!
+                      :model-fallback-callbacks :model-role-context}
+          candidates (model-fallback/candidate-plan node provider (apply dissoc options host-keys))
+          policy (or (:fallback-policy node) :temporary-transport)
+          module (dissoc (build-module node blackboard) :output-mapping)
+          candidates (mapv (fn [index candidate]
+                             (let [explicit-provider? (or (contains? node :provider)
+                                                          (and (pos? index)
+                                                               (contains? (nth (:fallback-models node) (dec index)) :provider)))
+                                   resolved (llm/preflight-provider!
+                                             (:provider candidate) module
+                                             (cond-> (:options candidate)
+                                               explicit-provider? (assoc :orc/explicit-provider? true)
+                                               (:model candidate) (assoc :model (:model candidate))))]
+                               (assoc candidate :provider (:provider resolved)
+                                                :model (:model resolved)))) (range) candidates)
+          role-context (:model-role-context options)
+          callbacks (or (:model-fallback-callbacks options)
+                        (when role-context
+                          (model-call-journal/callbacks
+                           (:context role-context) (:owner role-context) candidates policy)))]
+      (when-not (fn? (:record! callbacks))
+        (throw (ex-info "Durable model fallback callbacks are required"
+                        {:failure-kind :configuration-error})))
+      (model-fallback/run-candidates
+       (merge callbacks
+              {:candidates candidates :policy policy
+               :invoke!
+               (fn [index candidate]
+                 (execute-ai-candidate
+                  (assoc node :model (:model candidate)) blackboard (:provider candidate)
+                  :options (-> (merge (:options candidate) (select-keys options host-keys))
+                               (dissoc :model-fallback-callbacks)
+                               (assoc :model-candidate-index index
+                                      :mark-output-exposed!
+                                      (when-let [mark! (:mark-output-exposed! callbacks)]
+                                        #(mark! index))))
+                  :stream stream))})))))
 
 (defn execute-llm-condition
   "Execute an LLM condition node - a provider invocation that answers a yes/no
@@ -2199,7 +2283,7 @@
                                               {:description "True if the condition is met, false otherwise"}]})
                              (:reads node))
         leaf (-> node
-                 (select-keys [:id :name :instruction :reads :model :options])
+                 (select-keys [:id :name :instruction :reads :model :options :provider :fallback-models :fallback-policy])
                  (assoc :writes [answer-key]))
         ;; A finite answer is requested as a structured (function-calling)
         ;; response by default: in marker mode a bare "true" with no field
@@ -2344,7 +2428,7 @@
                                        {:key answer-key :schema answer-schema})
                                 (:reads node))
             leaf (-> node
-                     (select-keys [:id :name :reads :model :options])
+                     (select-keys [:id :name :reads :model :options :provider :fallback-models :fallback-policy])
                      ;; The rubric is rendered into the instruction (and is the
                      ;; decision model's criteria); it is not also evidence.
                      (update :reads #(if banded? (vec (remove #{(:bands-from node)} %)) %))
@@ -2815,7 +2899,11 @@
                 llm-options (cond-> (assoc execution-options :validate? false :with-metadata? true)
                                  (:model node) (assoc :model (:model node)))
 
-                llm-result (llm/predict provider module inputs llm-options)
+                llm-result (researcher-models/predict node provider module inputs llm-options
+                             (assoc context :researcher-iteration iteration
+                                            :execution-deadline-ms (:workflow-deadline-ms context))
+                             :prime (researcher-models/logical-id (assoc context :researcher-iteration iteration)
+                                                                 :prime (:name node) module inputs node llm-options))
                 ;; Extract code from LLM result
                 ;; With :with-metadata? true, llm returns {:outputs {:code "..."} :usage {...}}
                 ;; Code may be a string or a parsed Clojure form (if function calling mode parsed it)
@@ -2941,10 +3029,13 @@
                   (recur (inc iteration) new-history)))))))
 
       (catch Exception e
-        {:status :failure
-         :error (.getMessage e)
-         :duration-ms (- (System/currentTimeMillis) start-time)
-         :usage @total-usage}))))))
+        (if (:model-call-in-flight? (ex-data e))
+          {:status :running :researcher-frontier-conflict? true}
+          (merge {:status :failure
+                  :error (.getMessage e)
+                  :duration-ms (- (System/currentTimeMillis) start-time)
+                  :usage (merge-with + @total-usage (or (normalize-usage (:usage (ex-data e))) {}))}
+                 (select-keys (ex-data e) [:failure-kind :provider-evidence :model-fallback])))))))))
 
 ;; =============================================================================
 ;; RLM Mode Execution (BT as Primitive)
@@ -4464,7 +4555,11 @@
                 ;; outer bound and must never outlive the enclosing workflow.
                 (assoc llm-options :timeout-ms provider-timeout-ms)
                 provider-action-id
-                (researcher-effects/provider-logical-action-identity
+                (if (contains? node :fallback-models)
+                  (researcher-models/logical-id (assoc context :researcher-iteration iteration
+                                                             :llm-provider provider)
+                                               :prime (:name node) module inputs node llm-options)
+                  (researcher-effects/provider-logical-action-identity
                  {:tick-id (:tick-id context)
                   :node-id (:node-id context)
                   :iteration-index iteration
@@ -4476,7 +4571,7 @@
                   ;; time and is therefore not part of the logical request.
                   ;; Hash only stable caller/node options so replay can find
                   ;; the completed provider claim under load.
-                  :options (encode-effect-value provider-request-options)})
+                  :options (encode-effect-value provider-request-options)}))
                 legacy-provider-action-id
                 (str (:tick-id context) "/" (:node-id context) "/"
                      iteration "/provider/1")
@@ -4494,33 +4589,15 @@
                   (:provider-result completed-provider-envelope)
                   completed-provider-envelope)
                 invoke-provider
-                #(do
-                   (when-let [exceeded
-                              (if (and checkpointed?
-                                       (:reserve-provider-call! context))
-                                ((:reserve-provider-call! context)
-                                 {:iteration-index iteration
-                                  :logical-action-identity provider-action-id
-                                  :provider-attempt-ordinal
-                                  provider-attempt-ordinal})
-                                (and (:reserve-llm-call! context)
-                                     ((:reserve-llm-call! context))))]
-                     (throw (ex-info
-                             (or (:cognitect.anomalies/message exceeded)
-                                 (str "LLM call budget exceeded: "
-                                      (:current exceeded) "/" (:budget exceeded)))
-                             exceeded)))
-                   ;; :orc/idempotency-key here recognises an already-
-                   ;; dispatched call on resume at OUR boundary (the claim
-                   ;; and :completed-actions lookup above); it is not read or
-                   ;; honoured by any LLM provider (ADR 0004). Provider calls
-                   ;; remain at-least-once and are durably attributed to the
-                   ;; ownership epoch that produced them, never surfaced to
-                   ;; the model as a failure.
-                   (llm/predict provider module inputs
-                                (cond-> provider-request-options
-                                  checkpointed?
-                                  (assoc :orc/idempotency-key provider-action-id))))
+                #(researcher-models/predict
+                   node provider module inputs
+                   (cond-> provider-request-options checkpointed?
+                     (assoc :orc/idempotency-key provider-action-id))
+                   (assoc context :researcher-iteration iteration
+                                  :effect-attempt-ordinal provider-attempt-ordinal
+                                  :model-configuration-options llm-options
+                                  :execution-deadline-ms iteration-deadline-ms)
+                   :prime provider-action-id)
                 provider-claim-result
                 (when (and checkpointed?
                            (nil? completed-provider-action)
@@ -4581,8 +4658,10 @@
                                ;; takes the same retry-from-checkpoint path
                                ;; (`TimedOutIterationRetriesFromCheckpoint`). Any
                                ;; other provider error stays a terminal failure.
-                               (cond-> {:code nil :error (.getMessage e)}
-                                 (transport-timeout? e)
+                               (cond-> (merge {:code nil :error (.getMessage e)}
+                                              (select-keys (ex-data e) [:usage :failure-kind :provider-evidence :model-fallback
+                                                                        :model-call-in-flight?]))
+                                 (and (not (:model-fallback (ex-data e))) (transport-timeout? e))
                                  (assoc :timeout-kind :provider)))
 
                              :else (:value provider-call))
@@ -4697,6 +4776,9 @@
                                  (add-cost (:usage llm-result))))))]
 
             (cond
+                (:model-call-in-flight? llm-result)
+                {:status :running :researcher-frontier-conflict? true}
+
                 (str/blank? code)
                 (if-let [terminal-error (or (:error llm-result)
                                             (when checkpointed?
@@ -4715,21 +4797,21 @@
                                     (string? reasoning)
                                     (assoc :reasoning reasoning)))
                             terminal-result
-                            {:status :failure
-                             :error terminal-error
-                             :iterations history
-                             :duration-ms (- (long (campaign-now-ms-fn))
-                                             campaign-started-at-ms)
-                             :usage @total-usage}]
+                            (merge {:status :failure
+                                    :error terminal-error
+                                    :iterations history
+                                    :duration-ms (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                                    :usage @total-usage}
+                                   (select-keys llm-result [:failure-kind :provider-evidence :model-fallback]))]
                         (persist-terminal-result iteration failure-history
                                                  terminal-result
                                                  attempt-start-ms))
-                      {:status :failure
-                       :error terminal-error
-                       :iterations history
-                       :duration-ms (- (long (campaign-now-ms-fn))
-                                       campaign-started-at-ms)
-                       :usage @total-usage}))
+                      (merge {:status :failure
+                              :error terminal-error
+                              :iterations history
+                              :duration-ms (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                              :usage @total-usage}
+                             (select-keys llm-result [:failure-kind :provider-evidence :model-fallback]))))
                   (let [next-history (conj history
                                            {:code code
                                             :reasoning reasoning
@@ -4753,6 +4835,10 @@
                                              sandbox-vars)
                     rlm-ctx (rlm-sandbox/build-rlm-context
                             {:provider provider
+                             :model-call-context (assoc context :researcher-iteration iteration
+                                                              :effect-attempt-ordinal (get iteration-attempts iteration 0)
+                                                              :execution-deadline-ms iteration-deadline-ms)
+                             :model-defaults (researcher-models/subcall-defaults node)
                              :blackboard blackboard
                              :declared-writes declared-writes
                              :optional-writes optional-writes
@@ -5024,6 +5110,7 @@
                         ;; byte-identical) when the parent has no gate.
                         generated-tree (-> (:generated-tree @sandbox-vars)
                                            (inject-sub-model sub-model)
+                                           (inject-subcall-config (researcher-models/subcall-defaults node))
                                            (inject-tool-caller-fn (:tool-caller-fn node)
                                                                  (:tool-contracts node)))
                         generated-tree-raw (:generated-tree-raw @sandbox-vars)
@@ -5604,7 +5691,7 @@
                                  ;; Durable observation capabilities belong to the
                                  ;; host, not to model/node request configuration.
                                  (select-keys options [:start-provider-attempt!
-                                                       :complete-provider-attempt!]))
+                                                       :complete-provider-attempt! :model-role-context :model-fallback-callbacks]))
         max-node-attempts (or (get-in retry-config [:max-attempts]) 1)
         node-attempt (atom 0)
         execute-fn (fn []

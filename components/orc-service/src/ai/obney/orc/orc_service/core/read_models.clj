@@ -48,6 +48,8 @@
     :sheet/node-decorators-set
     :sheet/node-check-set
     :sheet/node-executor-set
+    :sheet/node-model-policy-set
+    :sheet/model-fallback-policy-set
     :sheet/node-retry-set
     :sheet/node-judges-set
     :sheet/parallel-config-set
@@ -100,6 +102,8 @@
     :sheet/node-decorators-set
     :sheet/node-check-set
     :sheet/node-executor-set
+    :sheet/node-model-policy-set
+    :sheet/model-fallback-policy-set
     :sheet/node-retry-set
     :sheet/node-judges-set
     :sheet/parallel-config-set
@@ -369,6 +373,13 @@
       (assoc-in [(:node-id event) :bands-from] (:bands-from event))
       (assoc-in [(:node-id event) :min-confidence] (:min-confidence event))
       (assoc-in [(:node-id event) :abstain] (:abstain event))))
+
+(defmethod nodes* :sheet/node-model-policy-set [state event]
+  (update state (:node-id event) merge
+          (select-keys event [:provider :fallback-models :fallback-policy :options])))
+
+(defmethod nodes* :sheet/model-fallback-policy-set [state event]
+  (assoc-in state [(:node-id event) :model-fallback-policy] (:model-fallback-policy event)))
 
 (defmethod nodes* :sheet/node-retry-set
   [state event]
