@@ -5,6 +5,7 @@
   construction, and tool schemas. This namespace owns provider calls and ORC's
   typed streaming channel contract."
   (:require [clojure.core.async :as async :refer [<! >! chan close! go-loop]]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [hato.client :as http]
             [litellm.router :as router]
@@ -12,6 +13,7 @@
             [malli.core :as m]
             [malli.transform :as mt]
             [sio.core :as sio]
+            [sio.input-identity :as input-identity]
             [sio.structured-output :as structured-output]))
 
 (defn register-provider! [config-name provider-spec]
@@ -189,6 +191,15 @@
   [spec]
   (update spec :outputs #(mapv wire-output %)))
 
+(defn- input-value-text
+  "Render native text inputs once, after the guide has inspected their values.
+   Explicit null stays distinct from an empty string; images bypass this path."
+  [value]
+  (cond
+    (nil? value) "null"
+    (coll? value) (json/write-str value)
+    :else value))
+
 (defn- input-section [spec inputs marker?]
   (let [image-names (set (map :name (filter #(= :image (:type %)) (:inputs spec))))]
     (str/join
@@ -196,10 +207,10 @@
      (for [{:keys [name]} (:inputs spec)
            :when (not (image-names name))]
        (str (when marker? (str "[[ ## " (clojure.core/name name) " ## ]]\n"))
-            ;; Every request already carries its input field guide. Keep values
-            ;; verbatim here without duplicating their declared meanings.
+            ;; Every request already carries its input field guide; retain the
+            ;; complete value without duplicating its declared meaning.
             (when-not marker? (str (clojure.core/name name) ": "))
-            (get inputs name ""))))))
+            (input-value-text (get inputs name)))))))
 
 (defn- shown-inputs
   "The spec restricted to the input fields this request carries -- present in
@@ -260,7 +271,7 @@
         shown-spec (update spec :inputs (fn [declared]
                                           (filterv #(contains? inputs (:name %)) declared)))
         instructions (:instructions spec)
-        after (str (when-let [guide (sio/input-field-guide (:inputs spec) inputs)]
+        after (str (when-let [guide (sio/input-request-guide (:inputs spec) inputs)]
                      (str guide "\n\n"))
                    "Given the following inputs:\n"
                    (input-section shown-spec inputs false)
@@ -278,7 +289,7 @@
 
 (defn- json-schema-request [spec inputs options compiled]
   (let [instructions (:instructions spec)
-        after (str (sio/input-field-guide (:inputs spec) inputs) "\n\n"
+        after (str (sio/input-request-guide (:inputs spec) inputs) "\n\n"
                    "Given the following inputs:\n"
                    (input-section (shown-inputs spec inputs) inputs false)
                    "\n\n" (structured-output/output-guide compiled))
@@ -289,6 +300,29 @@
                :response-format {:type "json_schema"
                                  :json_schema {:name "response" :strict true
                                                :schema (:schema compiled)}})
+        (update-in [:extra-body :provider] #(assoc (or % {}) :require_parameters true)))))
+
+(defn- paired-function-request [spec inputs options compiled]
+  (let [instructions (:instructions spec)
+        after (str (sio/input-request-guide (:inputs spec) inputs) "\n\n"
+                   "Given the following inputs:\n"
+                   (input-section (shown-inputs spec inputs) inputs false)
+                   "\n\nResponse function argument contract (JSON Schema):\n"
+                   (json/write-str (:schema compiled))
+                   "\nCall submit_response with one argument object conforming to this contract. Follow its field descriptions; use null only where the contract permits it.")
+        prompt (str instructions "\n\n" after)]
+    (-> (assoc (request-options options)
+           :messages [{:role :user
+                       :content (message-content spec inputs instructions after prompt options)}]
+           :tools [(cond-> {:type "function"
+                            :function {:name "submit_response"
+                                       :description "Submit the structured response"
+                                       :strict true
+                                       :parameters (:schema compiled)}}
+                     (:prompt-cache? options) (assoc :cache_control cache-marker))]
+           :tool-choice (if (:force-tool-choice? options)
+                          {:type "function" :function {:name "submit_response"}}
+                          "auto"))
         (update-in [:extra-body :provider] #(assoc (or % {}) :require_parameters true)))))
 
 ;; --------------------------------------------------------------------------- ;;
@@ -330,12 +364,14 @@
     {:map
      {:compile
       (fn [schema _]
-        (let [string-keys (into #{} (filter string?) (map first (m/children schema)))]
+        (let [declared-keys (set (map first (m/children schema)))
+              string-keys (into #{} (filter string?) declared-keys)]
           (fn [x]
             (if (map? x)
               (reduce-kv (fn [m k v]
                            (assoc m
                                   (cond
+                                    (contains? declared-keys k) k
                                     (and (string? k) (not (contains? string-keys k)))
                                     (keyword k)
                                     ;; A declared string key may arrive as the same
@@ -351,10 +387,26 @@
                          x)
               x))))}}}))
 
+(defn- preserve-valid-values
+  "Wrap Malli's per-schema interceptors; Malli still owns recursive traversal.
+   Canonical children of a partly raw parent must not be coerced a second time."
+  [transformer]
+  (reify m/Transformer
+    (-transformer-chain [_] (m/-transformer-chain transformer))
+    (-value-transformer [_ schema method options]
+      (when-let [interceptor (m/-value-transformer transformer schema method options)]
+        (let [valid? (m/validator schema)]
+          (reduce-kv (fn [result phase transform]
+                       (assoc result phase
+                              (fn [value]
+                                (if (valid? value) value (transform value)))))
+                     {} interceptor))))))
+
 (def ^:private provider-json-transformer
-  (mt/transformer
-   declared-string-key-transformer
-   (mt/json-transformer)))
+  (preserve-valid-values
+    (mt/transformer
+     declared-string-key-transformer
+     (mt/json-transformer))))
 
 (declare prepare-multi-dispatches)
 
@@ -447,9 +499,13 @@
    Canonical JSON keyword spellings become keywords; string enums and numeric
    strings retain their declared semantics."
   [schema value]
-  (m/decode schema
-            (prepare-multi-dispatches schema value)
-            provider-json-transformer))
+  ;; Strict paired decoders already return canonical domain values. Reapplying
+  ;; JSON coercion can turn typed dictionary enum keys back into strings.
+  (if (m/validate schema value)
+    value
+    (m/decode schema
+              (prepare-multi-dispatches schema value)
+              provider-json-transformer)))
 
 (defn- drop-null-optionals
   "The decode mirror of `nullable-optionals`, reading the SAME `descend`
@@ -675,10 +731,46 @@
 
 (defn- selected-output-mode [provider options]
   (let [mode (or (:output-mode options) (:output-mode (router/get-config provider)))]
-    (when-not (contains? #{nil :json-schema} mode)
+    (when-not (contains? #{nil :json-schema :function-calling} mode)
       (throw (structured-failure "Unsupported output mode"
                                  :schema-validation-failed {:provider (provider-name provider)})))
     mode))
+
+(defn- add-output-group-meanings
+  "Attach authored aggregate meanings to their original typed output groups.
+   This changes only description metadata in the paired compiled wire schema."
+  [compiled groups]
+  (if (seq groups)
+    (update-in compiled [:schema :description]
+               (fn [existing]
+                 (str/join "\n"
+                           (remove str/blank?
+                                   (cons existing
+                                         (map (fn [{:keys [path fields description]}]
+                                                (str "Original output group " (pr-str path)
+                                                     " (wire fields " (pr-str fields) "):\n"
+                                                     description)) groups))))))
+    compiled))
+
+(defn- compile-paired-output [provider spec]
+    ;; Only ORC-built fields carry this provenance. Direct caller descriptions
+    ;; are authored text and remain untouched. Legacy modes never take this path.
+    (try (add-output-group-meanings
+          (structured-output/compile-contract
+           (update spec :outputs
+                  (fn [fields]
+                    (mapv (fn [field]
+                            (if (contains? field :orc/strict-description)
+                              (let [description (:orc/strict-description field)]
+                                (cond-> (dissoc field :description :orc/strict-description)
+                                  (some? description) (assoc :description description)))
+                              field)) fields))))
+          (:orc/output-groups spec))
+         (catch Exception error
+           (throw (structured-failure
+                    (str "Unsupported strict output contract "
+                         (pr-str (select-keys (ex-data error) [:reason :path])))
+                    :schema-validation-failed {:provider (provider-name provider)} error)))))
 
 (defn- compile-strict-output [provider spec options]
   (let [raw (:extra-body options)
@@ -697,12 +789,58 @@
               (contains? provider-options "require_parameters"))
       (throw (structured-failure "Conflicting strict output controls"
                                  :schema-validation-failed {:provider (provider-name provider)})))
-    (try (structured-output/compile-contract spec)
+    (compile-paired-output provider spec)))
+
+(defn- compile-function-output [provider spec options]
+  (let [raw (:extra-body options)
+        protected #{:response_format :response-format :tools :tool_choice :tool-choice :stream
+                    "response_format" "response-format" "tools" "tool_choice" "tool-choice"
+                    "stream" "provider"}
+        provider-options (:provider raw)]
+    (when-not (= :openrouter (:provider (router/get-config provider)))
+      (throw (structured-failure "Paired function output is implemented for the OpenRouter adapter only"
+                                 :schema-validation-failed {:provider (provider-name provider)})))
+    (when (or (some #(contains? options %) [:tools :tool-choice :response-format])
+              (:stream options)
+              (some #(contains? raw %) protected)
+              (false? (:require_parameters provider-options))
+              (contains? provider-options "require_parameters"))
+      (throw (structured-failure "Conflicting paired function output controls"
+                                 :schema-validation-failed {:provider (provider-name provider)})))
+    (compile-paired-output provider spec)))
+
+(defn- parse-paired-function [compiled response evidence force-tool-choice?]
+  (let [calls (get-in response [:choices 0 :message :tool-calls])
+        call (first calls)
+        arguments (get-in call [:function :arguments])]
+    (when (empty? (:choices response))
+      (throw (structured-failure "Provider returned an empty structured response"
+                                 :empty-provider-response evidence)))
+    (when (and (= 1 (count (:choices response))) (empty? calls))
+      (throw (structured-failure (if force-tool-choice?
+                                  "Forced tool choice returned no tool call"
+                                  "Provider returned no structured response function call")
+                                 (if force-tool-choice?
+                                   :missing-forced-tool-call
+                                   :tool-call-parsing-failed)
+                                 evidence)))
+    (when-not (and (= 1 (count (:choices response)))
+                   (= 1 (count calls))
+                   (= "function" (:type call))
+                   (= "submit_response" (get-in call [:function :name]))
+                   (string? arguments))
+      (throw (structured-failure "Expected exactly one submit_response function argument string"
+                                 :tool-call-parsing-failed evidence)))
+    (try (structured-output/parse-output compiled arguments)
          (catch Exception error
-           (throw (structured-failure
-                    (str "Unsupported strict output contract "
-                         (pr-str (select-keys (ex-data error) [:reason :path])))
-                    :schema-validation-failed {:provider (provider-name provider)} error))))))
+           (let [{:keys [phase reason]} (ex-data error)
+                 malformed? (and (= :parse phase)
+                                 (contains? #{:invalid-json :trailing-data} reason))]
+             (throw (structured-failure
+                      (if malformed? "Function arguments are not complete JSON"
+                          "Function arguments violate the output contract")
+                      (if malformed? :tool-call-parsing-failed :schema-validation-failed)
+                      evidence error)))))))
 
 ;; --------------------------------------------------------------------------- ;;
 ;; Decision protocol (native decision models)
@@ -819,7 +957,7 @@
                        members)})))
 
 (defn- decision-request [model spec inputs kinds]
-  (let [guide (sio/input-field-guide (:inputs spec) inputs)]
+  (let [guide (sio/input-request-guide (:inputs spec) inputs)]
     {:model model
      :state (select-keys inputs (map :name (:inputs spec)))
      :questions (into {} (map (fn [output]
@@ -1025,7 +1163,9 @@
                         (default-decision-transport (:config config) options))
           ;; A per-request model (e.g. a node's model choice) overrides the
           ;; provider's configured default, as on the conversational path.
-          request (decision-request (or (:model options) (:model config)) spec inputs kinds)
+          view (input-identity/prepare-inputs (:inputs spec) inputs)
+          request (decision-request (or (:model options) (:model config))
+                                    (assoc spec :inputs (:inputs view)) (:native-values view) kinds)
           response (try (transport request)
                         (catch Exception e
                           (throw (decision-call-failure base-evidence e))))
@@ -1064,20 +1204,26 @@
   (let [options (or options {})
         validate? (get options :validate? true)
         inputs (if validate? (sio/validate-inputs (:inputs spec) inputs) inputs)
-        strict? (= :json-schema (selected-output-mode provider options))
-        compiled (when strict? (compile-strict-output provider spec options))
+        view (input-identity/prepare-inputs (:inputs spec) inputs)
+        request-spec (assoc spec :inputs (:inputs view))
+        mode (selected-output-mode provider options)
+        strict? (= :json-schema mode)
+        paired-function? (= :function-calling mode)
+        compiled (cond strict? (compile-strict-output provider spec options)
+                       paired-function? (compile-function-output provider spec options))
         function-calling?
-        (and (not strict?) (if (contains? options :use-function-calling?)
+        (and (not strict?) (or paired-function? (if (contains? options :use-function-calling?)
           (:use-function-calling? options)
           (try
             (router/supports-function-calling? provider)
-            (catch Exception _ false))))
+            (catch Exception _ false)))))
         response (try
                    (router/completion
                     provider
-                    (cond strict? (json-schema-request spec inputs options compiled)
-                          function-calling? (function-request spec inputs options)
-                          :else (marker-request spec inputs options)))
+                    (cond strict? (json-schema-request request-spec (:values view) options compiled)
+                          paired-function? (paired-function-request request-spec (:values view) options compiled)
+                          function-calling? (function-request request-spec (:values view) options)
+                          :else (marker-request request-spec (:values view) options)))
                    (catch Exception e
                      (throw (call-failure provider e))))
         evidence (provider-evidence provider response)
@@ -1102,12 +1248,15 @@
                                 (str ": " detail)))
                          :provider-finish-error evidence))
 
-                 (and strict?
+                 (and (or strict? paired-function?)
                       (or (:output-truncated? evidence)
                           (some? (get-in response [:choices 0 :message :refusal]))
                           (= "content_filter" (:finish-reason evidence))))
                  (throw (structured-failure "Provider did not complete the strict response"
                                             :schema-validation-failed evidence))
+
+                 paired-function?
+                 (parse-paired-function compiled parse-response evidence (:force-tool-choice? options))
 
                  strict?
                  (try (structured-output/parse-output compiled raw-response)
@@ -1147,7 +1296,7 @@
         ;; caller who has never opted into validation is not suddenly handed
         ;; nulls it never saw before merely because the wire now offers
         ;; optional fields as nullable.
-        normalized (drop-null-optional-outputs (:outputs spec) parsed)
+        normalized (if paired-function? parsed (drop-null-optional-outputs (:outputs spec) parsed))
         outputs (if validate?
                   (try
                     (validate-outputs (:outputs spec) normalized)
@@ -1189,15 +1338,18 @@
       (throw (structured-failure "LLM provider is not configured"
                                  :provider-not-configured
                                  {:provider (provider-name selected)})))
-    (if route
-      (when (some #(nil? (output-kind (:spec %))) (:outputs spec))
-        (throw (structured-failure "Decision provider cannot satisfy the output contract"
-                                   :schema-validation-failed
-                                   {:provider (provider-name selected)})))
-      (when (= :json-schema (selected-output-mode selected resolved-options))
-        (compile-strict-output selected spec resolved-options)))
-    {:provider selected :model (or (:model resolved-options) (:model config))
-     :protocol (if route :decision :chat) :options resolved-options}))
+    (let [output-mode (when-not route (selected-output-mode selected resolved-options))]
+      (if route
+        (when (some #(nil? (output-kind (:spec %))) (:outputs spec))
+          (throw (structured-failure "Decision provider cannot satisfy the output contract"
+                                     :schema-validation-failed
+                                     {:provider (provider-name selected)})))
+        (case output-mode
+          :json-schema (compile-strict-output selected spec resolved-options)
+          :function-calling (compile-function-output selected spec resolved-options)
+          nil))
+      {:provider selected :model (or (:model resolved-options) (:model config))
+       :protocol (if route :decision :chat) :output-mode output-mode :options resolved-options})))
 
 (defn predict
   "Perform one structured provider invocation.
@@ -1289,13 +1441,14 @@
         validate? (get options :validate? false)
         output-ch (chan)]
     (try
-      (when (= :json-schema (selected-output-mode provider options))
+      (when (contains? #{:json-schema :function-calling} (selected-output-mode provider options))
         (throw (structured-failure "Strict JSON streaming is not supported"
                                    :schema-validation-failed {:provider (provider-name provider)})))
       (let [inputs (if validate? (sio/validate-inputs (:inputs spec) inputs) inputs)
+            view (input-identity/prepare-inputs (:inputs spec) inputs)
             stream-ch (router/completion
                        provider
-                       (assoc (marker-request spec inputs options) :stream true))
+                       (assoc (marker-request (assoc spec :inputs (:inputs view)) (:values view) options) :stream true))
             debounce-ms (get options :debounce-ms 50)
             accumulated (atom "")
             usage (atom nil)

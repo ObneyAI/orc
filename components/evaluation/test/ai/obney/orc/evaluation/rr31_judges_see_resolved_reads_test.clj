@@ -16,13 +16,13 @@
    sheet/execute) with a stubbed `llm/predict` and a captured
    `invoke-judge`, per the handoff's TDD cycle list."
   (:require [clojure.test :refer [deftest testing is]]
-            [clojure.string :as str]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.evaluation.interface]
             [ai.obney.orc.evaluation.core.judge-runtime :as jr]
             [ai.obney.orc.evaluation.core.judge-run :as judge-run]
+            [ai.obney.orc.evaluation.core.judge-behaviours :as behaviours]
             [ai.obney.orc.evaluation.core.judges :as judges]
             [ai.obney.orc.evaluation.core.rubrics :as rubrics]
             [ai.obney.orc.ontology.interface]
@@ -94,10 +94,10 @@
 
 ;; =============================================================================
 ;; Cycles 4-6 — the judge configuration's declared :criteria reaches the LLM
-;; judge's composed instruction. Live processor path (mirrors RR-30's
+;; judge's native rubric input. Live processor path (mirrors RR-30's
 ;; driver): declare-judge -> create-node -> set-node-judges ->
 ;; complete-node-execution, with `llm/predict` stubbed to capture the
-;; module's :instructions string.
+;; native rubric value before shared request rendering.
 ;; =============================================================================
 
 (defn- wait-for-score-event [ctx tick-id]
@@ -115,8 +115,8 @@
 (defn- run-judge-capturing-rubric!
   "Drive one default LLM judge through the live processor path with the
    given `judge-config` (carrying :type and, optionally, :criteria).
-   Returns the `:rubric` input (the grading contract the model is given,
-   serialised) of the stubbed `llm/predict` call, or nil if the judge never
+   Returns the native `:rubric` input of the stubbed `llm/predict` call,
+   before shared request rendering, or nil if the judge never
    called it. S6b: the criteria a judge is declared with is data on the judge's
    blackboard (the rubric's criterion), not text baked into an instruction."
   [ctx {:keys [judge-config fake-llm-outputs host-writes]}]
@@ -150,9 +150,9 @@
                  :node-id node-id
                  :judges ["the-judge"]})
         tick-id (random-uuid)
-        captured-instruction (atom nil)
+        captured-rubric (atom nil)
         stub-predict (fn [_provider _module inputs _options]
-                      (reset! captured-instruction (:rubric inputs))
+                      (reset! captured-rubric (:rubric inputs))
                       {:outputs fake-llm-outputs :usage {:total-tokens 1}})]
     (Thread/sleep 150)
     (with-redefs [llm/predict stub-predict]
@@ -167,7 +167,7 @@
              :status :success
              :writes host-writes})
       (wait-for-score-event ctx tick-id))
-    @captured-instruction))
+    @captured-rubric))
 
 (def ^:private grounding-fake-outputs
   {:band 4
@@ -184,14 +184,18 @@
   (testing "a grounding judge declared with :criteria is invoked with a grading rubric (an input of the call) containing that criteria verbatim"
     (h/with-async-test-context [ctx]
       (let [criteria "Every routing claim must cite the ticket"
-            instruction (run-judge-capturing-rubric!
+            rubric (run-judge-capturing-rubric!
                           ctx {:judge-config {:type :grounding :criteria criteria}
                                :fake-llm-outputs grounding-fake-outputs
                                :host-writes {:answer "The ticket says billing."}})]
-        (is (some? instruction) "the judge must call llm/predict")
-        (is (str/includes? instruction (str "\"criterion\":\"" criteria "\""))
-            (str "the rubric the model is given must carry the declared criteria verbatim as its criterion. Got: "
-                 (pr-str instruction)))))))
+        (is (some? rubric) "the judge must call llm/predict")
+        (is (map? rubric) "the predictor receives a native rubric before request rendering")
+        (is (= criteria (:criterion rubric))
+            (str "the rubric must carry the declared criteria verbatim. Got: " (pr-str rubric)))
+        (is (= (behaviours/rubric-value
+                 (behaviours/effective-rubric {:type :grounding :criteria criteria}))
+               rubric)
+            "the criterion override preserves the complete rubric, including stance and bands")))))
 
 ;; -----------------------------------------------------------------------------
 ;; Cycle 5 — instruction-following
@@ -208,14 +212,18 @@
   (testing "an instruction-following judge declared with :criteria is invoked with a grading rubric (an input of the call) containing that criteria verbatim"
     (h/with-async-test-context [ctx]
       (let [criteria "Must follow triage protocol accurately"
-            instruction (run-judge-capturing-rubric!
+            rubric (run-judge-capturing-rubric!
                           ctx {:judge-config {:type :instruction-following :criteria criteria}
                                :fake-llm-outputs instruction-following-fake-outputs
                                :host-writes {:answer "Part 1... Part 2..."}})]
-        (is (some? instruction) "the judge must call llm/predict")
-        (is (str/includes? instruction (str "\"criterion\":\"" criteria "\""))
-            (str "the rubric the model is given must carry the declared criteria verbatim as its criterion. Got: "
-                 (pr-str instruction)))))))
+        (is (some? rubric) "the judge must call llm/predict")
+        (is (map? rubric) "the predictor receives a native rubric before request rendering")
+        (is (= criteria (:criterion rubric))
+            (str "the rubric must carry the declared criteria verbatim. Got: " (pr-str rubric)))
+        (is (= (behaviours/rubric-value
+                 (behaviours/effective-rubric {:type :instruction-following :criteria criteria}))
+               rubric)
+            "the criterion override preserves the complete rubric, including stance and bands")))))
 
 ;; -----------------------------------------------------------------------------
 ;; Cycle 5 — reasoning
@@ -232,14 +240,18 @@
   (testing "a reasoning judge declared with :criteria is invoked with a grading rubric (an input of the call) containing that criteria verbatim"
     (h/with-async-test-context [ctx]
       (let [criteria "Every inference must trace to a stated premise"
-            instruction (run-judge-capturing-rubric!
+            rubric (run-judge-capturing-rubric!
                           ctx {:judge-config {:type :reasoning :criteria criteria}
                                :fake-llm-outputs reasoning-fake-outputs
                                :host-writes {:answer "Because X, therefore Y."}})]
-        (is (some? instruction) "the judge must call llm/predict")
-        (is (str/includes? instruction (str "\"criterion\":\"" criteria "\""))
-            (str "the rubric the model is given must carry the declared criteria verbatim as its criterion. Got: "
-                 (pr-str instruction)))))))
+        (is (some? rubric) "the judge must call llm/predict")
+        (is (map? rubric) "the predictor receives a native rubric before request rendering")
+        (is (= criteria (:criterion rubric))
+            (str "the rubric must carry the declared criteria verbatim. Got: " (pr-str rubric)))
+        (is (= (behaviours/rubric-value
+                 (behaviours/effective-rubric {:type :reasoning :criteria criteria}))
+               rubric)
+            "the criterion override preserves the complete rubric, including stance and bands")))))
 
 ;; -----------------------------------------------------------------------------
 ;; Cycle 6 — guard: a judge declared WITHOUT :criteria composes an
@@ -288,11 +300,15 @@
   (testing "a completeness judge declared with :criteria is invoked with a grading rubric (an input of the call) containing that criteria verbatim"
     (h/with-async-test-context [ctx]
       (let [criteria "Must produce urgency, sentiment, category, and routing decision"
-            instruction (run-judge-capturing-rubric!
+            rubric (run-judge-capturing-rubric!
                           ctx {:judge-config {:type :completeness :criteria criteria}
                                :fake-llm-outputs completeness-fake-outputs
                                :host-writes {:answer "Report covers scope, budget, timeline."}})]
-        (is (some? instruction) "the judge must call llm/predict")
-        (is (str/includes? instruction (str "\"criterion\":\"" criteria "\""))
-            (str "the rubric the model is given must carry the declared criteria verbatim as its criterion. Got: "
-                 (pr-str instruction)))))))
+        (is (some? rubric) "the judge must call llm/predict")
+        (is (map? rubric) "the predictor receives a native rubric before request rendering")
+        (is (= criteria (:criterion rubric))
+            (str "the rubric must carry the declared criteria verbatim. Got: " (pr-str rubric)))
+        (is (= (behaviours/rubric-value
+                 (behaviours/effective-rubric {:type :completeness :criteria criteria}))
+               rubric)
+            "the criterion override preserves the complete rubric, including stance and bands")))))

@@ -56,6 +56,23 @@ _Avoid_: index files, the .ragatouille directory
 Hybrid search's contract that an absent or failing ColBERT signal silently narrows the search to the remaining signals, never erroring.
 _Avoid_: fallback mode
 
+### Model alternatives
+
+**Logical model task**:
+One node-owned request under an instruction and described input/output contracts, which may be attempted by more than one configured model without repeating completed work.
+
+**Model candidate**:
+A configured model and provider choice for a logical model task, with compatible request settings.
+
+**Response profile**:
+The agreed representation and interpretation of a conversational model's typed answer, distinct from the model that produces it.
+
+**Effective model plan**:
+A retained, versioned description of a logical model task's ordered candidates, their protocols, compatible request settings and failure policy.
+
+**Effective role plan**:
+The retained model choices and response profile shared by a campaign role under one authored configuration. Individual requests retain their own inputs and identities across iterations.
+
 ### Recursive researcher
 
 **Campaign**:

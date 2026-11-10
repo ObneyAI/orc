@@ -33,6 +33,7 @@
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.core.sci-sandbox :as base-sandbox]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
+            [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
             [ai.obney.orc.orc-service.core.researcher-models :as researcher-models]
@@ -135,7 +136,9 @@
   [inputs]
   (reduce-kv
    (fn [acc k v]
-     (assoc acc k (preview-value (:value v))))
+     (assoc acc k (if (contains? v :value)
+                    (preview-value (:value v))
+                    {:type :absent})))
    {}
    inputs))
 
@@ -154,6 +157,31 @@
     (try
       (:field-type (m/properties schema))
       (catch Exception _ nil))))
+
+(defn- inline-contract
+  [node-name key declared value direction]
+  (let [schema (or declared
+                   (if (= :input direction)
+                     (try
+                       (blackboard-schema/infer-specific-schema value [key])
+                       (catch clojure.lang.ExceptionInfo e
+                         (throw (ex-info (str "Inline LLM '" node-name "' needs a specific input contract at "
+                                              (pr-str (:path (ex-data e))) "; declare its blackboard schema")
+                                         (merge (ex-data e)
+                                                {:reason :missing-inline-contract :node-name node-name
+                                                 :direction direction :contract-reason (:reason (ex-data e))})
+                                         e))))
+                     (throw (ex-info (str "Inline LLM '" node-name "' needs an output contract at "
+                                          (pr-str [key]) "; declare its blackboard schema")
+                                     {:reason :missing-inline-contract :node-name node-name
+                                      :direction direction :path [key]
+                                      :contract-reason :missing-output-schema}))))]
+    (when-let [violation (first (blackboard-schema/violations schema [key]))]
+      (throw (ex-info (str "Inline LLM '" node-name "' needs a specific contract at "
+                           (pr-str (:path violation)))
+                      (merge violation {:reason :missing-inline-contract :node-name node-name
+                                        :direction direction :contract-reason (:reason violation)}))))
+    schema))
 
 (defn execute-llm-primitive
   "Execute an LLM primitive from the RLM sandbox.
@@ -189,30 +217,28 @@
         ;; Build inputs from reads - pass FULL values (no truncation)
         ;; The generated code manages chunk sizes; we don't second-guess it
         inputs (reduce (fn [acc k]
-                         (let [v (if (contains? sandbox-vars k) (get sandbox-vars k)
-                                     (get-in blackboard [k :value]))]
-                           (if (some? v)
-                             (assoc acc k v)  ;; Full value, no truncation
-                             acc)))
+                         (cond
+                           (contains? sandbox-vars k) (assoc acc k (get sandbox-vars k))
+                           (contains? (get blackboard k) :value)
+                           (assoc acc k (get-in blackboard [k :value]))
+                           :else acc))
                        {}
                        (or reads []))
         ;; Build ORC LLM module — U5: propagate :field-type from the blackboard
         ;; schema for each read key so vision/audio/etc. inputs get routed
         ;; as proper multimodal content blocks, not as inline text.
-        module {:inputs (mapv (fn [[k _v]]
-                                (let [schema (get-in blackboard [k :schema])
+        module {:inputs (mapv (fn [[k value]]
+                                (let [schema (inline-contract name k (get-in blackboard [k :schema]) value :input)
                                       ft (schema-field-type schema)]
                                   (cond-> {:name k
-                                           :spec :any
-                                           :description (str "Input: " (clojure.core/name k))}
+                                           :spec schema}
                                     ft (assoc :type ft))))
                               inputs)
                 :outputs (mapv (fn [k]
-                                 (let [schema (get-in blackboard [k :schema])]
+                                 (let [schema (inline-contract name k (get-in blackboard [k :schema]) nil :output)]
                                    {:name k
-                                    :spec (or schema :any)
-                                    :description (or (when schema (:description (m/properties schema)))
-                                                     (str "Output: " (clojure.core/name k)))}))
+                                    :spec schema
+                                    :description (:description (m/properties schema))}))
                                writes)
                 :instructions instruction}
         ;; The :model rides through llm into the litellm router as a
@@ -247,6 +273,13 @@
     (u/trace ::rlm-llm-primitive
       {:name name :writes writes :model model}
       (try
+        (let [call-context (assoc (or (:model-call-context context) context)
+                                 :researcher-ownership-epoch researcher-ownership-epoch)
+              prepared-inline-model-call
+              (when (and logical-action-identity (nil? completed-effect)
+                         (contains? opts :fallback-models))
+                (researcher-models/prepare-inline opts provider module llm-options
+                                                 call-context logical-action-identity))]
         (when (and logical-action-identity (nil? completed-effect))
           (let [claim-result
                 (claim-researcher-effect!
@@ -263,7 +296,7 @@
         ;; :with-metadata? true ensures llm returns {:outputs ... :usage ...} instead of just outputs
         (let [result (if completed-effect
                        (:result completed-effect)
-                       (let [call-context (or (:model-call-context context) context)
+                       (let [call-context (assoc call-context :prepared-inline-model-call prepared-inline-model-call)
                              logical-id (or logical-action-identity
                                             (researcher-models/logical-id call-context :subcall name module inputs opts llm-options))]
                          (researcher-models/predict opts provider module inputs llm-options
@@ -301,11 +334,11 @@
           (reduce (fn [acc k]
                     (assoc acc k (get outputs k)))
                   {}
-                  writes))
+                  writes)))
         (catch Exception e
           (throw (ex-info (str "LLM primitive '" name "' failed: " (.getMessage e))
                           (merge {:name name :writes writes}
-                                 (select-keys (ex-data e) [:failure-kind :provider-evidence :model-fallback :status]))
+                                 (select-keys (ex-data e) [:failure-kind :reason :provider-evidence :model-fallback :status]))
                           e)))))))
 
 ;; =============================================================================

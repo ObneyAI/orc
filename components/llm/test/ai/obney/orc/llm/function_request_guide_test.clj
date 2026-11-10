@@ -5,8 +5,8 @@
   values, the input field guide: the name, type and declared meaning of every
   field the request shows. These tests drive the public `predict`, capture the
   request the provider completion receives, and assert what reaches the model.
-  Input values are built exactly as the executor sends them: a map or vector is
-  JSON text, a nil is the empty string (`executor/serialize-for-llm`)."
+  Input values are native, as the repaired executor sends them; request
+  presentation owns serialization without losing typed identity."
   (:require [cheshire.core :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
@@ -15,14 +15,9 @@
             [ai.obney.orc.llm.interface :as llm]))
 
 (defn- as-the-executor-sends
-  "`executor/serialize-for-llm`, which the llm brick cannot require."
+  "The repaired executor retains original native values."
   [value]
-  (cond
-    (nil? value) ""
-    (map? value) (json/generate-string value)
-    (vector? value) (json/generate-string value)
-    (coll? value) (json/generate-string (vec value))
-    :else value))
+  value)
 
 (def ^:private support
   {:instructions "Draft the reply to send to the customer."
@@ -213,17 +208,15 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest an-input-present-with-no-value-is-shown
-  ;; The executor sends a nil blackboard value as the empty string; a direct
-  ;; caller may send nil itself. Either way the key is present: the model is
-  ;; shown the field, so it is explained and listed.
+  ;; Present nil and an empty string are both shown, with distinct wire values.
   (doseq [no-value ["" nil]]
     (testing (str "value " (pr-str no-value))
       (let [content (user-message
                      (capture-request support (assoc support-values :coupon no-value) {}))]
         (is (str/includes? content "Promo code the customer quoted")
             "present with no value is explained")
-        (is (str/includes? content "\ncoupon: \n")
-            "and listed, with its empty value")))))
+        (is (str/includes? content (str "\ncoupon: " (if (nil? no-value) "null" "") "\n"))
+            "and listed, preserving null versus empty string")))))
 
 (def ^:private describe-photo
   {:instructions "Describe the damage."

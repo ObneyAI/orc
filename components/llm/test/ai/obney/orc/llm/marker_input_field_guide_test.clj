@@ -4,8 +4,8 @@
   Every test drives the public `predict` / `predict-stream-v2` with the provider
   boundary intercepted, and asserts on what the provider would receive: the
   request ORC built, or the serialized HTTP body. Input values are built the way
-  the executor builds them (`serialize-for-llm`): complex values as JSON text,
-  nil as an empty string."
+  the repaired executor builds them: complex values remain native,
+  nil as explicit null."
   (:require [cheshire.core :as json]
             [clojure.core.async :as async]
             [clojure.string :as str]
@@ -48,22 +48,10 @@
    :outputs [{:name :reply :spec :string :description "The reply to send"}]
    :instructions "Reply to the customer."})
 
-;; Mirrors `executor/serialize-for-llm`, the function that builds every value
-;; `predict` receives from the executor: nil -> "", maps and collections -> JSON
-;; text, scalars as they are.
-(defn- serialize-for-llm [value]
-  (cond
-    (nil? value) ""
-    (map? value) (json/generate-string value)
-    (vector? value) (json/generate-string value)
-    (coll? value) (json/generate-string (vec value))
-    :else value))
-
 (defn- executor-values
-  "The values `predict` receives for `raw`, an input-name -> value map: only the
-  inputs present in `raw`, each serialized the way the executor serializes it."
+  "The repaired executor preserves native values until request presentation."
   [raw]
-  (update-vals raw serialize-for-llm))
+  raw)
 
 (def ^:private reply-response
   {:choices [{:message {:content "[[ ## reply ## ]]\nOn it."}}]})
@@ -115,9 +103,12 @@
   (testing "top-level, nested and collection-item meanings are all in the request"
     (doseq [meaning shown-meanings]
       (is (str/includes? text meaning) (str "missing: " meaning))))
-  (testing "a nested or item field this request does not carry is neither named nor explained"
-    (doseq [absent absent-nested-names-and-meanings]
-      (is (not (str/includes? everything absent)) (str "present: " absent)))))
+  (testing "absent nested fields stay out of shown evidence and remain declared"
+    (let [[shown declared] (str/split text #"DECLARED CONTRACT" 2)]
+      (is (some? declared))
+      (doseq [absent absent-nested-names-and-meanings]
+        (is (not (str/includes? shown absent)) (str "shown: " absent))
+        (is (str/includes? declared absent) (str "undeclared: " absent))))))
 
 (defn- check-guide-in-request [request]
   (check-guide (request-text request) (pr-str request)))
@@ -236,7 +227,7 @@
                                              :account {:tier "pro" :billing-region nil}
                                              :messages conversation})
         text (request-text request)]
-    (is (= "" (:promo-code (executor-values {:promo-code nil}))) "the executor sends nil as an empty string")
+    (is (nil? (:promo-code (executor-values {:promo-code nil}))) "the executor preserves explicit nil")
     (testing "a top-level input sent as an empty string is named and explained"
       (is (str/includes? text "`promo-code`"))
       (is (str/includes? text "Promo code the customer quoted")))
