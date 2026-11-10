@@ -2512,6 +2512,15 @@ surface WorkflowExecutionAccess {
         -- historically equivalent offset timestamp representations. A stored
         -- timeout remains directly retrievable by its trace identity.
 
+    @guarantee AggregateTraceMatchesCanonicalWrites
+        -- A completed map-each aggregate retains its producer identity and
+        -- its exact canonical value. Its completion and public trace report
+        -- the same written keys and value shapes, including empty and partial
+        -- aggregates. A composite forwarding those canonical values reports
+        -- their actual shapes too. Metadata cannot claim an empty output
+        -- while rehydration returns a produced aggregate. Profiles describe
+        -- values without copying their full payloads into lifecycle metadata.
+
     @guarantee TerminalCancellationFence
         -- Concurrent cancellation attempts converge on at most one durable
         -- cancellation terminal for an execution. Once an execution or any

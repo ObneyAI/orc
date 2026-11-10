@@ -5139,32 +5139,39 @@
              :__status :failure
              :__error (:error completion)))))
 
+(defn- map-each-result-events
+  [context sheet-id tick-id parent-id output-key into-value status summary]
+  (let [completion-body (cond-> {:sheet-id sheet-id
+                                 :tick-id tick-id
+                                 :node-id parent-id
+                                 :node-type :map-each
+                                 :status status
+                                 :write-keys [output-key]
+                                 :write-profile (profile-values {output-key into-value})}
+                          summary (assoc :partial-summary summary))]
+    [;; The aggregate is produced by this parent execution, not an item seed.
+     ;; Canonical completion readback joins writes by execution identity.
+     (make-bb-write-event context sheet-id tick-id output-key into-value
+                          {:node-id parent-id})
+     (->event
+      {:type :sheet/node-execution-completed
+       :tags #{[:sheet sheet-id] [:node parent-id] [:tick tick-id]}
+       :body completion-body})]))
+
 (defn- map-each-completion-events
   [context sheet-id tick-id parent-id state results completed-count]
   (let [total-items (count (:items state))
         [status summary output]
         (classify-map-each-outcome {:results results :item-count total-items})
         parent-node (get (resolve-nodes-by-id context sheet-id tick-id) parent-id)
-        into-value (if (:preserve-failures? parent-node) results output)
-        completion-body (cond-> {:sheet-id sheet-id
-                                 :tick-id tick-id
-                                 :node-id parent-id
-                                 :node-type :map-each
-                                 :status status}
-                          summary (assoc :partial-summary summary))]
-    [(->event
-      {:type :sheet/map-each-progress-updated
-       :tags #{[:sheet sheet-id] [:node parent-id] [:tick tick-id]}
-       :body {:sheet-id sheet-id :tick-id tick-id :node-id parent-id
-              :item-index completed-count :total-items total-items}})
-     ;; The aggregate is produced by this parent execution, not an item seed.
-     ;; Canonical completion readback joins writes by execution identity.
-     (make-bb-write-event context sheet-id tick-id (:output-key state) into-value
-                          {:node-id parent-id})
-     (->event
-      {:type :sheet/node-execution-completed
-       :tags #{[:sheet sheet-id] [:node parent-id] [:tick tick-id]}
-       :body completion-body})]))
+        into-value (if (:preserve-failures? parent-node) results output)]
+    (into [(->event
+            {:type :sheet/map-each-progress-updated
+             :tags #{[:sheet sheet-id] [:node parent-id] [:tick tick-id]}
+             :body {:sheet-id sheet-id :tick-id tick-id :node-id parent-id
+                    :item-index completed-count :total-items total-items}})]
+          (map-each-result-events context sheet-id tick-id parent-id
+                                  (:output-key state) into-value status summary))))
 
 (defn- map-each-start-events
   [context sheet-id tick-id parent-id state indices]
@@ -5393,32 +5400,14 @@
           (empty? source-list)
           ;; Empty list - succeed with empty results
           {:result/events
-           [(make-bb-write-event context sheet-id tick-id output-key [])
-            (->event
-             {:type :sheet/node-execution-completed
-              :tags #{[:sheet sheet-id]
-                      [:node node-id]
-                      [:tick tick-id]}
-              :body {:sheet-id sheet-id
-                     :tick-id tick-id
-                     :node-id node-id
-                     :node-type :map-each
-                     :status :success}})]}
+           (map-each-result-events context sheet-id tick-id node-id
+                                   output-key [] :success nil)}
 
           (not child-id)
           ;; No child subtree - succeed with original list
           {:result/events
-           [(make-bb-write-event context sheet-id tick-id output-key (vec source-list))
-            (->event
-             {:type :sheet/node-execution-completed
-              :tags #{[:sheet sheet-id]
-                      [:node node-id]
-                      [:tick tick-id]}
-              :body {:sheet-id sheet-id
-                     :tick-id tick-id
-                     :node-id node-id
-                     :node-type :map-each
-                     :status :success}})]}
+           (map-each-result-events context sheet-id tick-id node-id
+                                   output-key (vec source-list) :success nil)}
 
           :else
           (let [state-key (map-each-key tick-id node-id)

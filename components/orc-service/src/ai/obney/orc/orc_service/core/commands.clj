@@ -1874,6 +1874,16 @@
         forwarded-sources (into {}
                                 (for [[k source] (or write-sources {})]
                                   [k source]))
+        ;; Forwarders publish references rather than copying payloads. Their
+        ;; shape describes these exact canonical references, not merely the
+        ;; (usually empty) :writes argument or prior writes of the same node.
+        forwarded-writes (when (seq forwarded-sources)
+                           (value-log/resolve-values
+                            ctx (:tenant-id ctx) tick-id
+                            (into {} (map (fn [[k source]] [k {:source source}]))
+                                  forwarded-sources)
+                            (keys forwarded-sources)))
+        write-profile (profile/profile-values (merge forwarded-writes writes))
         cross-tick-sources (if write-references?
                              (into {}
                                    (filter (fn [[_ source]]
@@ -1912,7 +1922,7 @@
                                     (or (seq writes) (seq forwarded-sources))
                                     (assoc :write-keys (vec (distinct (concat (keys writes)
                                                                              (keys forwarded-sources))))
-                                           :write-profile (profile/profile-values writes))
+                                           :write-profile write-profile)
                                     (seq missing-write-keys) (assoc :missing-write-keys missing-write-keys)
                                     (seq rejected-writes)
                                     (assoc :rejected-write-keys (vec (keys rejected-writes))
