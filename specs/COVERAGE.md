@@ -111,6 +111,28 @@ tests are evidence for these domains rather than separately governed product
 domains. Any behavior found there that is not represented by a component is
 added to this ledger rather than silently excluded.
 
+## Researcher timeout classification across retained responses
+
+RESEARCHER-TIMEOUT-1 covers the ordinary/native LLM normalization boundary,
+researcher capture, durable request receipt and executor classification.
+Known Java timeout classes and exact normalized transport categories retain their
+meaning after unsafe causes are removed. Explicit non-timeout categories retain
+precedence; error text and HTTP status alone do not establish a timeout.
+
+Independent verification passes 142 tests / 1,133 assertions: 135 offline LLM
+tests, six actual Grain campaign tests and one actual SQLite receipt replay.
+Configured fallback exhaustion retains its terminal policy; recorded replay adds
+neither provider calls nor events. The existing timeout classification namespace
+is unchanged. **6 obligations, 6 covered, 0 uncovered** within this repair scope.
+No generated skeleton or weakened assertion supplies coverage. Transport effects
+are injected; Grain state transitions, projections and SQLite records are real.
+
+Both Allium commands retain 39 warnings, 113 informational diagnostics, zero
+errors and zero process findings. This remains a characterized baseline rather
+than a clean check. Fresh-process recovery, hosted provider failures and chat
+streaming are outside this proof. The separate live provider-finish-error remains
+unresolved and is not reclassified as a timeout.
+
 ## Provider failure evidence and bounded alternatives
 
 `StructuredPrediction.SafeOrdinaryTransportEvidence` specifies the synchronous

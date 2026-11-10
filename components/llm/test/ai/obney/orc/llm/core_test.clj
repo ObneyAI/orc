@@ -27,7 +27,7 @@
 
 (deftest public-boundary-exposes-only-the-structured-prediction-contract
   (is (= '#{predict predict-stream-v2 decode-provider-value
-            preflight-provider! register-provider! quick-setup! list-providers}
+            preflight-provider! transport-timeout? register-provider! quick-setup! list-providers}
          (set (keys (ns-publics 'ai.obney.orc.llm.interface))))))
 
 (def ^:private nested-keyword-output

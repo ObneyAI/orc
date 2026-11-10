@@ -203,7 +203,7 @@ contract StructuredPrediction {
         -- A synchronous conversational provider invocation that fails before a
         -- response retains its transport-failure kind and provider identity.
         -- Its optional closed transport record contains only a recognized
-        -- top-level client error type and/or an integer HTTP status from 100 to
+        -- client error type and/or an integer HTTP status from 100 to
         -- 599; unavailable or invalid fields are absent, and an empty record
         -- is omitted. Unknown failures acquire no invented classification.
         -- The public exception uses a fixed safe summary based only on those
@@ -212,6 +212,13 @@ contract StructuredPrediction {
         -- configuration remains a distinct safely summarized failure and does
         -- not establish that an outbound request occurred. Existing schema,
         -- parse, finish and semantic outcomes are not reclassified as outages.
+        -- Actual Java HTTP, socket and concurrent timeout types, including
+        -- wrapped causes, retain the established timeout category before safe
+        -- normalization removes their causes. The exact normalized timeout
+        -- category remains recognizable without the original Throwable.
+        -- Error wording alone never establishes timeout. Existing explicit
+        -- non-timeout classifications and unavailable status/model/usage remain
+        -- unchanged; normalization must not invent those observations.
         -- Classification is evidence, not authorization to retry or choose a
         -- different model. Native decision and asynchronous streaming failure
         -- surfaces require separate verification.
@@ -258,6 +265,8 @@ contract DecisionProtocolPrediction {
         -- one-response streaming wrapper's single error terminal. That wrapper
         -- closes after the error; this is not a contract for partial chat streams.
         -- Invalid decision answers retain their distinct validation failure.
+        -- Native decision transports preserve the same structurally recognized
+        -- timeout category before removing unsafe causes and payloads.
 
     @invariant ProtocolFollowsRegisteredProvider
         -- A registered provider declares whether it is a conversational model

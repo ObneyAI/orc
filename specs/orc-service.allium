@@ -1003,6 +1003,13 @@ contract CheckpointedResearcherExecution {
         -- and yields a retry of the same iteration from the last checkpoint,
         -- retaining its stable logical action identities. Exhausting the
         -- configured iteration-attempt limit terminates the campaign as timeout.
+        -- A provider timeout has the same meaning whether detected by the
+        -- enclosing deadline, a raw/wrapped transport timeout or the normalized
+        -- timeout category after safe cause removal. Researcher request capture
+        -- and durable response replay retain that structural meaning; neither
+        -- error prose nor a missing live Throwable determines classification.
+        -- Configured model-policy exhaustion retains its own terminal outcome
+        -- and does not silently grant another iteration retry allowance.
 
     @invariant BlockedChildPreservesPriorProgress
         -- A blocked generated child truthfully blocks the parent researcher and

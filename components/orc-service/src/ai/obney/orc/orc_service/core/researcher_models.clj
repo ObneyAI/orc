@@ -217,9 +217,14 @@
                                                {:status :success :result prediction :outputs (:outputs prediction)
                                                 :usage (:usage prediction) :model (:model prediction)})
                                              (catch Exception e
-                                               (merge {:status :failure :error (.getMessage e)
-                                                       :usage (get-in (ex-data e) [:provider-evidence :usage])}
-                                                      (select-keys (ex-data e) [:failure-kind :provider-evidence]))))]
+                                               (let [timeout? (llm/transport-timeout? e)]
+                                                 (cond-> (merge {:status :failure
+                                                                 :error (if timeout?
+                                                                          "Provider call deadline exceeded"
+                                                                          (.getMessage e))
+                                                                 :usage (get-in (ex-data e) [:provider-evidence :usage])}
+                                                                (select-keys (ex-data e) [:failure-kind :provider-evidence]))
+                                                   timeout? (assoc :timeout-kind :provider)))))]
                                 (persist! (:record-request! callbacks)
                                           (assoc receipt :phase :completed
                                                  :outcome (fallback/durable-outcome result)))
@@ -252,4 +257,4 @@
       (cond-> (assoc (:result outcome) :usage (:usage outcome))
         (:model-fallback outcome) (assoc :model-fallback (:model-fallback outcome)))
       (throw (ex-info (or (:error outcome) "Model request is already in progress")
-                      (select-keys outcome [:status :usage :failure-kind :provider-evidence :model-fallback :model-call-in-flight?]))))))
+                      (select-keys outcome [:status :usage :failure-kind :provider-evidence :model-fallback :model-call-in-flight? :timeout-kind]))))))

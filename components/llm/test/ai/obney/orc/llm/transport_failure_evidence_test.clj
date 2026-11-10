@@ -21,6 +21,53 @@
                    {:use-function-calling? false :validate? false})
       (catch Exception e e))))
 
+(deftest ordinary-raw-timeout-retains-only-structural-deadline-evidence
+  (with-redefs [router/completion
+                (fn [& _] (throw (java.net.http.HttpTimeoutException. fixture-secret)))]
+    (let [failure (try (llm/predict :transport-contract contract {}
+                                  {:use-function-calling? false :validate? false})
+                       (catch Exception e e))]
+      (is (= {:failure-kind :transport-failure
+              :provider-evidence {:provider "transport-contract"
+                                  :transport {:type :litellm/timeout}}}
+             (ex-data failure)))
+      (is (nil? (ex-cause failure)))
+      (is (not (str/includes? (pr-str failure) fixture-secret))))))
+
+(deftest timeout-classification-honors-explicit-categories-and-guards-cycles
+  (let [deadline #(java.net.http.HttpTimeoutException. fixture-secret)
+        cycle (proxy [Exception] ["not a timeout"]
+                (getCause [] this))]
+    (doseq [e [(deadline)
+               (java.net.SocketTimeoutException. fixture-secret)
+               (java.util.concurrent.TimeoutException. fixture-secret)
+               (ex-info fixture-secret {} (deadline))
+               (ex-info "safe" {:failure-kind :transport-failure
+                                :provider-evidence {:transport {:type :litellm/timeout}}})]]
+      (is (true? (llm/transport-timeout? e))))
+    (doseq [e [nil cycle
+               (Exception. "request timed out")
+               (ex-info "request timed out" {:status 408 :http-status 504})
+               (ex-info "typed invalid request" {:type :litellm/invalid-request} (deadline))
+               (ex-info "typed unknown" {:type :future/provider-error} (deadline))
+               (ex-info "schema failure" {:failure-kind :schema-validation-failed} (deadline))
+               (ex-info "normalized invalid request"
+                        {:failure-kind :transport-failure
+                         :provider-evidence {:transport {:type :litellm/invalid-request}}}
+                        (deadline))]]
+      (is (false? (llm/transport-timeout? e)))))
+  (doseq [type [:litellm/invalid-request :litellm/server-error]]
+    (with-redefs [router/completion
+                  (fn [& _] (throw (ex-info fixture-secret {:type type}
+                                           (java.net.http.HttpTimeoutException. fixture-secret))))]
+      (let [failure (try (llm/predict :transport-contract contract {}
+                                    {:use-function-calling? false :validate? false})
+                         (catch Exception e e))]
+        (is (= {:provider "transport-contract" :transport {:type type}}
+               (:provider-evidence (ex-data failure))))
+        (is (nil? (ex-cause failure)))
+        (is (not (str/includes? (pr-str failure) fixture-secret)))))))
+
 (deftest ordinary-errors-copy-only-the-declared-transport-fields
   (testing "every recognized category remains evidence, not a fallback policy"
     (doseq [type errors/all-error-types]

@@ -365,6 +365,20 @@
       (is (not (str/includes? (pr-str (ex-message e)) dummy-key)))
       (is (not (str/includes? (pr-str (ex-data e)) dummy-key))))))
 
+(deftest native-transport-timeout-is-structural-and-cause-free
+  (let [provider :decision-test-timeout-boundary]
+    (try
+      (register-decision-provider!
+       provider (fn [_] (throw (java.net.http.HttpTimeoutException. dummy-key))) (atom []))
+      (let [e (predict-failure #(llm/predict provider route-spec {:request "x"}))]
+        (is (= {:failure-kind :transport-failure
+                :provider-evidence {:provider (name provider)
+                                    :transport {:type :litellm/timeout}}}
+               (ex-data e)))
+        (is (nil? (ex-cause e)))
+        (is (not (str/includes? (pr-str e) dummy-key))))
+      (finally (router/unregister! provider)))))
+
 (deftest native-transport-status-is-bounded-and-cause-free
   (let [provider :decision-test-status-boundary]
     (try
