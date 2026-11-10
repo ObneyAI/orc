@@ -2026,7 +2026,8 @@
        vec))
 
 (def provider-call-reservation-fields
-  [:budget-sheet-id :budget-tick-id :sheet-id :tick-id :node-id
+  [:admission-kind :node-start-id :exec-context :candidate-index :node-attempt :campaign-sheet-id
+   :budget-sheet-id :budget-tick-id :sheet-id :tick-id :node-id
    :campaign-tick-id :campaign-node-id :iteration-index
    :logical-action-identity :invocation-identity :provider-attempt-ordinal
    :ownership-epoch :reserved-at])
@@ -2041,7 +2042,7 @@
 
 (defreadmodel :sheet provider-call-reservations
   {:events #{:sheet/provider-call-reserved}
-   :version 1
+   :version 2
    :partition-fn :budget-sheet-id
    :entity-id-fn (juxt :budget-tick-id :invocation-identity)}
   [state event]

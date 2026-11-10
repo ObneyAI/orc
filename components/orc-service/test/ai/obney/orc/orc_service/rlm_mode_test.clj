@@ -1224,7 +1224,7 @@
          "test"
          {:instruction "Summarize" :reads [:document] :writes [:summary]}
          {:provider :openrouter
-          :blackboard {}
+          :blackboard {:summary {:schema :string}}
           :sandbox-vars {:document "doc content"
                          :secret "should not see"
                          :other "also hidden"}})
@@ -1247,7 +1247,7 @@
       (let [result (rlm-sandbox/execute-llm-primitive
                     "test"
                     {:instruction "Do something" :writes [:declared-output]}
-                    {:provider :openrouter :blackboard {} :sandbox-vars {}})]
+                    {:provider :openrouter :blackboard {:declared-output {:schema :string}} :sandbox-vars {}})]
         ;; Result should only contain :declared-output, not :sneaky-key
         (is (= {:declared-output "expected"} result)
             "execute-llm-primitive should only return :writes keys")
@@ -1267,7 +1267,7 @@
                        "budgeted"
                        {:instruction "Work" :writes [:answer]}
                        {:provider :openrouter
-                        :blackboard {}
+                        :blackboard {:answer {:schema :string}}
                         :sandbox-vars {}
                         :reserve-llm-call!
                         (fn []
@@ -1276,7 +1276,9 @@
                       nil
                       (catch clojure.lang.ExceptionInfo e e))]
           (is (some? error))
-          (is (re-find #"LLM call budget exceeded: 2/2" (.getMessage error))))
+          (is (= :timeout (:status (ex-data error))))
+          (is (= "LLM primitive 'budgeted' failed: LLM call budget exhausted before provider attempt"
+                 (.getMessage error))))
         (is (= 1 @reservations) "the attempted call is charged exactly once")
         (is (false? @provider-called?)
             "budget exhaustion fences the provider invocation itself")))))
@@ -1290,7 +1292,7 @@
       (let [sandbox-vars (atom {:existing "keep"})
             ctx (rlm-sandbox/build-rlm-context
                  {:provider :openrouter
-                  :blackboard {}
+                  :blackboard {:out {:schema :string}}
                   :declared-writes [:out]
                   :sandbox-vars sandbox-vars})]
         ;; Execute code that calls llm
@@ -1316,7 +1318,7 @@
         (let [sandbox-vars (atom {:initial "start"})
               ctx (rlm-sandbox/build-rlm-context
                    {:provider :openrouter
-                    :blackboard {}
+                    :blackboard {:step1 {:schema :string} :step2 {:schema :string}}
                     :declared-writes [:step1 :step2]
                     :sandbox-vars sandbox-vars})]
           ;; Execute code with two sequential llm calls
@@ -1349,7 +1351,7 @@
         (let [sandbox-vars (atom {:chunks ["chunk-1" "chunk-2" "chunk-3"]})
               ctx (rlm-sandbox/build-rlm-context
                    {:provider :openrouter
-                    :blackboard {}
+                    :blackboard {:summary {:schema :string}}
                     :declared-writes [:summaries]
                     :sandbox-vars sandbox-vars})]
           ;; Execute map-each with :as syntax and function body
@@ -1385,7 +1387,7 @@
               sandbox-vars (atom {:chunks [large-chunk]})
               ctx (rlm-sandbox/build-rlm-context
                    {:provider :openrouter
-                    :blackboard {}
+                    :blackboard {:summary {:schema :string}}
                     :declared-writes [:summaries]
                     :sandbox-vars sandbox-vars})]
           (rlm-sandbox/execute-rlm-code
@@ -1413,7 +1415,7 @@
         (let [sandbox-vars (atom {:items ["a" "b" "c"]})
               ctx (rlm-sandbox/build-rlm-context
                    {:provider :openrouter
-                    :blackboard {}
+                    :blackboard {:result {:schema :string}}
                     :declared-writes [:results]
                     :sandbox-vars sandbox-vars})]
           (let [exec-result (rlm-sandbox/execute-rlm-code

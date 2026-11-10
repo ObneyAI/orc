@@ -489,10 +489,10 @@
 
    THE ENTRY SET IS PRESERVED EXACTLY. A declared-but-unresolvable key keeps
    its metadata and simply gets no :value — which is what the read model
-   produced for a declared-but-unwritten key. executor/gather-inputs
-   distinguishes 'entry absent' (skip the key) from 'entry present, value nil'
-   (serialize nil, i.e. an empty string), so dropping entries here would
-   silently change LLM prompts."
+   produced for a declared-but-unwritten key. executor/gather-inputs skips an
+   entry with no :value and preserves an explicit :value nil as a native null.
+   Shared request presentation renders that value under its declared contract;
+   metadata-only declarations must not become supplied null inputs."
   ([source tenant-id tick-id metadata-bb]
    (hydrate-blackboard source tenant-id tick-id metadata-bb nil))
   ([source tenant-id tick-id metadata-bb ks]

@@ -59,8 +59,9 @@
                          %)
                       tick-events)]
     (reduce-kv (fn [acc k value-source]
-                 (let [value (resolve-ref value-source)]
-                   (if (some? value) (assoc acc k value) acc)))
+                 (if-let [entry (resolve-ref value-source)]
+                   (assoc acc k (:value entry))
+                   acc))
                {} (or (:seed-sources started) {}))))
 
 (defn- tick-index
@@ -93,11 +94,11 @@
                              (value-log/exec-context (:inputs completion)))]
     (reduce (fn [acc k]
               (let [source (get sources k)
-                    value (cond
+                    entry (cond
                             source (resolve-ref source)
-                            (contains? iteration-seeds k) (get iteration-seeds k)
-                            :else (get @(:tick-seeds index) k))]
-                (if (some? value) (assoc acc k value) acc)))
+                            (contains? iteration-seeds k) {:value (get iteration-seeds k)}
+                            (contains? @(:tick-seeds index) k) {:value (get @(:tick-seeds index) k)})]
+                (if entry (assoc acc k (:value entry)) acc)))
             {}
             (or (:read-keys completion) []))))
 
@@ -107,8 +108,9 @@
                        (get (:output-sources index) ek))]
     (if (seq sources)
       (reduce-kv (fn [acc k value-source]
-                   (let [v (resolve-ref value-source)]
-                     (if (some? v) (assoc acc k v) acc)))
+                   (if-let [entry (resolve-ref value-source)]
+                     (assoc acc k (:value entry))
+                     acc))
                  {} sources)
       (or (not-empty (get (:logged-writes index) ek))
           (:writes completion)
@@ -170,8 +172,8 @@
 
 (defn- resolver
   "resolve-ref over {:tick-id :event-id} references, following cross-tick
-   references like value-log/resolve-source (missing, foreign and cyclic
-   references resolve to nil), reading each tick once."
+   references as found-value envelopes, including explicit nil. Missing,
+   foreign and cyclic references resolve to nil; each tick is read once."
   [read-tick]
   (fn resolve-ref
     ([source] (resolve-ref source #{}))
@@ -180,7 +182,7 @@
        (when-let [event (get (:by-ref (read-tick tick-id)) event-id)]
          (if (= :sheet/execution-value-referenced (:event/type event))
            (resolve-ref (:source event) (conj seen source))
-           (:value event)))))))
+           (when (contains? event :value) (select-keys event [:value]))))))))
 
 (defn- tick-entries
   "Every node-execution entry of one tick, plus the tick's lineage facts."

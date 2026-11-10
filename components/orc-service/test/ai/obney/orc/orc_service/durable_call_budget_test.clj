@@ -6,6 +6,7 @@
             [ai.obney.orc.orc-service.core.todo-processors :as todo]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.budget-reservation-fixture :as barrier]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-sqlite-v3.interface]
@@ -39,8 +40,12 @@
   (let [budget-sheet-id (random-uuid)
         budget-tick-id (random-uuid)
         physical-node-id (random-uuid)
+        node-start-id (random-uuid)
         campaign-node-id (random-uuid)
-        candidate {:budget-sheet-id budget-sheet-id
+        candidate {:admission-kind :campaign
+                   :node-start-id node-start-id
+                   :exec-context {}
+                   :budget-sheet-id budget-sheet-id
                    :budget-tick-id budget-tick-id
                    :sheet-id budget-sheet-id
                    :tick-id budget-tick-id
@@ -54,7 +59,8 @@
         root {:event/type :sheet/tree-tick-started
               :sheet-id budget-sheet-id
               :tick-id budget-tick-id
-              :options {:llm-call-budget 2}
+              :options {:llm-call-budget 2
+                        :llm-budget-accounting-version 1}
               :execution-snapshot
               {:nodes-by-id {physical-node-id {:id physical-node-id}
                              campaign-node-id {:id campaign-node-id}}}}
@@ -63,7 +69,9 @@
                   :tick-id budget-tick-id
                   :node-id campaign-node-id
                   :ownership-epoch 2}
-        node-start {:event/type :sheet/node-execution-started
+        node-start {:event/id node-start-id
+                    :inputs {}
+                    :event/type :sheet/node-execution-started
                     :sheet-id budget-sheet-id
                     :tick-id budget-tick-id
                     :node-id physical-node-id}
@@ -78,6 +86,16 @@
         accepts? (fn [request events]
                    ((:predicate-fn (reservations/reservation-cas request))
                     events))]
+    (is (= :incomplete-history
+           (:decision
+            (reservations/reservation-decision
+             candidate
+             [(update root :options dissoc :llm-budget-accounting-version)
+              node-start frontier iteration-claim existing])))
+        "a budget without complete-history evidence cannot admit a provider")
+    (is (false? (accepts? candidate
+                         [(update root :options dissoc :llm-budget-accounting-version)
+                          node-start frontier iteration-claim existing])))
     (is (true? (accepts? candidate [root node-start frontier iteration-claim existing])))
     (is (= {:decision :duplicate :current 1}
            (select-keys
@@ -107,6 +125,11 @@
              ["wrong trace family" (assoc candidate :tick-id (random-uuid))
               [root node-start frontier iteration-claim]]
              ["wrong physical node" (assoc candidate :node-id (random-uuid))
+              [root node-start frontier iteration-claim]]
+             ["wrong canonical node start" (assoc candidate :node-start-id (random-uuid))
+              [root node-start frontier iteration-claim]]
+             ["wrong execution context" (assoc candidate :exec-context
+                                               {::todo/map-each-index 0})
               [root node-start frontier iteration-claim]]
              ["wrong campaign iteration" (assoc candidate :iteration-index 4)
               [root node-start frontier iteration-claim]]
@@ -168,8 +191,16 @@
               (is (= sheet-id (:sheet-id reservation)))
               (is (= (:trace-id result) (:tick-id reservation)))
               (is (= node-id (:node-id reservation)))
-              (is (= (:logical-action-identity provider-claim)
-                     (:logical-action-identity reservation)))
+              (is (some? provider-claim) "reservation belongs to an actual provider effect")
+              (is (= (str (:logical-action-identity provider-claim) "/candidate/0")
+                     (:logical-action-identity reservation))
+                  "the physical reservation scopes the effect action to candidate zero")
+              (is (= (reservations/invocation-identity
+                      (:trace-id result)
+                      (str (:logical-action-identity provider-claim) "/candidate/0")
+                      (:ownership-epoch provider-claim)
+                      0)
+                     (:invocation-identity reservation)))
               (is (string? (:invocation-identity reservation)))
               (is (= 0 (:provider-attempt-ordinal reservation)))
               (is (= (:trace-id result) (:campaign-tick-id reservation)))
@@ -205,6 +236,10 @@
                                    (h/read-all-events ctx)))
                 projected (first (sheet/get-provider-call-reservations
                                   ctx sheet-id budget-tick-id))
+                owner-start
+                (first (filter #(and (= :sheet/node-execution-started (:event/type %))
+                                     (= (:node-start-id projected) (:event/id %)))
+                               (h/read-all-events ctx)))
                 duplicate-result
                 (h/run-command
                  ctx
@@ -221,13 +256,20 @@
                                       :provider-attempt-ordinal
                                       :ownership-epoch :reserved-at])))]
             (is (= (select-keys raw
-                                [:budget-sheet-id :budget-tick-id
+                                [:admission-kind :campaign-sheet-id :node-start-id :exec-context
+                                 :budget-sheet-id :budget-tick-id
                                  :sheet-id :tick-id :node-id
                                  :campaign-tick-id :campaign-node-id
                                  :iteration-index :logical-action-identity
                                  :invocation-identity :provider-attempt-ordinal
                                  :ownership-epoch :reserved-at])
                    projected))
+            (is (= :campaign (:admission-kind projected)))
+            (is (= sheet-id (:campaign-sheet-id projected)))
+            (is (some? owner-start) "projection identifies an actual canonical node start")
+            (is (= [sheet-id budget-tick-id (:node-id projected)]
+                   ((juxt :sheet-id :tick-id :node-id) owner-start)))
+            (is (= {} (:exec-context projected)))
             (is (= :cognitect.anomalies/conflict
                    (:cognitect.anomalies/category duplicate-result)))
             (is (= [projected]
@@ -384,77 +426,131 @@
             (is (= :failure (:status result)) (pr-str result))
             (is (true? (:cancelled? result)) (pr-str result))))))))
 
-(deftest duplicate-deliveries-authorize-only-the-append-winner
-  (testing "two identical reservation deliveries cannot both cross the provider gate"
-    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
-      (let [workflow
-            (sheet/workflow "provider-reservation-duplicate-barrier"
-              (sheet/blackboard {:summary :string})
-              (sheet/repl-researcher "researcher"
-                :instruction "Finish."
-                :writes [:summary]
-                :max-iterations 1
-                :rlm {:checkpointed? true
-                      :timeouts {:provider-ms 1000
-                                 :iteration-ms 2000
-                                 :campaign-ms 10000}}))
-            sheet-id (sheet/build-workflow! ctx workflow)]
-        (with-redefs [llm/predict
-                      (fn [& _]
-                        {:outputs {:code "(final! {:summary \"done\"})"}})]
-          (let [result (sheet/execute ctx sheet-id {} :timeout-ms 10000
-                                      :llm-call-budget 3)
-                first-reservation
-                (first (sheet/get-provider-call-reservations
-                        ctx sheet-id (:trace-id result)))
-                ordinal 1
-                invocation-identity
-                (reservations/invocation-identity
-                 (:budget-tick-id first-reservation)
-                 (:logical-action-identity first-reservation)
-                 (:ownership-epoch first-reservation)
-                 ordinal)
-                duplicate-command
-                (merge {:command/id (random-uuid)
-                        :command/timestamp (time/now)
-                        :command/name :sheet/reserve-provider-call
-                        :campaign-sheet-id sheet-id
+(defn- race-next-reservation! [ctx first-reservation]
+  ;; Exercise the native command admission contract. These deliveries do not
+  ;; impersonate HTTP dispatches; the actual original provider is held separately.
+  (let [ordinal (inc (:provider-attempt-ordinal first-reservation))
+        invocation (reservations/invocation-identity
+                    (:budget-tick-id first-reservation)
+                    (:logical-action-identity first-reservation)
+                    (:ownership-epoch first-reservation)
+                    ordinal)
+        command (merge (select-keys first-reservation
+                                   [:admission-kind :node-start-id :exec-context
+                                    :budget-sheet-id :budget-tick-id
+                                    :sheet-id :tick-id :node-id :campaign-sheet-id
+                                    :campaign-tick-id :campaign-node-id
+                                    :iteration-index :logical-action-identity
+                                    :ownership-epoch])
+                       {:command/name :sheet/reserve-provider-call
                         :provider-attempt-ordinal ordinal
-                        :invocation-identity invocation-identity
-                        :reserved-at "2030-01-01T00:00:00Z"}
-                       (select-keys first-reservation
-                                    [:budget-sheet-id :budget-tick-id
-                                     :sheet-id :tick-id :node-id
-                                     :campaign-tick-id :campaign-node-id
-                                     :iteration-index :logical-action-identity
-                                     :ownership-epoch]))
-                release (promise)
-                provider-entries (atom 0)
-                deliver! (fn []
-                           @release
-                           (let [command-result
-                                 (h/run-command
-                                  ctx (assoc duplicate-command
-                                             :command/id (random-uuid)))]
-                             (when-not (:cognitect.anomalies/category
-                                        command-result)
-                               (swap! provider-entries inc))
-                             command-result))
-                first-delivery (future (deliver!))
-                second-delivery (future (deliver!))]
-            (deliver release true)
-            (let [results [@first-delivery @second-delivery]
-                  categories (mapv :cognitect.anomalies/category results)
-                  ledger (sheet/get-provider-call-reservations
-                          ctx sheet-id (:trace-id result))]
-              (is (= 1 (count (remove nil? categories))) (pr-str results))
-              (is (= #{:cognitect.anomalies/conflict}
-                     (set (remove nil? categories))))
-              (is (= 1 @provider-entries))
-              (is (= 2 (count ledger)))
-              (is (= 1 (count (filter #(= invocation-identity
-                                         (:invocation-identity %))
-                                      ledger)))))))))))
+                        :invocation-identity invocation
+                        :reserved-at (str (time/now))})
+        ready (java.util.concurrent.CountDownLatch. 2)
+        release (promise)
+        deliver! (fn []
+                   (.countDown ready)
+                   (when-not (deref release 5000 false)
+                     (throw (ex-info "Command race barrier was not released" {})))
+                   (h/run-command ctx (assoc command :command/id (random-uuid)
+                                                    :command/timestamp (time/now))))
+        first-delivery (future (deliver!))
+        second-delivery (future (deliver!))]
+    (try
+      (is (.await ready 5 java.util.concurrent.TimeUnit/SECONDS)
+          "both actual command deliveries are waiting before release")
+      (deliver release true)
+      {:invocation invocation
+       :results [(deref first-delivery 10000 ::not-joined)
+                 (deref second-delivery 10000 ::not-joined)]}
+      (finally
+        (deliver release true)
+        (is (not= ::not-joined (deref first-delivery 10000 ::not-joined)))
+        (is (not= ::not-joined (deref second-delivery 10000 ::not-joined)))))))
+
+(defn- verify-reservation-race! [live-owner?]
+  (let [directory (.toFile (java.nio.file.Files/createTempDirectory
+                            "orc-reservation-race-"
+                            (make-array java.nio.file.attribute.FileAttribute 0)))
+        transport (barrier/start-held-provider!)
+        provider (keyword (str "reservation-race-" (random-uuid)))]
+    (try
+      (llm/register-provider! provider
+        {:provider :openrouter :model "fixture/reservation-race"
+         :output-mode :json-schema
+         :config {:api-key "fixture" :api-base (:url transport) :timeout 20000}})
+      (h/with-async-test-context
+        [ctx {:event-store-conn {:type :sqlite
+                                :database-file (str (io/file directory "store.sqlite"))
+                                :maximum-pool-size 2}
+              :context {:tenant-id (random-uuid) :llm-provider provider}}]
+        (let [workflow
+              (sheet/workflow (str "provider-reservation-race-" live-owner?)
+                (sheet/blackboard {:summary :string})
+                (sheet/repl-researcher "researcher"
+                  :instruction "Finish." :writes [:summary] :max-iterations 1
+                  :options {:output-mode :json-schema :max-retries 0}
+                  :rlm {:checkpointed? true
+                        :timeouts {:provider-ms 15000 :iteration-ms 18000
+                                   :campaign-ms 25000}}))
+              sheet-id (sheet/build-workflow! ctx workflow)
+              tick-id (random-uuid)
+              execution (future (sheet/execute ctx sheet-id {} :tick-id tick-id
+                                              :timeout-ms 25000 :llm-call-budget 3))]
+          (try
+            (is (true? (deref (:entered transport) 10000 false))
+                "a real HTTP request reaches the held provider")
+            (when-not live-owner?
+              (deliver (:release transport) true)
+              (is (= :success (:status (deref execution 15000 {})))))
+            (let [events-before (h/read-all-events ctx)
+                  initial-ledger (sheet/get-provider-call-reservations ctx sheet-id tick-id)
+                  first-reservation (first initial-ledger)
+                  owner-start (first (filter #(= (:node-start-id first-reservation)
+                                                 (:event/id %)) events-before))
+                  race (race-next-reservation! ctx first-reservation)
+                  categories (mapv :cognitect.anomalies/category (:results race))
+                  ledger (sheet/get-provider-call-reservations ctx sheet-id tick-id)
+                  proof {:live-owner? live-owner? :tenant (:tenant-id ctx)
+                         :sheet sheet-id :tick tick-id :events-before events-before
+                         :initial-ledger initial-ledger :race race :ledger ledger}]
+              (spit (io/file directory "proof.edn") (pr-str proof))
+              (println "RESERVATION-RACE-PROOF" (.getAbsolutePath directory))
+              (is (= 1 (count initial-ledger)))
+              (is (some? owner-start) "owner identity is from an actual canonical start")
+              (is (= [sheet-id tick-id (:node-id first-reservation)]
+                     ((juxt :sheet-id :tick-id :node-id) owner-start)))
+              (is (= (not live-owner?)
+                     (boolean (some #(and (= :sheet/tree-tick-completed (:event/type %))
+                                          (= tick-id (:tick-id %))
+                                          (= :success (:root-status %))) events-before)))
+                  "the race runs in the declared live or completed owner state")
+              (is (= (if live-owner? 1 2)
+                     (count (filter #{:cognitect.anomalies/conflict} categories)))
+                  (pr-str (:results race)))
+              (is (= (if live-owner? 1 0) (count (remove :cognitect.anomalies/category
+                                                       (:results race))))
+                  "only a live-owner append winner receives admission")
+              (is (= (if live-owner? 2 1) (count ledger)))
+              (is (= (if live-owner? 1 0)
+                     (count (filter #(= (:invocation race) (:invocation-identity %)) ledger)))))
+            (finally
+              (deliver (:release transport) true)
+              (let [result (deref execution 30000 ::not-joined)]
+                (is (not= ::not-joined result) "actual public execute body joins")
+                (is (= :success (:status result)) (pr-str result)))))
+          (is (= 1 (count @(:requests transport)))
+              "native admission commands cause no fictional provider entries")
+          (is (empty? @(:errors transport)))))
+      (finally (barrier/stop! transport)))))
+
+(deftest duplicate-deliveries-authorize-only-the-append-winner
+  (testing "two native reservation deliveries race while the canonical owner is inside real HTTP"
+    (verify-reservation-race! true)))
+
+(deftest completed-owner-cannot-acquire-new-provider-reservation
+  (testing "both duplicate deliveries after success are rejected without a new ledger row"
+    (verify-reservation-race! false)))
 
 (deftest durable-reservation-append-anomaly-fails-closed
   (testing "a non-conflict storage anomaly cannot authorize provider dispatch"
@@ -508,7 +604,8 @@
                       "(emit-tree! (quote " (pr-str child-tree) ")))")
             workflow
             (sheet/workflow "provider-reservation-whole-trace"
-              (sheet/blackboard {:summary :string})
+              (sheet/blackboard {:summary :string
+                                 :seed [:string {:description "Text produced by the inline specialist for subsequent workflow work."}]})
               (sheet/repl-researcher "researcher"
                 :instruction "Call inline then emit a child."
                 :writes [:summary]
@@ -555,7 +652,8 @@
       (let [provider-entries (atom 0)
             child
             (sheet/workflow "descendant-budget-campaign"
-              (sheet/blackboard {:summary :string})
+              (sheet/blackboard {:summary :string
+                                 :seed [:string {:description "Text produced by the inline specialist for subsequent workflow work."}]})
               (sheet/repl-researcher "descendant-researcher"
                 :instruction "Use one inline call."
                 :writes [:summary]
@@ -802,77 +900,151 @@
         (is (= 6 (by-node-total large) (by-node-total sliced)))
         (is (= 2 (count (:records large)) (count (:records sliced))))))))
 
-(deftest durable-budget-cache-hydrates-reconciles-and-cleans-up
-  (testing "the hot cache mirrors durable reservations but never decides admission"
-    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
-      (let [provider-entries (atom [])
-            root-tick-id (random-uuid)
-            workflow
-            (sheet/workflow "rr11-durable-cache-agreement"
-              (sheet/blackboard {:summary :string})
-              (sheet/repl-researcher "researcher"
-                :instruction "save then finish"
-                :writes [:summary]
-                :max-iterations 7
-                :rlm {:checkpointed? true
-                      :quantum {:max-iterations 3}
-                      :timeouts {:provider-ms 1000
-                                 :iteration-ms 3000
-                                 :campaign-ms 10000}}))
-            sheet-id (sheet/build-workflow! ctx workflow)]
-        (with-redefs [llm/predict
-                      (fn [& _]
-                        (let [entry (swap! provider-entries conj
-                                           (get @(budget-cache-atom)
-                                                root-tick-id))
-                              ordinal (count entry)]
-                          (case ordinal
-                            1 (do
-                                ;; Simulate eviction immediately after a warm
-                                ;; append; the next attempt must rehydrate.
-                                (swap! (budget-cache-atom)
-                                       dissoc
-                                       root-tick-id)
-                                {:outputs {:code "(store! :one 1)"}})
-                            2 (do
-                                ;; A duplicate/stale conflict in an older
-                                ;; runtime could leave a non-numeric cache
-                                ;; residue. It must be treated as a miss.
-                                (swap! (budget-cache-atom)
-                                       assoc
-                                       root-tick-id
-                                       nil)
-                                {:outputs {:code "(store! :two 2)"}})
-                            3 (do
-                                ;; Stale-high may not deny valid capacity.
-                                (swap! (budget-cache-atom)
-                                       assoc
-                                       root-tick-id
-                                       999)
-                                {:outputs {:code "(store! :three 3)"}})
-                            4 {:outputs {:code "(store! :four 4)"}}
-                            5 (do
-                                ;; The next attempt is over durable capacity;
-                                ;; stale-low cache state must not admit it.
-                                (swap! (budget-cache-atom)
-                                       assoc
-                                       root-tick-id
-                                       0)
-                                {:outputs {:code "(store! :five 5)"}}))))]
-          (let [result (sheet/execute ctx sheet-id {}
-                                      :tick-id root-tick-id
-                                      :timeout-ms 15000
-                                      :llm-call-budget 5)
-                root (:trace-id result)
-                ledger (sheet/get-provider-call-reservations ctx sheet-id root)]
-            (is (= :failure (:status result)) (pr-str result))
-            (is (true? (:cancelled? result)) (pr-str result))
-            (is (= [1 2 3 4 5] @provider-entries)
-                "cold hydration and the warm increment agree at provider entry")
-            (is (= 5 (count ledger))
-                "the stale-low cache cannot authorize an exhausted sixth attempt")
-            (is (nil? (get @(budget-cache-atom) root))
-                "terminal cleanup removes the hot root entry")))))))
+(deftest durable-admission-ignores-process-local-budget-corruption
+  (testing "corrupt, absent, nil, high and low cache values cannot change durable cap five"
+    (let [directory (.toFile (java.nio.file.Files/createTempDirectory
+                              "orc-budget-cache-corruption-"
+                              (make-array java.nio.file.attribute.FileAttribute 0)))
+          root-tick-id (random-uuid)
+          provider (keyword (str "budget-cache-corruption-" (random-uuid)))
+          cache (budget-cache-atom)
+          original-entry (find @cache root-tick-id)
+          runtime (atom nil)
+          entries (atom [])
+          mutations (atom [])
+          mutate! (fn [at operation value]
+                    (swap! mutations conj {:at at :operation operation :value value})
+                    (if (= :evict operation)
+                      (swap! cache dissoc root-tick-id)
+                      (swap! cache assoc root-tick-id value)))
+          transport
+          (barrier/start-capacity-provider!
+           (fn [ordinal]
+             (let [{:keys [ctx sheet-id]} @runtime]
+               (swap! entries conj
+                      {:ordinal ordinal
+                       :cache-present? (contains? @cache root-tick-id)
+                       :cache-value (get @cache root-tick-id)
+                       :ledger (sheet/get-provider-call-reservations ctx sheet-id root-tick-id)
+                       :events (h/read-all-events ctx)}))
+             (case ordinal
+               1 (mutate! 1 :evict nil)
+               2 (mutate! 2 :nil nil)
+               3 (mutate! 3 :stale-high 999)
+               5 (mutate! 5 :stale-low 0)
+               nil)))]
+      (try
+        (llm/register-provider! provider
+          {:provider :openrouter :model "fixture/budget-cache-corruption"
+           :output-mode :json-schema
+           :config {:api-key "fixture" :api-base (:url transport) :timeout 30000}})
+        (h/with-async-test-context
+          [ctx {:event-store-conn {:type :sqlite
+                                  :database-file (str (io/file directory "store.sqlite"))
+                                  :maximum-pool-size 2}
+                :context {:tenant-id (random-uuid) :llm-provider provider}}]
+          (let [workflow
+                (sheet/workflow "rr11-durable-cache-agreement"
+                  (sheet/blackboard {:summary :string})
+                  (sheet/repl-researcher "researcher"
+                    :instruction "save then finish"
+                    :writes [:summary]
+                    :max-iterations 7
+                    :options {:output-mode :json-schema :max-retries 0}
+                    :rlm {:checkpointed? true
+                          :quantum {:max-iterations 3}
+                          :timeouts {:provider-ms 1000
+                                     :iteration-ms 3000
+                                     :campaign-ms 10000}}))
+                sheet-id (sheet/build-workflow! ctx workflow)
+                node-id (:id (first (filter #(= "researcher" (:name %))
+                                           (sheet/get-nodes-for-sheet ctx sheet-id))))]
+            (reset! runtime {:ctx ctx :sheet-id sheet-id})
+            (mutate! :before-execute :corrupt "not-a-count")
+            (let [result (sheet/execute ctx sheet-id {}
+                                        :tick-id root-tick-id
+                                        :timeout-ms 15000
+                                        :llm-call-budget 5)
+                  ledger (sheet/get-provider-call-reservations ctx sheet-id root-tick-id)
+                  events (h/read-all-events ctx)
+                  records (sheet/get-researcher-iteration-records ctx sheet-id root-tick-id node-id)
+                  root-start (first (filter #(and (= :sheet/tree-tick-started (:event/type %))
+                                                  (= root-tick-id (:tick-id %))) events))
+                  cancellations (filterv #(and (= :sheet/tick-cancelled (:event/type %))
+                                                (= root-tick-id (:tick-id %))) events)
+                  expected-codes ["(store! :one 1)" "(store! :two 2)" "(store! :three 3)"
+                                  "(store! :four 4)" "(store! :five 5)"]
+                  proof {:directory (str directory) :root root-tick-id :sheet sheet-id
+                         :tenant (:tenant-id ctx) :node node-id :result result
+                         :ledger ledger :events events :records records
+                         :entries @entries :mutations @mutations
+                         :requests @(:requests transport) :responses @(:responses transport)
+                         :server-errors @(:errors transport)}]
+              (spit (io/file directory "proof.edn") (pr-str proof))
+              (println "CACHE-CORRUPTION-PROOF" (.getAbsolutePath directory))
+              (is (= :failure (:status result)) (pr-str result))
+              (is (true? (:cancelled? result)) (pr-str result))
+              (is (= "LLM call budget exceeded: 5/5" (:error result)))
+              (is (= 5 (count @(:requests transport))) "no sixth actual HTTP request")
+              (is (empty? @(:errors transport)))
+              (is (= [1 2 3 4 5] (mapv (comp count :ledger) @entries))
+                  "every actual provider entry sees its already durable reservation")
+              (is (= expected-codes (mapv :code @(:responses transport)))
+                  "all five original store operations are returned through real HTTP")
+              (is (= expected-codes (mapv :code (take 5 records)))
+                  "the original five-store workflow is recorded, not replaced by a final response")
+              (is (= [{:cache-present? true :cache-value "not-a-count"}
+                      {:cache-present? false :cache-value nil}
+                      {:cache-present? true :cache-value nil}
+                      {:cache-present? true :cache-value 999}
+                      {:cache-present? true :cache-value 999}]
+                     (mapv #(select-keys % [:cache-present? :cache-value]) @entries)))
+              (is (= [:corrupt :evict :nil :stale-high :stale-low]
+                     (mapv :operation @mutations)))
+              (is (= 0 (:value (last @mutations)))
+                  "stale-low is installed before the denied sixth admission")
+              (is (= 5 (count ledger)))
+              (is (= 5 (count (set (map :invocation-identity ledger)))))
+              (is (= [sheet-id root-tick-id] ((juxt :sheet-id :tick-id) root-start)))
+              (is (= 5 (get-in root-start [:options :llm-call-budget])))
+              (is (= 1 (get-in root-start [:options :llm-budget-accounting-version])))
+              (is (= 1 (count cancellations)))
+              (is (= "LLM call budget exceeded: 5/5" (:reason (first cancellations))))
+              (doseq [{:keys [ledger events ordinal]} @entries]
+                (let [raw (filterv #(= :sheet/provider-call-reserved (:event/type %)) events)
+                      expected (->> raw
+                                    (map #(select-keys %
+                                             [:admission-kind :node-start-id :exec-context
+                                              :candidate-index :node-attempt :campaign-sheet-id
+                                              :budget-sheet-id :budget-tick-id :sheet-id :tick-id :node-id
+                                              :campaign-tick-id :campaign-node-id :iteration-index
+                                              :logical-action-identity :invocation-identity
+                                              :provider-attempt-ordinal :ownership-epoch :reserved-at]))
+                                    (sort-by (juxt :provider-attempt-ordinal :invocation-identity)) vec)]
+                  (is (= ordinal (count raw)))
+                  (is (= expected ledger) "complete public rows match canonical admission facts")
+                  (doseq [row ledger]
+                    (let [start (first (filter #(= (:node-start-id row) (:event/id %)) events))]
+                      (is (= :campaign (:admission-kind row)))
+                      (is (= [sheet-id root-tick-id]
+                             ((juxt :budget-sheet-id :budget-tick-id) row)))
+                      (is (= :sheet/node-execution-started (:event/type start)))
+                      (is (= [sheet-id root-tick-id node-id]
+                             ((juxt :sheet-id :tick-id :node-id) row)
+                             ((juxt :sheet-id :tick-id :node-id) start)))
+                      (is (= (select-keys (:inputs start)
+                                         [::todo/map-each-index ::todo/map-each-parent ::todo/tick-iteration])
+                             (:exec-context row)))
+                      (is (= [sheet-id root-tick-id node-id]
+                             ((juxt :campaign-sheet-id :campaign-tick-id :campaign-node-id) row)))))))
+              (is (nil? (get @cache root-tick-id))
+                  "terminal cleanup removes this root's hot entry")
+              (is (not (contains? @cache root-tick-id))))))
+        (finally
+          (barrier/stop! transport)
+          (if original-entry
+            (swap! cache assoc root-tick-id (val original-entry))
+            (swap! cache dissoc root-tick-id)))))))
 
 (deftest durable-cache-hydration-read-failure-fails-closed
   (testing "a reservation remains spent but its provider is not dispatched when hydration cannot read"
@@ -1032,13 +1204,15 @@
                           child-node-starts)
                 (pr-str child-node-starts))))))))
 
-(deftest non-checkpointed-budgeted-researcher-retains-compatibility-events-and-result
-  (testing "non-checkpointed outer and inline calls use the legacy budget path only"
+(deftest non-checkpointed-budgeted-researcher-uses-durable-node-admission
+  (testing "capped checkpoint opt-out reserves outer and inline calls without campaign claims"
     (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
       (let [calls (atom 0)
+            reservation-counts-at-entry (atom [])
             workflow
             (sheet/workflow "rr11-non-checkpointed-compatibility"
-              (sheet/blackboard {:summary :string})
+              (sheet/blackboard {:summary :string
+                                 :seed [:string {:description "Text produced by the inline specialist for subsequent workflow work."}]})
               (sheet/repl-researcher "researcher"
                 :instruction "call inline then finish"
                 :writes [:summary]
@@ -1051,6 +1225,9 @@
             sheet-id (sheet/build-workflow! ctx workflow)]
         (with-redefs [llm/predict
                       (fn [_provider module _inputs _options]
+                        (swap! reservation-counts-at-entry conj
+                               (count (filter #(= :sheet/provider-call-reserved (:event/type %))
+                                              (h/read-all-events ctx))))
                         (if (= 1 (swap! calls inc))
                           {:outputs
                            {:code
@@ -1064,8 +1241,27 @@
                           (map :event/type
                                (h/read-tick-events ctx (:trace-id result))))
                    :timeout-ms 3000)
-                event-types (mapv :event/type
-                                  (h/read-tick-events ctx (:trace-id result)))
+                events (h/read-tick-events ctx (:trace-id result))
+                event-types (mapv :event/type events)
+                root-start (first (filter #(= :sheet/tree-tick-started (:event/type %)) events))
+                node-start (first (filter #(= :sheet/node-execution-started (:event/type %)) events))
+                owner-context (select-keys (:inputs node-start)
+                                           [::todo/map-each-index ::todo/map-each-parent
+                                            ::todo/tick-iteration])
+                raw-reservations (filterv #(= :sheet/provider-call-reserved (:event/type %)) events)
+                ledger (sheet/get-provider-call-reservations ctx sheet-id (:trace-id result))
+                expected-ledger
+                (mapv (fn [raw]
+                        {:admission-kind :ordinary
+                         :budget-sheet-id sheet-id :budget-tick-id (:trace-id result)
+                         :sheet-id sheet-id :tick-id (:trace-id result)
+                         :node-id (:node-id node-start) :node-start-id (:event/id node-start)
+                         :exec-context owner-context :candidate-index 0 :node-attempt 1
+                         :logical-action-identity (:logical-action-identity raw)
+                         :invocation-identity (:invocation-identity raw)
+                         :provider-attempt-ordinal 0 :reserved-at (:reserved-at raw)})
+                      (sort-by (juxt :provider-attempt-ordinal :invocation-identity)
+                               raw-reservations))
                 normalized-result
                 (-> result
                     (dissoc :duration-ms :trace-id :node-trace)
@@ -1076,8 +1272,35 @@
             (is (= :success (:status result)) (pr-str result))
             (is (= "legacy" (get-in result [:outputs :summary])))
             (is (= 2 @calls))
+            (is (= [1 2] @reservation-counts-at-entry)
+                "each actual provider entry sees its already durable reservation")
+            (is (some? root-start))
+            (is (some? node-start))
+            (is (= [sheet-id (:trace-id result)]
+                   ((juxt :sheet-id :tick-id) root-start)
+                   ((juxt :sheet-id :tick-id) node-start)))
+            (is (= 2 (get-in root-start [:options :llm-call-budget])))
+            (is (= 1 (get-in root-start [:options :llm-budget-accounting-version])))
+            (is (= [sheet-id (:trace-id result)]
+                   ((juxt :llm-budget-root-sheet-id :llm-budget-root-tick-id)
+                    (:options root-start))))
+            (is (= {} owner-context))
+            (is (= 2 (count raw-reservations) (count ledger)))
+            (is (= expected-ledger ledger)
+                "the complete public rows identify ordinary calls owned by the actual canonical start")
+            (is (= 2 (count (set (map :logical-action-identity ledger)))))
+            (is (= 2 (count (set (map :invocation-identity ledger)))))
+            (is (every? #(and (string? (:logical-action-identity %))
+                              (seq (:logical-action-identity %))
+                              (= (pr-str [:ordinary (:trace-id result) (:trace-id result)
+                                          (:event/id node-start) [nil nil nil]
+                                          (:logical-action-identity %) 0 1 0])
+                                 (:invocation-identity %))) ledger)
+                "each physical identity binds the actual root, start, context, action, candidate and attempt")
             (is (= [:sheet/tree-tick-started
                     :sheet/node-execution-started
+                    :sheet/provider-call-reserved
+                    :sheet/provider-call-reserved
                     :rlm/researcher-iterations
                     :sheet/execution-value-written
                     :sheet/execution-value-written
@@ -1090,6 +1313,7 @@
                     :status :success
                     :outputs
                     {:summary "legacy"
+                     :seed nil
                      :iterations
                      [{:result-profile {:type :map :length 1}
                        :vars-updated []
@@ -1112,8 +1336,7 @@
                     :configured-max-ticks 10}
                    normalized-result)
                 (pr-str normalized-result))
-            (is (not-any? #{:sheet/provider-call-reserved
-                            :rlm/researcher-frontier-claimed
+            (is (not-any? #{:rlm/researcher-frontier-claimed
                             :rlm/researcher-effect-claimed}
                           event-types)
                 (pr-str event-types))))))))

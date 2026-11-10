@@ -122,6 +122,8 @@
 
 (deftest execute-ai-reserves-before-entering-the-streaming-provider
   (testing "the streaming provider boundary uses the same per-attempt durable gate"
+    (llm/register-provider! :openrouter
+      {:provider :openrouter :model "fixture/stream" :config {:api-key "synthetic-not-sent"}})
     (let [tick-id (random-uuid)
           node-id (random-uuid)
           reservation (atom nil)

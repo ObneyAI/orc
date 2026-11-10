@@ -30,7 +30,7 @@
 
 (def candidate-option-keys
   #{:temperature :max-tokens :top-p :top-k :frequency-penalty :presence-penalty
-    :seed :reasoning :max-retries :timeout-ms})
+    :seed :reasoning :stop :reasoning-effort :thinking :max-retries :timeout-ms})
 (def reserved-option-keys
   #{:model :tick-id :sheet-id :node-id :node-start-id :context :stream :exec-context
     :execution-deadline-ms :llm-call-budget :llm-budget-root-tick-id :llm-budget-root-sheet-id
@@ -127,6 +127,9 @@
                                                :candidate-index index
                                                :requested-model (:model candidate)
                                                :provider (:provider candidate) :attempts attempts})
+                result (if-let [accounting (get-in outcome [:model-fallback :recovery-accounting])]
+                         (assoc-in result [:model-fallback :recovery-accounting] accounting)
+                         result)
                 recorded (record! (assoc entry :outcome (durable-outcome result)))]
             (if (:cognitect.anomalies/category recorded)
               {:status :failure :retryable? false :usage usage

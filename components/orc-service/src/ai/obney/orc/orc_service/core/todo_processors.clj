@@ -6,7 +6,9 @@
    - Handle sequence/fallback/parallel composite node logic
    - Handle map-each iteration
    - Update blackboard with node outputs"
-  (:require [ai.obney.orc.orc-service.core.read-models :as rm]
+  (:require [ai.obney.orc.orc-service.core.budget-facts :as budget-facts]
+            [ai.obney.orc.orc-service.core.emitted-model-authority :as emitted-authority]
+            [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
             [ai.obney.orc.orc-service.core.provider-observations :as provider-observations]
@@ -144,45 +146,34 @@
     @outcome))
 
 (defn- cancel-llm-budget!
-  "Durably cancel both the active and root ticks for proven exhaustion."
+  "Commit and publish active/root native cancellation off the model work that
+   their delivery interrupts. The owned task is synchronously joined."
   [context sheet-id tick-id exceeded]
-  (let [reason (str "LLM call budget exceeded: "
-                    (:current exceeded) "/" (:budget exceeded))]
-      ;; Every started tick owns its terminal event. Cancel the active child
-      ;; first, then the shared-budget root when they differ. Root-node
-      ;; completions racing either cancellation are fenced by
-      ;; complete-tree-tick and cannot append a second terminal event.
-      ;; Before the first cancellation is projected, the process-local claim
-      ;; closes the concurrent-sibling race. Once projection catches up, the
-      ;; durable tick status closes later deliveries. Both checks are required:
-      ;; using either one alone permits two identical :sheet/tick-cancelled
-      ;; events around the projection boundary.
-      (when (claim-budget-cancellation! tick-id)
-        (if (rm/is-tick-or-ancestor-cancelled? context tick-id)
-          (swap! budget-cancellation-claims dissoc tick-id)
-          (cp/process-command
-           (assoc context :command
-                  {:command/id (random-uuid)
-                   :command/timestamp (time/now)
-                   :command/name :sheet/cancel-tick
-                   :sheet-id sheet-id
-                   :tick-id tick-id
-                   :reason reason}))))
-      (when (and (:root-sheet-id exceeded)
-                 (:root-tick-id exceeded)
-                 (not= tick-id (:root-tick-id exceeded))
-                 (claim-budget-cancellation! (:root-tick-id exceeded)))
-        (if (rm/is-tick-or-ancestor-cancelled? context (:root-tick-id exceeded))
-          (swap! budget-cancellation-claims dissoc (:root-tick-id exceeded))
-          (cp/process-command
-           (assoc context :command
-                  {:command/id (random-uuid)
-                   :command/timestamp (time/now)
-                   :command/name :sheet/cancel-tick
-                   :sheet-id (:root-sheet-id exceeded)
-                   :tick-id (:root-tick-id exceeded)
-                   :reason reason}))))
-    exceeded))
+  (let [reason (str "LLM call budget exceeded: " (:current exceeded) "/" (:budget exceeded))
+        owners (cond-> [{:sheet-id sheet-id :tick-id tick-id}]
+                 (and (:root-sheet-id exceeded) (:root-tick-id exceeded)
+                      (not= tick-id (:root-tick-id exceeded)))
+                 (conj {:sheet-id (:root-sheet-id exceeded) :tick-id (:root-tick-id exceeded)}))
+        claimed (filterv #(claim-budget-cancellation! (:tick-id %)) owners)]
+    (if (seq claimed)
+      (or (execution-budget/run-owned-cancellation!
+            (fn []
+              (let [anomalies
+                    (into [] (keep (fn [{:keys [sheet-id tick-id]}]
+                             (if (rm/is-tick-or-ancestor-cancelled? context tick-id)
+                               (do (swap! budget-cancellation-claims dissoc tick-id) nil)
+                               (let [result (cp/process-command
+                                              (assoc context :command
+                                                     {:command/id (random-uuid) :command/timestamp (time/now)
+                                                      :command/name :sheet/cancel-tick :sheet-id sheet-id
+                                                      :tick-id tick-id :reason reason}))]
+                                 (when (:cognitect.anomalies/category result)
+                                   (u/log ::budget-cancellation-failed :level :error
+                                          :tick-id tick-id :anomaly result)
+                                   (assoc result :cancellation-tick-id tick-id)))))) claimed)]
+                (when (seq anomalies) (assoc (first anomalies) :cancellation-anomalies anomalies)))))
+          exceeded)
+      exceeded)))
 
 (defn- reserve-llm-call-or-cancel!
   "Reserve one call and durably cancel both the active and root ticks when the
@@ -192,140 +183,54 @@
     (cancel-llm-budget! context sheet-id tick-id exceeded)))
 
 (defn- reserve-durable-provider-call!
-  "Append the final durable gate for one checkpointed provider attempt.
-
-   Nil authorizes dispatch. Every conflict or other append anomaly is returned
-   so the provider boundary fails closed."
-  [context {:keys [logical-action-identity provider-attempt-ordinal
-                   ownership-epoch]
-            :as reservation}]
-  (let [invocation-identity
-        (provider-call-reservations/invocation-identity
-         (:budget-tick-id reservation) logical-action-identity ownership-epoch
-         provider-attempt-ordinal)
-        result
-        (cp/process-command
-         (assoc context :command
-                (merge {:command/id (random-uuid)
-                        :command/timestamp (time/now)
-                        :command/name :sheet/reserve-provider-call
-                        :invocation-identity invocation-identity
-                        :reserved-at (str (java.time.Instant/now))}
-                       (dissoc reservation :budget))))]
-    (if (:cognitect.anomalies/category result)
-      result
-      (try
-        ;; Lazy hydration: the successful CAS remains authoritative. Re-read
-        ;; its root-tagged reservation projection before dispatch so the hot
-        ;; cache is exact even after restart, a simulated miss, or stale data.
-        (let [root-tick-id (:budget-tick-id reservation)
-              cached-count (get @tick-llm-counts root-tick-id ::missing)
-              must-hydrate? (or (= ::missing cached-count)
-                                (not (integer? cached-count))
-                                (and (integer? (:budget reservation))
-                                     (>= cached-count (:budget reservation))))]
-          (if must-hydrate?
-            (let [read-fn (or (:provider-call-reservation-read-fn context)
-                              (fn [query]
-                                (es/read (:event-store context) query)))
-                  durable-count
-                  (count
-                   (into []
-                         (read-fn {:tenant-id (:tenant-id context)
-                                   :tags #{[:tick root-tick-id]}
-                                   :types #{:sheet/provider-call-reserved}})))]
-              (swap! tick-llm-counts
-                     (fn [counts]
-                       (if (= cached-count
-                              (get counts root-tick-id ::missing))
-                         (assoc counts root-tick-id durable-count)
-                         counts))))
-            (swap! tick-llm-counts update root-tick-id inc))
-          nil)
-        (catch Throwable error
-          {:cognitect.anomalies/category :cognitect.anomalies/fault
-           :cognitect.anomalies/message (.getMessage error)})))))
+  "Durable CAS is the sole bounded admission authority. Nil permits dispatch."
+  [context reservation]
+  (let [result (cp/process-command
+                (assoc context :command
+                       (merge {:command/id (random-uuid) :command/timestamp (time/now)
+                               :command/name :sheet/reserve-provider-call
+                               :invocation-identity (provider-call-reservations/reservation-identity reservation)
+                               :reserved-at (str (java.time.Instant/now))}
+                              (dissoc reservation :budget))))]
+    (when (:cognitect.anomalies/category result) result)))
 
 (defn- reserve-durable-provider-call-or-cancel!
-  "Reserve durably and cancel only for authoritatively proven exhaustion.
-
-   A conflict may instead mean duplicate delivery or stale ownership. Re-read
-   the same root-tag facts and use the admission classifier; any read failure,
-   invalid relationship, or duplicate remains fail-closed without cancellation."
+  "Classify append conflicts from the same authoritative dedicated fact stream.
+   Only proven exhaustion cancels; incomplete history, stale owners, duplicates
+   and read/append failures all refuse dispatch without an exhaustion claim."
   [context sheet-id tick-id reservation]
   (when-let [anomaly (reserve-durable-provider-call! context reservation)]
-    (if (= :cognitect.anomalies/conflict
-           (:cognitect.anomalies/category anomaly))
+    (if (= :cognitect.anomalies/conflict (:cognitect.anomalies/category anomaly))
       (try
-        (let [root-tick-id (:budget-tick-id reservation)
-              observed-count (get @tick-llm-counts root-tick-id ::missing)
-              read-fn (or (:provider-call-reservation-read-fn context)
-                          (fn [query]
-                            (es/read (:event-store context) query)))
-              events (read-fn
-                      {:tenant-id (:tenant-id context)
-                       :tags #{[:tick (:budget-tick-id reservation)]}
-                       :types #{:sheet/tree-tick-started
-                                :sheet/node-execution-started
-                                :rlm/researcher-frontier-claimed
-                                :rlm/researcher-effect-claimed
-                                :sheet/provider-call-reserved}})
+        (let [read-fn (or (:provider-call-reservation-read-fn context)
+                          (fn [query] (es/read (:event-store context) query)))
+              events (read-fn {:tenant-id (:tenant-id context)
+                               :tags #{[:llm-budget-root (:budget-tick-id reservation)]}
+                               :types provider-call-reservations/fact-types})
               decision (provider-call-reservations/reservation-decision
-                        (assoc reservation
-                               :invocation-identity
-                               (provider-call-reservations/invocation-identity
-                                (:budget-tick-id reservation)
-                                (:logical-action-identity reservation)
-                                (:ownership-epoch reservation)
-                                (:provider-attempt-ordinal reservation)))
-                        events)]
-          (swap! tick-llm-counts
-                 (fn [counts]
-                   (if (= observed-count
-                          (get counts root-tick-id ::missing))
-                     (assoc counts root-tick-id (:current decision))
-                     counts)))
-          (when (= :exhausted (:decision decision))
-            (cancel-llm-budget! context sheet-id tick-id decision))
-          anomaly)
-        (catch Throwable _
-          anomaly))
+                         (assoc reservation :invocation-identity
+                                (provider-call-reservations/reservation-identity reservation)) events)]
+          (case (:decision decision)
+            :exhausted (let [cancellation (cancel-llm-budget! context sheet-id tick-id decision)]
+                         (if (:cognitect.anomalies/category cancellation) cancellation anomaly))
+            :incomplete-history (assoc anomaly
+                                       :failure-kind :budget-history-unavailable
+                                       :cognitect.anomalies/message "Durable LLM budget history is incomplete; legacy bounded execution cannot resume")
+            anomaly))
+        (catch Throwable error
+          (assoc anomaly :cognitect.anomalies/message (.getMessage error))))
       anomaly)))
 
 (defn- durable-budget-root
-  "Resolve the durable budget owner for this execution.
-
-   Generated children carry explicit root ids. A delegated checkpointed
-   campaign may start without those internal options, so walk its durable
-   parent lineage to the nearest ancestor whose start owns the public budget."
-  [context sheet-id tick-id tick-ctx]
-  (let [explicit-tick-id (get-in tick-ctx [:options :llm-budget-root-tick-id])
-        explicit-sheet-id (get-in tick-ctx [:options :llm-budget-root-sheet-id])
-        explicit-budget (get-in tick-ctx [:options :llm-call-budget])]
-    (if (and explicit-tick-id
-             explicit-sheet-id
-             (integer? explicit-budget)
-             (pos? explicit-budget))
-      {:sheet-id explicit-sheet-id
-       :tick-id explicit-tick-id
-       :budget explicit-budget}
-      (loop [candidate-tick-id tick-id
-             seen #{}]
-        (when (and candidate-tick-id
-                   (not (contains? seen candidate-tick-id)))
-          (let [started (first
-                         (into []
-                               (es/read (:event-store context)
-                                        {:tenant-id (:tenant-id context)
-                                         :types #{:sheet/tree-tick-started}
-                                         :tags #{[:tick candidate-tick-id]}})))
-                budget (get-in started [:options :llm-call-budget])]
-            (if (and (integer? budget) (pos? budget))
-              {:sheet-id (:sheet-id started)
-               :tick-id (:tick-id started)
-               :budget budget}
-              (recur (:parent-tick-id started)
-                     (conj seen candidate-tick-id)))))))))
+  "A bounded option never falls back to process-local/no-cap admission when
+   canonical ownership cannot be established. CAS still validates that owner."
+  [context _sheet-id tick-id tick-ctx]
+  (let [owner (budget-facts/root context tick-id)
+        budget (get-in tick-ctx [:options :llm-call-budget])]
+    (when (and (integer? budget) (pos? budget) (nil? owner))
+      (throw (ex-info "Durable LLM budget history is incomplete; bounded execution cannot resume"
+                      {:failure-kind :budget-history-unavailable :tick-id tick-id})))
+    owner))
 
 (defn- tick-ctx-of
   "The tick's execution context for a handler running inside a delivery.
@@ -351,19 +256,18 @@
            {:tick-id tick-id :ctx (rm/get-tick-execution-context context tick-id)})))
 
 (defn- node-execution-tags
-  "Tag checkpointed descendant node starts for the budget root's atomic CAS.
-
-   Non-checkpointed events retain their exact historical tag set."
+  "Index all bounded node starts on the dedicated budget stream.
+   Historical checkpoint-specific tick tags remain separate and unchanged."
   [context sheet-id tick-id node-id]
   (let [tick-ctx (tick-ctx-of context tick-id)
         options (:options tick-ctx)
         node (get (:nodes-by-id tick-ctx) node-id)
         checkpointed? (or (true? (:checkpointed-campaign? options))
                           (researcher-mode/checkpointed? node))
-        root-tick-id (when checkpointed?
-                       (:tick-id (durable-budget-root context sheet-id tick-id
-                                                     tick-ctx)))]
+        budget-root (durable-budget-root context sheet-id tick-id tick-ctx)
+        root-tick-id (when checkpointed? (:tick-id budget-root))]
     (cond-> #{[:sheet sheet-id] [:node node-id] [:tick tick-id]}
+      budget-root (conj [:llm-budget-root (:tick-id budget-root)])
       (and root-tick-id (not= root-tick-id tick-id))
       (conj [:tick root-tick-id]))))
 
@@ -2498,29 +2402,35 @@
   [context tick-ctx sheet-id tick-id node-id exec-context]
   (let [tick-options (:options tick-ctx)
         checkpointed-campaign? (true? (:checkpointed-campaign? tick-options))
-        durable-budget? (and checkpointed-campaign?
-                             (integer? (:llm-call-budget tick-options))
-                             (pos? (:llm-call-budget tick-options)))
+        budget-root (durable-budget-root context sheet-id tick-id tick-ctx)
         reservation-context
-        {:budget-sheet-id (:llm-budget-root-sheet-id tick-options)
-         :budget-tick-id (:llm-budget-root-tick-id tick-options)
-         :sheet-id sheet-id
-         :tick-id tick-id
-         :node-id node-id
-         :campaign-sheet-id (:researcher-campaign-sheet-id tick-options)
-         :campaign-tick-id (:researcher-campaign-tick-id tick-options)
-         :campaign-node-id (:researcher-campaign-node-id tick-options)
-         :iteration-index (:researcher-iteration-index tick-options)
-         :ownership-epoch (:researcher-ownership-epoch tick-options)
-         :budget (:llm-call-budget tick-options)}
+        (merge {:budget-sheet-id (:sheet-id budget-root)
+                :budget-tick-id (:tick-id budget-root) :budget (:budget budget-root)
+                :sheet-id sheet-id :tick-id tick-id :node-id node-id
+                :node-start-id (get-in context [:event :event/id]) :exec-context exec-context}
+               (if checkpointed-campaign?
+                 {:admission-kind :campaign
+                  :campaign-sheet-id (:researcher-campaign-sheet-id tick-options)
+                  :campaign-tick-id (:researcher-campaign-tick-id tick-options)
+                  :campaign-node-id (:researcher-campaign-node-id tick-options)
+                  :iteration-index (:researcher-iteration-index tick-options)
+                  :ownership-epoch (:researcher-ownership-epoch tick-options)}
+                 {:admission-kind :ordinary :node-start-id (get-in context [:event :event/id])
+                  :exec-context exec-context}))
         reserve-provider-attempt!
-        (when durable-budget?
-          (fn [{:keys [logical-action-identity provider-attempt-ordinal]}]
+        (when budget-root
+          (fn [{:keys [logical-action-identity provider-attempt-ordinal candidate-index node-attempt emitted-model-authority]}]
             (reserve-durable-provider-call-or-cancel!
-             context sheet-id tick-id
-             (assoc reservation-context
-                    :logical-action-identity logical-action-identity
-                    :provider-attempt-ordinal provider-attempt-ordinal))))]
+              context sheet-id tick-id
+              (cond-> (assoc reservation-context :logical-action-identity logical-action-identity
+                             :provider-attempt-ordinal provider-attempt-ordinal)
+                emitted-model-authority
+                (assoc :ownership-epoch (:ownership-epoch emitted-model-authority)
+                       :model-logical-action-id (:logical-action-id emitted-model-authority))
+                (contains? emitted-model-authority :configuration-id)
+                (assoc :model-configuration-id (:configuration-id emitted-model-authority))
+                (not checkpointed-campaign?)
+                (assoc :candidate-index (or candidate-index 0) :node-attempt (or node-attempt 1))))))]
     (cond->
      {:model-role-context
       {:context context
@@ -2546,6 +2456,14 @@
          context (merge attempt {:sheet-id sheet-id :tick-id tick-id :node-id node-id
                                  :node-start-id (get-in context [:event :event/id])
                                  :exec-context exec-context})))}
+      (:researcher-campaign-node-id tick-options)
+      (assoc :fresh-model-authority!
+             (fn [deadline]
+               (emitted-authority/ensure!
+                 context {:sheet-id sheet-id :tick-id tick-id :node-id node-id
+                          :node-start-id (get-in context [:event :event/id]) :exec-context exec-context
+                          :logical-action-id (pr-str [tick-id node-id exec-context])}
+                 deadline)))
       reserve-provider-attempt!
       (assoc :reserve-provider-attempt! reserve-provider-attempt!
              :provider-reservation-context reservation-context))))
@@ -3064,12 +2982,11 @@
             ;; started inputs.
             read-inputs (extract-read-inputs (:reads base-node) blackboard)
             checkpointed? (boolean (researcher-mode/checkpointed? base-node))
-            budget-root (when checkpointed?
-                          (durable-budget-root context sheet-id tick-id tick-ctx))
+            budget-root (durable-budget-root context sheet-id tick-id tick-ctx)
             durable-tick-options
             (cond-> (:options tick-ctx)
               budget-root
-              (assoc :checkpointed-campaign? true
+              (assoc :checkpointed-campaign? checkpointed?
                      :llm-call-budget (:budget budget-root)
                      :llm-budget-root-sheet-id (:sheet-id budget-root)
                      :llm-budget-root-tick-id (:tick-id budget-root)))]
@@ -3525,26 +3442,24 @@
                                                     context tick-ctx sheet-id tick-id)
                                                   :reserve-provider-call!
                                                   (when budget-root
-                                                    (fn [{:keys [iteration-index
-                                                               logical-action-identity
-                                                               provider-attempt-ordinal]}]
-                                                    (reserve-durable-provider-call-or-cancel!
-                                                     context sheet-id tick-id
-                                                     {:budget-sheet-id (or (:sheet-id budget-root)
-                                                                           sheet-id)
-                                                      :budget-tick-id (or (:tick-id budget-root)
-                                                                          tick-id)
-                                                      :sheet-id sheet-id
-                                                      :tick-id tick-id
-                                                      :node-id node-id
-                                                      :campaign-sheet-id sheet-id
-                                                      :campaign-tick-id tick-id
-                                                      :campaign-node-id node-id
-                                                      :iteration-index iteration-index
-                                                      :logical-action-identity logical-action-identity
-                                                      :provider-attempt-ordinal provider-attempt-ordinal
-                                                      :ownership-epoch ownership-epoch
-                                                      :budget (:budget budget-root)})))
+                                                    (fn [{:keys [iteration-index logical-action-identity
+                                                                 provider-attempt-ordinal candidate-index node-attempt]}]
+                                                      (reserve-durable-provider-call-or-cancel!
+                                                        context sheet-id tick-id
+                                                        (merge {:budget-sheet-id (:sheet-id budget-root)
+                                                                :budget-tick-id (:tick-id budget-root) :budget (:budget budget-root)
+                                                                :sheet-id sheet-id :tick-id tick-id :node-id node-id
+                                                                :node-start-id (:event/id event) :exec-context exec-context
+                                                                :logical-action-identity logical-action-identity
+                                                                :provider-attempt-ordinal provider-attempt-ordinal}
+                                                               (if checkpointed?
+                                                                 {:admission-kind :campaign
+                                                                  :campaign-sheet-id sheet-id :campaign-tick-id tick-id
+                                                                  :campaign-node-id node-id :iteration-index iteration-index
+                                                                  :ownership-epoch ownership-epoch}
+                                                                 {:admission-kind :ordinary :node-start-id (:event/id event)
+                                                                  :exec-context exec-context :candidate-index (or candidate-index 0)
+                                                                  :node-attempt (or node-attempt 1)})))))
                                                   :persist-researcher-checkpoint!
                                                   (fn [checkpoint]
                                                     (persist-v2-checkpoint! checkpoint false))
@@ -3686,6 +3601,7 @@
                                          (:outputs validated-result)))
                            validated-result)
                   {:keys [status outputs rejected-writes missing-write-keys error duration-ms
+                          failure-kind provider-evidence model-fallback
                           generated-tree-raw generated-tree-source
                           iteration-reasonings usage own-usage iterations block-payload]} result
                   ;; Handle :tree-generated status - only propagate raw tree (canonical contains fns)
@@ -3824,6 +3740,9 @@
                          terminal-quantum-observation
                          (merge terminal-quantum-observation)
                          error (assoc :error error)
+                         failure-kind (assoc :failure-kind failure-kind)
+                         provider-evidence (assoc :provider-evidence provider-evidence)
+                         model-fallback (assoc :model-fallback model-fallback)
                          (seq missing-write-keys) (assoc :missing-write-keys missing-write-keys)
                          (seq rejected-writes)
                          (assoc :rejected-writes (normalize-output-keys rejected-writes))
@@ -5238,7 +5157,10 @@
        :tags #{[:sheet sheet-id] [:node parent-id] [:tick tick-id]}
        :body {:sheet-id sheet-id :tick-id tick-id :node-id parent-id
               :item-index completed-count :total-items total-items}})
-     (make-bb-write-event context sheet-id tick-id (:output-key state) into-value)
+     ;; The aggregate is produced by this parent execution, not an item seed.
+     ;; Canonical completion readback joins writes by execution identity.
+     (make-bb-write-event context sheet-id tick-id (:output-key state) into-value
+                          {:node-id parent-id})
      (->event
       {:type :sheet/node-execution-completed
        :tags #{[:sheet sheet-id] [:node parent-id] [:tick tick-id]}
@@ -5748,7 +5670,7 @@
         (and (= status :running)
              (< current-iteration max-ticks))
         {:result/events
-         [(->event
+         [(budget-facts/event context
            {:type :sheet/tree-tick-completed
             :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
                     correlation-id (conj [:correlation correlation-id]))
@@ -5757,7 +5679,7 @@
                            :iteration current-iteration
                            :root-status :running}
                     correlation-id (assoc :correlation-id correlation-id))})
-          (->event
+          (budget-facts/event context
            {:type :sheet/tree-tick-started
             :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
                     correlation-id (conj [:correlation correlation-id]))
@@ -6934,6 +6856,14 @@
   "Refresh a trace after its ordered ephemeral routing evidence is durable.
    A final routing summary can be appended after the terminal event that first
    triggered assembly, so this delivery is the settle signal for that evidence."
+  [context]
+  (refresh-terminal-execution-trace context))
+
+(defprocessor :sheet refresh-execution-trace-after-rlm-bookend
+  {:topics #{:sheet/rlm-tree-execution-completed}}
+  "Refresh the generated child's terminal trace after its late RLM bookend.
+   The event's tick-id identifies the child; source-tick-id identifies the
+   separate hosting campaign and must not redirect trace assembly."
   [context]
   (refresh-terminal-execution-trace context))
 

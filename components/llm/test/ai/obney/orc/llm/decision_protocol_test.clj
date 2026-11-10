@@ -216,9 +216,10 @@
                        "human means a staff member, never the customer's own words"
                        "What was written"]]
           (is (str/includes? instructions shown) (str "shown meaning: " shown)))
-        (doseq [absent ["Promo code the customer quoted"
-                        "Where they are based"]]
-          (is (not (str/includes? instructions absent)) (str "absent meaning: " absent)))))))
+        (let [[shown declared] (str/split instructions #"DECLARED CONTRACT" 2)]
+          (is (not (str/includes? shown "Where they are based")))
+          (is (str/includes? declared "Where they are based")))
+        (is (not (str/includes? instructions "Promo code the customer quoted")))))))
 
 (deftest the-guide-changes-neither-the-state-nor-the-options
   (let [requests (atom [])
@@ -246,7 +247,7 @@
 (deftest the-guide-follows-the-instruction-and-the-output-description
   (let [requests (atom [])
         inputs (guide-request-inputs)
-        guide (sio/input-field-guide (:inputs guide-spec) inputs)]
+        guide (sio/input-request-guide (:inputs guide-spec) inputs)]
     (register-decision-provider! :decision-test-guide-order (response guide-answers) requests)
     (llm/predict :decision-test-guide-order guide-spec inputs {:validate? false})
     (is (string? guide))
@@ -281,7 +282,9 @@
       (doseq [shown ["The ticket subject line" "Support tier"
                      "human means a staff member, never the customer's own words"]]
         (is (str/includes? instructions shown) shown))
-      (doseq [absent ["Promo code the customer quoted" "Where they are based"
+      (is (str/includes? instructions "Where they are based"))
+      (is (str/includes? instructions "DECLARED CONTRACT"))
+      (doseq [absent ["Promo code the customer quoted"
                       "Agent notes, when there are any"]]
         (is (not (str/includes? instructions absent)) absent)))))
 

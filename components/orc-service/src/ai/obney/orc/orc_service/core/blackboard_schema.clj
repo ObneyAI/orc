@@ -28,7 +28,9 @@
   [schema path]
   (let [entries (schema-args schema)]
     (if (empty? entries)
-      (violation path :map-fields-missing schema)
+      (if (and (map? (second schema)) (true? (:closed (second schema))))
+        [] ; A closed empty map admits exactly one shape, not arbitrary data.
+        (violation path :map-fields-missing schema))
       (mapcat
        (fn [entry]
          (if (and (vector? entry) (<= 2 (count entry)))
@@ -145,3 +147,51 @@
                             violations))
        " are forbidden"
        "; use the most specific schema possible for each value's intent"))
+
+(declare infer-specific-schema)
+
+(defn- collection-item-schema [values path]
+  (when (empty? values)
+    (throw (ex-info "Cannot infer the intent of an empty collection; provide an explicit, specific blackboard schema"
+                    {:reason :empty-collection :path path})))
+  (let [schemas (vec (distinct (map-indexed (fn [index value]
+                                             (infer-specific-schema value (conj path index)))
+                                           values)))]
+    (if (= 1 (count schemas)) (first schemas) (into [:or] schemas))))
+
+(defn infer-specific-schema
+  "Infer observed structure, never semantic meaning, from an existing value.
+   Use an authored schema first. Empty containers cannot reveal their intended
+   member shape and fail with the exact value path instead of becoming :any."
+  ([value] (infer-specific-schema value []))
+  ([value path]
+   (when (or (ratio? value)
+             (and (float? value) (not (Double/isFinite (double value)))))
+     (throw (ex-info "Cannot represent this numeric value losslessly in a model input; provide an explicit representation and contract"
+                     {:reason :unrepresentable-value :path path :value-type (.getName (class value))})))
+   (cond
+     (nil? value) :nil
+     (string? value) :string
+     (boolean? value) :boolean
+     (int? value) :int
+     (integer? value) 'integer?
+     (double? value) :double
+     (float? value) 'float?
+     (decimal? value) 'decimal?
+     (keyword? value) :keyword
+     (uuid? value) :uuid
+     (inst? value) 'inst?
+     (map? value)
+     (do
+       (when (empty? value)
+         (throw (ex-info "Cannot infer the intent of an empty map; provide an explicit, field-specific blackboard schema"
+                         {:reason :empty-map :path path})))
+       (into [:map]
+             (map (fn [[key item]] [key (infer-specific-schema item (conj path key))]))
+             (sort-by (comp pr-str key) value)))
+     (vector? value) [:vector (collection-item-schema value path)]
+     (set? value) [:set (collection-item-schema (sort-by pr-str value) path)]
+     (sequential? value) [:sequential (collection-item-schema value path)]
+     :else
+     (throw (ex-info "Cannot infer a specific blackboard schema; provide an explicit contract for this value"
+                     {:reason :unrepresentable-value :path path :value-type (.getName (class value))})))))
