@@ -34,7 +34,12 @@ contract StructuredPrediction {
     @invariant DeclaredMeaningReachesTheModel
         -- The description declared for each input reaches the model alongside
         -- its value, whether the request is sent in marker form or through
-        -- function calling.
+        -- function calling or strict structured output. Declared nested object,
+        -- collection-item and enum meanings remain attached to their paths.
+        -- A present nullable input remains present with null; an absent input
+        -- is not manufactured as null. Inline and emitted researcher callers
+        -- preserve declared input contracts instead of replacing them with
+        -- generic types or descriptions.
 
     @invariant OptionalOutputPresence
         -- A declared optional output may be absent from provider tool arguments
@@ -56,6 +61,11 @@ contract StructuredPrediction {
         -- accepts null. Required presence is checked separately: missing still
         -- fails, while explicit null passes only a nullable declared schema. An optional field whose own declared schema already accepts
         -- null keeps a returned null as its value.
+        -- A required record remains present as an empty map when all its
+        -- optional children are absent. Flattening and final reassembly do
+        -- not turn child absence into parent absence. An empty declared
+        -- record also remains a typed record. Partial stream updates do not
+        -- assert completion of records with no supplied fields.
 
     @invariant PredictionMetadata
         -- A metadata-bearing blocking result preserves parsed outputs, token
@@ -104,6 +114,80 @@ contract StructuredPrediction {
         -- Missing, extra, invalid or trailing response data fail. A reported
         -- refusal or truncation fails even when its content is parseable JSON.
         -- The selected mode never silently falls back to a different protocol.
+        -- Researcher instructions describe generated code as a field value, not
+        -- a competing marker, tool or JSON response envelope. The effective
+        -- protocol owns envelope instructions, including provider-inherited
+        -- configuration and specialist calls.
+
+    @invariant PairedFunctionOutputPreservesTheDeclaredContract
+        -- A caller may explicitly select the paired function output profile on
+        -- an ordinary generation node or its provider configuration. The offered
+        -- response function and its argument decoder derive from the same rich
+        -- declared contract used by the strict JSON profile. Preserve nested
+        -- meanings, typed key identities, dictionary keys, optional nullable
+        -- presence, literal strings, false and zero. A disabled optional ordinary
+        -- validation pass does not disable the paired wire contract.
+        -- Exactly one call to the offered response function supplies its complete
+        -- argument string. Missing calls, multiple calls, wrong function names,
+        -- malformed or contract-invalid arguments, duplicate properties, refusal
+        -- and truncation fail with typed evidence. Null message content with valid
+        -- function arguments is not an empty answer. A valid envelope is not
+        -- evidence that the returned values faithfully describe the sources.
+        -- The profile offers the rich compiled schema and model-visible meanings
+        -- and requests strict provider-side enforcement of the response function
+        -- argument contract for every model. Automatic tool selection is the
+        -- default; forcing the named response function is an explicit caller
+        -- choice. A strict request does not prove that an endpoint honors that
+        -- request, and an unsupported request remains a typed failure rather
+        -- than silently dropping enforcement. Generated envelope guidance asks for function arguments rather
+        -- than competing plain JSON output. A missing automatic response call is
+        -- a tool-call parsing failure; a missing explicitly forced call retains
+        -- the distinct missing-forced-call failure. This alone does not establish that
+        -- the provider enforces strict tool arguments. Local validation remains
+        -- mandatory. Unsupported adapters, conflicting protocol controls and
+        -- unsupported streaming reject before dispatch rather than using markers.
+        -- Explicit strict JSON never silently degrades to function calling. Legacy
+        -- function preference without the paired profile retains its historical
+        -- parsing and optional-field conventions. Node configuration may explicitly
+        -- override an inherited output profile; changing the model name alone
+        -- never silently overrides the selected protocol or privacy policy.
+        -- Ordinary leaves, conversational conditions and decisions, researcher
+        -- prime generations, inline specialists and emitted leaves preserve the
+        -- effective profile, contracts and paired guidance through fallback
+        -- candidates and delegation. Native finite decision providers retain
+        -- their separately declared protocol. Canonical projection fidelity and
+        -- each actual role require their own integration evidence.
+
+    @invariant StrictOutputGuidanceHasOneStructuralAuthority
+        -- When strict output is selected explicitly or inherited from provider
+        -- configuration, the paired compiled contract supplies structural output
+        -- guidance. ORC-generated legacy type summaries are not appended to
+        -- authored meanings when those summaries can describe a different wire
+        -- shape or collapse typed identities. Preserve every distinct authored
+        -- field and schema meaning, including nested meanings. This includes
+        -- the containing map's authored meaning when ORC flattens that map into
+        -- output fields. Preserve its scope to the original typed output group;
+        -- do not present group meaning as an unrelated scalar field's meaning.
+        -- Authored text is
+        -- never stripped by matching words or punctuation. Direct caller-authored
+        -- descriptions remain unchanged. Marker and function-mode behavior is
+        -- unchanged by this strict-mode presentation correction; aliases, schema
+        -- validation, decoding and canonical domain values also remain unchanged.
+
+    @invariant TypedOutputIdentitySurvivesNormalization
+        -- A value already valid under its original output contract retains
+        -- its typed keys and values through provider normalization. A raw
+        -- sibling needing schema-directed conversion must not corrupt an
+        -- already valid nested value. Raw JSON spellings still decode under
+        -- their declared types; validation is never weakened to accept loss.
+        -- Strict finite dictionary keys that share a JSON spelling remain
+        -- distinguishable through a paired representation carrying each
+        -- key's declared meaning. Duplicate decoded keys are rejected before
+        -- construction can overwrite a value. An unprovably reversible key
+        -- representation fails explicitly rather than choosing by order.
+        -- Dictionary support does not imply support for ambiguous ordinary
+        -- enum outputs. Canonical values retain identity through delegation
+        -- and durable blackboard projection read-back.
 
     @invariant StructuredFailureClassification
         -- A forced tool response with no tool call, malformed tool arguments,
@@ -114,6 +198,35 @@ contract StructuredPrediction {
         -- finish error is a failure even when validation is not requested and
         -- no tool was forced; its evidence includes the provider's own finish
         -- detail. Existing successful result shapes and values remain unchanged.
+
+    @invariant SafeOrdinaryTransportEvidence
+        -- A synchronous conversational provider invocation that fails before a
+        -- response retains its transport-failure kind and provider identity.
+        -- Its optional closed transport record contains only a recognized
+        -- top-level client error type and/or an integer HTTP status from 100 to
+        -- 599; unavailable or invalid fields are absent, and an empty record
+        -- is omitted. Unknown failures acquire no invented classification.
+        -- The public exception uses a fixed safe summary based only on those
+        -- recognized fields, without the upstream message, cause, request,
+        -- headers, body or arbitrary exception data. Missing provider
+        -- configuration remains a distinct safely summarized failure and does
+        -- not establish that an outbound request occurred. Existing schema,
+        -- parse, finish and semantic outcomes are not reclassified as outages.
+        -- Classification is evidence, not authorization to retry or choose a
+        -- different model. Native decision and asynchronous streaming failure
+        -- surfaces require separate verification.
+
+    @invariant CandidatePreflightDoesNotDispatch
+        -- Candidate preflight resolves registered routes and validates supported
+        -- structured contracts without a provider request. It does not certify
+        -- remote model availability or semantic suitability. A missing provider,
+        -- unsupported native output or incompatible strict adapter fails visibly.
+
+    @invariant StreamingFailureEvidenceIsSafe
+        -- Asynchronous transport failures preserve allowlisted type and status
+        -- through the terminal error. Raw exception messages, credentials and
+        -- throwable causes are not copied into the durable diagnostic boundary.
+        -- Status-only 429 is not evidence distinguishing quota from rate limit.
 
     @invariant OneInvocationPerPrediction
         -- One prediction attempt performs at most one provider invocation;
@@ -133,6 +246,18 @@ contract StructuredPrediction {
 
 contract DecisionProtocolPrediction {
     predict_decision: (provider: Any, specification: Any, inputs: Any, options: Any) -> Any
+
+    @invariant NativeTransportStatusSurvivesPublicBoundaries
+        -- A native decision transport failure retains its known top-level HTTP
+        -- status, when it is an integer from 100 through 599, as optional
+        -- provider-evidence.transport.http-status. A status alone never invents
+        -- an error category or proves eligibility for another model. Missing or
+        -- malformed status is omitted. Public diagnostics use a safe summary
+        -- and never retain the original message, request, response body or cause.
+        -- The same evidence survives ordinary completion and the native
+        -- one-response streaming wrapper's single error terminal. That wrapper
+        -- closes after the error; this is not a contract for partial chat streams.
+        -- Invalid decision answers retain their distinct validation failure.
 
     @invariant ProtocolFollowsRegisteredProvider
         -- A registered provider declares whether it is a conversational model
@@ -162,6 +287,47 @@ contract DecisionProtocolPrediction {
         -- streaming requests preserve their established layout: input guide,
         -- output contract, interaction markers, then node instruction.
         -- The guide is always on; no option removes it.
+        -- Applicable branch descriptions and declared enum-option meanings are
+        -- input meanings too. They cannot disappear when branches are expanded
+        -- into fields. Distinct branches with identical displayed field paths
+        -- retain unambiguous meaning references. An output guide carrying the
+        -- same description does not satisfy this input-guide obligation.
+        -- A field or map-entry description does not erase a distinct schema
+        -- description. Preserve both with their roles clear; identical meanings
+        -- need only appear once. This supersedes the older presentation rule
+        -- that chose the field description instead of its schema description.
+
+    @invariant SuppliedInputsRetainTheirDeclaredShape
+        -- Alongside the value-focused input guide, every supplied non-image
+        -- input retains provider-visible declared shape information. Nested
+        -- optional-field and collection-item meanings remain available when
+        -- optional keys are absent, collections are empty or values are null.
+        -- This information is labeled as a contract, not as supplied evidence;
+        -- it does not invent values, collection members or optional presence.
+        -- Inputs absent at the top level remain omitted. Applicable union and
+        -- enum meanings and exact presented key identities remain distinct;
+        -- without an observed item, declared alternatives are not guessed away.
+        -- Marker, streaming, strict JSON, paired and legacy function, and native
+        -- decision requests share this behavior without model-specific parsing
+        -- or author-supplied prompt patches. The existing shown-field guide
+        -- retains its value-focused meaning; contract information supplements it.
+
+    @invariant InputPresentationPreservesTypedIdentity
+        -- When input validation is enabled, original input contracts validate
+        -- original native values before model-facing presentation. Supplied
+        -- false and null are validated under the same option as other values;
+        -- absence remains distinct from either value. Presentation never
+        -- mutates the domain contract, canonical input or output contract.
+        -- Every model-facing value and its input guide use the same identity
+        -- mapping, including nested objects, collections, finite variants and
+        -- typed dictionaries. Distinct keys that share a JSON spelling remain
+        -- distinguishable, with their original paths and meanings visible.
+        -- Applicable union meanings survive serialization; a display collision
+        -- cannot select a different branch's meaning. Present nested null keeps
+        -- its declared meaning. A value that cannot be represented without
+        -- losing identity fails before transport with a specific diagnostic.
+        -- Marker, function, strict JSON, streaming and native decision state
+        -- follow this contract. Presentation is generic across model choices.
 
     @invariant DecisionRequestCarriesDeclaredMeaning
         -- The declared inputs become the state the decision model assesses,

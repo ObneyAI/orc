@@ -29,11 +29,12 @@
           rendered (executor/render-tree-outcome summary)]
       (is (str/includes? rendered "status: :success"))
       (is (str/includes? rendered "NIL/EMPTY WRITES: :report, :key-dates"))
-      (is (str/includes? rendered "did NOT land"))
-      ;; nil-written keys are NOT listed among merged outputs
+      (is (str/includes? rendered "legacy summary combines missing and present empty values"))
+      (is (not (str/includes? rendered "did NOT land")))
+      ;; Present output keys remain visible even if their preview is null.
       (is (str/includes? rendered ":key-entities"))
       (let [merged-section (first (str/split rendered #"NIL/EMPTY"))]
-        (is (not (str/includes? merged-section ":report")))))))
+        (is (str/includes? merged-section ":report"))))))
 
 (deftest render-outcome-includes-failed-leaf-errors
   (testing "failed leaves render with node-id and error (which carries the raw preview)"

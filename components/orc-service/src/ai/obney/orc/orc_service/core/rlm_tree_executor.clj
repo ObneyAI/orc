@@ -14,6 +14,7 @@
    This follows the delegate node pattern but is specialized for
    inline tree execution rather than referencing an existing sheet."
   (:require [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
+            [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.commands] ;; Load command handlers
             [ai.obney.orc.orc-service.core.streaming :as streaming]
@@ -21,7 +22,8 @@
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [malli.core :as m]))
 
 (declare compute-by-node-from-tick-events)
 
@@ -212,9 +214,19 @@
 ;; =============================================================================
 
 (defn- run-command!
-  "Run a command and return the result."
+  "Run a child setup command, stopping compilation when the command is rejected."
   [ctx command-data]
-  (cp/process-command (assoc ctx :command command-data)))
+  (let [result (cp/process-command (assoc ctx :command command-data))]
+    (when-let [category (:cognitect.anomalies/category result)]
+      (throw (ex-info
+              (str "Generated child setup command " (:command/name command-data)
+                   " rejected: "
+                   (or (:cognitect.anomalies/message result) (str category)))
+              {:reason :generated-child-setup-rejected
+               :preflight-rejected? true
+               :command-name (:command/name command-data)
+               :cognitect.anomalies/category category})))
+    result))
 
 (defn- make-create-sheet-command
   "Create a create-sheet command with unique name."
@@ -244,49 +256,6 @@
    :sheet-id sheet-id
    :key key
    :schema schema})
-
-(declare infer-specific-schema)
-
-(defn- collection-item-schema
-  [values]
-  (when (empty? values)
-    (throw (ex-info "Cannot infer the intent of an empty collection; provide an explicit, specific blackboard schema"
-                    {:value values})))
-  (let [schemas (vec (distinct (map infer-specific-schema values)))]
-    (if (= 1 (count schemas))
-      (first schemas)
-      (into [:or] schemas))))
-
-(defn- infer-specific-schema
-  "Infer a recursively specific schema from an existing value.
-
-   Empty containers deliberately fail: their intended member shape cannot be
-   learned from the value and must be supplied by the workflow author."
-  [value]
-  (cond
-    (nil? value) :nil
-    (string? value) :string
-    (boolean? value) :boolean
-    (integer? value) :int
-    (number? value) :double
-    (keyword? value) :keyword
-    (uuid? value) :uuid
-    (inst? value) :inst
-    (map? value) (do
-                   (when (empty? value)
-                     (throw (ex-info "Cannot infer the intent of an empty map; provide an explicit, field-specific blackboard schema"
-                                     {:value value})))
-                   (into [:map]
-                         (map (fn [[key item]] [key (infer-specific-schema item)]))
-                         (sort-by (comp pr-str key) value)))
-    (vector? value) [:vector (collection-item-schema value)]
-    (set? value) [:set (collection-item-schema value)]
-    (sequential? value) [:sequential (collection-item-schema value)]
-    :else
-    (throw (ex-info (str "Cannot infer a specific blackboard schema for "
-                         (.getName (class value))
-                         "; provide the most specific schema possible for the value's intent")
-                    {:value-type (class value)}))))
 
 ;; =============================================================================
 ;; Tree Analysis
@@ -355,6 +324,24 @@
     ;; Otherwise: no keys
     :else []))
 
+(defn- merge-contracts
+  "Resolve declarations without losing authored properties or silently picking a winner.
+   Unequal schema forms must be omitted in favor of the inherited contract."
+  [scope & declarations]
+  (reduce (fn [resolved declaration]
+            (reduce-kv
+              (fn [result k schema]
+                (when (and (contains? result k)
+                           (not= (m/form (get result k)) (m/form schema)))
+                  (throw (ex-info
+                           (str "Conflicting generated contract for " k
+                                "; omit the redeclaration and reuse the existing contract")
+                           {:preflight-rejected? true :reason :conflicting-contract
+                            :contract-scope scope :blackboard-key k})))
+                (if (contains? result k) result (assoc result k schema)))
+              resolved (or declaration {})))
+          {} declarations))
+
 (defn extract-key-schemas
   "U11: Walk the canonical tree and collect {write-key → Malli-schema} from
    leaf nodes that declared :output-schemas.
@@ -365,7 +352,7 @@
    response back into Clojure data. Without this, the LLM's structured
    output arrives at downstream :code nodes as raw JSON text.
 
-   Returns a map {key schema}. Last-write-wins on key conflicts.
+   Returns a map {key schema}. Conflicting declarations fail before execution.
    Returns {} when no :output-schemas declarations exist anywhere in the tree."
   [tree]
   (cond
@@ -377,7 +364,7 @@
     ;; Sequence-like (sheet/sequence, sheet/parallel) → recurse into children
     (and (seq? tree)
          (#{'sheet/sequence 'sheet/parallel} (first tree)))
-    (apply merge (map extract-key-schemas (rest tree)))
+    (apply merge-contracts :generated (map extract-key-schemas (rest tree)))
 
     ;; Map-each may declare schemas for its iteration binding and collected
     ;; output; merge those with schemas declared by its child leaf.
@@ -385,8 +372,8 @@
     (let [args (rest tree)
           child-node (last args)
           opts (apply hash-map (butlast args))]
-      (merge (:output-schemas opts)
-             (extract-key-schemas child-node)))
+      (merge-contracts :generated (:output-schemas opts)
+                     (extract-key-schemas child-node)))
 
     ;; Code/final/etc. → no schemas to collect here
     :else {}))
@@ -499,7 +486,14 @@
                  :sheet-id sheet-id
                  :node-id leaf-id
                  :executor :ai}
-          (:model opts) (assoc :model (:model opts))))
+          (:model opts) (assoc :model (:model opts))
+          (contains? opts :options) (assoc :options (:options opts))))
+      (when (some #(contains? opts %) [:provider :fallback-models :fallback-policy])
+        (run-command! context
+          (merge {:command/name :sheet/set-node-model-policy
+                  :command/id (random-uuid) :command/timestamp (time/now)
+                  :sheet-id sheet-id :node-id leaf-id}
+                 (select-keys opts [:provider :fallback-models :fallback-policy]))))
       {:node-id leaf-id
        :ephemeral-fn-keys []})
 
@@ -650,13 +644,20 @@
           sandbox-vars (select-keys (or sandbox-vars {}) tree-keys)
           output-keys (extract-output-keys tree)
           tree-schemas (extract-key-schemas tree)
+          _ (merge-contracts :inherited blackboard-schemas tree-schemas)
           input-schemas (merge
+                         ;; Contract existence is independent of value existence:
+                         ;; an authored output may not have been produced yet.
+                         (select-keys blackboard-schemas tree-keys)
                          (into {} (map (fn [[key value]]
-                                         [key (infer-specific-schema value)]))
+                                         [key (or (get blackboard-schemas key)
+                                                  (get tree-schemas key)
+                                                  (blackboard-schema/infer-specific-schema value [key]))]))
                                sandbox-vars)
                          (into {} (map (fn [[key value]]
                                          [key (or (get blackboard-schemas key)
-                                                  (infer-specific-schema value))]))
+                                                  (get tree-schemas key)
+                                                  (blackboard-schema/infer-specific-schema value [key]))]))
                                blackboard))
           undeclared-keys (remove #(or (contains? input-schemas %)
                                        (contains? tree-schemas %))
@@ -665,7 +666,7 @@
               (throw (ex-info
                       (str "Generated tree keys " (vec undeclared-keys)
                            " have no specific schema; declare :output-schemas using the most specific schema possible for each value's intent")
-                      {:blackboard-keys (vec undeclared-keys)})))
+                      {:preflight-rejected? true :blackboard-keys (vec undeclared-keys)})))
           ;; Create ephemeral sheet for this tree execution
           _ (println "[DEBUG Tree] Creating ephemeral sheet...")
           sheet-result (run-command! context
@@ -677,40 +678,11 @@
           _ (println "[DEBUG Tree] Tree keys:" tree-keys)
           _ (println "[DEBUG Tree] Output keys:" output-keys)
 
-          ;; Declare blackboard keys from sandbox-vars
-          ;; Infer concrete container schemas without introducing :any.
-          _ (println "[DEBUG Tree] Declaring sandbox-vars keys...")
-          _ (doseq [[k _] sandbox-vars]
-              (let [schema (get input-schemas k)]
-                (run-command! context
-                  (make-declare-key-command sheet-id k schema))))
-
-          ;; Declare blackboard keys from inputs.
-          ;; U6: If the caller supplied :blackboard-schemas, prefer that
-          ;; schema (preserves :field-type :image etc.); else infer from
-          ;; value type.
-          _ (println "[DEBUG Tree] Declaring blackboard keys...")
-          _ (doseq [[k _] blackboard]
-              (let [schema (get input-schemas k)]
-                (run-command! context
-                  (make-declare-key-command sheet-id k schema))))
-
-          ;; U11: collect any :output-schemas declared on :llm nodes in the
-          ;; tree. When the model declares the structure of an :llm write
-          ;; (e.g. :targets [:vector [:map ...]]), we use that schema when
-          ;; declaring the blackboard key so llm's complex-spec? path
-          ;; triggers JSON-parsing of the LLM response. Without this,
-          ;; structured LLM outputs arrive at downstream :code nodes as
-          ;; raw JSON text.
-          ;; Declare any additional keys from tree that aren't already declared.
-          ;; Model-authored output schemas are preferred. A generic non-nil
-          ;; schema keeps legacy generated trees executable without violating
-          ;; the blackboard's prohibition on :any.
-          declared-keys (set (concat (keys sandbox-vars) (keys blackboard)))
-          _ (doseq [k tree-keys
-                    :when (not (contains? declared-keys k))]
+          ;; Declare each resolved key once. This never creates an input value;
+          ;; absent authored writes stay absent until their producer completes.
+          _ (doseq [[k schema] (merge tree-schemas input-schemas)]
               (run-command! context
-                (make-declare-key-command sheet-id k (get tree-schemas k))))
+                (make-declare-key-command sheet-id k schema)))
 
           ;; Compile the actual tree structure into ORC nodes
           ;; Returns {:node-id N :ephemeral-fn-keys [...]}
@@ -791,14 +763,10 @@
                                             :command/name :sheet/tick-tree
                                             :sheet-id sheet-id
                                             :tick-id tick-id
-                                            ;; The parent blackboard also holds
-                                            ;; output placeholders. An absent
-                                            ;; output is not a caller input and
-                                            ;; must not be seeded as explicit
-                                            ;; nil through the child schema gate.
-                                            :inputs (into {}
-                                                          (remove (comp nil? val))
-                                                          (merge blackboard sandbox-vars))
+                                            ;; Caller supplies only present values. Preserve
+                                            ;; explicit null, false and zero in both sources;
+                                            ;; unwritten output placeholders are not inputs.
+                                            :inputs (merge blackboard sandbox-vars)
                                             :options (cond-> {:timeout-ms timeout-ms}
                                                        assessment-origin
                                                        (assoc :assessment-origin assessment-origin)
@@ -808,11 +776,16 @@
                                                        (assoc :researcher-campaign-sheet-id campaign-sheet-id
                                                               :researcher-campaign-tick-id campaign-tick-id
                                                               :researcher-campaign-node-id campaign-node-id
+                                                              :researcher-campaign-exec-context (or (:exec-context context) (value-log/exec-context (get-in context [:event :inputs])) {})
                                                               :researcher-iteration-index campaign-iteration-index
                                                               :researcher-ownership-epoch campaign-ownership-epoch)
+                                                       (and durable-budget?
+                                                            (pos-int? campaign-ownership-epoch)
+                                                            (nat-int? campaign-iteration-index)
+                                                            (every? uuid? [campaign-sheet-id campaign-tick-id campaign-node-id]))
+                                                       (assoc :checkpointed-campaign? true)
                                                        durable-budget?
-                                                       (assoc :checkpointed-campaign? true
-                                                              :llm-budget-root-tick-id
+                                                       (assoc :llm-budget-root-tick-id
                                                               llm-budget-root-tick-id
                                                               :llm-budget-root-sheet-id
                                                               llm-budget-root-sheet-id))}
@@ -985,6 +958,11 @@
     (catch Exception e
       (println "[DEBUG Tree] EXECUTION ERROR:" (.getMessage e))
       (.printStackTrace e)
-      {:status :failure
-       :error (str "Tree execution failed: " (.getMessage e))
-       :duration-ms 0})))))
+      (cond-> {:status :failure
+               :error (str "Tree execution failed: " (.getMessage e))
+               :duration-ms 0}
+        (:preflight-rejected? (ex-data e))
+        (assoc :preflight-rejected? true)
+        (:blackboard-keys (ex-data e))
+        (assoc :preflight-rejected? true
+               :missing-schema-keys (:blackboard-keys (ex-data e)))))))))

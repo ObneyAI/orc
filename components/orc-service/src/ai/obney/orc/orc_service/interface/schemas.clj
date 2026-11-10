@@ -129,13 +129,35 @@
    ;; The call named a provider that was never configured: nothing was sent, so
    ;; this is distinct from a transport failure and says what to fix.
    :provider-not-configured
+   ;; Durable budget admission cannot safely reconstruct older call history.
+   ;; This rejects the request before transport, without provider evidence.
+   :budget-history-unavailable
+   ;; Historical fallback work cannot infer an unretained effective profile.
+   :model-plan-incompatible
    ;; A banded decision whose most probable level is an exact tie: no band is
    ;; selected (distinct from a malformed answer).
    :undecided])
 
+(def provider-transport-evidence
+  [:and
+   [:map {:closed true}
+    [:type {:optional true}
+     [:enum :litellm/invalid-request :litellm/invalid-config
+      :litellm/authentication-error :litellm/authorization-error
+      :litellm/provider-not-found :litellm/model-not-found
+      :litellm/unsupported-feature :litellm/quota-exceeded
+      :litellm/rate-limit :litellm/timeout :litellm/connection-error
+      :litellm/server-error :litellm/provider-error
+      :litellm/invalid-response :litellm/streaming-error :litellm/content-filter
+      :litellm/internal-error :litellm/resource-exhausted]]
+    [:http-status {:optional true} [:int {:min 100 :max 599}]]]
+   ;; Absent classification is omitted, never an empty or fabricated record.
+   [:fn seq]])
+
 (def provider-failure-evidence
   [:map
    [:provider :string]
+   [:transport {:optional true} provider-transport-evidence]
    [:model {:optional true} [:maybe :string]]
    [:response-id {:optional true} [:maybe :string]]
    [:finish-reason {:optional true} [:maybe :string]]
@@ -349,6 +371,73 @@
 ;; Domain Schemas (for use in query results)
 ;; =============================================================================
 
+
+(def ordinary-provider-reservation
+  [:map
+    [:admission-kind [:= :ordinary]]
+    [:budget-sheet-id :uuid] [:budget-tick-id :uuid]
+    [:sheet-id :uuid] [:tick-id :uuid] [:node-id :uuid] [:node-start-id :uuid]
+    [:exec-context [:map {:closed true}
+      [:ai.obney.orc.orc-service.core.todo-processors/map-each-index {:optional true} [:and :int [:>= 0]]]
+      [:ai.obney.orc.orc-service.core.todo-processors/map-each-parent {:optional true} :uuid]
+      [:ai.obney.orc.orc-service.core.todo-processors/tick-iteration {:optional true} [:and :int [:>= 1]]]]]
+    [:candidate-index [:and :int [:>= 0]]] [:node-attempt [:and :int [:>= 1]]]
+    [:logical-action-identity :string] [:invocation-identity :string]
+    [:provider-attempt-ordinal [:and :int [:>= 0]]] [:reserved-at :string]])
+
+(def legacy-provider-reservation-command
+  [:map
+    [:budget-sheet-id :uuid]
+    [:budget-tick-id :uuid]
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:campaign-sheet-id :uuid]
+    [:campaign-tick-id :uuid]
+    [:campaign-node-id :uuid]
+    [:iteration-index [:and :int [:>= 0]]]
+    [:logical-action-identity :string]
+    [:invocation-identity :string]
+    [:provider-attempt-ordinal [:and :int [:>= 0]]]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:reserved-at :string]])
+
+(def legacy-provider-reservation-event
+  [:map
+    [:budget-sheet-id :uuid]
+    [:budget-tick-id :uuid]
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:campaign-tick-id :uuid]
+    [:campaign-node-id :uuid]
+    [:iteration-index [:and :int [:>= 0]]]
+    [:logical-action-identity :string]
+    [:invocation-identity :string]
+    [:provider-attempt-ordinal [:and :int [:>= 0]]]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:reserved-at :string]])
+
+(def campaign-provider-reservation
+  [:map
+    [:admission-kind [:= :campaign]]
+    [:budget-sheet-id :uuid]
+    [:budget-tick-id :uuid]
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:campaign-sheet-id :uuid]
+    [:campaign-tick-id :uuid]
+    [:campaign-node-id :uuid]
+    [:iteration-index [:and :int [:>= 0]]]
+    [:logical-action-identity :string]
+    [:invocation-identity :string]
+    [:provider-attempt-ordinal [:and :int [:>= 0]]]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:reserved-at :string]
+    [:model-configuration-id {:optional true} :string]
+    [:model-logical-action-id {:optional true} :string]])
+
 (defschemas domain
   {::sheet
    [:map
@@ -371,6 +460,14 @@
     [:parent-id {:optional true} :uuid]
     [:children-ids [:vector :uuid]]
     [:status node-status]
+    [:provider {:optional true} :keyword]
+    [:fallback-models {:optional true}
+     [:vector [:map {:closed true}
+               [:model [:string {:min 1}]]
+               [:provider {:optional true} :keyword]
+               [:options {:optional true} [:map]]]]]
+    [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]
+    [:model-fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]
     ;; Leaf-only fields
     [:instruction {:optional true} :string]
     [:reads [:vector :keyword]]
@@ -473,6 +570,18 @@
 
    ::node-trace
    [:map
+    [:model-fallback {:optional true}
+     [:map [:policy [:enum :temporary-transport :all-transport]]
+      [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused :output-exposed]]
+      [:candidate-index :int] [:candidate-node-id {:optional true} :uuid]
+      [:requested-model [:maybe :string]] [:provider {:optional true} :keyword]
+      [:attempts {:optional true} [:vector :map]]
+      [:recovery-accounting {:optional true}
+       [:map [:source [:= :runtime-receipts]] [:coverage [:enum :complete :partial]]
+        [:completed-receipts [:and :int [:>= 0]]]
+        [:missing-earlier-receipts [:and :int [:>= 0]]]
+        [:incomplete-receipts {:optional true} [:and :int [:>= 0]]]]]
+      [:predecessor-event-id {:optional true} :uuid]]]
     [:node-id :uuid]
     [:delegate-child-tick-id {:optional true} :uuid]
     [:delegate-child-status {:optional true} :keyword]
@@ -770,6 +879,17 @@
     [:tool-caller-fn {:optional true} :string]
     [:tool-contracts {:optional true} tool-contracts]]
 
+   :sheet/set-node-model-policy
+   [:map [:sheet-id :uuid] [:node-id :uuid]
+    [:options {:optional true} [:map]]
+    [:provider {:optional true} :keyword]
+    [:fallback-models {:optional true}
+     [:vector [:map {:closed true}
+               [:model [:string {:min 1}]]
+               [:provider {:optional true} :keyword]
+               [:options {:optional true} [:map]]]]]
+    [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]]
+
    :sheet/set-node-retry
    [:map
     [:sheet-id :uuid]
@@ -1017,21 +1137,7 @@
     [:claimed-at :string]]
 
    :sheet/reserve-provider-call
-   [:map
-    [:budget-sheet-id :uuid]
-    [:budget-tick-id :uuid]
-    [:sheet-id :uuid]
-    [:tick-id :uuid]
-    [:node-id :uuid]
-    [:campaign-sheet-id :uuid]
-    [:campaign-tick-id :uuid]
-    [:campaign-node-id :uuid]
-    [:iteration-index [:and :int [:>= 0]]]
-    [:logical-action-identity :string]
-    [:invocation-identity :string]
-    [:provider-attempt-ordinal [:and :int [:>= 0]]]
-    [:ownership-epoch [:and :int [:>= 1]]]
-    [:reserved-at :string]]
+   [:or ordinary-provider-reservation campaign-provider-reservation legacy-provider-reservation-command]
 
    :sheet/complete-researcher-effect
    [:map
@@ -1503,6 +1609,21 @@
     [:previous-tools {:optional true} [:vector :keyword]]
     [:previous-options {:optional true} :map]]
 
+   :sheet/node-model-policy-set
+   [:map [:sheet-id :uuid] [:node-id :uuid]
+    [:options {:optional true} [:map]]
+    [:provider {:optional true} :keyword]
+    [:fallback-models {:optional true}
+     [:vector [:map {:closed true}
+               [:model [:string {:min 1}]]
+               [:provider {:optional true} :keyword]
+               [:options {:optional true} [:map]]]]]
+    [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]]
+
+   :sheet/model-fallback-policy-set
+   [:map [:sheet-id :uuid] [:node-id :uuid]
+    [:model-fallback-policy [:enum :temporary-transport :all-transport]]]
+
    :sheet/node-retry-set
    [:map
     [:sheet-id :uuid]
@@ -1717,8 +1838,28 @@
               [:status [:enum :success :failure :running :partial :timeout :blocked]]
               [:node-type [:enum :condition :sequence :fallback]]]]]]
 
+   :sheet/model-fallback-transition-recorded
+   [:map [:sheet-id :uuid] [:tick-id :uuid] [:node-id :uuid]
+    [:candidate-node-id :uuid] [:candidate-index :int] [:predecessor-event-id :uuid]
+    [:next-node-id {:optional true} :uuid]
+    [:policy [:enum :temporary-transport :all-transport]]
+    [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused :eligible-transport]]
+    [:advanced? :boolean] [:inputs {:optional true} :map]]
+
    :sheet/node-execution-completed
    [:map
+    [:model-fallback {:optional true}
+     [:map [:policy [:enum :temporary-transport :all-transport]]
+      [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused :output-exposed]]
+      [:candidate-index :int] [:candidate-node-id {:optional true} :uuid]
+      [:requested-model [:maybe :string]] [:provider {:optional true} :keyword]
+      [:attempts {:optional true} [:vector :map]]
+      [:recovery-accounting {:optional true}
+       [:map [:source [:= :runtime-receipts]] [:coverage [:enum :complete :partial]]
+        [:completed-receipts [:and :int [:>= 0]]]
+        [:missing-earlier-receipts [:and :int [:>= 0]]]
+        [:incomplete-receipts {:optional true} [:and :int [:>= 0]]]]]
+      [:predecessor-event-id {:optional true} :uuid]]]
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
@@ -2238,20 +2379,7 @@
     [:resolved-at [:maybe :string]]]
 
    :sheet/provider-call-reserved
-   [:map
-    [:budget-sheet-id :uuid]
-    [:budget-tick-id :uuid]
-    [:sheet-id :uuid]
-    [:tick-id :uuid]
-    [:node-id :uuid]
-    [:campaign-tick-id :uuid]
-    [:campaign-node-id :uuid]
-    [:iteration-index [:and :int [:>= 0]]]
-    [:logical-action-identity :string]
-    [:invocation-identity :string]
-    [:provider-attempt-ordinal [:and :int [:>= 0]]]
-    [:ownership-epoch [:and :int [:>= 1]]]
-    [:reserved-at :string]]
+   [:or ordinary-provider-reservation campaign-provider-reservation legacy-provider-reservation-event]
 
    :rlm/researcher-effect-completed
    [:map

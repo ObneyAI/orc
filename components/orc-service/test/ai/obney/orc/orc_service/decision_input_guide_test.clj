@@ -72,7 +72,7 @@
           (is (str/includes? instructions shown) shown)))
       (testing "a nested field the request does not carry is not described"
         (is (not (str/includes? instructions "Where they are based"))))
-      (testing "the state holds the values the executor gathered, and no guide"
+      (testing "the state holds the paired native model view, and no guide"
         (is (= "Q3 revenue from the board report" (:request state)))
-        (is (= "{\"tier\":\"pro\"}" (:account state)))
+        (is (= {"tier" "pro"} (:account state)))
         (is (not (str/includes? (pr-str state) "Your input fields")))))))

@@ -146,7 +146,10 @@
                              "Exact claim to assess." "Authoritative supporting evidence."]]
           (is (str/includes? (:instructions question) description)))
         (is (not (str/includes? (:instructions question) "Omitted private context.")))
-        (is (= (:packet score-inputs) (json/parse-string (get-in request [:state :packet]) true)))
+        (is (= (:packet score-inputs) (get-in request [:state :packet])))
+        (is (= (:packet score-inputs)
+               (get-in (json/parse-string (json/generate-string request) true) [:state :packet]))
+            "The JSON request carries an object, preserving its exact nested values.")
         (is (not (contains? (:state request) :rubric)) "The rubric is criteria, not duplicated evidence.")))))
 
 (deftest ordinary-strict-model-accepts-the-same-ordered-band-and-input-contract

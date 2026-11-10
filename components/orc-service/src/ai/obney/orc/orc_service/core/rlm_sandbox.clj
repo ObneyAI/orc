@@ -33,8 +33,10 @@
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.core.sci-sandbox :as base-sandbox]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
+            [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
+            [ai.obney.orc.orc-service.core.researcher-models :as researcher-models]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [com.brunobonacci.mulog :as u])
   (:import [java.io StringWriter]))
@@ -134,7 +136,9 @@
   [inputs]
   (reduce-kv
    (fn [acc k v]
-     (assoc acc k (preview-value (:value v))))
+     (assoc acc k (if (contains? v :value)
+                    (preview-value (:value v))
+                    {:type :absent})))
    {}
    inputs))
 
@@ -153,6 +157,31 @@
     (try
       (:field-type (m/properties schema))
       (catch Exception _ nil))))
+
+(defn- inline-contract
+  [node-name key declared value direction]
+  (let [schema (or declared
+                   (if (= :input direction)
+                     (try
+                       (blackboard-schema/infer-specific-schema value [key])
+                       (catch clojure.lang.ExceptionInfo e
+                         (throw (ex-info (str "Inline LLM '" node-name "' needs a specific input contract at "
+                                              (pr-str (:path (ex-data e))) "; declare its blackboard schema")
+                                         (merge (ex-data e)
+                                                {:reason :missing-inline-contract :node-name node-name
+                                                 :direction direction :contract-reason (:reason (ex-data e))})
+                                         e))))
+                     (throw (ex-info (str "Inline LLM '" node-name "' needs an output contract at "
+                                          (pr-str [key]) "; declare its blackboard schema")
+                                     {:reason :missing-inline-contract :node-name node-name
+                                      :direction direction :path [key]
+                                      :contract-reason :missing-output-schema}))))]
+    (when-let [violation (first (blackboard-schema/violations schema [key]))]
+      (throw (ex-info (str "Inline LLM '" node-name "' needs a specific contract at "
+                           (pr-str (:path violation)))
+                      (merge violation {:reason :missing-inline-contract :node-name node-name
+                                        :direction direction :contract-reason (:reason violation)}))))
+    schema))
 
 (defn execute-llm-primitive
   "Execute an LLM primitive from the RLM sandbox.
@@ -174,7 +203,8 @@
    block rather than as inline text. This is the Phase-1 mirror of
    executor.clj's build-field behavior for Phase-2 leaf nodes."
   [name opts context]
-  (let [{:keys [instruction writes model reads]} opts
+  (let [opts (researcher-models/inherit (:model-defaults context) opts)
+        {:keys [instruction writes model reads]} opts
         {:keys [provider blackboard sandbox-vars usage-tracker reserve-llm-call!
                 reserve-provider-call!
                 durable-source-required? tick-id node-id researcher-iteration
@@ -187,33 +217,33 @@
         ;; Build inputs from reads - pass FULL values (no truncation)
         ;; The generated code manages chunk sizes; we don't second-guess it
         inputs (reduce (fn [acc k]
-                         (let [v (or (get sandbox-vars k)
-                                     (get-in blackboard [k :value]))]
-                           (if (some? v)
-                             (assoc acc k v)  ;; Full value, no truncation
-                             acc)))
+                         (cond
+                           (contains? sandbox-vars k) (assoc acc k (get sandbox-vars k))
+                           (contains? (get blackboard k) :value)
+                           (assoc acc k (get-in blackboard [k :value]))
+                           :else acc))
                        {}
                        (or reads []))
         ;; Build ORC LLM module — U5: propagate :field-type from the blackboard
         ;; schema for each read key so vision/audio/etc. inputs get routed
         ;; as proper multimodal content blocks, not as inline text.
-        module {:inputs (mapv (fn [[k _v]]
-                                (let [schema (get-in blackboard [k :schema])
+        module {:inputs (mapv (fn [[k value]]
+                                (let [schema (inline-contract name k (get-in blackboard [k :schema]) value :input)
                                       ft (schema-field-type schema)]
                                   (cond-> {:name k
-                                           :spec :any
-                                           :description (str "Input: " (clojure.core/name k))}
+                                           :spec schema}
                                     ft (assoc :type ft))))
                               inputs)
                 :outputs (mapv (fn [k]
-                                 {:name k
-                                  :spec :any
-                                  :description (str "Output: " (clojure.core/name k))})
+                                 (let [schema (inline-contract name k (get-in blackboard [k :schema]) nil :output)]
+                                   {:name k
+                                    :spec schema
+                                    :description (:description (m/properties schema))}))
                                writes)
                 :instructions instruction}
         ;; The :model rides through llm into the litellm router as a
         ;; per-request override.
-        llm-options (cond-> {:validate? false :with-metadata? true}
+        llm-options (cond-> (merge {:validate? false :with-metadata? true} (:options opts))
                       model (assoc :model model))
         logical-action-identity
         (when durable-source-required?
@@ -224,7 +254,8 @@
             :generated-code-hash generated-code-hash
             :kind :provider
             :target (encode-effect-value
-                     {:provider provider :model model :name name})
+                     {:provider (or (:provider opts) provider) :model model :name name
+                      :fallback-models (:fallback-models opts) :fallback-policy (:fallback-policy opts)})
             :arguments (encode-effect-value
                         {:module module
                          :inputs inputs
@@ -242,6 +273,13 @@
     (u/trace ::rlm-llm-primitive
       {:name name :writes writes :model model}
       (try
+        (let [call-context (assoc (or (:model-call-context context) context)
+                                 :researcher-ownership-epoch researcher-ownership-epoch)
+              prepared-inline-model-call
+              (when (and logical-action-identity (nil? completed-effect)
+                         (contains? opts :fallback-models))
+                (researcher-models/prepare-inline opts provider module llm-options
+                                                 call-context logical-action-identity))]
         (when (and logical-action-identity (nil? completed-effect))
           (let [claim-result
                 (claim-researcher-effect!
@@ -255,23 +293,14 @@
                               {:claim-result claim-result
                                :logical-action-identity logical-action-identity
                                :attempt-identity attempt-identity})))))
-        (when-let [rejected
-                   (and (nil? completed-effect)
-                        (if reserve-provider-call!
-                          (reserve-provider-call!
-                           {:iteration-index researcher-iteration
-                            :logical-action-identity logical-action-identity
-                            :provider-attempt-ordinal effect-attempt-ordinal})
-                          (and reserve-llm-call! (reserve-llm-call!))))]
-          (throw (ex-info
-                  (or (:cognitect.anomalies/message rejected)
-                      (str "LLM call budget exceeded: "
-                           (:current rejected) "/" (:budget rejected)))
-                  rejected)))
         ;; :with-metadata? true ensures llm returns {:outputs ... :usage ...} instead of just outputs
         (let [result (if completed-effect
                        (:result completed-effect)
-                       (llm/predict provider module inputs llm-options))
+                       (let [call-context (assoc call-context :prepared-inline-model-call prepared-inline-model-call)
+                             logical-id (or logical-action-identity
+                                            (researcher-models/logical-id call-context :subcall name module inputs opts llm-options))]
+                         (researcher-models/predict opts provider module inputs llm-options
+                                                    call-context :subcall logical-id)))
               outputs (or (:outputs result) result)
               usage (:usage result)
               ;; Aggregate usage into tracker if provided
@@ -305,10 +334,11 @@
           (reduce (fn [acc k]
                     (assoc acc k (get outputs k)))
                   {}
-                  writes))
+                  writes)))
         (catch Exception e
           (throw (ex-info (str "LLM primitive '" name "' failed: " (.getMessage e))
-                          {:name name :instruction instruction :writes writes}
+                          (merge {:name name :writes writes}
+                                 (select-keys (ex-data e) [:failure-kind :reason :provider-evidence :model-fallback :status]))
                           e)))))))
 
 ;; =============================================================================
@@ -429,6 +459,8 @@
 
         ;; Context for LLM primitive execution
         exec-context {:provider provider
+                      :model-defaults (:model-defaults context)
+                      :model-call-context (:model-call-context context)
                       :blackboard blackboard
                       :parent-trace-id parent-trace-id
                       :usage-tracker usage-tracker

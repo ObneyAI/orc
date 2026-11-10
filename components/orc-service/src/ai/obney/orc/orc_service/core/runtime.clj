@@ -129,7 +129,11 @@
           node-id (java.util.UUID/nameUUIDFromBytes
                    (.getBytes (str path) "UTF-8"))
           children (or (:children snapshot-node) [])
-          node-record {:id node-id
+          node-record (merge
+                       (select-keys snapshot-node [:provider :fallback-models :fallback-policy
+                                                   :model-fallback-policy :rlm :browser-tools
+                                                   :tool-contracts :tool-caller-fn :judges])
+                       {:id node-id
                        :type (:type snapshot-node)
                        :name (:name snapshot-node)
                        ;; The draft node this one was published from (absent on
@@ -183,7 +187,7 @@
                                             (:inherit-ontology? snapshot-node)
                                             true)
                        ;; Ontology context injection
-                       :context (:context snapshot-node)}
+                       :context (:context snapshot-node)})
           ;; Recursively parse children
           child-records (mapcat (fn [i child]
                                   (parse-snapshot-nodes child node-id i (str path "/" i)))
@@ -823,6 +827,11 @@
 
    Options:
      :timeout-ms - Max execution time in ms (default 300000 = 5 minutes)
+     :execution-deadline-ms - Optional absolute deadline cap, inherited by
+                              delegates, for provider admission. The local
+                              timeout may tighten it; a spent cap stays spent.
+                              It does not shorten the blocking caller wait or
+                              interrupt arbitrary code; those retain timeout-ms.
      :result-grace-ms - Silence tolerance used to classify an expired wait
                         as WEDGED vs merely over budget (default
                         `default-result-grace-ms`, the engine's own
@@ -859,7 +868,7 @@
       :executed-version ...      ;; Version number if published version was used
       :wedged? true              ;; Present only when the run was declared
       :liveness {...}}           ;; wedged — see `expire-run!` (non-retryable)"
-  [context sheet-id inputs & {:keys [timeout-ms result-grace-ms use-version force-draft
+  [context sheet-id inputs & {:keys [timeout-ms execution-deadline-ms result-grace-ms use-version force-draft
                                       trace? langfuse-client store-trace?
                                       max-ticks llm-call-budget tick-id parent-tick-id
                                       delegate-parent-sheet-id delegate-parent-node-id
@@ -885,6 +894,10 @@
         execution-now-ms-fn (or (:execution-now-ms-fn context)
                                 #(System/currentTimeMillis))
         execution-start-ms (long (execution-now-ms-fn))
+        local-deadline-ms (+ execution-start-ms timeout-ms)
+        effective-deadline-ms (if (some? execution-deadline-ms)
+                                (min local-deadline-ms execution-deadline-ms)
+                                local-deadline-ms)
         cmd-result (cp/process-command
                      (assoc context :command
                             (cond-> {:command/id (random-uuid)
@@ -894,7 +907,7 @@
                                      :tick-id tick-id
                                      :inputs (or inputs {})
                                      :options (cond-> {:timeout-ms timeout-ms
-                                                        :execution-deadline-ms (+ execution-start-ms timeout-ms)
+                                                        :execution-deadline-ms effective-deadline-ms
                                                         :store-trace? store-trace?}
                                                  trace? (assoc :trace? true)
                                                  langfuse-client (assoc :langfuse-client langfuse-client)

@@ -60,7 +60,7 @@
       (is (= 2 (count (:document-images result))))
       (is (= "data:image/png;base64,abc123" (first (:document-images result))))))
 
-  (testing "non-image vectors ARE JSON-serialized"
+  (testing "non-image vectors retain native identity until request rendering"
     (let [items ["a" "b" "c"]
           node {:reads [:items]}
           blackboard {:items {:key :items
@@ -68,8 +68,8 @@
                               :value items
                               :version 1}}
           result (executor/gather-inputs node blackboard)]
-      ;; Should be a JSON string, not a raw vector
-      (is (string? (:items result)))))
+      ;; Serialization belongs to the shared request builder after schema inspection.
+      (is (= items (:items result)))))
 
   (testing "plain string values pass through unchanged"
     (let [node {:reads [:instruction]}

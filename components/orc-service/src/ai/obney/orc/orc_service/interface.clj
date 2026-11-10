@@ -174,6 +174,10 @@
 
    Options:
      :timeout-ms - Max execution time in ms (default 300000 = 5 minutes)
+     :execution-deadline-ms - Optional absolute cap for provider admission.
+                              A shorter local timeout wins; a spent cap stays
+                              spent. It does not shorten the blocking wait or
+                              interrupt arbitrary code (timeout-ms is unchanged).
      :use-version - Specific version number to execute (overrides execution-mode)
      :force-draft - Force draft execution even if execution-mode is :published
      :correlation-id - Optional UUID grouping independent roots and all their

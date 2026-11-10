@@ -1,11 +1,11 @@
 {:paths ["src"]
  :deps {io.github.ObneyAI/sio
         {:git/url "https://github.com/ObneyAI/sio.git"
-         :git/sha "242769baf16d2645473fbd3b38650af65f893236"}
+         :git/sha "e61e11a9abc6fdad4e19f772d9e32e2edd2dcc3b"}
 
         tech.unravel/litellm-clj
         {:git/url "https://github.com/ObneyAI/litellm-clj.git"
-         :git/sha "2b6781b8f98105fe07d17b289138103e5dd3a047"}
+         :git/sha "f5fa99d8df32d0830e972382e8fa6db233622022"}
 
         hato/hato {:mvn/version "0.9.0"}
 

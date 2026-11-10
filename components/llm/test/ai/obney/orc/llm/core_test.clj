@@ -27,7 +27,7 @@
 
 (deftest public-boundary-exposes-only-the-structured-prediction-contract
   (is (= '#{predict predict-stream-v2 decode-provider-value
-            register-provider! quick-setup! list-providers}
+            preflight-provider! register-provider! quick-setup! list-providers}
          (set (keys (ns-publics 'ai.obney.orc.llm.interface))))))
 
 (def ^:private nested-keyword-output
@@ -201,14 +201,29 @@
       (is (= 1 @calls)))))
 
 (deftest function-calling-failure-is-not-hidden-by-an-adapter-retry
-  (let [calls (atom 0)]
-    (with-redefs [router/supports-function-calling? (constantly true)
-                  router/completion (fn [& _]
-                                      (swap! calls inc)
-                                      (throw (ex-info "provider failed" {})))]
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"provider failed"
-                            (llm/predict :test qa {:question "Capital?"})))
-      (is (= 1 @calls)))))
+  (doseq [[data message evidence]
+          [[{:request {:api-key "SYNTHETIC-PRIVATE"}}
+            "LLM provider call failed" {:provider "test"}]
+           [{:type :litellm/server-error :http-status 503
+             :request {:api-key "SYNTHETIC-PRIVATE"}}
+            "LLM provider call failed [server-error] (HTTP 503)"
+            {:provider "test" :transport {:type :litellm/server-error :http-status 503}}]]]
+    (let [calls (atom 0)]
+      (with-redefs [router/supports-function-calling? (constantly true)
+                    router/completion (fn [& _]
+                                        (swap! calls inc)
+                                        (throw (ex-info "provider failed" data)))]
+        (let [failure (try (llm/predict :test qa {:question "Capital?"})
+                           nil
+                           (catch clojure.lang.ExceptionInfo error error))]
+          (is (instance? clojure.lang.ExceptionInfo failure))
+          (is (= message (some-> failure .getMessage)))
+          (is (= {:failure-kind :transport-failure :provider-evidence evidence}
+                 (ex-data failure)))
+          (is (nil? (some-> failure ex-cause)))
+          (is (not (str/includes? (pr-str failure) "provider failed")))
+          (is (not (str/includes? (pr-str failure) "SYNTHETIC-PRIVATE")))
+          (is (= 1 @calls)))))))
 
 (deftest streaming-emits-ordered-orc-events-and-one-terminal
   (let [chunks [{:choices [{:delta {:content "[[ ## answer ## ]]\n"}}]}
@@ -237,10 +252,16 @@
 (deftest streaming-provider-and-validation-failures-are-terminal-errors
   (testing "provider error"
     (with-redefs [router/completion
-                  (fn [& _] (fake-stream [{:type :error :message "unavailable"}]))]
+                  (fn [& _] (fake-stream [{:type :error :message "unavailable"
+                                          :request {:api-key "SYNTHETIC-PRIVATE"}}]))]
       (let [events (drain (llm/predict-stream-v2 :test qa {:question "Capital?"}))]
         (is (= [:error] (mapv :orc/event events)))
-        (is (= "unavailable" (get-in events [0 :error :message]))))))
+        (is (= "LLM streaming transport failed" (get-in events [0 :error :message])))
+        (is (= :transport-failure (get-in events [0 :error :failure-kind])))
+        (is (= {:provider "test"} (get-in events [0 :error :provider-evidence])))
+        (is (not (contains? (get-in events [0 :error]) :cause)))
+        (is (not (str/includes? (pr-str events) "unavailable")))
+        (is (not (str/includes? (pr-str events) "SYNTHETIC-PRIVATE"))))))
   (testing "requested output validation"
     (with-redefs [router/completion
                   (fn [& _] (fake-stream [{:choices [{:delta {}}]}]))]
@@ -363,9 +384,10 @@
                     (llm/predict :openrouter qa {:question "Capital?"}
                                  {:force-tool-choice? true :with-metadata? true})
                     (catch clojure.lang.ExceptionInfo e e))]
-      (is (= "upstream unavailable" (.getMessage failure)))
+      (is (= "LLM provider call failed" (.getMessage failure)))
       (is (= :transport-failure (:failure-kind (ex-data failure))))
-      (is (= {:provider "openrouter"} (:provider-evidence (ex-data failure)))))))
+      (is (= {:provider "openrouter"} (:provider-evidence (ex-data failure))))
+      (is (nil? (ex-cause failure))))))
 
 (deftest empty-structured-response-is-distinct
   (with-redefs [router/supports-function-calling? (constantly true)

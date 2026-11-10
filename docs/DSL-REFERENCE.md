@@ -1784,3 +1784,112 @@ Saves a sheet directly to a .clj file.
 4. **Build your own** — start with a simple workflow and iterate
 
 Happy workflow building!
+
+### Model fallback on standard nodes
+
+**Local implementation in progress, not merged.** This API supersedes the
+unmerged `llm-fallback` wrapper. Integration and recovery acceptance must complete
+before consumers adopt it; this section describes the intended contract, not a
+claim that every path has passed its proof.
+
+Configure backups directly on `llm`, `llm-condition`, `llm-decision`, or
+`repl-researcher`. The node remains one task with one typed input/output contract.
+
+```clojure
+(orc/llm "assess"
+  :provider :primary-provider
+  :model "provider/primary"
+  :fallback-models [{:provider :backup-provider
+                     :model "provider/backup"
+                     :options {:max-tokens 32768}}
+                    {:model "provider/another-backup"}]
+  :fallback-policy :temporary-transport
+  :instruction "Assess the supplied evidence."
+  :reads [:request :evidence]
+  :writes [:assessment-reasoning :assessment]
+  :options {:output-mode :json-schema :max-tokens 65536})
+```
+
+`:provider` is a registered provider alias, not a model identifier. Omit it to
+use existing runtime selection. Each backup requires a model; an omitted backup
+provider means the primary's provider, never the preceding backup's provider.
+Register each selected provider in the worker/runtime context so resumed work can
+resolve it. Existing native decision registration names retain their established
+model-selection behavior; use unambiguous explicit provider/model pairs for new
+cross-provider definitions.
+
+An omitted fallback list leaves existing behavior unchanged. An explicit `[]`
+disables inherited backups. Candidate generation overrides are `:temperature`,
+`:max-tokens`, `:top-p`, `:top-k`, `:frequency-penalty`, `:presence-penalty`,
+`:seed`, `:reasoning`, `:max-retries` and `:timeout-ms`. Keep shared output/privacy
+controls in node `:options`. Candidates cannot override instructions, read/write
+contracts, execution identities, budgets, deadlines or runtime callbacks.
+
+The default `:temporary-transport` policy admits reliable connection, timeout,
+rate-limit and server failures. Unknown or contradictory evidence is refused;
+HTTP 429 alone does not distinguish rate limiting from exhausted quota. Explicit
+`:all-transport` admits other recorded transport failures, including permanent
+ones. Neither policy switches on valid false/negative answers, abstention, ties,
+invalid outputs, permission blocks, cancellation or exhausted execution limits.
+A false `llm-condition` still fails the condition semantically; it is not an
+outage and does not invoke backups.
+
+Candidates are checked against the effective output mode and decision contract
+before dispatch. Registration does not prove remote model availability or quality.
+Native/chat transitions must retain the offered choices, rubric and declared
+confidence/abstention behavior; missing confidence is never invented. An
+incompatible strict-output adapter is rejected, not silently downgraded.
+
+When backups are configured, the default is one request per candidate. Explicit
+`:options {:max-retries n}` permits bounded retries before moving on. All physical
+requests retain the family budget and absolute deadline. Exhaustion does not
+restart the candidate list through an outer node retry. Nodes without configured
+backups retain their existing retry behavior.
+
+#### Researcher model roles
+
+Node-level model/provider/fallback configuration belongs to the researcher's
+prime model. Configure specialists separately under `:rlm`:
+
+```clojure
+(orc/repl-researcher "research"
+  :model prime-model
+  :fallback-models [{:model backup-prime-model}]
+  :instruction instruction
+  :reads [:sources] :writes [:findings]
+  :rlm {:recursive? true :checkpointed? true
+        :sub-provider :specialist-provider
+        :sub-model specialist-model
+        :sub-options {:max-tokens 32768}
+        :sub-fallback-models [{:model backup-specialist-model}]
+        :sub-fallback-policy :temporary-transport})
+```
+
+Inline and emitted model calls inherit these subcall defaults. An explicit
+subcall primary still inherits backups; a supplied list replaces them, and `[]`
+disables them. Changing models retries the failed model request, not the research
+iteration or completed tool actions. After a backup succeeds, later calls in that
+researcher run/role start there. Selection is durable and only advances; another
+run or tenant starts independently. An explicit subcall configuration has its
+own selection state.
+
+#### Evidence and streaming
+
+Inspect the node trace's `:model-fallback` summary and candidate journal query
+`:sheet/model-candidate-history` with `{:tick-id tick-id}` using the normal Grain
+query envelope. Candidate entries identify the logical call, role, candidate,
+requested provider/model, safe failure and transition reason. Provider-reported
+model identity is separate. They are attempts within one node, not artificial
+child leaves. Inspect physical request observations as well as candidate counts
+when retries are enabled.
+
+For streaming, fallback is allowed only before visible output. Once a delta or
+field reaches the caller, failure terminates that stream without substituting a
+new answer. Recovery must retain that boundary. A crash during a model request
+may require another counted model request when its outcome is unknown; completed
+external actions must not be repeated.
+
+Call-budget exhaustion may cancel the family before a completed trace exists.
+The public execute result retains the budget error, and cancelled ticks record
+`:sheet/tick-cancelled` with its reason. Inspect those records rather than waiting
+indefinitely for a completed trace.

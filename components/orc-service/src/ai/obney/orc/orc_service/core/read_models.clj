@@ -48,6 +48,8 @@
     :sheet/node-decorators-set
     :sheet/node-check-set
     :sheet/node-executor-set
+    :sheet/node-model-policy-set
+    :sheet/model-fallback-policy-set
     :sheet/node-retry-set
     :sheet/node-judges-set
     :sheet/parallel-config-set
@@ -100,6 +102,8 @@
     :sheet/node-decorators-set
     :sheet/node-check-set
     :sheet/node-executor-set
+    :sheet/node-model-policy-set
+    :sheet/model-fallback-policy-set
     :sheet/node-retry-set
     :sheet/node-judges-set
     :sheet/parallel-config-set
@@ -369,6 +373,13 @@
       (assoc-in [(:node-id event) :bands-from] (:bands-from event))
       (assoc-in [(:node-id event) :min-confidence] (:min-confidence event))
       (assoc-in [(:node-id event) :abstain] (:abstain event))))
+
+(defmethod nodes* :sheet/node-model-policy-set [state event]
+  (update state (:node-id event) merge
+          (select-keys event [:provider :fallback-models :fallback-policy :options])))
+
+(defmethod nodes* :sheet/model-fallback-policy-set [state event]
+  (assoc-in state [(:node-id event) :model-fallback-policy] (:model-fallback-policy event)))
 
 (defmethod nodes* :sheet/node-retry-set
   [state event]
@@ -2015,7 +2026,8 @@
        vec))
 
 (def provider-call-reservation-fields
-  [:budget-sheet-id :budget-tick-id :sheet-id :tick-id :node-id
+  [:admission-kind :node-start-id :exec-context :candidate-index :node-attempt :campaign-sheet-id
+   :budget-sheet-id :budget-tick-id :sheet-id :tick-id :node-id
    :campaign-tick-id :campaign-node-id :iteration-index
    :logical-action-identity :invocation-identity :provider-attempt-ordinal
    :ownership-epoch :reserved-at])
@@ -2030,7 +2042,7 @@
 
 (defreadmodel :sheet provider-call-reservations
   {:events #{:sheet/provider-call-reserved}
-   :version 1
+   :version 2
    :partition-fn :budget-sheet-id
    :entity-id-fn (juxt :budget-tick-id :invocation-identity)}
   [state event]

@@ -216,9 +216,10 @@
                        "human means a staff member, never the customer's own words"
                        "What was written"]]
           (is (str/includes? instructions shown) (str "shown meaning: " shown)))
-        (doseq [absent ["Promo code the customer quoted"
-                        "Where they are based"]]
-          (is (not (str/includes? instructions absent)) (str "absent meaning: " absent)))))))
+        (let [[shown declared] (str/split instructions #"DECLARED CONTRACT" 2)]
+          (is (not (str/includes? shown "Where they are based")))
+          (is (str/includes? declared "Where they are based")))
+        (is (not (str/includes? instructions "Promo code the customer quoted")))))))
 
 (deftest the-guide-changes-neither-the-state-nor-the-options
   (let [requests (atom [])
@@ -246,7 +247,7 @@
 (deftest the-guide-follows-the-instruction-and-the-output-description
   (let [requests (atom [])
         inputs (guide-request-inputs)
-        guide (sio/input-field-guide (:inputs guide-spec) inputs)]
+        guide (sio/input-request-guide (:inputs guide-spec) inputs)]
     (register-decision-provider! :decision-test-guide-order (response guide-answers) requests)
     (llm/predict :decision-test-guide-order guide-spec inputs {:validate? false})
     (is (string? guide))
@@ -281,7 +282,9 @@
       (doseq [shown ["The ticket subject line" "Support tier"
                      "human means a staff member, never the customer's own words"]]
         (is (str/includes? instructions shown) shown))
-      (doseq [absent ["Promo code the customer quoted" "Where they are based"
+      (is (str/includes? instructions "Where they are based"))
+      (is (str/includes? instructions "DECLARED CONTRACT"))
+      (doseq [absent ["Promo code the customer quoted"
                       "Agent notes, when there are any"]]
         (is (not (str/includes? instructions absent)) absent)))))
 
@@ -365,6 +368,28 @@
       (is (= :transport-failure (:failure-kind (ex-data e))))
       (is (not (str/includes? (pr-str (ex-message e)) dummy-key)))
       (is (not (str/includes? (pr-str (ex-data e)) dummy-key))))))
+
+(deftest native-transport-status-is-bounded-and-cause-free
+  (let [provider :decision-test-status-boundary]
+    (try
+      (doseq [status [100 429 599 nil 99 600 "429" 429.0]
+              :let [valid? (and (integer? status) (<= 100 status 599))]]
+        (register-decision-provider!
+         provider
+         (fn [_] (throw (ex-info (str "Unsafe upstream " dummy-key)
+                                {:status status :request {:authorization dummy-key}}
+                                (ex-info dummy-key {}))))
+         (atom []))
+        (let [e (predict-failure #(llm/predict provider route-spec {:request "x"}))]
+          (is (= :transport-failure (:failure-kind (ex-data e))))
+          (is (= (cond-> {:provider "decision-test-status-boundary"}
+                   valid? (assoc :transport {:http-status status}))
+                 (:provider-evidence (ex-data e))))
+          (is (= (str "Decision transport failed" (when valid? (str " (HTTP " status ")")))
+                 (ex-message e)))
+          (is (nil? (ex-cause e)))
+          (is (not (str/includes? (pr-str [(ex-message e) (ex-data e)]) dummy-key)))))
+      (finally (router/unregister! provider)))))
 
 ;; ---------------------------------------------------------------------------
 ;; DecisionMetadataIsPreserved

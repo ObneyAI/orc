@@ -6,10 +6,12 @@
    - Return {:command-result/events [...]} on success
    - Return cognitect anomaly on failure
    - Last write wins (no optimistic concurrency)"
-  (:require [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
+  (:require [ai.obney.orc.orc-service.core.budget-facts :as budget-facts]
+            [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
             [ai.obney.orc.orc-service.core.judge-definition :as judge-definition]
             [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.model-fallback :as model-fallback]
             [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
@@ -500,6 +502,22 @@
                   (:fn node) (assoc :previous-fn (:fn node))
                   (:tools node) (assoc :previous-tools (:tools node))
                   (:options node) (assoc :previous-options (:options node)))})]})))
+
+(defcommand :sheet set-node-model-policy
+  {:authorized? authenticated?}
+  "Persist provider routing and ordered backups for a model-capable node."
+  [{{:keys [sheet-id node-id] :as command} :command :as ctx}]
+  (if-let [node (rm/get-node ctx sheet-id node-id)]
+    (if (or (#{:llm-condition :repl-researcher} (:type node))
+            (and (= :leaf (:type node))
+                 (or (nil? (:executor node)) (#{:ai :decision} (:executor node)))))
+      {:command-result/events
+       [(->event {:type :sheet/node-model-policy-set
+                  :tags #{[:sheet sheet-id] [:node node-id]}
+                  :body (merge {:sheet-id sheet-id :node-id node-id}
+                               (select-keys (model-fallback/validate-config! command) [:provider :fallback-models :fallback-policy :options]))})]}
+      {::anom/category ::anom/incorrect ::anom/message "Node cannot call a model"})
+    {::anom/category ::anom/not-found ::anom/message "Node not found"}))
 
 (defcommand :sheet set-node-retry
   {:authorized? authenticated?}
@@ -1049,6 +1067,7 @@
             tool-context]} :command
     :as context}]
   (let [new-tick-id (or tick-id (random-uuid))
+        options (budget-facts/start-options context sheet-id new-tick-id parent-tick-id options)
         tick-start-cas {:types #{:sheet/tree-tick-started}
                         :tags #{[:tick new-tick-id]}
                         :predicate-fn
@@ -1125,7 +1144,7 @@
                                               (reduce-kv (fn [acc k entry]
                                                            (assoc acc k (dissoc entry :value)))
                                                          {} (or entries {}))))
-                started-event (->event
+                started-event (budget-facts/event context
              {:type :sheet/tree-tick-started
               :tags (cond-> #{[:sheet sheet-id]
                               [:tick new-tick-id]}
@@ -1172,7 +1191,7 @@
 
           :else
           {:command-result/events
-           [(->event
+           [(budget-facts/event context
              {:type :sheet/tree-tick-started
               :tags (cond-> #{[:sheet sheet-id]
                               [:tick new-tick-id]}
@@ -1221,7 +1240,7 @@
       :else
       (let [new-tick-id (or tick-id (random-uuid))]
         {:command-result/events
-         [(->event
+         [(budget-facts/event ctx
            {:type :sheet/node-execution-started
             :tags #{[:sheet sheet-id]
                     [:node node-id]
@@ -1276,7 +1295,7 @@
 
       :else
       {:command-result/events
-       [(->event
+       [(budget-facts/event ctx
          {:type :sheet/node-execution-started
           :tags #{[:sheet sheet-id] [:node node-id] [:tick tick-id]}
           :body (cond-> {:sheet-id sheet-id
@@ -1428,7 +1447,7 @@
                           :saved-at now}})]
                  (not= false resume?)
                  (conj
-                  (->event
+                  (budget-facts/event ctx
                    {:type :sheet/node-execution-started
                     :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
                     :body {:sheet-id sheet-id
@@ -1570,7 +1589,7 @@
                           :checkpointed-at (str (java.time.Instant/now))}})]
                  (not= false resume?)
                  (conj
-                  (->event
+                  (budget-facts/event ctx
                    {:type :sheet/node-execution-started
                     :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
                     :body {:sheet-id sheet-id
@@ -1598,10 +1617,10 @@
   {:authorized? authenticated?}
   "Atomically acquire one checkpointed researcher campaign frontier epoch."
   [{{:keys [sheet-id tick-id node-id budget-root-tick-id ownership-epoch claimed-at
-            campaign-started-at-ms campaign-deadline-ms]} :command}]
+            campaign-started-at-ms campaign-deadline-ms]} :command :as ctx}]
   (let [campaign-tag (researcher-effects/campaign-tag sheet-id tick-id node-id)]
     {:command-result/events
-     [(->event
+     [(budget-facts/event ctx
        {:type :rlm/researcher-frontier-claimed
         :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]
                         [:node node-id] campaign-tag}
@@ -1625,7 +1644,7 @@
   "Atomically claim an effect under the campaign's current ownership epoch."
   [{{:keys [sheet-id tick-id node-id budget-root-tick-id iteration-index logical-action-identity
             attempt-identity attempt-ordinal ownership-epoch kind claimed-at]}
-    :command}]
+    :command :as ctx}]
   (let [campaign-tag (researcher-effects/campaign-tag sheet-id tick-id node-id)
         expected-attempt-identity
         (researcher-effects/attempt-identity
@@ -1635,7 +1654,7 @@
        ::anom/message
        "Researcher effect attempt identity does not match logical action, epoch, and ordinal"}
       {:command-result/events
-       [(->event
+       [(budget-facts/event ctx
          {:type :rlm/researcher-effect-claimed
           :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]
                           [:node node-id] campaign-tag}
@@ -1661,38 +1680,30 @@
 (defcommand :sheet reserve-provider-call
   {:authorized? authenticated?}
   "Atomically consume one durable provider-call slot before dispatch."
-  [{{:keys [budget-sheet-id budget-tick-id sheet-id tick-id node-id
-            campaign-sheet-id campaign-tick-id campaign-node-id iteration-index
-            logical-action-identity invocation-identity
-            provider-attempt-ordinal ownership-epoch reserved-at]
+  [{{:keys [budget-sheet-id budget-tick-id tick-id node-id admission-kind
+            campaign-sheet-id campaign-tick-id campaign-node-id invocation-identity]
      :as reservation} :command}]
-  (let [expected-invocation-identity
-        (provider-call-reservations/invocation-identity
-         budget-tick-id logical-action-identity ownership-epoch
-         provider-attempt-ordinal)]
-    (if (not= expected-invocation-identity invocation-identity)
-      {::anom/category ::anom/incorrect
-       ::anom/message
-       "Provider invocation identity does not match logical action, epoch, and ordinal"}
-      {:command-result/events
-       [(->event
-         {:type provider-call-reservations/reservation-event-type
-          :tags #{[:sheet budget-sheet-id]
-                  [:tick budget-tick-id]
-                  [:provider-invoking-tick tick-id]
-                  [:provider-node node-id]
-                  [:researcher-campaign-tick campaign-tick-id]
-                  (researcher-effects/campaign-tag
-                   campaign-sheet-id campaign-tick-id campaign-node-id)}
-          :body (select-keys reservation
-                             [:budget-sheet-id :budget-tick-id
-                              :sheet-id :tick-id :node-id
-                              :campaign-tick-id :campaign-node-id
-                              :iteration-index :logical-action-identity
-                              :invocation-identity :provider-attempt-ordinal
-                              :ownership-epoch :reserved-at])})]
-       :command-result/cas
-       (provider-call-reservations/reservation-cas reservation)})))
+  (if (not= (provider-call-reservations/reservation-identity reservation) invocation-identity)
+    {::anom/category ::anom/incorrect
+     ::anom/message "Provider invocation identity does not match its canonical owner and physical attempt"}
+    {:command-result/events
+     [(->event
+       {:type provider-call-reservations/reservation-event-type
+        :tags (cond-> #{[:sheet budget-sheet-id] [:tick budget-tick-id]
+                        [:llm-budget-root budget-tick-id]
+                        [:provider-invoking-tick tick-id] [:provider-node node-id]}
+                (not= :ordinary admission-kind)
+                (conj [:researcher-campaign-tick campaign-tick-id]
+                      (researcher-effects/campaign-tag campaign-sheet-id campaign-tick-id campaign-node-id)))
+        :body (select-keys reservation
+                           [:admission-kind :budget-sheet-id :budget-tick-id
+                            :sheet-id :tick-id :node-id :node-start-id :exec-context
+                            :candidate-index :node-attempt
+                            :campaign-sheet-id :campaign-tick-id :campaign-node-id
+                            :iteration-index :logical-action-identity :invocation-identity
+                            :provider-attempt-ordinal :ownership-epoch :reserved-at
+                            :model-configuration-id :model-logical-action-id])})]
+     :command-result/cas (provider-call-reservations/reservation-cas reservation)}))
 
 (defcommand :sheet complete-researcher-effect
   {:authorized? authenticated?}
@@ -1784,7 +1795,7 @@
   [{{:keys [sheet-id tick-id node-id completion-id researcher-ownership-epoch
             status writes rejected-writes missing-write-keys write-sources write-references? duration-ms
             observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage own-usage model
-            node-type completion-kind raw-response failure-kind provider-evidence
+            node-type completion-kind raw-response failure-kind provider-evidence model-fallback
             condition-answer decision block-payload read-sources
             requested-model resolved-model]} :command
     :as ctx}]
@@ -1863,6 +1874,16 @@
         forwarded-sources (into {}
                                 (for [[k source] (or write-sources {})]
                                   [k source]))
+        ;; Forwarders publish references rather than copying payloads. Their
+        ;; shape describes these exact canonical references, not merely the
+        ;; (usually empty) :writes argument or prior writes of the same node.
+        forwarded-writes (when (seq forwarded-sources)
+                           (value-log/resolve-values
+                            ctx (:tenant-id ctx) tick-id
+                            (into {} (map (fn [[k source]] [k {:source source}]))
+                                  forwarded-sources)
+                            (keys forwarded-sources)))
+        write-profile (profile/profile-values (merge forwarded-writes writes))
         cross-tick-sources (if write-references?
                              (into {}
                                    (filter (fn [[_ source]]
@@ -1880,7 +1901,7 @@
                                                    (seq exec-context)
                                                    (assoc :exec-context exec-context))}))
                                cross-tick-sources)
-        completion-event (->event
+        completion-event (budget-facts/event ctx
                            {:type :sheet/node-execution-completed
                             :tags #{[:sheet sheet-id]
                                     [:node node-id]
@@ -1901,7 +1922,7 @@
                                     (or (seq writes) (seq forwarded-sources))
                                     (assoc :write-keys (vec (distinct (concat (keys writes)
                                                                              (keys forwarded-sources))))
-                                           :write-profile (profile/profile-values writes))
+                                           :write-profile write-profile)
                                     (seq missing-write-keys) (assoc :missing-write-keys missing-write-keys)
                                     (seq rejected-writes)
                                     (assoc :rejected-write-keys (vec (keys rejected-writes))
@@ -1925,6 +1946,7 @@
                                     ;; (node-output <node-id>) drill-down.
                                     raw-response (assoc :raw-response raw-response)
                                     failure-kind (assoc :failure-kind failure-kind)
+                                    model-fallback (assoc :model-fallback model-fallback)
                                     (boolean? condition-answer) (assoc :condition-answer condition-answer)
                                     decision (assoc :decision decision)
                                     provider-evidence (assoc :provider-evidence provider-evidence)
@@ -2158,7 +2180,7 @@
     {:command-result/events []}
     (cond->
      {:command-result/events
-      [(->event
+      [(budget-facts/event ctx
         {:type :sheet/node-execution-completed
          :tags #{[:sheet sheet-id]
                  [:node node-id]
@@ -2225,7 +2247,7 @@
     (if (contains? #{:completed :cancelled} (:status (rm/get-tick ctx tick-id)))
       {:command-result/events []}
       {:command-result/events
-       [(->event
+       [(budget-facts/event ctx
          {:type :sheet/tick-cancelled
           :tags #{[:sheet sheet-id]
                   [:tick tick-id]}
@@ -2252,9 +2274,9 @@
 (defcommand :sheet emit-tick-started
   {:authorized? authenticated?}
   "System command: record that a tree tick execution has started (for in-progress tracking)."
-  [{{:keys [sheet-id tick-id]} :command}]
+  [{{:keys [sheet-id tick-id]} :command :as ctx}]
   {:command-result/events
-   [(->event {:type :sheet/tree-tick-started
+   [(budget-facts/event ctx {:type :sheet/tree-tick-started
               :tags #{[:sheet sheet-id] [:tick tick-id]}
               :body {:sheet-id sheet-id
                      :tick-id tick-id}})]})
@@ -2267,7 +2289,7 @@
             block-payload error]} :command
     :as ctx}]
   {:command-result/events
-     [(->event {:type :sheet/tree-tick-completed
+     [(budget-facts/event ctx {:type :sheet/tree-tick-completed
                 :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
                         correlation-id (conj [:correlation correlation-id]))
                 :body (cond-> {:sheet-id sheet-id
@@ -2375,11 +2397,14 @@
                  :source-node-id (:id node)
                  :type (:type node)
                  :name (:name node)}
+          true (merge (select-keys node [:provider :fallback-models :fallback-policy :options]))
+          (:model-fallback-policy node) (assoc :model-fallback-policy (:model-fallback-policy node))
           ;; Leaf-specific fields
           (= :leaf (:type node))
           (merge (cond-> {}
                    (:executor node) (assoc :executor (:executor node))
                    (:model node) (assoc :model (:model node))
+                   (:options node) (assoc :options (:options node))
                    (:fn node) (assoc :fn (:fn node))
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))
@@ -2403,6 +2428,11 @@
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (:model node) (assoc :model (:model node))))
+          ;; Researcher definitions must freeze the complete execution contract.
+          (= :repl-researcher (:type node))
+          (merge (select-keys node [:instruction :reads :writes :model :options :rlm
+                                    :mcp-tools :browser-tools :tool-contracts :tool-caller-fn
+                                    :max-iterations :context :judges]))
           ;; Parallel-specific
           (= :parallel (:type node))
           (merge {:success-policy (or (:success-policy node) :all)
