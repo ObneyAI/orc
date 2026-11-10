@@ -10,8 +10,7 @@
    shapes follow the OpenRouter /api/alpha/decisions reference:
    noul {:type \"noul\" :noul p}; choice {:type \"choice\" :choice id
    :confidence? c :probabilities? {id p}}; usage {:input_tokens :output_tokens :cost}."
-  (:require [cheshire.core :as json]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [hato.client :as http]
             [litellm.router :as router]
@@ -143,13 +142,9 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- as-the-executor-sends
-  "A value exactly as the executor hands it to `llm/predict`
-   (executor `serialize-for-llm`): nil as the empty string, a map or a
-   collection as JSON text, anything else as it is."
+  "The executor retains native values before request rendering."
   [value]
-  (cond (nil? value) ""
-        (coll? value) (json/generate-string value)
-        :else value))
+  value)
 
 (def ^:private guide-spec
   {:inputs [{:name :subject :spec :string :description "The ticket subject line"}
@@ -201,7 +196,7 @@
 (deftest every-question-carries-the-guide-for-the-shown-fields
   (let [requests (atom [])]
     (register-decision-provider! :decision-test-guide (response guide-answers) requests)
-    ;; the executor calls predict with :validate? false (its complex values are JSON text)
+    ;; The executor validates typed values separately and keeps them native here.
     (llm/predict :decision-test-guide guide-spec (guide-request-inputs) {:validate? false})
     (is (= 1 (count @requests)))
     (doseq [qname ["route" "urgent"]
@@ -229,11 +224,12 @@
     (let [{:keys [state] :as request} (first @requests)
           route (question-named request "route")
           urgent (question-named request "urgent")]
-      (is (= {:subject "Refund please" :notes ""
-              :account "{\"tier\":\"pro\"}"
-              :messages (get inputs :messages)}
+      (is (= {:subject "Refund please" :notes nil
+              :account {"tier" "pro"}
+              :messages [{"author-kind" "human" "text" "How can I help?"}
+                         {"author-kind" "customer" "text" "I was charged twice"}]}
              state)
-          "the state holds the input values and nothing else")
+          "the transport receives structured values with JSON field names and explicit nil")
       (is (not (str/includes? (pr-str state) "Your input fields")) "the guide is not in the state")
       (is (= "choice" (name (:type route))))
       (is (= route-descriptions
@@ -271,7 +267,7 @@
              (:instructions (question-named request "route")))
           "no guide, no dangling separator"))))
 
-(deftest values-given-as-data-are-explained-like-values-given-as-json-text
+(deftest native-values-carry-their-shown-and-declared-meanings
   (let [requests (atom [])]
     (register-decision-provider! :decision-test-guide-data (response guide-answers) requests)
     (llm/predict :decision-test-guide-data guide-spec
@@ -368,6 +364,20 @@
       (is (= :transport-failure (:failure-kind (ex-data e))))
       (is (not (str/includes? (pr-str (ex-message e)) dummy-key)))
       (is (not (str/includes? (pr-str (ex-data e)) dummy-key))))))
+
+(deftest native-transport-timeout-is-structural-and-cause-free
+  (let [provider :decision-test-timeout-boundary]
+    (try
+      (register-decision-provider!
+       provider (fn [_] (throw (java.net.http.HttpTimeoutException. dummy-key))) (atom []))
+      (let [e (predict-failure #(llm/predict provider route-spec {:request "x"}))]
+        (is (= {:failure-kind :transport-failure
+                :provider-evidence {:provider (name provider)
+                                    :transport {:type :litellm/timeout}}}
+               (ex-data e)))
+        (is (nil? (ex-cause e)))
+        (is (not (str/includes? (pr-str e) dummy-key))))
+      (finally (router/unregister! provider)))))
 
 (deftest native-transport-status-is-bounded-and-cause-free
   (let [provider :decision-test-status-boundary]

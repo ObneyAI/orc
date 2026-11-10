@@ -165,19 +165,6 @@
                   :else v)))]
       (decode* value))))
 
-(def ^:private transport-timeout-classes
-  "Exception types that mean exactly one thing: the call did not complete within
-   its deadline. A checkpointed provider call races TWO timers set from the same
-   live remainder — ORC's own `bounded-call` deadline and the request timeout ORC
-   hands the transport — so either can fire first. Both must classify the same
-   way, or which timer wins decides whether the campaign retries or dies.
-
-   Classified by TYPE and cause chain, never by message text.
-   `HttpConnectTimeoutException` is a subtype of `HttpTimeoutException`."
-  #{java.net.http.HttpTimeoutException
-    java.net.SocketTimeoutException
-    java.util.concurrent.TimeoutException})
-
 (def provider-classification-lead-ms
   "How much EARLIER than the transport's deadline ORC's own provider deadline fires.
 
@@ -215,17 +202,11 @@
     provider-timeout-ms))
 
 (defn transport-timeout?
-  "True when `throwable`, or anything in its cause chain, is a transport-level
-   deadline expiry. The chain walk is cycle-guarded: a self-referencing cause
-   must not hang the classifier."
+  "Recognize durable researcher deadlines and the LLM boundary's structural
+   transport timeout contract. No exception cause is needed after replay."
   [throwable]
-  (loop [e throwable
-         seen #{}]
-    (cond
-      (nil? e) false
-      (contains? seen e) false
-      (some #(instance? % e) transport-timeout-classes) true
-      :else (recur (.getCause ^Throwable e) (conj seen e)))))
+  (or (= :provider (:timeout-kind (ex-data throwable)))
+      (llm/transport-timeout? throwable)))
 
 (defn bounded-call
   "Invoke f within timeout-ms. Returns a tagged result and interrupts the worker

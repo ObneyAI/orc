@@ -579,6 +579,56 @@
       :module {:name "prime-test-module"} :inputs {:turn iteration}
       :options {:role :prime :configuration-id config :exec-context (:exec-context owner)}})))
 
+(deftest configured-timeout-receipt-replays-without-provider-redispatch
+  ;; Uses the existing staged owner fixture and real SQLite/domain commands.
+  ;; This proves receipt replay, not a complete workflow/process restart.
+  (staged-prime!
+   (fn [ctx owner primary _backup _staged]
+     (let [secret "FICTIONAL-RECEIPT-TIMEOUT-SECRET"
+           calls (atom 0)
+           node {:fallback-models []}
+           module {:inputs [] :outputs [{:name :code :spec :string :description "Generated code."}]
+                   :instructions "Generate code."}
+           options {:with-metadata? true :max-retries 0}
+           context (merge ctx owner {:researcher-ownership-epoch 1 :researcher-iteration 0})
+           capture (fn [prepared]
+                     (try
+                       (models/predict node primary module {} options
+                                       (assoc context :prepared-prime-model-call prepared)
+                                       :prime (:logical-action-id prepared))
+                       (catch clojure.lang.ExceptionInfo e e)))]
+       (try
+         (llm/register-provider! primary {:provider :openrouter :model "fixture/timeout"
+                                          :output-mode :function-calling
+                                          :config {:api-key "CONTROLLED-NOT-A-REAL-KEY"}})
+         (is (nil? (:cognitect.anomalies/category (frontier! ctx owner 1))))
+         (let [prepared (models/prepare-prime node primary module {} options context)
+               original (with-redefs [router/completion
+                                      (fn [& _] (swap! calls inc)
+                                        (throw (java.net.http.HttpTimeoutException. secret)))]
+                          (capture prepared))
+               before (orc/value-log-read-tick-events ctx (:tenant-id ctx) (:tick-id owner))
+               requests (filter #(and (= :sheet/model-request-recorded (:event/type %))
+                                       (= :completed (get-in % [:request :phase]))) before)
+               retained (models/prepare-prime node primary module {} options context)
+               replay (with-redefs [router/completion
+                                    (fn [& _] (swap! calls inc)
+                                      (throw (ex-info "Receipt replay must not dispatch" {})))]
+                        (capture retained))
+               after (orc/value-log-read-tick-events ctx (:tenant-id ctx) (:tick-id owner))]
+           (is (= 1 @calls))
+           (is (= 1 (count requests)))
+           (is (= :provider (get-in (first requests) [:request :outcome :timeout-kind])))
+           (is (= :litellm/timeout (get-in (first requests) [:request :outcome :provider-evidence :transport :type])))
+           (is (= :provider (:timeout-kind (ex-data original))))
+           (is (= (ex-data original) (ex-data replay)))
+           (is (some? (:model-fallback (ex-data replay)))
+               "Configured policy exhaustion retains its existing outcome guard")
+           (is (= (mapv :event/id before) (mapv :event/id after)))
+           (is (not (str/includes? (pr-str after) secret)))
+           (is (nil? (ex-cause replay))))
+         (finally (router/unregister! primary)))))))
+
 (deftest competing-prime-preparations-and-current-request-ownership-are-fenced
   (staged-prime!
    (fn [ctx owner primary backup staged]
