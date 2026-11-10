@@ -110,7 +110,7 @@
    default, the helper's default rlm-config explicitly opts back into
    terminal mode (:recursive? false). Tests that genuinely want recursive
    behavior can pass :rlm-config {:recursive? true}."
-  [ctx & {:keys [instruction reads writes model rlm-config max-iterations]
+  [ctx & {:keys [instruction reads writes model rlm-config max-iterations intermediate-contracts]
           :or {instruction "Research the question"
                reads [:question]
                writes [:answer]
@@ -122,6 +122,9 @@
     ;; Declare blackboard keys
     (doseq [k (concat reads writes)]
       (h/run-and-apply! ctx (h/make-declare-key-command sheet-id k :string)))
+    ;; Inline subcalls reuse authored contracts, including intermediate outputs.
+    (doseq [[k schema] intermediate-contracts]
+      (h/run-and-apply! ctx (h/make-declare-key-command sheet-id k schema)))
     ;; Create sequence with repl-researcher child
     (let [seq-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
           seq-id (-> seq-result :command-result/events first :node-id)
@@ -310,45 +313,47 @@
 (deftest rlm-mode-sequence-primitive-test
   (testing "sequence primitive executes llm nodes in order"
     (with-rlm-test-context [ctx]
-      (let [call-count (atom 0)
-            call-order (atom [])]
+      (let [call-order (atom [])]
         (with-redefs [llm/predict
                       (fn [provider module inputs opts]
-                        (let [n (swap! call-count inc)]
+                        (let [output-keys (mapv :name (:outputs module))]
                           (cond
-                            ;; First call: root LLM generates code with sequence
-                            (= n 1)
+                            ;; Root code-generation module: root LLM generates code with sequence
+                            (= [:reasoning :code] output-keys)
                             {:outputs {:code "(sequence \"two-step\"
                                                 (llm \"first\" :instruction \"Say hello\" :writes [:greeting])
                                                 (llm \"second\" :instruction \"Say goodbye\" :writes [:farewell]))
-                                              (final! {:answer (str (:greeting (get-input :greeting))
+                                              (final! {:answer (str (get-var :greeting)
                                                                    \" and \"
-                                                                   (:farewell (get-input :farewell)))})"}
+                                                                   (get-var :farewell))})"}
                              :usage {:prompt_tokens 100 :completion_tokens 50 :total_tokens 150}}
 
-                            ;; Second call: first llm in sequence
-                            (= n 2)
+                            ;; First child output contract: first llm in sequence
+                            (= [:greeting] output-keys)
                             (do (swap! call-order conj :first)
                                 {:outputs {:greeting "Hello"}
                                  :usage {:prompt_tokens 20 :completion_tokens 5 :total_tokens 25}})
 
-                            ;; Third call: second llm in sequence
-                            (= n 3)
+                            ;; Second child output contract: second llm in sequence
+                            (= [:farewell] output-keys)
                             (do (swap! call-order conj :second)
                                 {:outputs {:farewell "Goodbye"}
                                  :usage {:prompt_tokens 20 :completion_tokens 5 :total_tokens 25}})
 
                             :else
-                            {:outputs {:unexpected "call"}
-                             :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})))]
+                            (throw (ex-info "Unexpected fixture output contract"
+                                            {:output-keys output-keys})))))]
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Use sequence to run two steps"
-                                     :rlm-config {:recursive? false})
+                                     :rlm-config {:recursive? false}
+                                     :intermediate-contracts {:greeting [:string {:description "Greeting from the first step"}]
+                                                              :farewell [:string {:description "Farewell from the second step"}]})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
 
             (is (= :success (:status result)) (str "Expected success, got: " (:status result)))
+            (is (= "Hello and Goodbye" (get-in result [:outputs :answer])))
             ;; Verify sequence executed in order
             (is (= [:first :second] @call-order)
                 "Sequence should execute nodes in order")))))))
@@ -360,14 +365,13 @@
 (deftest rlm-mode-map-each-primitive-test
   (testing "map-each primitive processes collection items"
     (with-rlm-test-context [ctx]
-      (let [call-count (atom 0)
-            processed-items (atom [])]
+      (let [processed-items (atom [])]
         (with-redefs [llm/predict
                       (fn [provider module inputs opts]
-                        (let [n (swap! call-count inc)]
+                        (let [output-keys (mapv :name (:outputs module))]
                           (cond
-                            ;; First call: root LLM generates code with map-each
-                            (= n 1)
+                            ;; Root code-generation module: root LLM generates code with map-each
+                            (= [:reasoning :code] output-keys)
                             {:outputs {:code "(let [items [\"apple\" \"banana\" \"cherry\"]
                                                     results (map-each \"process-fruit\"
                                                               items
@@ -379,21 +383,27 @@
                              :usage {:prompt_tokens 100 :completion_tokens 50 :total_tokens 150}}
 
                             ;; Subsequent calls: process each fruit
-                            :else
+                            (= [:tropical] output-keys)
                             (let [;; The instruction contains the fruit name
                                   instruction (get-in module [:instructions])
                                   fruit (second (re-find #"Is (\w+) tropical" instruction))]
                               (swap! processed-items conj fruit)
                               {:outputs {:tropical (if (= fruit "banana") "yes" "no")}
-                               :usage {:prompt_tokens 20 :completion_tokens 5 :total_tokens 25}}))))]
+                               :usage {:prompt_tokens 20 :completion_tokens 5 :total_tokens 25}})
+
+                            :else
+                            (throw (ex-info "Unexpected fixture output contract"
+                                            {:output-keys output-keys})))))]
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Use map-each to classify fruits"
-                                     :rlm-config {:recursive? false})
+                                     :rlm-config {:recursive? false}
+                                     :intermediate-contracts {:tropical [:enum {:description "Whether the fruit is tropical"} "yes" "no"]})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
 
             (is (= :success (:status result)) (str "Expected success, got: " (:status result)))
+            (is (= "(\"no\" \"yes\" \"no\")" (get-in result [:outputs :answer])))
             ;; All three items should have been processed
             (is (= #{"apple" "banana" "cherry"} (set @processed-items))
                 "map-each should process all collection items")))))))
@@ -447,16 +457,15 @@
 (deftest rlm-mode-condition-primitive-test
   (testing "condition primitive evaluates predicate and executes appropriate branch"
     (with-rlm-test-context [ctx]
-      (let [call-count (atom 0)
-            branches-called (atom [])]
+      (let [branches-called (atom [])]
         (with-redefs [llm/predict
                       (fn [provider module inputs opts]
-                        (let [n (swap! call-count inc)]
+                        (let [output-keys (mapv :name (:outputs module))]
                           (cond
-                            ;; First call: root LLM generates code with condition
+                            ;; Root code-generation module: root LLM generates code with condition
                             ;; Note: both branches will be evaluated due to eager eval,
                             ;; but condition selects the correct one
-                            (= n 1)
+                            (= [:reasoning :code] output-keys)
                             {:outputs {:code "(let [x 10
                                                     high-result (llm \"high\" :instruction \"X is high\" :writes [:result])
                                                     low-result (llm \"low\" :instruction \"X is low\" :writes [:result])
@@ -464,31 +473,33 @@
                                                 (final! {:answer (:result chosen)}))"}
                              :usage {:prompt_tokens 100 :completion_tokens 50 :total_tokens 150}}
 
-                            ;; Second call: high branch
-                            (= n 2)
+                            ;; High branch instruction
+                            (= "X is high" (:instructions module))
                             (do
                               (swap! branches-called conj :high)
                               {:outputs {:result "high-value"}
                                :usage {:prompt_tokens 20 :completion_tokens 5 :total_tokens 25}})
 
-                            ;; Third call: low branch (also evaluated due to eager)
-                            (= n 3)
+                            ;; Low branch instruction (also evaluated due to eager)
+                            (= "X is low" (:instructions module))
                             (do
                               (swap! branches-called conj :low)
                               {:outputs {:result "low-value"}
                                :usage {:prompt_tokens 20 :completion_tokens 5 :total_tokens 25}})
 
                             :else
-                            {:outputs {:unexpected "call"}
-                             :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})))]
+                            (throw (ex-info "Unexpected fixture output contract"
+                                            {:output-keys output-keys})))))]
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Use condition to branch"
-                                     :rlm-config {:recursive? false})
+                                     :rlm-config {:recursive? false}
+                                     :intermediate-contracts {:result [:string {:description "Result of the selected value branch"}]})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
 
             (is (= :success (:status result)) (str "Expected success, got: " (:status result)))
+            (is (= [:high :low] @branches-called) "Both eager branch calls should execute")
             ;; Both branches get evaluated (eager), but condition selects high
             ;; The answer should be from the high branch since x=10 > 5
             (is (= "high-value" (:answer (:outputs result)))
@@ -534,45 +545,47 @@
 (deftest rlm-mode-parallel-primitive-test
   (testing "parallel primitive executes llm nodes (conceptually in parallel)"
     (with-rlm-test-context [ctx]
-      (let [call-count (atom 0)
-            calls-seen (atom [])]
+      (let [calls-seen (atom [])]
         (with-redefs [llm/predict
                       (fn [provider module inputs opts]
-                        (let [n (swap! call-count inc)]
+                        (let [output-keys (mapv :name (:outputs module))]
                           (cond
-                            ;; First call: root LLM generates code with parallel
-                            (= n 1)
+                            ;; Root code-generation module: root LLM generates code with parallel
+                            (= [:reasoning :code] output-keys)
                             {:outputs {:code "(parallel \"concurrent\"
                                                 (llm \"a\" :instruction \"Get A\" :writes [:val-a])
                                                 (llm \"b\" :instruction \"Get B\" :writes [:val-b]))
-                                              (final! {:answer (str (:val-a (get-input :val-a))
+                                              (final! {:answer (str (get-var :val-a)
                                                                    \"-\"
-                                                                   (:val-b (get-input :val-b)))})"}
+                                                                   (get-var :val-b))})"}
                              :usage {:prompt_tokens 100 :completion_tokens 50 :total_tokens 150}}
 
-                            ;; Second call: first llm in parallel
-                            (= n 2)
+                            ;; First child output contract: first llm in parallel
+                            (= [:val-a] output-keys)
                             (do (swap! calls-seen conj :a)
                                 {:outputs {:val-a "Alpha"}
                                  :usage {:prompt_tokens 20 :completion_tokens 5 :total_tokens 25}})
 
-                            ;; Third call: second llm in parallel
-                            (= n 3)
+                            ;; Second child output contract: second llm in parallel
+                            (= [:val-b] output-keys)
                             (do (swap! calls-seen conj :b)
                                 {:outputs {:val-b "Beta"}
                                  :usage {:prompt_tokens 20 :completion_tokens 5 :total_tokens 25}})
 
                             :else
-                            {:outputs {:unexpected "call"}
-                             :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})))]
+                            (throw (ex-info "Unexpected fixture output contract"
+                                            {:output-keys output-keys})))))]
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Use parallel to run two steps"
-                                     :rlm-config {:recursive? false})
+                                     :rlm-config {:recursive? false}
+                                     :intermediate-contracts {:val-a [:string {:description "Value returned by branch A"}]
+                                                              :val-b [:string {:description "Value returned by branch B"}]})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
 
             (is (= :success (:status result)) (str "Expected success, got: " (:status result)))
+            (is (= "Alpha-Beta" (get-in result [:outputs :answer])))
             ;; Both calls should have happened
             (is (= #{:a :b} (set @calls-seen))
                 "Parallel should execute both nodes")))))))
@@ -797,11 +810,15 @@
               (is (str/includes? instructions "(set ")
                   "Mentions the (set [...]) workaround verbatim"))
 
-            (testing "frequencies on nil-bearing collections pitfall + filter-some workaround"
+            (testing "frequencies preserves valid nil, false and zero values"
               (is (str/includes? instructions "frequencies")
                   "Mentions frequencies by name")
-              (is (str/includes? instructions "some?")
-                  "Mentions the (filter some? ...) workaround"))
+              (is (str/includes? instructions "nil, false and zero as distinct values")
+                  "Distinguishes valid falsey values when counting")
+              (is (str/includes? instructions "Preserve nil when it is a valid domain value")
+                  "Does not advise discarding valid nil evidence")
+              (is (str/includes? instructions "filter it only when the declared task explicitly excludes it")
+                  "Restricts filtering to the declared task"))
 
             (testing "sandbox-var existence after Phase-2 :failure"
               (is (or (str/includes? instructions "(get-var ")
@@ -874,8 +891,8 @@
             ;; Check that blackboard key is listed with annotation
             (is (clojure.string/includes? instructions ":question")
                 "Instructions should list :question key")
-            (is (clojure.string/includes? instructions "[from blackboard]")
-                "Blackboard keys should have [from blackboard] annotation")))))))
+            (is (clojure.string/includes? instructions "[original blackboard value]")
+                "Blackboard keys should identify their original value source")))))))
 
 (deftest rlm-prompt-shows-created-vars-with-iteration-test
   (testing "RLM prompt shows sandbox-vars with [created iteration N] annotation"
@@ -908,8 +925,8 @@
               (let [instructions (:instructions (nth @captured-modules 1))]
                 (is (clojure.string/includes? instructions ":my-chunks")
                     "Instructions should list :my-chunks variable")
-                (is (clojure.string/includes? instructions "[created iteration 1]")
-                    "Sandbox-vars should have [created iteration N] annotation")))))))))
+                (is (clojure.string/includes? instructions "[current local binding; created iteration 1]")
+                    "Sandbox-vars should identify their current local source and creation iteration")))))))))
 
 ;; =============================================================================
 ;; Issue 004: Iteration Deltas Tracking
@@ -1147,26 +1164,22 @@
   (testing "When (llm ...) is called, sub-LLM receives FULL values from :reads
             (not previews) so it can actually process the content"
     (with-rlm-test-context [ctx]
-      (let [captured-sub-llm-inputs (atom nil)
-            iteration (atom 0)]
+      (let [captured-sub-llm-inputs (atom [])]
         (with-redefs [llm/predict
-                      (fn [provider module inputs opts]
-                        (let [n (swap! iteration inc)]
-                          (case n
-                            ;; Root LLM: call a sub-LLM with :reads
-                            1 {:outputs {:code "(llm \"sub\" :instruction \"Summarize\" :reads [:document] :writes [:summary])"}
-                               :usage {:prompt_tokens 50 :completion_tokens 20 :total_tokens 70}}
-                            ;; Sub-LLM call: capture the inputs
-                            2 (do
-                                (reset! captured-sub-llm-inputs inputs)
-                                {:outputs {:summary "This is a summary"}
-                                 :usage {:prompt_tokens 50 :completion_tokens 20 :total_tokens 70}})
-                            ;; Root LLM iteration 2: use result
-                            3 {:outputs {:code "(final! {:answer (:summary (get-var :sub-result))})"}
-                               :usage {:prompt_tokens 50 :completion_tokens 20 :total_tokens 70}}
-                            ;; Fallback
-                            {:outputs {:code "(final! {:answer \"fallback\"})"}
-                             :usage {:prompt_tokens 50 :completion_tokens 20 :total_tokens 70}})))]
+                      (fn [_provider module inputs _opts]
+                        ;; A rejected inline call retries the ROOT. Call #2 alone
+                        ;; cannot prove that a sub-LLM received any document.
+                        (case (mapv :name (:outputs module))
+                          [:reasoning :code]
+                          {:outputs {:code "(let [result (llm \"sub\" :instruction \"Summarize\" :reads [:document] :writes [:summary])] (final! {:answer (:summary result)}))"}
+                           :usage {:prompt_tokens 50 :completion_tokens 20 :total_tokens 70}}
+                          [:summary]
+                          (do
+                            (swap! captured-sub-llm-inputs conj inputs)
+                            {:outputs {:summary "This is a summary"}
+                             :usage {:prompt_tokens 50 :completion_tokens 20 :total_tokens 70}})
+                          (throw (ex-info "Unexpected fixture output contract"
+                                          {:output-keys (mapv :name (:outputs module))}))))]
           ;; Create a sheet with a large document
           (let [large-doc (apply str (repeat 5000 "Lorem ipsum "))
                 {:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
@@ -1174,7 +1187,8 @@
                                      :instruction "Summarize the document"
                                      :reads [:document]
                                      :max-iterations 5
-                                     :rlm-config {:recursive? false})
+                                     :rlm-config {:recursive? false}
+                                     :intermediate-contracts {:summary [:string {:description "Summary of the full document"}]})
                 ;; Set a large document value
                 _ (h/run-and-apply! ctx {:command/name :sheet/set-key-value
                                          :command/id (random-uuid)
@@ -1184,16 +1198,17 @@
                                          :value large-doc})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:document large-doc})
                 result (wait-for-completion promise)]
-            ;; Check that sub-LLM received the FULL document, not a preview.
-            ;; The generated code is responsible for chunk sizing; the sub-LLM
-            ;; must see actual content to process it.
-            (when @captured-sub-llm-inputs
-              (let [doc-input (:document @captured-sub-llm-inputs)]
-                ;; Should be the full string value, not a preview map and not truncated.
-                (is (string? doc-input)
-                    "Sub-LLM should receive the full document string, not a preview map")
-                (is (= (count large-doc) (count doc-input))
-                    "Sub-LLM should receive the document at its original length (no truncation)")))))))))
+            (is (= :success (:status result)) (pr-str result))
+            (is (= "This is a summary" (get-in result [:outputs :answer])))
+            (is (= 1 (count @captured-sub-llm-inputs))
+                "Exactly one actual summary subcall must be reached")
+            (let [doc-input (:document (first @captured-sub-llm-inputs))]
+              (is (string? doc-input)
+                  "The actual sub-LLM receives a native document string")
+              (is (= large-doc doc-input)
+                  "The actual sub-LLM receives the complete unchanged document")
+              (is (= 60000 (count doc-input))
+                  "The complete document is not truncated"))))))))
 
 (deftest rlm-sub-llm-token-count-bounded-test
   (testing "Token count for sub-LLM prompt stays bounded regardless of input size"
