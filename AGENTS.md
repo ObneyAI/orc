@@ -17,6 +17,10 @@ Before designing, changing, or verifying a workflow, read
 events-first model, use `:delegate` as the composition seam, put deterministic
 structure around LLM work, and verify projections as well as returned values.
 
+## Workflow authoring skills
+
+For consumer workflow design, implementation and diagnosis, start with [ORC skills contents](orc-skills/CONTENTS.md) and load the relevant skills. These authoring references complement the principles and the contributor specification workflow below; they do not replace this repository’s instructions.
+
 ## Allium Is the Default Behavioral Workflow
 
 The specifications in [`specs/`](specs/) are the durable behavioral source of

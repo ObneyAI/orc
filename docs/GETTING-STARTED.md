@@ -1,5 +1,7 @@
 # Getting Started with ORC
 
+Using an AI coding agent? Point it at the [bundled ORC skills contents](../orc-skills/CONTENTS.md) to choose focused guidance alongside this walkthrough.
+
 > A progressive getting-started guide in **six phases** — each adds one
 > capability to the same workflow: core behavior tree → LLM judges → custom
 > judges → GEPA prompt optimization → ontology memory → the self-improving loop.
