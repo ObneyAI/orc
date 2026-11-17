@@ -1178,6 +1178,17 @@ transport or tool seam injected, plus gated REAL-model runs:
   `execution_lease_recovery_test.clj` (incl. the actual registered periodic trigger; proven to fail
   on the pre-lease code), `weed_followups_test.clj`, and a two-JVM SQLite crash/restart probe
   (DET-E2E-304).
+- `ExecutionRecovery` `PeriodicRecoveryWritesOnlyWhenWorkIsAbandoned` —
+  `recovery_scan_quiet_test.clj`: idle tenant over 120 beats (an hour) records no event of any kind;
+  only-live-lease work (running and queued) records none; an abandoned start is quiet while its lease
+  is live, then recorded and resumed exactly once on the first beat after expiry, repeated scans
+  idempotent; the real scheduler's startup beat still recovers abandoned work; unreadable state (a
+  throwing or nil context function, an unreadable projection) and an unregistered consumer record the
+  trigger as before. Mechanism: a consumer registers a tenant-id -> context function
+  (`register-recovery-scan-context-fn!`); without it every beat is recorded as today. The decision is
+  `runtime/abandoned-work?`, which shares `recoverable-start?` with `resume-in-progress!`.
+  A map-each coordinator that no resumed start references yet also makes a scan record (once: the
+  resume command refuses a second resume), exactly as the scan resumed it before.
 - `DelegationBoundary` (4 + signature) — `delegation_boundary_test.clj`, `weed_followups_test.clj`
   (DET-E2E-307).
 - mcp-sheet-builder `ExecutorsUseTheNodesToolCaller` — `tool_seam_unification_test.clj`,

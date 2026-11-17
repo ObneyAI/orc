@@ -9,6 +9,7 @@
             [ai.obney.orc.orc-service.core.queries]
             [ai.obney.orc.orc-service.core.todo-processors]
             [ai.obney.orc.orc-service.core.periodic-tasks]
+            [ai.obney.orc.orc-service.core.recovery-scan :as recovery-scan]
             ;; Load schemas for registration
             [ai.obney.orc.orc-service.interface.schemas]
             ;; Re-export from interface sub-namespaces
@@ -209,6 +210,14 @@
   "Resume abandoned leaf, delegate, and researcher frontiers after processors
    restart against the same durable event store. Repeated calls are idempotent."
   runtime/resume-in-progress!)
+
+(def register-recovery-scan-context-fn!
+  "Let the periodic recovery scan decide before it writes. `f` maps a tenant id
+   to that tenant's ORC context (the one passed to `resume-in-progress!`), or
+   nil. With it, a scan records its trigger only when a start is abandoned (or
+   the state cannot be read); without it the scan records every beat as before.
+   Returns a no-arg function that removes the registration."
+  recovery-scan/register-context-fn!)
 
 ;; =============================================================================
 ;; Live Streaming (ephemeral observation layer — see docs/STREAMING.md)
