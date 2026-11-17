@@ -839,14 +839,18 @@ contract ExecutionRecovery {
         -- tenant has at least one start that recovery would resume now: an
         -- unfinished start whose latest lease has expired and that the scanning
         -- worker is not itself running, by the same lease decision recovery
-        -- uses. With no unfinished work, or with only work under a live lease,
+        -- uses, or an in-progress map coordinator that recovery has not yet
+        -- rebuilt (recovery rebuilds each coordinator once). With no unfinished work, or with only work under a live lease,
         -- a scan records nothing, so no trigger, processor checkpoint or
         -- transaction marker follows. When abandoned work exists, the scan
         -- records the trigger as before and recovery resumes it as before; work
         -- is never left unrecovered for longer than one scan interval after its
         -- lease expires. When the scan cannot read the execution state, it
         -- records the trigger as before rather than risk leaving work
-        -- unrecovered.
+        -- unrecovered. The scan reads execution state through a context the
+        -- consumer registers at runtime start (the same context it gives
+        -- recovery); until a consumer registers one, every scan records its
+        -- trigger as before.
         -- Found in a consumer's deployment: an idle tenant wrote 480 events an
         -- hour from the scan alone (a trigger, a checkpoint and their two
         -- transaction markers every 30 seconds), none of which recovered
