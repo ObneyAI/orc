@@ -5,7 +5,7 @@ description: Implement or review hand-assembled ORC workflows with reusable spec
 
 # Compose ORC specialists
 
-Use this once the tree's goals and specialist boundaries are clear. Read [specialist design](../orc-design-tree/references/specialist-design.md) for goal-based boundaries, recursive composition and the research reading route; return to `orc-design-tree` if those choices are unresolved. Read `AGENTS.md` and `docs/ORC-PRINCIPLES.md` in the target repo, then inspect the **current** `orc-service` public interface and DSL implementation. Check branch/revision; older app examples and guides can contain stale signatures.
+Use this once the tree's goals and specialist boundaries are clear. Read [specialist design](../orc-design-tree/references/specialist-design.md) for goal-based boundaries, recursive composition and the research reading route; return to `orc-design-tree` if those choices are unresolved. Read ORC’s tracked [agent instructions](../../AGENTS.md) and [principles](../../docs/ORC-PRINCIPLES.md), then inspect the **current** `orc-service` public interface and DSL implementation. Check branch/revision; older app examples and guides can contain stale signatures.
 
 For repeated goal solving, read the [authored controller](references/authored-controller.md). It gives the executable child repetition structure, inherited tick ceiling, fresh-invocation reconciliation and terminal business outcome contract. Use [context flow](../orc-blackboard-contracts/references/context-flow.md) when one specialist requests information and another must answer before the original obligation resumes.
 

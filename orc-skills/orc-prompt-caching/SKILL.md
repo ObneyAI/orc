@@ -9,7 +9,7 @@ Prompt caching reuses provider computation for a matching **cacheable prefix**, 
 
 ## Configure the actual loaded stack
 
-Start with [operational checks](references/operational-checks.md) for a no-call resource/source check, an explicitly guarded model-only warm example, and allowlisted usage/ownership measurements. Companion links assume sibling skills installed in the `orc-skills` catalogue. If a sibling path is absent in a draft or relocated package, locate that named skill through the installed session catalogue; do not duplicate it or silently skip its checks. Report a missing required companion if neither route resolves.
+Start with [operational checks](references/operational-checks.md) for a no-call resource/source check, an explicitly guarded model-only warm example, and allowlisted usage/ownership measurements. Companion links resolve to sibling skills bundled in this repository. Keep the collection together when copying it. A missing companion indicates an incomplete copy; it is not a requirement to install personal skills.
 
 After declaring concrete, described blackboard inputs and outputs, an ordinary generation node can use:
 

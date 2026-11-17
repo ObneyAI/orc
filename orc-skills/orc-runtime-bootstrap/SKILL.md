@@ -5,7 +5,7 @@ description: Wire an ORC behavior-tree runtime for an experiment or application,
 
 # Bootstrap an ORC runtime
 
-Start from the project's `AGENTS.md` and ORC principles. Check the actual ORC and Grain revisions before copying setup code; the pinned example in [runtime.md](references/runtime.md) is a starting point, not an API freeze.
+Start with ORC’s tracked [agent instructions](../../AGENTS.md) and [principles](../../docs/ORC-PRINCIPLES.md). Follow the consumer project’s own instructions if it provides them. Check the actual ORC and Grain revisions before copying setup code; the pinned example in [runtime.md](references/runtime.md) is a starting point, not an API freeze.
 
 For a standalone project, use the reference's public Git `deps.edn` form and its two LMDB JVM options. Choose the lean `projects/orc-service` package for ordinary trees; add backend packages deliberately. Resolve and execute the setup in the application's own directory before claiming it works.
 

@@ -1,6 +1,6 @@
 # Context-flow evidence boundaries
 
-These historical observations explain the context-design guidance. They keep their original source revisions and do not inherit the later model-contract candidate's proof. The staging manifest records the original report paths and hashes; these summaries are self-contained so a portable skill does not require the research workspace.
+These historical observations explain the context-design guidance. They keep their original source revisions and do not inherit the later model-contract candidate's proof. The original report paths and hashes belong to the private historical archive, which is not bundled or required. These summaries are self-contained.
 
 ## Conversation qualified uncertainty V4
 

@@ -134,7 +134,7 @@ Use node `:options {:output-mode :json-schema :max-tokens ... :extra-body {:prov
 
 Qwen direct HTTP429s carried `upstream_provider_shared_pool`, including a512-token control followed by a successful32768-token call. Identical strict requests also had different outcomes. This rules out changed library serialization as the explanation for those outcomes; it does not expose the provider scheduler or prove permanent availability. Raw native-provider requests beyond OpenRouter remain unobserved.
 
-Historical provenance labels: `live/access-investigation/LAYER-REPORT.md` and `model-level/RESULTS.md` in the model-contract campaign. The profile table and limits above describe those checkpoints; the later complex model checkpoint remains separate. Original report paths and hashes are retained in the staging manifest.
+Historical provenance labels: `live/access-investigation/LAYER-REPORT.md` and `model-level/RESULTS.md` in the model-contract campaign. The profile table and limits above describe those checkpoints; the later complex model checkpoint remains separate. Those reports and their hashes belong to the private historical archive, which is not bundled or required.
 
 
 ## Same-source complex investigation: compatibility and evidence quality

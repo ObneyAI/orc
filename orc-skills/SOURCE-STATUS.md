@@ -21,3 +21,19 @@ The prompt-cache message-boundary improvement remains unpublished at this checkp
 ## Maintaining the public collection
 
 Maintain these skills in this repository alongside ORC changes. Update the owning reference and this compatibility summary when adoption changes. Keep supported recipes separate from historical evidence, and preserve negative results and known limits. The separate research library may retain private experiments; it is not a runtime or documentation dependency of this collection.
+
+## Resolving references
+
+All relative Markdown links in this collection target tracked files in ORC, including the root `AGENTS.md` and the companion skills. An application’s own instructions and example application modules belong to that consumer; examples do not assume those files already exist.
+
+Source anchors abbreviated as `core/executor.clj` or `core/dsl.clj` refer to files below ORC’s tracked [service source directory](../components/orc-service/src/ai/obney/orc/orc_service/). LLM source anchors refer to the tracked [LLM component](../components/llm/src/ai/obney/orc/llm/). Historical line numbers can differ at another revision.
+
+Grain, SIO and litellm-clj are public dependencies, not personal worktrees or files bundled inside ORC. Source paths prefixed with those library names resolve within their public repositories at the cited dependency revision:
+
+- [Grain](https://github.com/ObneyAI/grain): event stores, commands, queries, processors and Event Model documentation.
+- [SIO](https://github.com/ObneyAI/sio): structured contracts and parsing.
+- [litellm-clj](https://github.com/ObneyAI/litellm-clj): provider routing, serialization and usage normalization.
+
+Historical campaign names and unbundled reports identify provenance only. They are not required reading or available repository paths. The relevant technical conclusions and limits remain in the bundled references. No machine-level instruction file, private evidence archive or personal skill installation is required.
+
+Grain also maintains a public [skill collection](https://github.com/ObneyAI/grain/tree/main/skills). Its [Grain entry point](https://github.com/ObneyAI/grain/blob/main/skills/grain/SKILL.md) and [Event Model guidance](https://github.com/ObneyAI/grain/blob/main/skills/event-model/SKILL.md) complement the Grain specialist skills already tracked in ORC. Browse them on GitHub or supply a Grain checkout when an agent needs to read them locally. They are public companion resources, not files assumed to exist in ORC or in a personal configuration directory. Check their instructions against the consuming Grain revision.
