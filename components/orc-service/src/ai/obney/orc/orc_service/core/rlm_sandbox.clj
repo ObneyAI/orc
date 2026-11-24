@@ -27,6 +27,7 @@
             [clojure.string :as str]
             [clojure.set]
             [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.orc-service.core.output-validation :as output-validation]
             [malli.core :as m]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -497,10 +498,22 @@
 
         ;; final! function with validation
         final!-fn (fn [output]
-                    (let [validated (validate-final! output declared-writes optional-writes)]
-                      (reset! final-output validated)
+                    ;; A later refused final attempt must not retain an earlier
+                    ;; successful capture from this same program.
+                    (reset! final-output nil)
+                    (let [candidate (validate-final! output declared-writes optional-writes)
+                          result (output-validation/validate-outputs
+                                   blackboard {:status :success :outputs candidate} false)]
+                      (when (= :failure (:status result))
+                        ;; Candidate values can contain transient SCI closures.
+                        ;; Retain safe schema evidence and original program source,
+                        ;; never executable objects in checkpointed error data.
+                        (throw (ex-info (:error result)
+                                        {:failure-kind :final-output-schema-invalid
+                                         :rejected-write-keys (vec (keys (:rejected-writes result)))})))
+                      (reset! final-output (:outputs result))
                       ;; Return a marker string for detection
-                      (str "FINAL_ANSWER: " (pr-str validated))))
+                      (str "FINAL_ANSWER: " (pr-str (:outputs result)))))
 
         ;; get-input function - loads full value into variable space
         get-input-fn (fn [k]

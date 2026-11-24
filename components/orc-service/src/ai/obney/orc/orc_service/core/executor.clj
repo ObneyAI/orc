@@ -27,8 +27,7 @@
             [clojure.walk :as walk]
             [cheshire.core :as json]
             [malli.core :as m]
-            [malli.error :as me]
-            [malli.transform :as mt]
+            [ai.obney.orc.orc-service.core.output-validation :as output-validation]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
@@ -536,9 +535,14 @@
              :budget-remaining-ms (:budget-remaining-ms phase2-result)
              :nodes-completed-before-cancel (count leaf-completions))
 
+      (:error phase2-result)
+      (assoc :error (:error phase2-result))
+
+      (:admission-rejected? phase2-result)
+      (assoc :admission-rejected? true)
+
       (:preflight-rejected? phase2-result)
-      (assoc :preflight-rejected? true
-             :error (:error phase2-result)))))
+      (assoc :preflight-rejected? true))))
 
 (defn merge-tree-result-into-sandbox
   "Return new sandbox-vars after a Phase 2 tree execution.
@@ -605,19 +609,26 @@
   (let [{:keys [status elapsed-ms nodes-succeeded nodes-failed nodes-total
                 outputs-keys outputs-previews nil-writes failed-leaves
                 failure-indices failure-reasons surviving-vars
-                preflight-rejected? error missing-writes present-empty-writes
+                preflight-rejected? admission-rejected? error missing-writes present-empty-writes
                 source-iteration action-id tick-id scoped-outputs protected-writes]} summary
         preview-str (fn [k]
                       (let [p (get outputs-previews k)]
                         (if (string? p) p (pr-str p))))
         nil-set (set nil-writes)
         ok-keys (vec outputs-keys)]
-    (if preflight-rejected?
+    (cond
+      preflight-rejected?
       (str "TREE REJECTED BEFORE EXECUTION — no child tick or leaf ran. "
            error
            " Correct the reported setup error before re-emitting the intended "
            "tree. Reuse existing declared contracts; declare specific schemas "
            "for new computed keys. No child result was produced.")
+      admission-rejected?
+      (str "CHILD ADMISSION REJECTED BEFORE EXECUTION — no child tick or leaf ran. "
+           error
+           " The refusal occurred before child code could change its inputs. "
+           "No child result was produced.")
+      :else
       (str "Tree executed — status: " status
          " | child tick: " tick-id
          (when action-id (str " | action: " action-id))
@@ -626,6 +637,7 @@
          (when (and nodes-failed (pos? nodes-failed))
            (str ", " nodes-failed " failed"))
          (when elapsed-ms (str " | " elapsed-ms " ms"))
+         (when error (str "\nExecution error: " error))
          (when (seq ok-keys)
            (str "\nOutputs merged (readable via get-var):\n"
                 (str/join "\n" (map (fn [k] (str "  " k " = " (preview-str k)))
@@ -1719,78 +1731,12 @@
 ;; AI Execution
 ;; =============================================================================
 
-;; A map key the contract declares as a string stays a string; keys the contract
-;; leaves to convention are read as keywords (llm.allium). Malli's stock
-;; `key-transformer` keywordizes every key, which made `[:map ["0" :double]]`
-;; unsatisfiable for code leaves. Mirrors the provider path in llm core.
-(def ^:private declared-string-key-transformer
-  (mt/transformer
-   {:decoders
-    {:map
-     {:compile
-      (fn [schema _]
-        (let [declared-keys (set (map first (m/children schema)))
-              string-keys (into #{} (filter string?) declared-keys)]
-          (fn [x]
-            (if (map? x)
-              (reduce-kv (fn [m k v]
-                           (assoc m
-                                  (cond
-                                    (contains? declared-keys k) k
-                                    (and (string? k) (not (contains? string-keys k)))
-                                    (keyword k)
-                                    ;; A declared string key may arrive as the same
-                                    ;; un-namespaced keyword (SIO parses provider JSON
-                                    ;; with :key-fn keyword). Namespaced keywords and
-                                    ;; undeclared names never map.
-                                    (and (keyword? k) (nil? (namespace k))
-                                         (contains? string-keys (name k)))
-                                    (name k)
-                                    :else k)
-                                  v))
-                         {}
-                         x)
-              x))))}}}))
-
 (defn validate-leaf-outputs
-  "Decode provider JSON values and normalize object keys according to each
-   declared Malli schema, then reject an invalid successful leaf result before
-   its writes become canonical. Provider JSON numbers are canonicalized through
-   the schema; numeric strings remain invalid. Non-provider leaves receive only
-   schema-directed key normalization and retain strict JVM value types."
+  "Normalize and validate declared leaf outputs before their writes become canonical."
   ([blackboard result]
-   (validate-leaf-outputs blackboard result false))
+   (output-validation/validate-outputs blackboard result false))
   ([blackboard result provider-output?]
-   (if (not= :success (:status result))
-     result
-     (let [key-transformer declared-string-key-transformer
-           rejected-writes (:outputs result)
-           normalized (reduce-kv
-                       (fn [outputs key value]
-                         (assoc outputs key
-                                (if-let [schema (get-in blackboard [key :schema])]
-                                  (if provider-output?
-                                    (llm/decode-provider-value schema value)
-                                    (m/decode schema value key-transformer))
-                                  value)))
-                       {}
-                       (:outputs result))]
-       (if-let [[key explanation]
-                (some (fn [[key value]]
-                        (when-let [schema (get-in blackboard [key :schema])]
-                          (try
-                            (when-not (m/validate schema value)
-                              [key (me/humanize (m/explain schema value))])
-                            (catch Exception e
-                              [key {:invalid-schema (.getMessage e)}]))))
-                      normalized)]
-         (-> result
-             (assoc :status :failure
-                    :error (str "Blackboard schema validation failed for "
-                                (pr-str key) ": " explanation)
-                    :outputs {}
-                    :rejected-writes rejected-writes))
-         (assoc result :outputs normalized))))))
+   (output-validation/validate-outputs blackboard result provider-output?)))
 
 (def ^:private prediction-envelope-keys
   "Keys llm/predict adds around :outputs when called with :with-metadata?."
@@ -2956,6 +2902,20 @@
                                     (str/join ", " (map str vars-created)))))))
                     history)))))
 
+(def ^:private native-evidence-guidance
+  (str "## Native evidence ownership\n"
+       "Preserve native evidence unchanged when the task requires exact carry-through: "
+       "authoritative records, opaque identifiers, literal values and material qualifications. "
+       "Keep interpretation separate from evidence. Give semantic work ownership of new "
+       "judgments, explanations or decisions, rather than asking it to reproduce fields "
+       "already available as native values. Use code to assemble the declared final structure "
+       "from the original evidence and those new interpretations. Preserve required order, "
+       "duplicates, false, zero and null. Do not fuzzy-match, normalize, or repair identifiers "
+       "to hide changed evidence. Task-requested transformations remain valid; apply them "
+       "explicitly under the task's contracts. Use existing bindings, typed contracts and "
+       "primitives; this principle requires no new helper API, fixed tree shape or extra "
+       "model call.\n\n"))
+
 (defn- build-code-generation-module
   "Build ORC LLM module for generating Clojure code."
   [node blackboard-metadata history mcp-tools browser-tools]
@@ -2980,6 +2940,7 @@
                 :spec :string
                 :description "Clojure code to execute. Call tools as functions, use println to log progress, and output FINAL_ANSWER: <result> when done."}]
      :instructions (str "You are a research assistant that writes Clojure code to solve tasks.\n\n"
+                        native-evidence-guidance
                         "IMPORTANT RULES:\n"
                         "1. Write valid Clojure code that calls the available tools\n"
                         "2. Use println to log your progress and findings\n"
@@ -3563,6 +3524,7 @@
               :spec :string
               :description "Clojure code to execute"}]
    :instructions (str "You are an RLM (Recursive Language Model) that constructs behavior trees to solve tasks.\n\n"
+                      native-evidence-guidance
                       ;; Two-space architecture explanation
                       "## Two-Space Architecture\n\n"
                       "RLM separates **Variable Space** (full data in sandbox memory) from **Token Space** (what LLMs see).\n"
@@ -3987,11 +3949,14 @@
                              "the most recent `:tree-results` entry to spot CLEARLY broken payloads — "
                              "e.g. an A-Z letter count block that reads `A: 0, B: 0, ...` for "
                              "non-empty transcription text, a required structured array that came "
-                             "back `[]`, or `nil` where structured data should be. When the task has no "
-                             "explicit process requirement, only emit another tree if a value is "
-                             "OBVIOUSLY broken in that sense; minor imperfections, stylistic "
-                             "differences, or completeness questions are fine — finalize and let the "
-                             "evaluation layer judge quality.\n\n")
+                             "back `[]`, or `nil` where structured data should be. Cosmetic or "
+                             "stylistic differences alone do not require another tree. Missing required "
+                             "evidence, changed native values or material qualifications, and unsupported "
+                             "certainty are correctness failures even when the schema and previews look "
+                             "complete. Use focused repair within the remaining allowance, or a "
+                             "contract-permitted unresolved result when the evidence genuinely prevents "
+                             "closure. Do not invent missing evidence or use an unresolved result to "
+                             "conceal an avoidable error.\n\n")
                         "")
                       ;; T2-Hardening-C: forward guidance — recurring SCI/Clojure
                       ;; pitfalls observed across the bench suite that the model

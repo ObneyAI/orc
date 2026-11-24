@@ -25,9 +25,27 @@ Startup/periodic recovery uses persisted leases and epoch comparison to accept o
 
 Inspect `get-var :tree-results`; read failures/detail when summary evidence is insufficient. `tree-detail` nodes have UUID `:node-id` and a **map** of `:writes`. That is different from a vector of write names. Pass the actual UUID to `node-output`, rather than converting to a string or using an invented `:id` field. Diagnostic helpers operate on the most recent child by default. Repeated item executions need canonical execution context/attempt, not UUID alone.
 
+Distinguish environment access from model visibility. Checkpointed iteration history renders result/stdout profiles rather than their payloads: printing a full inspected value does not by itself show that value to the next prime request. Store a focused short scalar with `store!` when its preview is needed for the next decision, or pass complete structured values through declared child reads. Check the actual next request; a map's key preview or a collection sample is not evidence that the model inspected every field.
+
+A fresh computed key without a declared contract can reach child work through a concrete schema inferred from its value. That inference does not recover the original tool contract's descriptions, enums, bounds or closed-map rules. Declare known intermediate contracts and use supported emitted output declarations for new produced keys when those meanings matter. See [setup and contracts](setup-and-contracts.md); inspect the actual child module as well as its native values.
+
 Preserve indexed map successes and locate the failed item. Check actual aggregation shape and source provenance. Re-emit missing extraction, failed tool, verification or synthesis only when its inputs remain valid. A successful retrieval need not be repeated just because a sibling failed. A tool/model failure does not authorize unrelated recovery or a fabricated answer. Keep the final contract strict; do not broaden schemas to `:any`, coerce missing numeric values to zero, or accept nil required outputs to obtain green status.
 
 File-backed and forwarded intermediate values currently have a reproduced survivor-collection gap. Canonical public reads can resolve them while the model's survivor map cannot. See [source status](source-status.md). Preserve evidence and stop promising that path until its consuming revision passes the storage-mode proof. This limitation does not invalidate the working inline focused-repair path.
+
+## Validate outputs before completion
+
+`final!` validates the complete declared nested output before accepting final completion. A refused attempt retains its schema reason in the next iteration while the existing call, iteration and deadline allowance remains. Only a valid candidate becomes canonical output. Exhausted allowance still fails; validation does not add a retry budget. Native false, zero, explicit null and optional omission retain their schema-defined meanings. Existing empty-result checks still apply.
+
+A child refused at tick admission has not executed a leaf. Its outcome feedback includes the original admission reason even when no failed-leaf event exists. Correct the rejected input or contract before expecting child code to repair it; that code never started.
+
+A map-each parent validates its aggregate independently of successful item results. An invalid aggregate fails the parent and remains diagnostic evidence, while completed item outputs retain their original execution ownership. Inspect the actual collection shape: map-shaped items preserve their fields and named child writes; scalar items with child writes produce those named writes, without automatically adding the item alias. Preserve useful item work when planning a repair rather than repeating completed effects.
+
+Typed completion, exact source preservation and semantic acceptance are separate checks. A complete artifact can still make an unsupported claim. Follow the application's acceptance predicate when a reviewer supplies both a positive flag and located defects; do not discard the defects or infer success from the flag alone.
+
+For deliverables containing exact source identities or observations, prefer retaining those native values through code while semantic leaves produce interpretations. Asking a model to reproduce an entire evidence payload can change an opaque reference without violating its string schema. Check exact preservation separately from shape; do not repair arbitrary identifiers with model-specific parsing rules.
+
+An acceptance gate placed after the researcher completes does not automatically return its rejection to that researcher's loop. If quality failures must trigger correction, compose an explicit bounded repair path that receives the candidate and the actual verdict. State the acceptance rule in the public task contract: an evaluator must not silently strengthen a conditional requirement into an unconditional one. Preserve original failed outcomes and existing call/deadline accounting.
 
 ## Tool effects and physical attempts
 
@@ -47,7 +65,7 @@ Configure supported model parameters separately from:
 - Physical family call budget and an application cost ceiling where needed.
 - Concurrency, JVM heap, projection-cache capacity and external tool resource limits.
 
-A longer client wait does not extend an inner campaign deadline. Restart must not reset deadline or accumulated spend. Generated per-LLM options are currently dropped, so source `:max-tokens`/`:max-retries` cannot establish their effective policy. Inspect actual projected nodes and provider arguments, and use truthful externally enforced experiment limits rather than claiming compiler support.
+A longer client wait does not extend an inner campaign deadline. Restart must not reset deadline or accumulated spend. Inspect actual projected nodes and provider arguments when verifying `:max-tokens` or `:max-retries`; source syntax alone does not establish the effective request policy. Check the consuming revision and retain the observed limits in the evidence.
 
 Test a process kill at a chosen accepted checkpoint and an uncertain pre-receipt window separately. Rejoining after a committed receipt does not prove automatic safe replay across every crash point. Stop only owned processes, save their PID/boundary, and inspect the original campaign rather than creating a replacement tick.
 

@@ -4,6 +4,14 @@ The agent authoring a researcher and the model running that researcher have diff
 
 Teach the model how to assemble supported work. Let it choose the actions, decomposition and semantic conclusions from the actual task and observations. An example of executable syntax is guidance; a supplied answer, fabricated observation or canned analysis is not.
 
+The default runtime guidance now includes native evidence ownership in legacy,
+recursive and terminal researchers. For results combining exact evidence and new
+interpretation, let semantic work own the new interpretation and ordinary code
+carry the original evidence into the final shape. This uses existing primitives;
+it adds no identifier matching or repair mechanism. Keep task-requested
+transformations explicit. Verify the model's actual data flow rather than
+assuming that receiving this guidance guarantees compliance.
+
 ## What the prime needs before its first emission
 
 | Boundary | Model-visible information |

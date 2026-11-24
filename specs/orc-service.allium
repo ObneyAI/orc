@@ -229,8 +229,15 @@ contract LeafExecutor {
     @invariant ResearcherFinalizationUsesDeclaredSchemas
         -- Values supplied through a researcher's finalization operation cross
         -- the same declared-output validation boundary as every other leaf.
-        -- Invalid values fail the node with attributable schema evidence and
-        -- never become durable execution values.
+        -- The complete nested candidate is validated before final completion.
+        -- An invalid attempt is refused with attributable schema evidence and
+        -- never becomes a durable execution value. While normal iteration,
+        -- call and deadline allowance remains, the researcher receives that
+        -- evidence and may correct its candidate without repeating completed
+        -- child work. Refusal does not extend any allowance. Exhausted work
+        -- fails honestly rather than accepting an invalid or partial candidate.
+        -- A later refused final attempt in one iteration clears an earlier
+        -- pending final capture rather than completing from that stale capture.
 
     @invariant GeneratedChildrenReuseDeclaredContracts
         -- A generated child's shared read and write keys inherit their complete
@@ -255,6 +262,16 @@ contract LeafExecutor {
         -- supported declaration mechanism for new computed keys.
         -- Examples follow those same rules and never silently require an
         -- unconstrained output. Guidance does not invent a model-specific API.
+        -- Every researcher mode receives the same evidence-ownership principle:
+        -- authoritative identifiers, observations and literal values remain
+        -- native data while semantic work produces interpretations. Ordinary
+        -- code assembles those values into the declared final shape without
+        -- asking a model to reproduce unchanged evidence or introducing fuzzy
+        -- matching, identifier repair or task-specific output parsing.
+        -- This is construction guidance, not an automatic output rewrite or a
+        -- guarantee that a model follows it. Intentional task transformations
+        -- remain possible. Exact-fidelity requirements are distinct from
+        -- optional polishing and do not prescribe a fixed tree or extra call.
 
     @invariant ResearcherFeedbackMatchesCurrentState
         -- Before each iteration, variable availability describes the values
@@ -268,6 +285,10 @@ contract LeafExecutor {
         -- missing child result. Valid completed null or empty writes are not
         -- described as writes that failed to land. Previews are identified as
         -- previews and full values remain available through inspection.
+        -- A child refused at execution admission contributes its exact refusal
+        -- reason to the next iteration, even when no leaf event exists. Feedback
+        -- distinguishes refused admission from executed work and does not invent
+        -- a failed leaf or a completed child output for that refusal.
         -- Feedback supplies evidence for the next decision; it does not force
         -- the researcher to repeat work or finalize a result.
 
@@ -279,6 +300,13 @@ contract LeafExecutor {
         -- ownership; neither seeded inputs nor the last item's value stand in
         -- for the parent's aggregate. Researcher feedback uses this canonical
         -- producer evidence rather than guessing from a flat blackboard.
+        -- Before the parent records an aggregate, it validates that value
+        -- against the declared output contract. An invalid aggregate records
+        -- parent failure with the exact validation reason and no canonical
+        -- aggregate write. Valid completed per-item work remains inspectable;
+        -- aggregate refusal does not undo or repeat those effects.
+        -- The rejected candidate remains diagnostic evidence, separate from
+        -- canonical values, with the parent's execution identity.
 
     @invariant ResearcherSyntaxFeedbackFollowsParserEvidence
         -- Syntax feedback preserves the parser's expected/unexpected delimiter
@@ -1660,6 +1688,7 @@ rule NodePartiallySucceeds {
     when: MapEachPartiallyCompletes(node_execution, aligned_outputs, failure_details)
     requires: node_execution.status = running
     requires: node_execution.node.kind = map_each
+    requires: outputs_valid_for(node_execution.node, aligned_outputs)
 
     ensures: node_execution.status = partial
     ensures: node_execution.completed_at = now
