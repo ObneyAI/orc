@@ -102,7 +102,7 @@ contract CandidateMetric {
 }
 
 contract ReflectiveInstructionProposer {
-    build_dataset: (evaluations: List<CandidateEvaluation>) -> List<ReflectiveExample>
+    build_dataset: (minibatch: List<DatasetExample>, parent_evaluation: CandidateEvaluation) -> List<ReflectiveExample>
     propose: (current_instruction: String, examples: List<ReflectiveExample>) -> InstructionProposal
 
     @invariant PersistedReflectionOptions
@@ -110,9 +110,20 @@ contract ReflectiveInstructionProposer {
         -- reach proposal requests while preserving model selection and the
         -- structured response contract. No fixed temperature is imposed.
 
+    @invariant ReflectionFromTheParentsTrainingMinibatch
+        -- A mutation round draws a minibatch from the training set before any
+        -- reflection, evaluates the parent whose instruction will be rewritten
+        -- on that minibatch, and builds its reflective examples from that
+        -- evaluation alone. Each reflective example's inputs, generated outputs
+        -- and feedback belong to one and the same training example, whatever
+        -- the sizes or order of the training and validation sets. The
+        -- validation set scores candidates and keeps the frontier; it never
+        -- feeds reflection. An example whose evaluation failed or is unknown
+        -- is never a reflective example.
+
     @invariant FailureFocusedReflection
-        -- Reflective examples preferentially expose examples where the current
-        -- candidate underperforms the frontier, including inputs, outputs, and feedback.
+        -- Reflective examples preferentially expose the minibatch examples where
+        -- the parent scores below perfect, including inputs, outputs, and feedback.
 
     @invariant OneComponentMutation
         -- A mutation changes the selected named instruction component while
@@ -141,7 +152,9 @@ contract ParetoPopulationSelection {
 
     @invariant StrictMutationAcceptance
         -- A proposed mutation proceeds beyond its subsample only when its score
-        -- sum is strictly greater than the parent's on the same examples.
+        -- sum is strictly greater than the parent's on the same examples: the
+        -- training minibatch the parent was reflected on, compared with that
+        -- same parent evaluation, which is reused rather than run again.
 
     @invariant CommonAncestorCrossover
         -- Merge candidates share an ancestor and contribute different improved
@@ -430,13 +443,44 @@ rule ProposeReflectiveMutation {
     requires: optimization.metric_calls_used < optimization.configuration.maximum_metric_calls
     let parent = select_pareto_candidate(optimization.frontier_entries)
     let component = next_round_robin_component(parent)
+    let minibatch = training_minibatch(optimization.trainset, optimization.configuration.reflection_minibatch_size)
+
+    ensures: ParentMinibatchEvaluationRequested(
+        optimization: optimization,
+        parent: parent,
+        component: component,
+        minibatch: minibatch
+    )
+}
+
+rule ReflectOnTheParentsMinibatch {
+    when: ParentMinibatchEvaluated(optimization, parent, component, minibatch, parent_evaluation)
+    requires: optimization.status = running
+    requires: not (optimization.configuration.skip_perfect_score and all_perfect(parent_evaluation))
 
     ensures: ReflectiveMutationRequested(
         optimization: optimization,
         parent: parent,
         component: component,
-        examples: reflective_failures(parent, optimization.trainset)
+        minibatch: minibatch,
+        parent_evaluation: parent_evaluation,
+        examples: build_dataset(minibatch, parent_evaluation)
     )
+    @guidance
+        -- The proposal is later judged on this minibatch against this
+        -- parent_evaluation (StrictMutationAcceptance).
+}
+
+rule SkipAParentPerfectOnItsMinibatch {
+    when: ParentMinibatchEvaluated(optimization, parent, component, minibatch, parent_evaluation)
+    requires: optimization.status = running
+    requires: optimization.configuration.skip_perfect_score
+    requires: all_perfect(parent_evaluation)
+
+    ensures: MutationRoundSkipped(optimization: optimization, parent: parent, minibatch: minibatch)
+    @guidance
+        -- No proposer call is made for the round; the skipped comparison is
+        -- still recorded so completion is not blocked.
 }
 
 rule RecordReflectiveMutation {

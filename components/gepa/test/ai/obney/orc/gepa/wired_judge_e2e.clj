@@ -108,20 +108,14 @@
           ;; PROOF for #4: the reflective example the proposer actually sees now
           ;; carries BOTH the real bad output AND the judges' rich feedback.
           (println "\n--- reflective example shown to the proposer (seed, ex 0) ---")
-          (let [seed (first evaluated)
-                refl (tp/build-reflective-dataset
-                       ctx opt-id (:candidate-id seed)
-                       {:reflection-minibatch-size 3})
-                ex0 (first refl)]
-            (println "  #reflective-examples:" (count refl))
-            (println "  Generated Outputs:" (pr-str (get ex0 "Generated Outputs")))
-            (println "  Feedback (first 300):"
-                     (let [fb (str (get ex0 "Feedback"))]
-                       (subs fb 0 (min 300 (count fb)))))
-            (println "  PROOF both-present?:"
-                     (and (map? (get ex0 "Generated Outputs"))
-                          (seq (get ex0 "Generated Outputs"))
-                          (seq (str (get ex0 "Feedback"))))))
+          (let [call (first (filter #(= opt-id (:optimization-id %))
+                                    (filter #(= :gepa/proposer-call-completed (:event/type %)) all)))
+                prompt (str (:prompt call))]
+            (println "  proposer prompt (first 600):"
+                     (subs prompt 0 (min 600 (count prompt))))
+            (println "  PROOF prompt-has-triplets?:"
+                     (boolean (and (re-find #"Generated Outputs|Inputs" prompt)
+                                   (re-find #"Feedback" prompt)))))
           (let [aggs (keep :aggregate-score (vals (:candidates pop-state)))
                 seed-score (double (:aggregate-score (first evaluated)))
                 best-score (double (or (:aggregate-score best) (:best-score result) 0.0))]

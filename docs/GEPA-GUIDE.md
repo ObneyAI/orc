@@ -13,7 +13,7 @@ You already have a behavior tree with an `:llm` node, and you hand-wrote its ins
 > **Your `:llm` node works, but the instruction is your first guess. GEPA automatically searches for a better instruction — running your tree against examples, scoring with judges, and proposing improved instructions through reflective mutation.**
 
 <p align="center"><img src="media/gepa-loop.gif" alt="GEPA candidate rewrite, quick test, full evaluation and Pareto frontier" width="760"></p>
-<p align="center"><sub>Failing examples + the judges' weakest-first feedback → a rewritten instruction → a 3-example quick test → full evaluation → a per-example Pareto frontier. <i>Illustrative texts and scores.</i></sub></p>
+<p align="center"><sub>The parent's failing minibatch examples + the judges' weakest-first feedback → a rewritten instruction → the same 3-example quick test → full evaluation → a per-example Pareto frontier. <i>Illustrative texts and scores.</i></sub></p>
 
 Here is the whole arc, from the tree you already have to an instruction you didn't have to write. Each step is a few lines at the REPL.
 
@@ -53,7 +53,7 @@ So the only requirement to make a node optimizable is that it has a stable `:nam
 
 GEPA needs example inputs to run your tree against. An example is a flat map whose keys match your node's `:reads` (string keys). You almost certainly already have a handful of representative inputs — past tickets, sample questions, fixtures from a test.
 
-- **`:trainset`** — examples GEPA samples *failures* from, to show the proposer LLM what is going wrong.
+- **`:trainset`** — examples GEPA draws a small minibatch from each round. It runs the current parent instruction on that minibatch and shows the proposer LLM what went wrong on those same examples. The validation set never feeds reflection.
 - **`:valset`** — examples GEPA *scores* candidates on (this is the number that has to go up).
 
 ```clojure
@@ -335,9 +335,9 @@ Both judge metrics (`{:score :feedback}` maps) and structural metrics (bare numb
      :feedback nil}))                       ; structural metrics: no feedback
 ```
 
-**Step 3 — failing examples are wrapped into `ReflectiveExample` triplets** (`reflection.clj:28-43`)
+**Step 3 — the parent's training minibatch is wrapped into `ReflectiveExample` triplets** (`reflection.clj:28-43`)
 
-Low-scoring examples (score below the Pareto frontier) are formatted as `ReflectiveExample` maps:
+Each mutation round draws a minibatch from the trainset, evaluates the **parent** (the candidate whose instruction is being rewritten) on it, and formats the results as `ReflectiveExample` maps. Every triplet's inputs, generated output and feedback belong to one training example; examples scoring below perfect come first. A parent that is already perfect on its minibatch ends the round without a proposer call (`:skip-perfect-score`). The round is recorded as its own durable boundary before the parent is evaluated (`:gepa/parent-minibatch-evaluation-requested`: parent, component, iteration, minibatch indices), so `resume!` continues an interrupted round from that record, reusing completed parent tasks. The proposal is then judged on the same minibatch against the same parent evaluation, which is reused rather than run again:
 
 ```clojure
 {"Inputs"            {...candidate-inputs...}
@@ -384,11 +384,13 @@ See also [`JUDGE-ARCHITECTURE.md`](JUDGE-ARCHITECTURE.md) — "How GEPA consumes
 │  gepa/core/todo_processors.clj                                            │
 │                                                                           │
 │  optimization-started   → create seed candidate                          │
-│  candidate-created      → evaluate on full trainset                      │
-│  candidate-evaluated    → update Pareto frontier                         │
-│  frontier-updated       → propose mutation                               │
-│  mutation-proposed      → evaluate on subsample (3 examples) first       │
-│  subsample-evaluated    → if improved: full eval; else: next mutation     │
+│  candidate-created      → evaluate on the validation set                 │
+│  candidate-evaluated    → update frontier; request a mutation round      │
+│  parent-minibatch-evaluation-requested                                   │
+│                         → run the parent on a training minibatch;        │
+│                           reflect and propose (or skip a perfect parent) │
+│  proposal-ready         → evaluate the proposal on the same minibatch    │
+│  subsample-evaluated    → if improved: full eval; else: next round       │
 └──────────┬────────────────────────────────────────┬───────────────────────┘
            │ metric-fn call                          │ proposer call
            ▼                                         ▼
@@ -437,7 +439,7 @@ Main entry point. Takes the Grain `context` and an options map.
 ```clojure
 (gepa/optimize! context
   {:sheet-id  sheet-id
-   :trainset  trainset                                  ;; failures sampled for reflection
+   :trainset  trainset                                  ;; minibatches drawn for reflection
    :valset    valset                                    ;; examples candidates are scored on
    :metric-fn (gepa/make-judge-metric {:grounding 0.5 :completeness 0.5})
    :config    {:max-metric-calls 50}
@@ -448,7 +450,7 @@ Main entry point. Takes the Grain `context` and an options map.
 | Option | Type | Description |
 |--------|------|-------------|
 | `:sheet-id` | uuid | Workflow whose `:llm` node instructions are optimized |
-| `:trainset` | vector | Example input maps (string keys) sampled for reflective feedback |
+| `:trainset` | vector | Example input maps (string keys); each round's minibatch is run on the parent and reflected on |
 | `:valset` | vector | Example input maps scored to drive selection |
 | `:metric-fn` | fn | Scoring function — e.g. `make-judge-metric`, `make-exact-match-metric` |
 | `:judges` | map | Shortcut: a weight map; `optimize!` builds the judge metric for you |
@@ -757,7 +759,7 @@ That's it — no blackboard plumbing, no `:reads` changes.
 (def result
   (gepa/optimize! context
     {:sheet-id  sheet-id
-     :trainset  (subvec examples 0 3)       ;; sampled for reflective feedback
+     :trainset  (subvec examples 0 3)       ;; minibatches drawn for reflection
      :valset    examples                    ;; scored to drive selection
      :metric-fn (gepa/make-judge-metric {:grounding 0.5 :completeness 0.5})
      :config    {:max-metric-calls 30}
@@ -844,7 +846,7 @@ The LLM provider is determined by the model string prefix:
 :config {:max-metric-calls 100}   ;; thorough optimization
 ```
 
-Other `:config` keys: `:reflection-minibatch-size` (failures sampled per mutation, default 3), `:use-merge` (crossover, default true), `:val-overlap-floor`, `:skip-perfect-score`, `:frontier-type`.
+Other `:config` keys: `:reflection-minibatch-size` (training examples per mutation round, default 3), `:use-merge` (crossover, default true), `:val-overlap-floor`, `:skip-perfect-score`, `:frontier-type`.
 
 ---
 

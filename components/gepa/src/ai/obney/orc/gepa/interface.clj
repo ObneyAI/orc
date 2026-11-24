@@ -291,6 +291,12 @@
                            (remove #(contains? subsample-starts
                                                [(:parent-id %) (:iteration %)])
                                    (get by-type :gepa/proposal-ready)))
+        round-decided (set (concat (map (juxt :parent-id :iteration)
+                                        (get by-type :gepa/proposal-ready))
+                                   subsample-results))
+        pending-round (last
+                        (remove #(contains? round-decided [(:parent-id %) (:iteration %)])
+                                (get by-type :gepa/parent-minibatch-evaluation-requested)))
         pending-subsample (last
                             (remove #(contains? subsample-results
                                                 [(:parent-id %) (:iteration %)])
@@ -341,6 +347,15 @@
            :boundary :proposal-ready
            :remaining-budget remaining-budget
            :parent-id (:parent-id pending-proposal)})
+
+      ;; A recorded mutation round whose parent evaluation was interrupted:
+      ;; re-run it from the record (same parent, component and minibatch).
+      ;; Completed parent tasks are reused; unfinished ones are recovered.
+      pending-round
+      (do (todo/on-parent-minibatch-evaluation-requested (assoc ctx :event pending-round))
+          {:optimization-id optimization-id :status :resumed
+           :boundary :parent-minibatch-evaluation
+           :parent-id (:parent-id pending-round)})
 
       pending-evaluation
       (do (todo/on-candidate-evaluation-started (assoc ctx :event pending-evaluation))

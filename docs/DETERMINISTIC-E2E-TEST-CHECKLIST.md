@@ -915,6 +915,26 @@ Implementation briefs: docs/issues/gepa-recovery/. Existing GEPA-RESULT checks c
 
 - [x] GEPA-RECOVERY-10: Managed aggregate commands reject unfinished, unrelated or mismatched task evidence; legitimate parent-perfect skips are explicit; terminal completion preserves admitted unfinished work.
 
+## GEPA reflection from the parent's training minibatch
+
+Source: `components/gepa/test/ai/obney/orc/gepa/parent_minibatch_reflection_test.clj`, plus the wired
+`feedback_path_test.clj` and `output_path_test.clj` (distinct training and validation sets). Contract
+`ReflectiveInstructionProposer` (`ReflectionFromTheParentsTrainingMinibatch`, `FailureFocusedReflection`),
+`ParetoPopulationSelection.StrictMutationAcceptance`, rules `ReflectOnTheParentsMinibatch` and
+`SkipAParentPerfectOnItsMinibatch`.
+
+- [x] GEPA-REFLECT-1: With distinct training and validation sets (training longer, and shorter), every reflective example's inputs, generated output and feedback belong to one training example; no validation value or empty input reaches the proposer.
+- [x] GEPA-REFLECT-2: Reordered equal examples stay paired by identity; failing examples come first.
+- [x] GEPA-REFLECT-3: The examples come from the sampled parent evaluated on its minibatch, not the just-evaluated candidate.
+- [x] GEPA-REFLECT-4: The parent's minibatch is evaluated before the proposer call and once only: the acceptance gate reuses those tasks (no second dispatch, metric call or charge), and a redelivered round reuses them.
+- [x] GEPA-REFLECT-5: A parent perfect on its minibatch makes no proposer call, publishes the skipped comparison, creates no candidate, and does not block completion; with `:skip-perfect-score false` the proposer is called.
+- [x] GEPA-REFLECT-6: A training set smaller than the minibatch size reflects on each example once (distinct indices) and reaches the proposer.
+- [x] GEPA-REFLECT-7: A metric exception or failed workflow yields no score on the unmanaged path (refuses with `:gepa/evaluation-status :failed`) and no task result on the managed path.
+- [x] GEPA-REFLECT-8: The wired loop (`gepa/optimize!`) hands the proposer feedback and outputs of the parent's training examples only.
+- [x] GEPA-REFLECT-9: A round interrupted during the parent's evaluation is recorded first; `resume!` continues the same round (same parent, component and minibatch), does not run or charge completed parent tasks again, and reaches `proposal-ready`; a second `resume!` makes no second proposal.
+- [x] GEPA-REFLECT-10: A round that already has its proposal, or a published skip, is not resumed as a round.
+- [x] GEPA-REFLECT-11: `:gepa/request-recovery` carries an interrupted round to its proposal through the recovery processor.
+
 - [x] GEPA-RECOVERY-11: Built-in metrics select canonical keyword blackboard answer fields rather than echoed inputs; configured reflection generation limits reach the provider request.
 
 - [x] GEPA-RECOVERY-12: After SQLite close/reopen before task-manifest creation, the actual named GEPA evaluation processor catches up the durable evaluation-start event without manual resume; one task, workflow, metric invocation and aggregate result survive repeated named startup. Existing-behavior verification for DurableOptimizationLifecycle.ResumeFromRecordedBoundary; expected green, with no production changes.
