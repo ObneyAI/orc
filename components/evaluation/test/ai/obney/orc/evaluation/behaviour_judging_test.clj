@@ -153,7 +153,8 @@
                      (sheet/blackboard {:items [:vector [:string {:description "Items"}]]
                                         :item [:string {:description "Current item"}]
                                         :result [:string {:description "Per-item result"}]
-                                        :results [:vector [:string {:description "Results"}]]})
+                                        :results [:vector [:map {:closed true :description "Per-item named result writes."}
+                                                          [:result [:string {:description "Per-item result"}]]]]})
                      (sheet/judges {:leaf-judge {:type :custom :sheet-id judge}})
                      (sheet/map-each "each" :from :items :as :item :into :results
                        (sheet/code "per-item" :fn "ai.obney.orc.evaluation.behaviour-judging-test/per-item"
@@ -225,7 +226,8 @@
         (sheet/blackboard {:items [:vector [:string {:description "Items"}]]
                            :item [:string {:description "Current item"}]
                            :result [:string {:description "Per-item result"}]
-                           :results [:vector [:string {:description "Results"}]]})
+                           :results [:vector [:map {:closed true :description "Per-item named result writes."}
+                                                          [:result [:string {:description "Per-item result"}]]]]})
         (sheet/judges {:child-judge {:type :custom :sheet-id child-judge}
                        :parent-judge {:type :custom :sheet-id parent-judge-sheet}})
         (sheet/map-each "each" :from :items :as :item :into :results :judges ["parent-judge"]
@@ -384,7 +386,8 @@
                      (sheet/blackboard {:items [:vector [:string {:description "Items"}]]
                                         :item [:string {:description "Current item"}]
                                         :result [:string {:description "Per-item result"}]
-                                        :results [:vector [:string {:description "Results"}]]})
+                                        :results [:vector [:map {:closed true :description "Per-item named result writes."}
+                                                          [:result [:string {:description "Per-item result"}]]]]})
                      (sheet/judges {:a {:type :custom :sheet-id a}
                                     :b {:type :custom :sheet-id b}})
                      (sheet/map-each "each" :from :items :as :item :into :results
@@ -473,9 +476,9 @@
         (sheet/execute ctx parent {:request "hello"} :timeout-ms 60000)
         (settled-assessments ctx #(= id (:node-id %)) 1))
       (is (some? @captured) "the built-in judge called the model")
-      (is (= "{\"request\":\"hello\"}" (:original-task @captured))
+      (is (= {:request "hello"} (:original-task @captured))
           "the run's original task is handed over as its own item")
       (is (= (:host-inputs @captured) (:original-task @captured))
-          "here the node read exactly the run's input, serialised the same way")
+          "here the node read exactly the run's original native input")
       (is (not (str/includes? (str (:host-instruction @captured)) "hello"))
           "the original task is not folded into the node's instruction"))))
