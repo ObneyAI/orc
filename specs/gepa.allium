@@ -37,6 +37,7 @@ value ModelProvenance {
     prompt_tokens: Integer?
     completion_tokens: Integer?
     total_tokens: Integer?
+    cost: Decimal?
 }
 
 value OptimizationConfiguration {
@@ -50,6 +51,8 @@ value OptimizationConfiguration {
     validation_overlap_floor: Integer
     skip_perfect_score: Boolean
     inherit_from_previous: Boolean
+    reflection_prompt_template: Any?
+    maximum_reflection_tokens: Integer?
 }
 
 value MetricResult {
@@ -130,8 +133,26 @@ contract ReflectiveInstructionProposer {
         -- retaining all other candidate instructions.
 
     @invariant RoundRobinComponents
-        -- Repeated mutation of a candidate rotates fairly through its named
-        -- instruction components rather than repeatedly selecting one component.
+        -- Each candidate rotates through its named instruction components in a
+        -- stable order. The rotation advances once for every round on that
+        -- candidate that reaches reflection; a round skipped because the parent
+        -- is perfect on its minibatch does not advance it, and a repeated
+        -- request for the same round chooses the same component. A new
+        -- candidate continues from the furthest rotation among its parents.
+
+    @invariant PersistedReflectionPromptTemplate
+        -- A consumer may supply one reflection prompt template for every
+        -- component, or one per named component. Each template carries both the
+        -- current-instruction and the examples placeholders; a template missing
+        -- either is refused when the optimization starts, before any evaluation.
+        -- The template survives restart and is used for every proposal for its
+        -- component; a component without one uses the default template.
+
+    @invariant ReflectionBudgetCheckedBeforeEachProposal
+        -- When a reflection token budget is set, no proposer call starts once
+        -- the recorded reflection tokens reach it; one call may take the total
+        -- past the budget by its own usage. A completed proposer call reused on
+        -- resume is not counted again.
 
     @invariant EveryModelInstructionIsAComponent
         -- Every model leaf, model decision and model-backed condition
@@ -171,8 +192,9 @@ contract DurableOptimizationLifecycle {
 
     @invariant DurableModelEvidence
         -- Every completed proposer and task-model call records its resolved
-        -- model, stable call identity, usage, and associated optimization
-        -- evidence before dependent frontier work proceeds.
+        -- model, stable call identity, usage, any provider-reported cost, and
+        -- associated optimization evidence before dependent frontier work
+        -- proceeds.
 
     @invariant ResumeFromRecordedBoundary
         -- Recovery continues from the latest durable proposal or evaluation
@@ -265,6 +287,7 @@ entity OptimizationRun {
     validation_set: List<DatasetExample>
     configuration: OptimizationConfiguration
     metric_calls_used: Integer
+    reflection_tokens_used: Integer
     started_at: Timestamp
     completed_at: Timestamp?
     failure_reason: String?
@@ -347,6 +370,7 @@ rule StartOptimization {
         validation_set: validation_set,
         configuration: configuration,
         metric_calls_used: 0,
+        reflection_tokens_used: 0,
         started_at: now,
         completed_at: null,
         failure_reason: null,
@@ -367,6 +391,9 @@ rule RecordCompletedModelCall {
         trace_identifier: trace_identifier,
         completed_at: now
     )
+    ensures:
+        if role = "proposer":
+            optimization.reflection_tokens_used = optimization.reflection_tokens_used + tokens_of(model_provenance)
 }
 
 rule CreateCandidate {
@@ -441,6 +468,7 @@ rule ProposeReflectiveMutation {
     when: MutationRoundRequested(optimization)
     requires: optimization.status = running
     requires: optimization.metric_calls_used < optimization.configuration.maximum_metric_calls
+    requires: optimization.configuration.maximum_reflection_tokens = null or optimization.reflection_tokens_used < optimization.configuration.maximum_reflection_tokens
     let parent = select_pareto_candidate(optimization.frontier_entries)
     let component = next_round_robin_component(parent)
     let minibatch = training_minibatch(optimization.trainset, optimization.configuration.reflection_minibatch_size)
@@ -549,6 +577,27 @@ rule CompleteOptimization {
         else:
             optimization.status = failed
             optimization.failure_reason = "Metric budget exhausted before a complete candidate evaluation"
+}
+
+rule CompleteOptimizationAtReflectionBudget {
+    when: ReflectionBudgetExhausted(optimization)
+    requires: optimization.status = running
+    requires: optimization.configuration.maximum_reflection_tokens != null
+    requires: optimization.reflection_tokens_used >= optimization.configuration.maximum_reflection_tokens
+    requires: admitted_evaluations_finished(optimization)
+    requires: publishable_evaluations_recorded(optimization)
+
+    ensures: optimization.completed_at = now
+    ensures:
+        if fully_evaluated_candidate_exists(optimization):
+            optimization.status = completed
+            BestCandidateReturned(
+                optimization: optimization,
+                candidate: best_aggregate_candidate(optimization.candidates)
+            )
+        else:
+            optimization.status = failed
+            optimization.failure_reason = "Reflection token budget exhausted before a complete candidate evaluation"
 }
 
 rule FailOptimization {

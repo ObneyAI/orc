@@ -1252,3 +1252,13 @@ Independent replay/trace integration evidence: `complex-portability/ai-receipt-r
 - [ ] INPUT-SHAPE-4 — Valid compiled/local-registry/schema/ref input contracts retain accurate provider-visible structural types and nested meanings without dumping opaque objects, inventing values or looping on recursive references. Root public reproduction currently accepts `[:schema {:registry ...} :example/record]` but renders packet as str and drops its described optional child. Preserve bounded structural proofs separately from arbitrary extension support.
 
 INPUT-SHAPE-3 verification: private final runtime manifest aac96291, eight hosted cases/56 raw-schema-valid responses, all actual input descriptions and sent/native values independently audited. Six exact task successes; MiniMax ordering and MiMo literal-fidelity failures were correctly rejected, not presented as successful semantics. Evidence: complex-portability/protocol-hosted-described/ROOT-REVIEW.json and hosted-described-read-audit/EIGHT-CASE-REPORT.md. INPUT-SHAPE-1/2/4 retain their scoped constructor/metadata proof separately; no claim of an all-mode datastore E2E from this strict-JSON batch.
+
+## GEPA component rotation, reflection prompt template and reflection token budget
+
+Source: `components/gepa/test/ai/obney/orc/gepa/rotation_prompt_budget_test.clj`.
+
+- [ ] GEPA-ROTATE-1: Successive rounds of one parent rotate through its components in a stable order; a round skipped for a perfect parent does not advance the rotation; a redelivered round keeps its recorded component; a child continues from its parent's pointer while an unrelated candidate starts at the first component.
+- [ ] GEPA-PROMPT-1: A template string reaches every component's proposer prompt; a map reaches its component while another component gets the default; a template missing a placeholder is refused at start, before any evaluation; the template is used after `resume!`.
+- [ ] GEPA-PROMPT-2: The optional `general-rules-prompt-template` is GEPA's default plus the three sentences, passes validation, is re-exported from the public interface, and reaches the proposer prompt when passed as `:reflection-prompt-template`.
+- [ ] GEPA-TOKENS-1: With `:max-reflection-tokens` set, no round opens and no proposer call starts once the recorded tokens reach it, and the run completes with the best fully evaluated candidate (or fails naming the budget when none exists); a completed proposer call reused on redelivery or resume is not counted again; progress and `resume!` report the tokens used.
+- [ ] GEPA-TOKENS-2: A provider-reported cost is kept in the proposer-call evidence.

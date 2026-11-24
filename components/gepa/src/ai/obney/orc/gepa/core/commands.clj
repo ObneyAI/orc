@@ -12,6 +12,7 @@
   (:require [ai.obney.orc.gepa.core.read-models :as rm]
             [ai.obney.orc.gepa.core.task-ledger :as ledger]
             [ai.obney.orc.gepa.core.pareto :as pareto]
+            [ai.obney.orc.gepa.core.proposer :as proposer]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :as command-processor :refer [defcommand]]
             [ai.obney.grain.time.interface :as time]
@@ -37,6 +38,22 @@
 ;; Start Optimization
 ;; =============================================================================
 
+(defn- invalid-reflection-template
+  "The reason a reflection prompt template is unusable, or nil. Every template,
+   whether given for all components or for one, must carry both placeholders; a
+   bad one is refused before any evaluation."
+  [template]
+  (let [templates (cond (nil? template) []
+                        (string? template) [template]
+                        (map? template) (vals template)
+                        :else [::invalid])]
+    (some (fn [t]
+            (try (if (string? t)
+                   (do (proposer/validate-prompt-template t) nil)
+                   "Reflection prompt template must be a string or a map of component name to string")
+                 (catch Exception e (.getMessage e))))
+          templates)))
+
 (defcommand :gepa start-optimization
   "Start a new GEPA optimization run.
 
@@ -50,6 +67,7 @@
     :keys [event-store] :as ctx}]
   (let [optimization-id (or optimization-id (random-uuid))
         merged-config (merge-config (or config {}))
+        template-error (invalid-reflection-template (:reflection-prompt-template merged-config))
         metric-descriptor (or metric-descriptor
                               (when-not (:gepa/metric-fn ctx)
                                 {:kind :default :metric-id "orc/default" :revision "1"
@@ -60,6 +78,8 @@
         normalize-keys (fn [m] (into {} (map (fn [[k v]] [(name k) v]) m)))
         normalized-trainset (mapv normalize-keys trainset)
         normalized-valset (mapv normalize-keys valset)]
+    (if template-error
+      {::anom/category ::anom/incorrect ::anom/message template-error}
     {:command-result/events
      [;; Event 1: Optimization started with metadata
       (->event {:type :gepa/optimization-started
@@ -80,7 +100,7 @@
                        :valset normalized-valset
                        :stored-at now}})]
      :command/result {:optimization-id optimization-id
-                      :config merged-config}}))
+                      :config merged-config}})))
 
 (defcommand :gepa select-metric
   {:authorized? (fn [ctx] (uuid? (:tenant-id ctx)))}

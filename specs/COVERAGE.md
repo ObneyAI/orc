@@ -223,16 +223,18 @@ and zero process findings under Allium language version 3.
 present, while `allium analyse` returns success when those diagnostics produce
 no process findings. Thus “zero errors” above does not mean
 `allium check specs` exits cleanly. Under the current checked-in specifications
-and Allium CLI 3.5.3, `allium check specs` reports 154 structural diagnostics
-across the twelve specifications: 115 informational and 39 warnings, zero
+and Allium CLI 3.5.3, `allium check specs` reports 155 structural diagnostics
+across the twelve specifications: 116 informational and 39 warnings, zero
 errors. `analyse` reports zero process findings. Before the GEPA reflection
 repair the same CLI measured 113 informational and 39 warnings; the repair adds
 two `unreachableTrigger` diagnostics for `ParentMinibatchEvaluated`, an internal
-evaluation callback like `SubsampleEvaluationCompleted`.
+evaluation callback like `SubsampleEvaluationCompleted`. The reflection token
+budget adds one for `ReflectionBudgetExhausted`, the internal callback beside
+`OptimizationBudgetExhausted`.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 76 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations. The RR-12 map-each recovery, RR-13 blocked-child callback, RR-14 resume-persistence and GEPA parent-minibatch evaluation triggers are such startup/internal callbacks. |
+| `allium.rule.unreachableTrigger` | 77 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations. The RR-12 map-each recovery, RR-13 blocked-child callback, RR-14 resume-persistence, GEPA parent-minibatch evaluation and GEPA reflection-budget triggers are such startup/internal callbacks. |
 | `allium.field.unused` | 39 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
 | `allium.externalEntity.missingSourceHint` | 17 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
 | `allium.definition.unused` | 18 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |

@@ -44,7 +44,7 @@ You don't restructure anything. GEPA optimizes the instruction **in place**: it 
 
 So the only requirement to make a node optimizable is that it has a stable `:name` — which `"draft-reply"` already has. GEPA will vary *that node's* `"Write a reply to the support ticket."`. You do **not** move the instruction into the blackboard, and you do **not** touch `:reads`.
 
-> If your tree has several `:llm` nodes, GEPA optimizes them all at once (round-robin per component), each keyed by its node name. To optimize exactly one node, point GEPA at a sheet that contains only that node — see [Optimizing inside a subbehavior](#optimizing-inside-a-subbehavior).
+> If your tree has several `:llm` nodes, GEPA optimizes them all at once, rotating through the components round-robin (each candidate keeps its own pointer into the components in sorted order, advanced once for every round that reaches reflection; a round skipped because the parent is perfect on its minibatch does not advance it, and a child starts at the furthest pointer among its parents), each keyed by its node name. To optimize exactly one node, point GEPA at a sheet that contains only that node — see [Optimizing inside a subbehavior](#optimizing-inside-a-subbehavior).
 
 ### Step 2 — build a trainset and valset from examples you already have
 
@@ -585,6 +585,8 @@ options persist with the run and reach resumed proposals; model selection and
 structured-response/metadata requirements remain authoritative. Temperature is
 not forced. Task-node options remain separate from reflection options.
 
+`:reflection-prompt-template` persists with the run and is used for every proposal for its component, including after `resume!`. It is kept apart from `:reflection-options`, which merge into the model request. GEPA's default template asks the rewrite to include the domain facts the examples show. `gepa/general-rules-prompt-template` is GEPA's template plus three sentences that ask for general rules instead of copied example texts and leave out values each input already carries; nothing selects it unless you pass it as `:reflection-prompt-template`.
+
 Anonymous custom functions receive a generated identity; after restart the
 application must deliberately restore that exact descriptor. Missing custom
 registration or an unsupported/missing descriptor produces recovery-required
@@ -846,7 +848,9 @@ The LLM provider is determined by the model string prefix:
 :config {:max-metric-calls 100}   ;; thorough optimization
 ```
 
-Other `:config` keys: `:reflection-minibatch-size` (training examples per mutation round, default 3), `:use-merge` (crossover, default true), `:val-overlap-floor`, `:skip-perfect-score`, `:frontier-type`.
+`:max-reflection-tokens` (in `:config`, default none) caps the tokens the reflection model may spend, measured from the durable proposer-call evidence (the sum of each call's total tokens). No round opens and no proposer call starts once the recorded tokens reach it; one call may take the total past the budget by its own usage. The run then finishes like the metric budget: it completes with the best fully evaluated candidate, or fails naming the reflection token budget when none exists. `gepa/get-progress` reports `:reflection-tokens {:used .. :budget ..}` and `gepa/resume!` reports `:reflection-tokens-used`. A cost the provider reports is kept in the proposer-call evidence as `:usage :cost`.
+
+Other `:config` keys: `:reflection-prompt-template` (a string for every component, or a map from component name to string; each must contain `<curr_param>` and `<side_info>`, is checked when the optimization starts, and a component missing from the map uses GEPA's default; `gepa/general-rules-prompt-template` is an optional ready-made one, described below), `:reflection-minibatch-size` (training examples per mutation round, default 3), `:use-merge` (crossover, default true), `:val-overlap-floor`, `:skip-perfect-score`, `:frontier-type`.
 
 ---
 
