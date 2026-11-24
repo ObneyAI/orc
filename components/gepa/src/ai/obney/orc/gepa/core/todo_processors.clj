@@ -55,10 +55,14 @@
     (apply str (map #(format "%02x" (bit-and (int %) 0xff)) digest))))
 
 (defn- normalize-usage
+  "Token usage as recorded in durable evidence. A cost the provider reported is
+   kept (as a double); an absent cost is never invented."
   [usage]
-  {:prompt-tokens (int (or (:prompt-tokens usage) (:prompt_tokens usage) 0))
-   :completion-tokens (int (or (:completion-tokens usage) (:completion_tokens usage) 0))
-   :total-tokens (int (or (:total-tokens usage) (:total_tokens usage) 0))})
+  (let [cost (:cost usage)]
+    (cond-> {:prompt-tokens (int (or (:prompt-tokens usage) (:prompt_tokens usage) 0))
+             :completion-tokens (int (or (:completion-tokens usage) (:completion_tokens usage) 0))
+             :total-tokens (int (or (:total-tokens usage) (:total_tokens usage) 0))}
+      (number? cost) (assoc :cost (double cost)))))
 
 (defn- stable-call-id
   [& parts]
@@ -225,16 +229,18 @@
          (mapv :example))))
 
 (defn select-component
-  "Select which component to mutate next.
+  "Select which component of `parent-id` to mutate next, round-robin.
 
-   Uses round-robin with random tie-breaking based on
-   how many times each component has been mutated."
-  [context optimization-id]
-  (let [pop-state (rm/get-population-state context optimization-id)
-        ;; Get all mutation events to count per-component mutations
-        components (keys (:instructions (first (vals (:candidates pop-state)))))]
-    ;; For now, just pick randomly from components
-    (rand-nth (vec components))))
+   Each candidate rotates through its component names (sorted, so the order is
+   stable) and its pointer advances once for every round that reached
+   reflection; a skipped round does not advance it, and a child starts at the
+   furthest pointer among its parents. The pointer is derived from recorded
+   events (`rm/gepa-state`), so a redelivery chooses the same component."
+  [context optimization-id parent-id]
+  (let [state (rm/get-gepa-state context optimization-id)
+        idx (get-in state [:candidate-id->idx parent-id])]
+    (or (when idx (rm/get-next-component-to-update state idx))
+        (first (sort (keys (:instructions (rm/get-candidate context optimization-id parent-id))))))))
 
 ;; =============================================================================
 ;; Workflow Execution with Instruction Patching
@@ -605,11 +611,17 @@
                                  reflective-examples model-name nil nil nil))
   ([context parent-instructions component reflective-examples model-name
     optimization-id parent-candidate-id iteration]
-  (let [context (if optimization-id
-                  (assoc context :gepa/reflection-options
-                         (get-in (rm/get-optimization-summary context optimization-id)
-                                 [:config :reflection-options]))
+  (let [config (when optimization-id
+                 (:config (rm/get-optimization-summary context optimization-id)))
+        context (if optimization-id
+                  (assoc context :gepa/reflection-options (:reflection-options config))
                   context)
+        ;; One template for every component, or one per component; a component
+        ;; without one uses the default. Kept apart from :reflection-options,
+        ;; which merge into the model request.
+        template (:reflection-prompt-template config)
+        prompt-template (cond (string? template) template
+                              (map? template) (get template (str component)))
         current-instruction (get parent-instructions component)
         formatted-examples (reflection/format-reflective-examples reflective-examples)
         call-id (when (and optimization-id parent-candidate-id (some? iteration))
@@ -647,7 +659,8 @@
             result (proposer/propose-new-instruction
                      effective-llm-fn
                      current-instruction
-                     formatted-examples)]
+                     formatted-examples
+                     :prompt-template prompt-template)]
         (:proposed-instruction result))))))
 
 ;; =============================================================================
@@ -742,7 +755,11 @@
 ;; =============================================================================
 
 (defn- finish-at-admission-budget-exhaustion!
-  [context optimization-id]
+  "Finish the optimization because a budget ran out: complete with the best
+   fully evaluated candidate, or fail naming the budget when none exists.
+   `budget` is :metric-calls (default) or :reflection-tokens."
+  ([context optimization-id] (finish-at-admission-budget-exhaustion! context optimization-id :metric-calls))
+  ([context optimization-id budget]
   (let [tasks (vals (:tasks (task-ledger/get-state context optimization-id)))]
     (if (some #(not= :completed (:status %)) tasks)
       (u/log ::budget-exhausted-with-unfinished-work :optimization-id optimization-id)
@@ -755,7 +772,19 @@
                                    :gepa/fail-optimization)
                    :optimization-id optimization-id}
             (nil? (:aggregate-score winner))
-            (assoc :error-message "Metric budget exhausted before a complete candidate evaluation")))))))
+            (assoc :error-message (str (case budget
+                                         :reflection-tokens "Reflection token budget"
+                                         "Metric budget")
+                                       " exhausted before a complete candidate evaluation")))))))))
+
+(defn- reflection-budget-exhausted?
+  "True once the durable proposer-call evidence has reached the optimization's
+   `:max-reflection-tokens` (a call may take the total past it by its own usage)."
+  [context optimization-id]
+  (let [limit (get-in (rm/get-optimization-summary context optimization-id)
+                      [:config :max-reflection-tokens])]
+    (and (some? limit)
+         (>= (rm/get-reflection-tokens-used context optimization-id) limit))))
 
 (defn on-candidate-evaluation-started
   "Handle candidate-evaluation-started event.
@@ -920,6 +949,8 @@
                               (str "Parent minibatch evaluation failed: " (.getMessage e)))))
       nil)))
 
+(declare request-mutation-round-within-budget!)
+
 (defn- request-mutation-round!
   "Open a mutation round: choose the parent, the component and the training
    minibatch, and record the request (`ParentMinibatchEvaluationRequested`) as
@@ -933,9 +964,17 @@
 
    `fallback-parent-id` is used when the frontier is empty."
   [context optimization-id fallback-parent-id]
+  (if (reflection-budget-exhausted? context optimization-id)
+    ;; No round may open once the recorded reflection tokens reach the budget:
+    ;; no metric call is spent on a round that cannot propose.
+    (finish-at-admission-budget-exhaustion! context optimization-id :reflection-tokens)
+    (request-mutation-round-within-budget! context optimization-id fallback-parent-id)))
+
+(defn- request-mutation-round-within-budget!
+  [context optimization-id fallback-parent-id]
   (let [parent-id (or (rm/sample-pareto-frontier context optimization-id)
                       fallback-parent-id)
-        component (select-component context optimization-id)
+        component (select-component context optimization-id parent-id)
         opt-summary (rm/get-optimization-summary context optimization-id)
         minibatch-size (get-in opt-summary [:config :reflection-minibatch-size] 3)
         iteration (rm/get-iteration-count context optimization-id)
@@ -1015,6 +1054,15 @@
                :accounting-mode :tasks
                :task-call-ids (:task-call-ids parent-result)
                :parent-perfect-skip? true}))
+          ;; The reflection budget is checked again just before the proposer
+          ;; call, since the round may have been opened earlier. A call already
+          ;; completed for this round is reused on resume and costs nothing, so
+          ;; it never stops the round.
+          (if (and (reflection-budget-exhausted? context optimization-id)
+                   (not (completed-proposer-call
+                          context (stable-call-id :gepa/proposer optimization-id parent-id
+                                                  iteration component))))
+            (finish-at-admission-budget-exhaustion! context optimization-id :reflection-tokens)
           ;; Provider failures are terminal and visible; they must not cause
           ;; event retries to create repeated frontier updates or fabricated
           ;; candidates.
@@ -1042,7 +1090,7 @@
                  :iteration iteration}))
             (catch Exception e
               (fail-optimization! context optimization-id
-                                  (str "Instruction proposal failed: " (.getMessage e))))))))))
+                                  (str "Instruction proposal failed: " (.getMessage e)))))))))))
 
 ;; =============================================================================
 ;; On Candidate Evaluated
