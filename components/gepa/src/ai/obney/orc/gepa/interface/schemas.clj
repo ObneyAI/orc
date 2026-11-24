@@ -243,6 +243,16 @@
     [:usage {:optional true} [:maybe :map]]
     [:completed-at :any]]
 
+   :gepa/parent-minibatch-evaluation-requested
+   [:map
+    [:optimization-id :uuid]
+    [:request-id :uuid]
+    [:parent-id :uuid]
+    [:component :string]
+    [:iteration :int]
+    [:subsample-indices [:vector :int]]
+    [:requested-at :any]]
+
    :gepa/proposal-ready
    [:map
     [:optimization-id :uuid]
@@ -470,6 +480,14 @@
     [:feedback {:optional true} [:maybe :string]]
     [:model {:optional true} [:maybe :string]]
     [:usage {:optional true} [:maybe :map]]]
+
+   :gepa/request-parent-minibatch-evaluation
+   [:map
+    [:optimization-id :uuid]
+    [:parent-id :uuid]
+    [:component :string]
+    [:iteration :int]
+    [:subsample-indices [:vector :int]]]
 
    :gepa/record-proposal-ready
    [:map

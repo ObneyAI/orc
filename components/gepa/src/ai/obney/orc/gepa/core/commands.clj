@@ -735,6 +735,39 @@
                              (not-any? #(= call-id (:call-id %)) facts))))}
      :command/result {:call-id call-id}})))
 
+(defcommand :gepa request-parent-minibatch-evaluation
+  "Record that a mutation round was opened: the parent, the component and the
+   training minibatch it will be evaluated on. The record is the durable
+   boundary `resume!` re-runs. A round is identified by its optimization and
+   iteration: every round ends in a recorded decision that advances the
+   iteration, so a repeat, whatever parent it names, is only a redelivery and
+   is a no-op."
+  [{{:keys [optimization-id parent-id component iteration subsample-indices]} :command
+    :keys [event-store tenant-id]}]
+  (let [request-id (java.util.UUID/nameUUIDFromBytes
+                     (.getBytes (pr-str [:gepa/parent-minibatch-evaluation optimization-id
+                                         iteration])
+                                java.nio.charset.StandardCharsets/UTF_8))]
+    (if (some #(= request-id (:request-id %))
+              (into [] (es/read event-store
+                         {:tenant-id tenant-id
+                          :types #{:gepa/parent-minibatch-evaluation-requested}
+                          :tags #{[:optimization optimization-id]}})))
+      {:command-result/events [] :command/result {:status :already-requested}}
+      {:command-result/events
+       [(->event {:type :gepa/parent-minibatch-evaluation-requested
+                  :tags #{[:optimization optimization-id]
+                          [:request request-id]
+                          [:parent parent-id]}
+                  :body {:optimization-id optimization-id
+                         :request-id request-id
+                         :parent-id parent-id
+                         :component component
+                         :iteration iteration
+                         :subsample-indices (vec subsample-indices)
+                         :requested-at (time/now)}})]
+       :command/result {:status :requested :request-id request-id}})))
+
 (defcommand :gepa record-proposal-ready
   "Persist the complete proposal before its first evaluation. This is the
    explicit crash/resume boundary between a billable proposer call and task

@@ -31,6 +31,7 @@
     :gepa/reflective-dataset-built    ;; Track reflection data
     :gepa/proposer-call-completed     ;; Durable real-model provenance/usage
     :gepa/task-call-completed         ;; Restart-safe evaluated example ledger
+    :gepa/parent-minibatch-evaluation-requested ;; Durable mutation-round request
     :gepa/proposal-ready              ;; Durable proposer/evaluation boundary
     :gepa/winner-applied              ;; Winner-to-workflow publication link
     :gepa/mutation-proposed
