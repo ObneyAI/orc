@@ -4,6 +4,14 @@ The agent authoring a researcher and the model running that researcher have diff
 
 Teach the model how to assemble supported work. Let it choose the actions, decomposition and semantic conclusions from the actual task and observations. An example of executable syntax is guidance; a supplied answer, fabricated observation or canned analysis is not.
 
+The default runtime guidance now includes native evidence ownership in legacy,
+recursive and terminal researchers. For results combining exact evidence and new
+interpretation, let semantic work own the new interpretation and ordinary code
+carry the original evidence into the final shape. This uses existing primitives;
+it adds no identifier matching or repair mechanism. Keep task-requested
+transformations explicit. Verify the model's actual data flow rather than
+assuming that receiving this guidance guarantees compliance.
+
 ## What the prime needs before its first emission
 
 | Boundary | Model-visible information |
@@ -83,11 +91,51 @@ After a partial map, derive missing identities from actual input coverage and it
 
 Completion checks need actual execution. Before delivery/finalization, compare expected and observed identity frequencies/cardinality, source/reference provenance, required nonempty values, and independently computed arithmetic. Record that verification result through a declared write or domain guard. A model's statement that it checked coverage, or a final call that merely returns stored values, is insufficient proof. Interpret prose semantically against full evidence; do not use matching words or phrases as a substitute for that review.
 
+## Assess optional planning stages
+
+A proposed spine and a review of that candidate can help with decomposition, but
+they are not required researcher stages. Compare them with the same builder,
+grammar, capability grants, contracts, evidence and acceptance checks. Include
+authoring calls in the whole-family cost and latency. A richer proposal or more
+executed node types does not by itself establish better task performance.
+
+Start blackboard ownership with the spine and refine it alongside specialist
+boundaries. Give the reviewer the actual candidate and the complete tool and
+specialist contracts. Give the builder the complete native refined design through
+a supported input seam. A node name or an unsupported option does not deliver
+that context. A reviewer depends on its candidate; parallelize work that is
+actually independent instead.
+
+Keep abstract design metadata distinct from executable syntax. A design's control
+ID is not automatically an emitted control option. After a failed attempt, reuse
+retained schema declarations rather than replacing them as fresh contracts. Check
+the actual compiler and next model request when either boundary is unclear.
+
+In one matched pair on an unpromoted runtime, both approaches passed literal and
+independent semantic acceptance. The control used five calls; spine plus
+refinement used ten. Staging read each source once, whereas the control repeated
+all five reads after repairing its aggregate contract. Staging also ran an
+independent gap specialist, but no downstream node consumed that output. The
+extra stages therefore showed a reuse benefit without establishing an overall
+efficiency or quality improvement. This single pair does not justify a universal
+planner pipeline or imply released support for the candidate's emitted palette.
+
+For a proposed critic or specialist, identify who inspects or consumes its result,
+and whether it changes the final answer, an explicit gate, or a separately useful
+monitoring artifact. Merely running an audit does not merge its findings. Preserve
+useful independent work and reconnect only the necessary downstream consumers.
+
+Retain full proposals, actual revisions, described seams, rejected attempts,
+located feedback and accepted results with their execution owners. These can
+support later episode projection and pattern review. Capturing them does not
+prove that classification, harvesting or training consumed them, or that learning
+improved; verify those downstream boundaries separately.
+
 ## Prevent misleading recovery
 
 An emitted source string is not proof of accepted compilation or execution. A preflight rejection may have no child tick or nodes to inspect. Confirm the actual rejection and schemas before calling it a tool failure or diagnosing code scope.
 
-At the inspected revision, precise preflight causes can be absent from the next prime history. A model may then speculate that generated tools are impossible or move all work into serial inline calls. Preserve that failed run and the actual source; do not accept the speculation as an ORC limitation. The supported generated tool seam is the injected `call-tool-fn` above.
+On older revisions, precise preflight causes can be absent from the next prime history. A model may then speculate that generated tools are impossible or move all work into serial inline calls. Preserve that failed run and the actual source; do not accept the speculation as an ORC limitation. The supported generated tool seam is the injected `call-tool-fn` above.
 
 Treat original `:generated-tree-source` as executable-source evidence. A normalized serialized tree can turn list forms into vector-shaped data for storage/display. Compare the original source and actual compiler outcome before diagnosing invalid parentheses from a preview.
 

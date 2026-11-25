@@ -1253,6 +1253,18 @@ Independent replay/trace integration evidence: `complex-portability/ai-receipt-r
 
 INPUT-SHAPE-3 verification: private final runtime manifest aac96291, eight hosted cases/56 raw-schema-valid responses, all actual input descriptions and sent/native values independently audited. Six exact task successes; MiniMax ordering and MiMo literal-fidelity failures were correctly rejected, not presented as successful semantics. Evidence: complex-portability/protocol-hosted-described/ROOT-REVIEW.json and hosted-described-read-audit/EIGHT-CASE-REPORT.md. INPUT-SHAPE-1/2/4 retain their scoped constructor/metadata proof separately; no claim of an all-mode datastore E2E from this strict-JSON batch.
 
+## Typed workflow results and recoverable diagnostics
+
+- [x] RESEARCHER-ADMISSION-FEEDBACK — Public HTTP/SIO/SQLite execution returns a child admission refusal and exact nested schema reason in the next researcher request, then executes only the corrected child and publishes its canonical result.
+- [x] MAP-AGGREGATE-OUTPUT — Successful scalar-item observations cannot publish an invalid parent aggregate. The parent fails with exact schema evidence, the rejected candidate remains diagnostic, and successful item values stay canonical. Valid partial aggregation preserves status and failure indices.
+- [x] RESEARCHER-FINAL-REPAIR — Nested invalid final attempts yield schema feedback before completion and permit bounded correction. Native false/zero/null and optional omission remain intact; function candidates checkpoint safely, a caught later rejection clears an earlier final capture, and exhausted allowance cannot publish invalid values or dispatch extra calls.
+- [x] RESEARCHER-NATIVE-EVIDENCE — Public researcher requests in legacy, recursive and RLM terminal modes receive shared native-evidence ownership guidance. Executed code assembles a typed result from unchanged native observations and separately produced interpretation, preserving opaque references, order, duplicate identities, false, zero and null without matching or repairing identifiers. A recursive emitted semantic-child plus code-assembly case verifies the same ownership through canonical projections.
+
+
+## CSV per-entity definition enrichment
+
+- [x] CSV-ENTITY-CONTEXT — Public SQLite execution of the authored CSV definition stage prepares and enriches two distinct entities, exposes each entity's full native context to the actual model request, and publishes the generated fields under their original entity identities without global or prior-item bleed. The original two-direct-child topology remains a failing negative control; the aggregate contract stays strict. Controlled HTTP proves transport/composition, not live semantic quality.
+
 ## GEPA component rotation, reflection prompt template and reflection token budget
 
 Source: `components/gepa/test/ai/obney/orc/gepa/rotation_prompt_budget_test.clj`.

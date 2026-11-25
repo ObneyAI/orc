@@ -1700,3 +1700,97 @@ AggregateTraceMatchesCanonicalWrites closes AGGREGATE-TRACE-1 for complete, empt
 Independent root integration passed18tests/255assertions with zero failures/errors, including the unchanged trace-fidelity namespace, public SQLite aggregate/detail queries and SQLite value-log regressions. The targeted new regression passed2tests/143assertions; its original productive cases failed54assertions and the additional exact-reference counterexample failed1assertion before correction. 1 obligation, 1 covered, 0 uncovered within this scope. No generated mock, skipped assertion or skeleton supplies this evidence.
 
 Deliberately completing an already terminal node again can still cause historical rehydration to fold its old own writes over declared references. That staged command history is preserved as a separate existing limitation; no valid authored workflow reaching it is demonstrated. This correction does not change that resolver or claim general historical migration, nested map coordinators or restart coverage. The earlier eight-model evidence remains at its frozen sources; this later correction concerns trace metadata and empty/no-child attribution, with independent deterministic integration evidence. Allium retains39warnings/113info/0errors/0processfindings.
+
+
+## Typed workflow results and recoverable diagnostics
+
+3 changed-invariant obligations, 3 covered, 0 uncovered: child admission
+feedback, map aggregate validation, and bounded final-output correction. The
+public workflow regressions use local scripted HTTP responses, SIO, SQLite,
+canonical value projections, and the released default researcher guide.
+Before implementation, six cases produced 33 expected assertion failures out
+of 62 assertions, with zero errors. The final seven cases pass 68 assertions,
+including an additional caught-rejection case that verifies stale final
+capture cannot complete the campaign. Existing normalization and declared
+string-key compatibility tests pass 11 tests and 72 assertions.
+
+The rejected aggregate retains diagnostic evidence while successful items
+remain canonical; a valid partial control retains failure indices. Final
+correction preserves false, zero, null, optional omission, and existing call
+limits. Runtime function candidates cannot enter checkpoint error metadata.
+The admission case verifies the exact schema refusal reaches the next model
+request even when no child node executed.
+
+These checks do not establish hosted-model semantic quality, process-kill
+recovery, externally stored large candidates, or every pre-existing clause
+of the three invariants. No whole-repository test result is claimed. Allium
+check retains the existing 12-module baseline: 39 warnings, 113 informational
+diagnostics, zero errors; process analysis reports zero findings. This is a
+warning-bearing baseline, not a clean check.
+
+
+A standalone consumer control additionally passes 2 tests and 42 assertions
+through HTTP and SQLite: a generated child fails, its exact error reaches the
+next request, a corrected tree completes, and an external acceptance gate runs.
+A separate control preserves rejection without another researcher call.
+A fresh hosted workflow used three researcher calls and one generated LLM call.
+It executed the child and returned a typed result, but receipt checks rejected
+changed opaque references before semantic review. This is not accepted-answer
+or live-correction coverage. Inspection of raw requests and responses locates
+the reference changes in the model response, with canonical values unchanged
+after decoding. Consumer acceptance rules and model-visible inspection remain
+separate concerns from the three validation boundaries.
+
+
+## Shared researcher guidance and native evidence ownership
+
+1 additional changed-invariant obligation, 1 covered, 0 uncovered:
+ResearcherGuidanceMatchesCallableContracts supplies the same native-evidence
+ownership principle to legacy, recursive RLM and terminal RLM researchers.
+The three targeted guidance tests pass 224 assertions through public HTTP/SIO
+and SQLite workflows. The new all-mode test initially failed 15 assertions
+for absent guidance, with zero errors; existing native assembly behavior was
+already valid. The recursive witness runs semantic child work followed by
+ordinary code assembly and verifies canonical values. It covers opaque
+references, order, duplicate identities, false, zero and null. This scoped
+obligation does not close every historical clause of the guidance invariant.
+
+A later fresh hosted follow-up used six researcher calls, two generated LLM
+calls and one independent semantic review. Actual schema rejections reached
+the next researcher requests, and corrected child work completed without
+repeating discovery or the five source reads. Canonical catalog and
+observations equal the original source receipts. Literal checks passed;
+independent review accepted the qualified unresolved result with no defects.
+The unavailable source remained an access gap. This later result preserves
+the earlier rejected run above rather than reclassifying its outcome.
+
+Guidance introduces no helper API, parser, identifier repair, required tree
+shape or additional mandatory call. This single hosted construction case
+does not establish all-model reliability, broad delegation, process recovery
+or a return edge from the external semantic judge into the researcher.
+Interpretation citations remain model-authored; preserving native evidence
+does not itself guarantee their correctness. No generated stub, skipped
+assertion or skeleton counts as coverage. The specification diagnostics
+retain 39 warnings, 113 informational diagnostics, zero errors and zero
+process findings; this is not a clean structural check.
+
+
+## CSV entity context and definition composition
+
+1 scoped obligation, 1 covered, 0 uncovered: the authored CSV definition stage
+executes preparation and enrichment in order for each entity, passes the actual
+entity and prepared context to the model, and retains generated definition
+fields under that entity's original identity. The public SQLite/HTTP regression
+uses two distinct entities and actual canonical value readback. Before the
+correction, two cases produced 12 assertion failures out of 21 assertions, with
+zero errors. After the correction, both cases pass all 21 assertions. The old
+two-direct-child topology remains a failing negative control and produces no
+canonical definition aggregate; no required field or validator was weakened.
+
+The workflow uses its existing sequential map default. This witness does not
+establish parallel composite collection, per-item provider-failure recovery,
+process restart, whole-CSV extraction, or real-model semantic quality. Scripted
+HTTP responses prove context/transport/composition, not those broader claims.
+The failed hosted CI supplied the integration counterexample; a post-fix hosted
+result is not claimed here. No mock, placeholder, omitted assertion or skeleton
+substitutes for the named public stage obligation.

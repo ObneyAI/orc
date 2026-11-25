@@ -18,6 +18,22 @@ Where independently retained progress matters, use disjoint typed branch outputs
 
 Keep healthy completed work outside a repeat boundary or guard its reuse within that boundary. Re-run only missing or invalidated work. Retained intake observations do not waive fresh validation before a consequential effect. Verify the executing revision's map-each and partial-result rules before relying on collected indices.
 
+## Compose each mapped method as one child subtree
+
+An authored map-each executes one child subtree. Supplying preparation and
+semantic work as two direct children does not sequence them: only the first
+subtree runs. Compose the ordered work inside that child, or use a reusable
+delegate with an explicit result seam. For parallel maps, keep the primitive
+child guidance and verify scoped collection before relying on a composite's
+writes. A sequential two-item proof does not establish parallel fault recovery.
+
+Declare the current item and each prepared value in the consuming leaf's reads.
+A code leaf writing an entity name or source samples does not automatically pass
+those values to the next model. Inspect the actual per-item model inputs and
+canonical rows. A two-entity regression exposed both skipped enrichment and
+missing context; fixing the subtree and reads restored the generated fields
+without changing the aggregate schema or manufacturing values.
+
 ## Preserve current, historical and unavailable evidence
 
 Persist or return new observations even when the semantic continuation asks a question or refuses an action. A newly read fact must not coexist with an old snapshot labelled current. Keep quoted terms, last-observed facts and freshly checked facts distinguishable in the model packet and user presentation.

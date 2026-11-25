@@ -424,6 +424,15 @@ contract OntologyExtraction {
     @invariant SourceAwareExtraction
         -- CSV, JSON, SQL, RDF, and text retain provenance and use their extractor.
 
+    @invariant CsvDefinitionEnrichmentUsesCurrentEntity
+        -- Every detected CSV entity is enriched using its own identity, source
+        -- columns, observed sample values, related entities and current domain.
+        -- Definition generation follows context preparation for that same entity.
+        -- Collected definitions retain the contributing entity identity and the
+        -- actual generated definition, scope note and external alignments.
+        -- One entity's context or generated values must not substitute for another;
+        -- failed or incomplete enrichment cannot publish a complete aggregate.
+
     @invariant DeterministicRdfImport
         -- N-Triples RDF import is deterministic: URI resources receive stable
         -- ontology-scoped identities and graph predicates join the same concept graph.

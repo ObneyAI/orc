@@ -811,6 +811,7 @@
                      (println "[DEBUG Tree] tick-tree command rejected:"
                               (:cognitect.anomalies/message tick-cmd-result))
                      {:status :failure
+                      :admission-rejected? true
                       :error (str ":sheet/tick-tree command rejected: "
                                   (:cognitect.anomalies/message tick-cmd-result)
                                   (when-let [explain (:error/explain tick-cmd-result)]
