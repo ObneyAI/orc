@@ -250,6 +250,30 @@ contract DurableOptimizationLifecycle {
         -- history is reported rather than guessed; mixed runtime writers are not
         -- permitted while an optimization crosses the accounting boundary.
 
+    @invariant ConflictedLedgerWritesRetry
+        -- A task-ledger write refused because another writer changed the same
+        -- stream first is retried with bounded, jittered backoff on every event
+        -- store, however the store reports the conflict. When retries run out,
+        -- the task is left at a recoverable boundary that resume continues. A
+        -- run never stalls with a task whose workflow completed and whose
+        -- metric never started.
+
+    @invariant InheritanceIsExplicitlyControlled
+        -- A run inherits earlier candidates only when inheritance is allowed
+        -- for it, and turning inheritance off when starting a run takes effect
+        -- however the caller passes the option. A run that names one earlier
+        -- optimization inherits only that optimization's candidates; otherwise
+        -- it inherits the best candidates of every completed run of the
+        -- workflow.
+
+    @invariant InheritedScoresOnlyForTheSameEvidence
+        -- An inherited candidate reuses a recorded per-example score only for
+        -- an example identical in content to the one scored, on the same
+        -- workflow content and the same metric. Every other example is
+        -- evaluated in this run and charged to its budget. A reused score is
+        -- never moved to a different example by position, and an edited
+        -- workflow or metric never reuses scores from before the edit.
+
     @invariant TerminalWinnerStable
         -- Completion waits for fully evaluated comparisons whose aggregates
         -- remain publishable. Terminal selection and aggregate publication
