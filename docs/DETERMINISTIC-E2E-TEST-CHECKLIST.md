@@ -1329,3 +1329,18 @@ Hosted semantic quality, arbitrary captured closures and compiled-sheet
 export/import of callable metadata remain outside this proof. Specification
 checking retains 39 warnings, 116 informational diagnostics, zero errors and
 zero process findings. Check exits 1; analyse exits 0. The baseline is not clean.
+
+
+## Researcher timeout meaning across model boundaries
+
+- [x] RESEARCHER-TIMEOUT-1 — Raw and wrapped typed timeouts, safely normalized timeout evidence, and durable recorded timeout outcomes retain provider-timeout meaning through actual researcher execution. The original iteration limit/retry/checkpoint contract remains intact. Ordinary and native LLM normalization preserve timeout type without raw causes/payloads or invented status/model/usage. Configured receipt replay does not redispatch, and configured fallback exhaustion acquires no extra retry allowance. Ordinary errors and misleading timeout prose stay distinct.
+
+Earlier RESEARCHER-TIMEOUT-1 verification: independent 142 tests / 1,133 assertions across the offline LLM boundary, actual Grain campaigns and SQLite receipt replay. Existing timeout classification tests remain unchanged. Recorded receipt replay makes no additional dispatch or event write. Full process restart and hosted provider failure are outside this bounded contract.
+
+Reconciliation with the merged recovery repair preserves all 70 runtime files.
+The focused native-input checks pass 149 tests and 750 assertions, including
+all 48 RLM mode tests, six reconciled-contract cases and retained timeout replay.
+The corrected score assertions distinguish supplied evidence, declared optional
+shape, native predictor inputs and JSON-ready transport values. The earlier
+two failed expectations remain documented; no production contract or assertion
+is weakened.

@@ -130,6 +130,46 @@ tests are evidence for these domains rather than separately governed product
 domains. Any behavior found there that is not represented by a component is
 added to this ledger rather than silently excluded.
 
+## Researcher timeout classification across retained responses
+
+RESEARCHER-TIMEOUT-1 covers the ordinary/native LLM normalization boundary,
+researcher capture, durable request receipt and executor classification.
+Known Java timeout classes and exact normalized transport categories retain their
+meaning after unsafe causes are removed. Explicit non-timeout categories retain
+precedence; error text and HTTP status alone do not establish a timeout.
+
+Earlier timeout-specific verification passed 142 tests / 1,133 assertions: 135 offline LLM
+tests, six actual Grain campaign tests and one actual SQLite receipt replay.
+Configured fallback exhaustion retains its terminal policy; recorded replay adds
+neither provider calls nor events. The existing timeout classification namespace
+is unchanged. **6 obligations, 6 covered, 0 uncovered** within this repair scope.
+No generated skeleton or weakened assertion supplies coverage. Transport effects
+are injected; Grain state transitions, projections and SQLite records are real.
+
+That earlier source retained 39 warnings and 113 informational diagnostics,
+with zero errors and zero process findings. This remains a characterized baseline rather
+than a clean check. Fresh-process recovery, hosted provider failures and chat
+streaming are outside this proof. The separate live provider-finish-error remains
+unresolved and is not reclassified as a timeout.
+
+The merged recovery repair already supplies the timeout implementation and its
+stronger category-precedence checks. Reconciliation preserves all 70 runtime
+files byte-for-byte. The remaining changes correct test translations of native
+inputs, JSON-ready transport values and declared optional fields. The score
+fixture now checks the intact value before rendering, exact JSON field names
+at transport, and absence of a declared optional child from supplied evidence.
+Its two obsolete expectations reproduce two failures before this correction.
+
+The focused reconciliation command passes 149 tests and 750 assertions, with
+zero failures or errors: three LLM boundary namespaces, all 48 RLM mode tests,
+six reconciled-contract tests and one retained timeout replay. The six
+reconciled-contract cases now pass 44 assertions. No production assertion was
+removed or skipped. The existing field-guide and native-input contracts govern
+these checks; the reconciliation introduces no new production domain or
+behavior. Current Allium checks retain 12 modules, 39 warnings and 116
+informational diagnostics, with zero errors and zero process findings. Check
+exits 1 and analyse exits 0; this remains a warning baseline, not a clean check.
+
 ## Provider failure evidence and bounded alternatives
 
 `StructuredPrediction.SafeOrdinaryTransportEvidence` specifies the synchronous

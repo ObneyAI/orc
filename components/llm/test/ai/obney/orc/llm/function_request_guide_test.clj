@@ -39,7 +39,7 @@
                      [:sent-at {:optional true :description "When it was sent"} :string]]]}]
    :outputs [{:name :reply :spec :string :description "The reply to send"}]})
 
-;; `coupon` is not carried, `account` has no `region`: both are absent fields.
+;; `coupon` is absent altogether; supplied `account` has an absent optional region.
 (def ^:private support-values
   {:subject (as-the-executor-sends "Refund please")
    :account (as-the-executor-sends {:tier "pro"})
@@ -57,9 +57,24 @@
    "What was written"
    "When it was sent"])
 
-(def ^:private absent-meanings
-  ["Promo code the customer quoted"
-   "Where they are based"])
+(defn- check-absent-inputs [content]
+  (let [[guide values] (str/split content #"Given the following inputs:" 2)
+        [shown declared] (str/split guide #"DECLARED CONTRACT" 2)]
+    (is (string? values) "the request has a separate supplied-value section")
+    (is (string? declared) "the supplied account retains its declared nested shape")
+    (doseq [absent ["coupon" "Promo code the customer quoted"]]
+      (is (not (str/includes? content absent))
+          (str "an absent top-level input is omitted entirely: " absent)))
+    (doseq [absent ["region" "Where they are based"]]
+      (is (not (str/includes? shown absent))
+          (str "not presented as shown evidence: " absent))
+      (is (and (string? declared) (str/includes? declared absent))
+          (str "retained in the declared nested contract: " absent))
+      (is (and (string? values) (not (str/includes? values absent)))
+          (str "not invented as a supplied value: " absent)))
+    (is (and (string? declared)
+             (re-find #"`region` \([^\n)]*optional\): Where they are based(?:\n|$)" declared))
+        "the optional region retains its own exact meaning")))
 
 (defn- capture-request
   "The request `predict` hands the provider, in function mode."
@@ -92,17 +107,13 @@
           (when-let [meaning-at (at meaning)]
             (is (< instruction-at meaning-at values-at)
                 (str "after the instruction and before the values: " meaning))))
-        (doseq [meaning absent-meanings]
-          (is (nil? (at meaning)) (str "does not describe an absent field: " meaning)))))))
+        (check-absent-inputs content)))))
 
-(deftest an-absent-input-is-named-nowhere-in-a-function-request
+(deftest absent-values-stay-omitted-while-a-supplied-input-retains-its-declared-shape
   (doseq [options [{} {:force-tool-choice? true}]]
     (testing (str "options " (pr-str options))
       (let [content (user-message (capture-request support support-values options))]
-        (is (not (str/includes? content "coupon"))
-            "neither listed among the values nor described in the guide")
-        (is (not (str/includes? content "region"))
-            "an absent nested field is not named either")
+        (check-absent-inputs content)
         (testing "the shown inputs are still given as name: value lines"
           (is (str/includes? content "\nsubject: Refund please\n"))
           (is (str/includes? content "\naccount: {\"tier\":\"pro\"}\n")))))))
@@ -192,9 +203,7 @@
         (is (= 0 (at "Draft the reply to send to the customer.")))
         (doseq [meaning shown-meanings]
           (is (some? (at meaning)) (str "the wire body carries: " meaning)))
-        (doseq [meaning absent-meanings]
-          (is (nil? (at meaning)) (str "the wire body omits: " meaning)))
-        (is (not (str/includes? content "coupon")))
+        (check-absent-inputs content)
         (is (some? (at "Your input fields are:")) "the guide is in the body")
         (is (some? (at "Given the following inputs:")))
         (when (and (at "Your input fields are:") (at "Given the following inputs:"))
