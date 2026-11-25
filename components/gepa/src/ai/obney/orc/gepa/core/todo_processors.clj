@@ -688,16 +688,29 @@
         ;; 1. Extract seed instructions from workflow
         seed-instructions (extract-workflow-instructions context sheet-id)
 
+        ;; The runs this run continues. The seed reuses the scores they
+        ;; recorded for an identical instruction set (the same evidence rule as
+        ;; an inherited candidate), and the run continues their minibatch
+        ;; schedule from the furthest position they reached.
+        source-ids (when inherit?
+                     (rm/inheritance-source-ids context sheet-id inherit-from))
+        seed-scores (when (seq source-ids)
+                      (not-empty (rm/recorded-scores-for-instructions
+                                   context source-ids seed-instructions)))
+        schedule-base (when (seq source-ids) (rm/schedule-base context source-ids))
+
         ;; 2. Create seed candidate (generation 0)
         _ (run-command! context
-            {:command/id (random-uuid)
-             :command/timestamp (time/now)
-             :command/name :gepa/create-candidate
-             :optimization-id optimization-id
-             :instructions seed-instructions
-             :parent-ids [nil]
-             :mutation-reason nil
-             :source-optimization-id nil})
+            (cond-> {:command/id (random-uuid)
+                     :command/timestamp (time/now)
+                     :command/name :gepa/create-candidate
+                     :optimization-id optimization-id
+                     :instructions seed-instructions
+                     :parent-ids [nil]
+                     :mutation-reason nil
+                     :source-optimization-id nil}
+              seed-scores (assoc :historical-scores seed-scores)
+              schedule-base (assoc :schedule-base schedule-base)))
 
         ;; 3. Query inherited candidates (cumulative across ALL runs)
         inherited-candidates (when inherit?
@@ -966,6 +979,13 @@
 
 (declare request-mutation-round-within-budget!)
 
+(defn- round-cost
+  "The metric calls one whole mutation round needs: the parent's minibatch, the
+   proposal's minibatch and a full validation evaluation."
+  [opt-summary valset]
+  (+ (* 2 (get-in opt-summary [:config :reflection-minibatch-size] 3))
+     (count valset)))
+
 (defn- request-mutation-round!
   "Open a mutation round: choose the parent, the component and the training
    minibatch, and record the request (`ParentMinibatchEvaluationRequested`) as
@@ -973,40 +993,62 @@
    event runs the round from the recorded values, and `resume!` re-runs it from
    the same record after an interruption.
 
-   The minibatch is drawn by the deterministic epoch-shuffled sampler. The
-   sampler pads a short last batch with a repeated index; one example is
-   evaluated, and reflected on, once, so the recorded indices are distinct.
+   A round opens only when every starting candidate has an evaluation, no other
+   round is undecided, and the remaining metric budget pays for the whole round.
+   When the budget cannot, the run finishes as at budget exhaustion.
+
+   The minibatch is drawn by the deterministic epoch-shuffled sampler at the
+   round's schedule position. The sampler pads a short last batch with a
+   repeated index; one example is evaluated, and reflected on, once, so the
+   recorded indices are distinct.
 
    `fallback-parent-id` is used when the frontier is empty."
   [context optimization-id fallback-parent-id]
-  (if (reflection-budget-exhausted? context optimization-id)
-    ;; No round may open once the recorded reflection tokens reach the budget:
-    ;; no metric call is spent on a round that cannot propose.
-    (finish-at-admission-budget-exhaustion! context optimization-id :reflection-tokens)
-    (request-mutation-round-within-budget! context optimization-id fallback-parent-id)))
+  (let [gate (rm/get-round-state context optimization-id)]
+    (cond
+      ;; Another starting candidate is still being evaluated, or a round is
+      ;; undecided: that candidate's or round's own decision opens the next.
+      (not (:admissible? gate)) nil
+
+      ;; No round may open once the recorded reflection tokens reach the budget:
+      ;; no metric call is spent on a round that cannot propose.
+      (reflection-budget-exhausted? context optimization-id)
+      (finish-at-admission-budget-exhaustion! context optimization-id :reflection-tokens)
+
+      :else
+      (request-mutation-round-within-budget! context optimization-id fallback-parent-id))))
 
 (defn- request-mutation-round-within-budget!
   [context optimization-id fallback-parent-id]
-  (let [parent-id (or (rm/sample-pareto-frontier context optimization-id)
-                      fallback-parent-id)
-        component (select-component context optimization-id parent-id)
-        opt-summary (rm/get-optimization-summary context optimization-id)
-        minibatch-size (get-in opt-summary [:config :reflection-minibatch-size] 3)
-        iteration (rm/get-iteration-count context optimization-id)
-        trainset (rm/get-trainset context optimization-id)]
-    (if-not (and (seq trainset) (:sheet-id opt-summary))
+  (let [opt-summary (rm/get-optimization-summary context optimization-id)
+        trainset (rm/get-trainset context optimization-id)
+        valset (rm/get-valset context optimization-id)]
+    (cond
+      (not (and (seq trainset) (:sheet-id opt-summary)))
       (fail-optimization! context optimization-id
                           "Subsample evaluation requires a persisted non-empty training set and workflow")
-      (run-command! context
-        {:command/id (random-uuid)
-         :command/timestamp (time/now)
-         :command/name :gepa/request-parent-minibatch-evaluation
-         :optimization-id optimization-id
-         :parent-id parent-id
-         :component component
-         :iteration iteration
-         :subsample-indices (vec (distinct (sampler/epoch-shuffled-batch-sampler
-                                             (count trainset) minibatch-size iteration)))}))))
+
+      (< (:available-metric-calls opt-summary 0) (round-cost opt-summary valset))
+      (finish-at-admission-budget-exhaustion! context optimization-id)
+
+      :else
+      (let [parent-id (or (rm/sample-pareto-frontier context optimization-id)
+                          fallback-parent-id)
+            component (select-component context optimization-id parent-id)
+            minibatch-size (get-in opt-summary [:config :reflection-minibatch-size] 3)
+            iteration (rm/get-iteration-count context optimization-id)
+            position (rm/minibatch-position context optimization-id iteration)]
+        (run-command! context
+          {:command/id (random-uuid)
+           :command/timestamp (time/now)
+           :command/name :gepa/request-parent-minibatch-evaluation
+           :optimization-id optimization-id
+           :parent-id parent-id
+           :component component
+           :iteration iteration
+           :position position
+           :subsample-indices (vec (distinct (sampler/epoch-shuffled-batch-sampler
+                                               (count trainset) minibatch-size position)))})))))
 
 (defn on-parent-minibatch-evaluation-requested
   "Handle parent-minibatch-evaluation-requested: run the mutation round from

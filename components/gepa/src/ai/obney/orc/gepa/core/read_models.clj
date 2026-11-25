@@ -822,6 +822,109 @@
   (when (= sheet-id (:sheet-id (get-optimization-summary ctx optimization-id)))
     (unique-candidates ctx [optimization-id] limit)))
 
+(defn inheritance-source-ids
+  "The runs a new run of the workflow inherits from: the named run when it
+   belongs to the workflow, otherwise every completed run of the workflow."
+  [ctx sheet-id inherit-from]
+  (if inherit-from
+    (if (= sheet-id (:sheet-id (get-optimization-summary ctx inherit-from)))
+      [inherit-from]
+      [])
+    (vec (completed-optimization-ids ctx sheet-id))))
+
+(defn recorded-scores-for-instructions
+  "Recorded per-example scores, by example fingerprint, of an instruction set
+   across every evaluated candidate of the given runs (not only the Pareto
+   ones), merged by the highest score per fingerprint. Empty when none."
+  [ctx opt-ids instructions]
+  (reduce
+    (fn [acc opt-id]
+      (let [state (get-gepa-state ctx opt-id)
+            fps (valset-fingerprints ctx opt-id)]
+        (reduce (fn [acc idx]
+                  (if (= instructions (nth (:program-candidates state) idx))
+                    (merge-with max acc
+                                (into {} (keep (fn [[i score]]
+                                                 (when-let [fp (nth fps i nil)] [fp score])))
+                                      (get (:val-subscores state) idx {})))
+                    acc))
+                acc
+                (range (count (:program-candidates state))))))
+    {}
+    opt-ids))
+
+;; =============================================================================
+;; Mutation rounds and the minibatch schedule
+;; =============================================================================
+
+(def round-event-types
+  "The facts that decide whether a mutation round may open."
+  #{:gepa/candidate-created :gepa/candidate-evaluated
+    :gepa/parent-minibatch-evaluation-requested :gepa/subsample-evaluated
+    :gepa/optimization-completed :gepa/optimization-failed})
+
+(defn- starting-candidate? [created]
+  (not-any? some? (:parent-ids created)))
+
+(defn round-state
+  "The state of a run's mutation rounds, from its recorded facts. A starting
+   candidate is the seed or an inherited candidate (it has no parent). A round
+   is decided when its proposal is rejected (or its parent skipped as perfect),
+   or when the candidate its accepted proposal created has an evaluation. A new
+   round is admissible only when every starting candidate has an evaluation and
+   no round is undecided."
+  [facts]
+  (let [by-type (group-by :event/type facts)
+        created (get by-type :gepa/candidate-created)
+        evaluated (into #{} (map :candidate-id) (get by-type :gepa/candidate-evaluated))
+        starters (into #{} (comp (filter starting-candidate?) (map :candidate-id)) created)
+        mutated (into #{} (comp (remove starting-candidate?) (map :candidate-id)) created)
+        requested (count (get by-type :gepa/parent-minibatch-evaluation-requested))
+        decided (+ (count (remove :accepted? (get by-type :gepa/subsample-evaluated)))
+                   (count (filter evaluated mutated)))
+        starters-evaluated? (and (seq starters) (every? evaluated starters))]
+    {:starting-candidates (count starters)
+     :starters-evaluated? (boolean starters-evaluated?)
+     :requested requested
+     :decided decided
+     :open? (> requested decided)
+     :admissible? (boolean (and starters-evaluated? (<= requested decided)))}))
+
+(defn get-round-state [ctx optimization-id]
+  (round-state (into [] (es/read (:event-store ctx)
+                                 {:tenant-id (:tenant-id ctx)
+                                  :types round-event-types
+                                  :tags #{[:optimization optimization-id]}}))))
+
+(defn schedule-base
+  "The first minibatch-schedule position a run continuing the given runs draws:
+   one past the furthest position they reached. Nil when none of them drew a
+   minibatch."
+  [ctx opt-ids]
+  (let [positions (for [opt-id opt-ids
+                        e (into [] (es/read (:event-store ctx)
+                                            {:tenant-id (:tenant-id ctx)
+                                             :types #{:gepa/parent-minibatch-evaluation-requested}
+                                             :tags #{[:optimization opt-id]}}))]
+                    (or (:position e) (:iteration e)))]
+    (when (seq positions) (inc (apply max positions)))))
+
+(defn minibatch-position
+  "The schedule position of the round at `iteration`. A run that continues
+   earlier runs starts at its recorded base, and moves with its iteration from
+   the point its starting candidates were all evaluated. A run that inherits
+   nothing uses its iteration."
+  [ctx optimization-id iteration]
+  (let [created (into [] (es/read (:event-store ctx)
+                                  {:tenant-id (:tenant-id ctx)
+                                   :types #{:gepa/candidate-created}
+                                   :tags #{[:optimization optimization-id]}}))
+        base (some :schedule-base created)
+        starters (count (filter starting-candidate? created))]
+    (if base
+      (max 0 (+ base (- iteration starters)))
+      iteration)))
+
 (defn inherit-from-previous-runs
   "Get candidates to inherit from ALL previous optimization runs.
 

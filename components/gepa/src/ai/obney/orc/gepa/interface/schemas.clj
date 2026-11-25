@@ -150,6 +150,8 @@
     [:historical-val-subscores {:optional true} [:maybe [:map-of :int :double]]]  ;; Legacy positional scores; never reused
     ;; Recorded scores of an inherited candidate, keyed by example fingerprint
     [:historical-scores {:optional true} [:maybe [:map-of :string :double]]]
+    ;; First schedule position of a run that continues earlier runs' minibatch schedule
+    [:schedule-base {:optional true} [:maybe :int]]
     [:created-at :any]]
 
    :gepa/candidate-evaluation-started
@@ -259,6 +261,9 @@
     [:parent-id :uuid]
     [:component :string]
     [:iteration :int]
+    ;; Position of the round on the deterministic minibatch schedule; a round
+    ;; recorded without one ran at its iteration.
+    [:position {:optional true} :int]
     [:subsample-indices [:vector :int]]
     [:requested-at :any]]
 
@@ -402,7 +407,8 @@
     [:mutation-reason [:maybe :string]]
     [:source-optimization-id {:optional true} [:maybe :uuid]]
     [:historical-val-subscores {:optional true} [:maybe [:map-of :int :double]]]
-    [:historical-scores {:optional true} [:maybe [:map-of :string :double]]]]  ;; Reused only for identical examples
+    [:historical-scores {:optional true} [:maybe [:map-of :string :double]]]  ;; Reused only for identical examples
+    [:schedule-base {:optional true} [:maybe :int]]]
 
    :gepa/evaluate-candidate
    [:map
@@ -500,6 +506,7 @@
     [:parent-id :uuid]
     [:component :string]
     [:iteration :int]
+    [:position {:optional true} :int]
     [:subsample-indices [:vector :int]]]
 
    :gepa/record-proposal-ready
