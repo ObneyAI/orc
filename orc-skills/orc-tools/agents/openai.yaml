@@ -1,0 +1,6 @@
+interface:
+  display_name: "ORC Tools"
+  short_description: "Build typed tools and recursive action behaviors"
+  default_prompt: "Use $orc-tools to design and verify custom tools in this ORC behavior tree."
+policy:
+  allow_implicit_invocation: true

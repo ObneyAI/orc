@@ -671,6 +671,101 @@
              :types #{:rlm/researcher-frontier-claimed}
              :tags #{(researcher-effects/campaign-tag sheet-id tick-id node-id)}})))
 
+(defn- tick-open-starts
+  "Unfinished starts of one tick and the lease renewals naming each start, from
+   the tick's durable events."
+  [tick-events]
+  (let [;; Projection state collapses repeated map child executions to a
+        ;; bare node id. Fold lifecycle events by full execution context
+        ;; instead so one sibling completion cannot hide other abandoned
+        ;; starts of the same child node.
+        open-starts-by-key
+        (reduce (fn [starts event]
+                  (case (:event/type event)
+                    :sheet/node-execution-started
+                    (assoc starts (value-log/execution-key event) event)
+
+                    :sheet/node-execution-completed
+                    (dissoc starts (value-log/execution-key event))
+
+                    starts))
+                {}
+                tick-events)
+        ;; A map item context is terminal once any matching completion is
+        ;; durable. A stale/reordered duplicate start after that completion
+        ;; must not reopen the slot. Non-map nodes retain ordered lifecycle
+        ;; folding because they can legitimately execute again in one tick.
+        completed-map-contexts
+        (into #{}
+              (keep (fn [event]
+                      (let [exec-context (value-log/exec-context (:inputs event))]
+                        (when (and (= :sheet/node-execution-completed
+                                      (:event/type event))
+                                   (contains? exec-context
+                                              :ai.obney.orc.orc-service.core.todo-processors/map-each-parent))
+                          (value-log/execution-key event)))))
+              tick-events)]
+    {:open-starts (vals (apply dissoc open-starts-by-key completed-map-contexts))
+     :renewals-by-start
+     (group-by :start-event-id
+               (filter #(= :sheet/node-execution-lease-renewed (:event/type %))
+                       tick-events))}))
+
+(defn- recoverable-start?
+  "OwnedWorkIsNotAbandoned / AbandonedWorkStaysRecoverable: a leaf or delegate
+   start (original or resumed) is resumed only when its owner is known not to
+   be working on it. Researchers use the same lease decision for WHETHER to
+   resume (checkpointed or not) and keep their epoch-based path for WHAT is
+   resumed: only original starts are candidates."
+  [context nodes-by-id renewals-by-start start]
+  (let [node (get nodes-by-id (:node-id start))
+        renewals (get renewals-by-start (:event/id start))
+        exec-context (value-log/exec-context (:inputs start))]
+    (case (:type node)
+      (:leaf :delegate)
+      (execution-lease/abandoned? context start renewals exec-context)
+      :repl-researcher (and (nil? (:resumed-from-event-id start))
+                            (execution-lease/abandoned?
+                             context start renewals exec-context
+                             {:fenced? (boolean
+                                        (researcher-mode/checkpointed? node))}))
+      false)))
+
+(defn- unresumed-map-coordinator?
+  "True when an in-progress map-each node has an original start that no resumed
+   start references yet: `resume-in-progress!` rebuilds that coordinator (once;
+   the resume command refuses a second resume of the same start)."
+  [nodes-by-id nodes-in-progress tick-events]
+  (let [resumed-ids (into #{} (keep :resumed-from-event-id) tick-events)]
+    (boolean
+     (some (fn [node-id]
+             (and (= :map-each (:type (get nodes-by-id node-id)))
+                  (some #(and (= :sheet/node-execution-started (:event/type %))
+                              (= node-id (:node-id %))
+                              (nil? (:resumed-from-event-id %))
+                              (not (contains? resumed-ids (:event/id %))))
+                        tick-events)))
+           nodes-in-progress))))
+
+(defn abandoned-work?
+  "True when `resume-in-progress!` would resume at least one start now, by the
+   same lease decision, or rebuild a map coordinator it has not yet resumed.
+   Reads the cached in-progress projection first (idle is empty) and the durable
+   events only of ticks that are still running."
+  [context]
+  (boolean
+   (some
+    (fn [{:keys [tick-id nodes-in-progress]}]
+      (let [nodes-by-id (:nodes-by-id (rm/get-tick-execution-context context tick-id))
+            tick-events (into [] (es/read (:event-store context)
+                                          {:tenant-id (:tenant-id context)
+                                           :tags #{[:tick tick-id]}}))
+            {:keys [open-starts renewals-by-start]} (tick-open-starts tick-events)]
+        (or (unresumed-map-coordinator? nodes-by-id nodes-in-progress tick-events)
+            (some #(recoverable-start? context nodes-by-id renewals-by-start %)
+                  open-starts))))
+    (rm/get-all-active-executions context))))
+
 (defn resume-in-progress!
   "Resume abandoned map coordinators plus leaf, delegate, and researcher
    frontiers from durable state.
@@ -688,43 +783,7 @@
             tick-events (into [] (es/read (:event-store context)
                                           {:tenant-id (:tenant-id context)
                                            :tags #{[:tick tick-id]}}))
-            ;; Projection state collapses repeated map child executions to a
-            ;; bare node id. Fold lifecycle events by full execution context
-            ;; instead so one sibling completion cannot hide other abandoned
-            ;; starts of the same child node.
-            open-starts-by-key
-            (reduce (fn [starts event]
-                      (case (:event/type event)
-                        :sheet/node-execution-started
-                        (assoc starts (value-log/execution-key event) event)
-
-                        :sheet/node-execution-completed
-                        (dissoc starts (value-log/execution-key event))
-
-                        starts))
-                    {}
-                    tick-events)
-            ;; A map item context is terminal once any matching completion is
-            ;; durable. A stale/reordered duplicate start after that completion
-            ;; must not reopen the slot. Non-map nodes retain ordered lifecycle
-            ;; folding because they can legitimately execute again in one tick.
-            completed-map-contexts
-            (into #{}
-                  (keep (fn [event]
-                          (let [exec-context (value-log/exec-context (:inputs event))]
-                            (when (and (= :sheet/node-execution-completed
-                                          (:event/type event))
-                                       (contains? exec-context
-                                                  :ai.obney.orc.orc-service.core.todo-processors/map-each-parent))
-                              (value-log/execution-key event)))))
-                  tick-events)
-            open-starts
-            (vals (apply dissoc open-starts-by-key completed-map-contexts))
-            renewals-by-start
-            (group-by :start-event-id
-                      (filter #(= :sheet/node-execution-lease-renewed
-                                  (:event/type %))
-                              tick-events))
+            {:keys [open-starts renewals-by-start]} (tick-open-starts tick-events)
             ;; Rebuild each active map coordinator before its in-flight direct
             ;; child is re-enqueued below. The resumed map start is consumed by
             ;; the same ordered execute-node processor, so its durable survivor
@@ -759,28 +818,8 @@
         (keep
          (fn [start]
            (let [node-id (:node-id start)
-                 node (get nodes-by-id node-id)
-                 node-type (:type node)]
-             ;; OwnedWorkIsNotAbandoned / AbandonedWorkStaysRecoverable: a leaf
-             ;; or delegate start (original or resumed) is resumed only when
-             ;; its owner is known not to be working on it. Researchers use the
-             ;; same lease decision for WHETHER to resume (checkpointed or
-             ;; not) and keep their epoch-based path for WHAT is resumed:
-             ;; only original starts are candidates.
-             (when (case node-type
-                     (:leaf :delegate)
-                     (execution-lease/abandoned?
-                      context start
-                      (get renewals-by-start (:event/id start))
-                      (value-log/exec-context (:inputs start)))
-                     :repl-researcher (and (nil? (:resumed-from-event-id start))
-                                           (execution-lease/abandoned?
-                                            context start
-                                            (get renewals-by-start (:event/id start))
-                                            (value-log/exec-context (:inputs start))
-                                            {:fenced? (boolean
-                                                       (researcher-mode/checkpointed? node))}))
-                     false)
+                 node (get nodes-by-id node-id)]
+             (when (recoverable-start? context nodes-by-id renewals-by-start start)
                (let [researcher-ownership-epoch
                      (when (researcher-mode/checkpointed? node)
                        (inc (latest-researcher-frontier-epoch

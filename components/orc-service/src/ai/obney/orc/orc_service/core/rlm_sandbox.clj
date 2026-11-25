@@ -22,11 +22,13 @@
    Key principle: Separates variable space (sandbox memory) from token space
    (what the LLM sees). Large data stays in variable space; only sliced data
    goes to sub-LLM calls."
-  (:require [sci.core :as sci]
+  (:require [ai.obney.orc.orc-service.core.recoverable-function :as recoverable-function]
+            [sci.core :as sci]
             [clojure.walk :as walk]
             [clojure.string :as str]
             [clojure.set]
             [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.orc-service.core.output-validation :as output-validation]
             [malli.core :as m]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -497,10 +499,22 @@
 
         ;; final! function with validation
         final!-fn (fn [output]
-                    (let [validated (validate-final! output declared-writes optional-writes)]
-                      (reset! final-output validated)
+                    ;; A later refused final attempt must not retain an earlier
+                    ;; successful capture from this same program.
+                    (reset! final-output nil)
+                    (let [candidate (validate-final! output declared-writes optional-writes)
+                          result (output-validation/validate-outputs
+                                   blackboard {:status :success :outputs candidate} false)]
+                      (when (= :failure (:status result))
+                        ;; Candidate values can contain transient SCI closures.
+                        ;; Retain safe schema evidence and original program source,
+                        ;; never executable objects in checkpointed error data.
+                        (throw (ex-info (:error result)
+                                        {:failure-kind :final-output-schema-invalid
+                                         :rejected-write-keys (vec (keys (:rejected-writes result)))})))
+                      (reset! final-output (:outputs result))
                       ;; Return a marker string for detection
-                      (str "FINAL_ANSWER: " (pr-str validated))))
+                      (str "FINAL_ANSWER: " (pr-str (:outputs result)))))
 
         ;; get-input function - loads full value into variable space
         get-input-fn (fn [k]
@@ -704,6 +718,9 @@
                            (ex-info
                             quoted-inline-function-source-message
                             {:requirement :quoted-inline-function-source})))
+                        ;; Validate structure while feedback still contains only data.
+                        ;; The existing vector grammar accepts quoted function data.
+                        (rlm-dsl/validate-emitted-tree! tree)
                         ;; Preserve the authored source first. Compile only
                         ;; quoted inline code-node function forms for execution.
                         (let [executable-tree
@@ -713,7 +730,9 @@
                                           (= :fn (key node))
                                           (seq? (val node))
                                           (#{'fn 'fn*} (first (val node))))
-                                   [:fn (sci/eval-form @sci-ctx* (val node))]
+                                   [:fn (if durable-source-required?
+                                          (recoverable-function/prepare-function (val node) @sci-ctx*)
+                                          (sci/eval-form @sci-ctx* (val node)))]
                                    node))
                                tree)
                               canonical (rlm-dsl/rlm-dsl->orc-dsl executable-tree)]
@@ -1084,8 +1103,8 @@
   [{:keys [sci-ctx final-output usage-tracker]} code-string]
   (let [stdout-writer (StringWriter.)]
     (try
-      (let [result (binding [*out* stdout-writer]
-                     (sci/eval-string* sci-ctx code-string))]
+      (let [result (base-sandbox/call-with-output-writer stdout-writer
+                     #(sci/eval-string* sci-ctx code-string))]
         {:stdout (str stdout-writer)
          :result (pr-str result)
          :raw-result result

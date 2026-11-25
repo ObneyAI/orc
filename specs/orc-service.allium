@@ -125,6 +125,17 @@ contract LeafExecutor {
         -- back to an ungated caller. With no configured gate, the ordinary tool
         -- caller remains available for backwards compatibility.
 
+    @invariant SandboxOutputBelongsToCurrentEvaluation
+        -- Permitted standard printing in ordinary researcher evaluation,
+        -- recursive researcher evaluation and generated code uses the current
+        -- evaluation's output destination. It must not fail solely because the
+        -- sandbox printer lacks that destination. A failed evaluation retains
+        -- its already captured output and original failure; it does not become
+        -- successful. Later evaluations and their enclosing caller retain their
+        -- own output destinations after either success or failure. Authored
+        -- code's existing caller output behavior is preserved. This does not
+        -- add a persisted stdout field to code-leaf results or grant new I/O.
+
     @invariant CodeLeafToolGateIsPreserved
         -- A code leaf authored by a consumer may name a consumer-supplied tool
         -- gate, exactly as a generated code leaf may. The named gate survives
@@ -229,8 +240,15 @@ contract LeafExecutor {
     @invariant ResearcherFinalizationUsesDeclaredSchemas
         -- Values supplied through a researcher's finalization operation cross
         -- the same declared-output validation boundary as every other leaf.
-        -- Invalid values fail the node with attributable schema evidence and
-        -- never become durable execution values.
+        -- The complete nested candidate is validated before final completion.
+        -- An invalid attempt is refused with attributable schema evidence and
+        -- never becomes a durable execution value. While normal iteration,
+        -- call and deadline allowance remains, the researcher receives that
+        -- evidence and may correct its candidate without repeating completed
+        -- child work. Refusal does not extend any allowance. Exhausted work
+        -- fails honestly rather than accepting an invalid or partial candidate.
+        -- A later refused final attempt in one iteration clears an earlier
+        -- pending final capture rather than completing from that stale capture.
 
     @invariant GeneratedChildrenReuseDeclaredContracts
         -- A generated child's shared read and write keys inherit their complete
@@ -255,6 +273,16 @@ contract LeafExecutor {
         -- supported declaration mechanism for new computed keys.
         -- Examples follow those same rules and never silently require an
         -- unconstrained output. Guidance does not invent a model-specific API.
+        -- Every researcher mode receives the same evidence-ownership principle:
+        -- authoritative identifiers, observations and literal values remain
+        -- native data while semantic work produces interpretations. Ordinary
+        -- code assembles those values into the declared final shape without
+        -- asking a model to reproduce unchanged evidence or introducing fuzzy
+        -- matching, identifier repair or task-specific output parsing.
+        -- This is construction guidance, not an automatic output rewrite or a
+        -- guarantee that a model follows it. Intentional task transformations
+        -- remain possible. Exact-fidelity requirements are distinct from
+        -- optional polishing and do not prescribe a fixed tree or extra call.
 
     @invariant ResearcherFeedbackMatchesCurrentState
         -- Before each iteration, variable availability describes the values
@@ -268,6 +296,19 @@ contract LeafExecutor {
         -- missing child result. Valid completed null or empty writes are not
         -- described as writes that failed to land. Previews are identified as
         -- previews and full values remain available through inspection.
+        -- A child refused at execution admission contributes its exact refusal
+        -- reason to the next iteration, even when no leaf event exists. Feedback
+        -- distinguishes refused admission from executed work and does not invent
+        -- a failed leaf or a completed child output for that refusal.
+        -- A generated child refused during setup likewise reports the rejected
+        -- command and the available field-level schema explanation before the
+        -- next iteration, including after a checkpoint. The diagnostic keeps
+        -- its refusal category and reason separate from executed child results.
+        -- Only diagnostic fields are carried: no raw command, authorization,
+        -- source values or unrelated handler data. When the refusal provides no
+        -- field explanation, feedback does not invent one. Bounded summaries
+        -- identify the affected field before optional explanatory detail; full
+        -- safe details remain inspectable in the durable child outcome.
         -- Feedback supplies evidence for the next decision; it does not force
         -- the researcher to repeat work or finalize a result.
 
@@ -279,6 +320,13 @@ contract LeafExecutor {
         -- ownership; neither seeded inputs nor the last item's value stand in
         -- for the parent's aggregate. Researcher feedback uses this canonical
         -- producer evidence rather than guessing from a flat blackboard.
+        -- Before the parent records an aggregate, it validates that value
+        -- against the declared output contract. An invalid aggregate records
+        -- parent failure with the exact validation reason and no canonical
+        -- aggregate write. Valid completed per-item work remains inspectable;
+        -- aggregate refusal does not undo or repeat those effects.
+        -- The rejected candidate remains diagnostic evidence, separate from
+        -- canonical values, with the parent's execution identity.
 
     @invariant ResearcherSyntaxFeedbackFollowsParserEvidence
         -- Syntax feedback preserves the parser's expected/unexpected delimiter
@@ -457,6 +505,14 @@ contract LeafExecutor {
         -- requires no fresh-call authority, provider lookup or reservation.
         -- Uncapped children retain the same ownership checks without a cap;
         -- ordinary and checkpoint-opted-out work acquire no campaign authority.
+        -- A genuinely first descendant starting after a proven newer parent
+        -- start is distinct from an older unresumed execution. It may retain
+        -- its exact nonspending model plan while the current frontier or claim
+        -- is pending. Retention never grants provider reservation, request or
+        -- dispatch authority. The actual matching current frontier and claim,
+        -- exact original configuration and selected facts must still be current
+        -- at the append boundary. Stale/superseded/completed ownership and a
+        -- conflicting retained plan cannot acquire a new authority binding.
 
     @invariant ConfiguredFallbackHasBoundedPhysicalAttempts
         -- Configured fallback defaults to one physical request per candidate.
@@ -709,6 +765,14 @@ contract WorkflowDefinitionConstruction {
         -- configuration field exactly. Tool contracts, consumer tool gates,
         -- browser tools, ontology context, and execution options never
         -- disappear or widen permissions at a serialization boundary.
+        -- An explicitly positive total-work timeout reaches persisted researcher
+        -- configuration and survives fresh and changed builds, public data
+        -- export/import and executable source rendering. Omission retains the
+        -- existing node, enclosing execution and fallback precedence; preserving
+        -- the value never resets the original campaign deadline. Public authored
+        -- construction rejects invalid non-null timeout values. Absent execution
+        -- options remain absent, while an explicitly empty options map and a
+        -- supplied map retain their declared presence through both round trips.
 }
 
 contract ExecutionEventStream {
@@ -832,6 +896,29 @@ contract ExecutionRecovery {
         -- identity. A resumed start is itself leased, so work whose resumer
         -- also stops remains recoverable in turn; each start is resumed at
         -- most once.
+
+    @invariant PeriodicRecoveryWritesOnlyWhenWorkIsAbandoned
+        -- The periodic recovery scan keeps its cadence and its run at startup,
+        -- but it decides before it writes. It records its trigger only when the
+        -- tenant has at least one start that recovery would resume now: an
+        -- unfinished start whose latest lease has expired and that the scanning
+        -- worker is not itself running, by the same lease decision recovery
+        -- uses, or an in-progress map coordinator that recovery has not yet
+        -- rebuilt (recovery rebuilds each coordinator once). With no unfinished work, or with only work under a live lease,
+        -- a scan records nothing, so no trigger, processor checkpoint or
+        -- transaction marker follows. When abandoned work exists, the scan
+        -- records the trigger as before and recovery resumes it as before; work
+        -- is never left unrecovered for longer than one scan interval after its
+        -- lease expires. When the scan cannot read the execution state, it
+        -- records the trigger as before rather than risk leaving work
+        -- unrecovered. The scan reads execution state through a context the
+        -- consumer registers at runtime start (the same context it gives
+        -- recovery); until a consumer registers one, every scan records its
+        -- trigger as before.
+        -- Found in a consumer's deployment: an idle tenant wrote 480 events an
+        -- hour from the scan alone (a trigger, a checkpoint and their two
+        -- transaction markers every 30 seconds), none of which recovered
+        -- anything.
 }
 
 contract CheckpointedResearcherExecution {
@@ -877,6 +964,16 @@ contract CheckpointedResearcherExecution {
         -- tree crosses the emit boundary before inline function forms are
         -- compiled for execution; source is not recovered from closure metadata
         -- and code nodes are not rewritten into a string-authored DSL.
+        -- An admitted source-bound generated callable can be reconstructed in a
+        -- new runtime lifetime under its original identity and declared context.
+        -- Its source/version/integrity and absence of unsupported captured
+        -- authority are validated before use, including when a binding already
+        -- exists. Malformed, shadowed/captured or conflicting definitions refuse
+        -- without widening execution capabilities. Cleanup releases only the
+        -- matching terminal binding when no live execution still needs it;
+        -- unrelated or shared live bindings remain. A saved completed child
+        -- result is consumed without invoking its callable again. Saved source,
+        -- pending callable recovery and completed-result reuse are distinct facts.
 
     @invariant GeneratedChildSetupMustSucceedBeforeExecution
         -- A generated child may run only after its blackboard declarations,
@@ -978,6 +1075,12 @@ contract CheckpointedResearcherExecution {
         -- explicitly, naming the value that could not be made durable; they are
         -- never silently dropped or stringified, and they never fail the campaign
         -- in a way that discards the iterations already completed.
+        -- If checkpointed recursive SCI code emits a tree and then fails before
+        -- dispatch, pending emission markers return to their pre-iteration
+        -- values before checkpointing. The rejected tree never dispatches;
+        -- prior completed tree provenance, ordinary durable scratch values and
+        -- actual tool effect receipts survive. This does not filter unsupported
+        -- user values or change terminal or checkpoint-opt-out behavior.
 
     @invariant TimeoutScopesRemainIndependent
         -- Provider-call, iteration, generated-child, researcher-campaign and
@@ -1003,13 +1106,12 @@ contract CheckpointedResearcherExecution {
         -- and yields a retry of the same iteration from the last checkpoint,
         -- retaining its stable logical action identities. Exhausting the
         -- configured iteration-attempt limit terminates the campaign as timeout.
-        -- A provider timeout has the same meaning whether detected by the
-        -- enclosing deadline, a raw/wrapped transport timeout or the normalized
-        -- timeout category after safe cause removal. Researcher request capture
-        -- and durable response replay retain that structural meaning; neither
-        -- error prose nor a missing live Throwable determines classification.
-        -- Configured model-policy exhaustion retains its own terminal outcome
-        -- and does not silently grant another iteration retry allowance.
+        -- A raw, wrapped or safely normalized provider deadline retains the
+        -- same meaning through request capture, durable response and replay
+        -- without its live cause. Explicit non-timeout categories beat a stale
+        -- provider marker. Configured model-policy exhaustion remains terminal
+        -- and does not create a fresh iteration retry allowance. Classification
+        -- alone grants no call, deadline extension or budget.
 
     @invariant BlockedChildPreservesPriorProgress
         -- A blocked generated child truthfully blocks the parent researcher and
@@ -1392,6 +1494,8 @@ entity ProviderCallReservation {
 
 -- Ordinary generation, conditions, decisions and checkpoint-opt-out researcher
 -- calls are owned by their actual node execution, without a fictional campaign.
+-- A shared delegate target containing a checkpointed researcher does not grant
+-- its ordinary producer or consumer siblings that researcher's campaign identity.
 variant NodeProviderCallReservation : ProviderCallReservation {
 }
 
@@ -1644,6 +1748,7 @@ rule NodePartiallySucceeds {
     when: MapEachPartiallyCompletes(node_execution, aligned_outputs, failure_details)
     requires: node_execution.status = running
     requires: node_execution.node.kind = map_each
+    requires: outputs_valid_for(node_execution.node, aligned_outputs)
 
     ensures: node_execution.status = partial
     ensures: node_execution.completed_at = now

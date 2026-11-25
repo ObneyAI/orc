@@ -1,5 +1,24 @@
 # ORC Allium distillation coverage
 
+## Checkpoint recovery and delegate admission review
+
+The scoped regression witnesses cover two existing contracts: rejected partial
+emissions preserve the preceding checkpoint's emission provenance, and ordinary
+siblings in a delegate target do not acquire a researcher's campaign identity.
+The corresponding named checklist entries retain their native HTTP/SQLite
+evidence. They do not close the broader budget/restart obligations below.
+
+The full main `83479e348d271950960ad14e7996111adb0bd9f0` snapshot reports
+39 warnings, 116 informational diagnostics, zero errors and zero process
+findings both before and after these annotations (check exit 1, analyse exit 0).
+No diagnostic identity or message changes. This is a warning baseline, not a
+clean check. The earlier 113-info account below predates three GEPA
+`allium.rule.unreachableTrigger` diagnostics: `ReflectOnTheParentsMinibatch`
+and `SkipAParentPerfectOnItsMinibatch` lack a local `ParentMinibatchEvaluated`
+source, and `CompleteOptimizationAtReflectionBudget` lacks a local
+`ReflectionBudgetExhausted` source. These pre-existing findings remain tracked
+and unresolved; this repair neither accepts nor removes them.
+
 ## Mixed-family call budget repair: approved intent, verification open
 
 The independently reproduced mixed workflow exceeds a native cap of six:
@@ -119,7 +138,7 @@ Known Java timeout classes and exact normalized transport categories retain thei
 meaning after unsafe causes are removed. Explicit non-timeout categories retain
 precedence; error text and HTTP status alone do not establish a timeout.
 
-Independent verification passes 142 tests / 1,133 assertions: 135 offline LLM
+Earlier timeout-specific verification passed 142 tests / 1,133 assertions: 135 offline LLM
 tests, six actual Grain campaign tests and one actual SQLite receipt replay.
 Configured fallback exhaustion retains its terminal policy; recorded replay adds
 neither provider calls nor events. The existing timeout classification namespace
@@ -127,11 +146,29 @@ is unchanged. **6 obligations, 6 covered, 0 uncovered** within this repair scope
 No generated skeleton or weakened assertion supplies coverage. Transport effects
 are injected; Grain state transitions, projections and SQLite records are real.
 
-Both Allium commands retain 39 warnings, 113 informational diagnostics, zero
-errors and zero process findings. This remains a characterized baseline rather
+That earlier source retained 39 warnings and 113 informational diagnostics,
+with zero errors and zero process findings. This remains a characterized baseline rather
 than a clean check. Fresh-process recovery, hosted provider failures and chat
 streaming are outside this proof. The separate live provider-finish-error remains
 unresolved and is not reclassified as a timeout.
+
+The merged recovery repair already supplies the timeout implementation and its
+stronger category-precedence checks. Reconciliation preserves all 70 runtime
+files byte-for-byte. The remaining changes correct test translations of native
+inputs, JSON-ready transport values and declared optional fields. The score
+fixture now checks the intact value before rendering, exact JSON field names
+at transport, and absence of a declared optional child from supplied evidence.
+Its two obsolete expectations reproduce two failures before this correction.
+
+The focused reconciliation command passes 149 tests and 750 assertions, with
+zero failures or errors: three LLM boundary namespaces, all 48 RLM mode tests,
+six reconciled-contract tests and one retained timeout replay. The six
+reconciled-contract cases now pass 44 assertions. No production assertion was
+removed or skipped. The existing field-guide and native-input contracts govern
+these checks; the reconciliation introduces no new production domain or
+behavior. Current Allium checks retain 12 modules, 39 warnings and 116
+informational diagnostics, with zero errors and zero process findings. Check
+exits 1 and analyse exits 0; this remains a warning baseline, not a clean check.
 
 ## Provider failure evidence and bounded alternatives
 
@@ -245,18 +282,23 @@ and zero process findings under Allium language version 3.
 present, while `allium analyse` returns success when those diagnostics produce
 no process findings. Thus “zero errors” above does not mean
 `allium check specs` exits cleanly. Under the current checked-in specifications
-and Allium CLI, both
-`allium check specs` and `allium analyse specs` report 151 structural diagnostics
-across the twelve specifications: 115 informational and 36 warnings. `analyse`
-reports zero process findings.
+and Allium CLI 3.5.3, `allium check specs` reports 155 structural diagnostics
+across the twelve specifications: 116 informational and 39 warnings, zero
+errors. `analyse` reports zero process findings. Before the GEPA reflection
+repair the same CLI measured 113 informational and 39 warnings; the repair adds
+two `unreachableTrigger` diagnostics for `ParentMinibatchEvaluated`, an internal
+evaluation callback like `SubsampleEvaluationCompleted`. The reflection token
+budget adds one for `ReflectionBudgetExhausted`, the internal callback beside
+`OptimizationBudgetExhausted`.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 77 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations. The RR-12 map-each recovery, RR-13 blocked-child callback, and RR-14 resume-persistence triggers are such startup/internal callbacks. |
-| `allium.field.unused` | 38 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
-| `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
+| `allium.rule.unreachableTrigger` | 77 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations. The RR-12 map-each recovery, RR-13 blocked-child callback, RR-14 resume-persistence, GEPA parent-minibatch evaluation and GEPA reflection-budget triggers are such startup/internal callbacks. |
+| `allium.field.unused` | 39 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.externalEntity.missingSourceHint` | 17 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
 | `allium.definition.unused` | 18 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
+| `allium.surface.unusedBinding` | 2 | Surface bindings not yet referenced by the surface body; candidates for connection or removal during tending |
 
 This is a characterized baseline, not an allowlist for future warnings. Agents
 must review every newly introduced or changed diagnostic, update this table when
@@ -1200,6 +1242,17 @@ transport or tool seam injected, plus gated REAL-model runs:
   `execution_lease_recovery_test.clj` (incl. the actual registered periodic trigger; proven to fail
   on the pre-lease code), `weed_followups_test.clj`, and a two-JVM SQLite crash/restart probe
   (DET-E2E-304).
+- `ExecutionRecovery` `PeriodicRecoveryWritesOnlyWhenWorkIsAbandoned` —
+  `recovery_scan_quiet_test.clj`: idle tenant over 120 beats (an hour) records no event of any kind;
+  only-live-lease work (running and queued) records none; an abandoned start is quiet while its lease
+  is live, then recorded and resumed exactly once on the first beat after expiry, repeated scans
+  idempotent; the real scheduler's startup beat still recovers abandoned work; unreadable state (a
+  throwing or nil context function, an unreadable projection) and an unregistered consumer record the
+  trigger as before. Mechanism: a consumer registers a tenant-id -> context function
+  (`register-recovery-scan-context-fn!`); without it every beat is recorded as today. The decision is
+  `runtime/abandoned-work?`, which shares `recoverable-start?` with `resume-in-progress!`.
+  A map-each coordinator that no resumed start references yet also makes a scan record (once: the
+  resume command refuses a second resume), exactly as the scan resumed it before.
 - `DelegationBoundary` (4 + signature) — `delegation_boundary_test.clj`, `weed_followups_test.clj`
   (DET-E2E-307).
 - mcp-sheet-builder `ExecutorsUseTheNodesToolCaller` — `tool_seam_unification_test.clj`,
@@ -1706,3 +1759,146 @@ AggregateTraceMatchesCanonicalWrites closes AGGREGATE-TRACE-1 for complete, empt
 Independent root integration passed18tests/255assertions with zero failures/errors, including the unchanged trace-fidelity namespace, public SQLite aggregate/detail queries and SQLite value-log regressions. The targeted new regression passed2tests/143assertions; its original productive cases failed54assertions and the additional exact-reference counterexample failed1assertion before correction. 1 obligation, 1 covered, 0 uncovered within this scope. No generated mock, skipped assertion or skeleton supplies this evidence.
 
 Deliberately completing an already terminal node again can still cause historical rehydration to fold its old own writes over declared references. That staged command history is preserved as a separate existing limitation; no valid authored workflow reaching it is demonstrated. This correction does not change that resolver or claim general historical migration, nested map coordinators or restart coverage. The earlier eight-model evidence remains at its frozen sources; this later correction concerns trace metadata and empty/no-child attribution, with independent deterministic integration evidence. Allium retains39warnings/113info/0errors/0processfindings.
+
+
+## Typed workflow results and recoverable diagnostics
+
+3 changed-invariant obligations, 3 covered, 0 uncovered: child admission
+feedback, map aggregate validation, and bounded final-output correction. The
+public workflow regressions use local scripted HTTP responses, SIO, SQLite,
+canonical value projections, and the released default researcher guide.
+Before implementation, six cases produced 33 expected assertion failures out
+of 62 assertions, with zero errors. The final seven cases pass 68 assertions,
+including an additional caught-rejection case that verifies stale final
+capture cannot complete the campaign. Existing normalization and declared
+string-key compatibility tests pass 11 tests and 72 assertions.
+
+The rejected aggregate retains diagnostic evidence while successful items
+remain canonical; a valid partial control retains failure indices. Final
+correction preserves false, zero, null, optional omission, and existing call
+limits. Runtime function candidates cannot enter checkpoint error metadata.
+The admission case verifies the exact schema refusal reaches the next model
+request even when no child node executed.
+
+These checks do not establish hosted-model semantic quality, process-kill
+recovery, externally stored large candidates, or every pre-existing clause
+of the three invariants. No whole-repository test result is claimed. Allium
+check retains the existing 12-module baseline: 39 warnings, 113 informational
+diagnostics, zero errors; process analysis reports zero findings. This is a
+warning-bearing baseline, not a clean check.
+
+
+A standalone consumer control additionally passes 2 tests and 42 assertions
+through HTTP and SQLite: a generated child fails, its exact error reaches the
+next request, a corrected tree completes, and an external acceptance gate runs.
+A separate control preserves rejection without another researcher call.
+A fresh hosted workflow used three researcher calls and one generated LLM call.
+It executed the child and returned a typed result, but receipt checks rejected
+changed opaque references before semantic review. This is not accepted-answer
+or live-correction coverage. Inspection of raw requests and responses locates
+the reference changes in the model response, with canonical values unchanged
+after decoding. Consumer acceptance rules and model-visible inspection remain
+separate concerns from the three validation boundaries.
+
+
+## Shared researcher guidance and native evidence ownership
+
+1 additional changed-invariant obligation, 1 covered, 0 uncovered:
+ResearcherGuidanceMatchesCallableContracts supplies the same native-evidence
+ownership principle to legacy, recursive RLM and terminal RLM researchers.
+The three targeted guidance tests pass 224 assertions through public HTTP/SIO
+and SQLite workflows. The new all-mode test initially failed 15 assertions
+for absent guidance, with zero errors; existing native assembly behavior was
+already valid. The recursive witness runs semantic child work followed by
+ordinary code assembly and verifies canonical values. It covers opaque
+references, order, duplicate identities, false, zero and null. This scoped
+obligation does not close every historical clause of the guidance invariant.
+
+A later fresh hosted follow-up used six researcher calls, two generated LLM
+calls and one independent semantic review. Actual schema rejections reached
+the next researcher requests, and corrected child work completed without
+repeating discovery or the five source reads. Canonical catalog and
+observations equal the original source receipts. Literal checks passed;
+independent review accepted the qualified unresolved result with no defects.
+The unavailable source remained an access gap. This later result preserves
+the earlier rejected run above rather than reclassifying its outcome.
+
+Guidance introduces no helper API, parser, identifier repair, required tree
+shape or additional mandatory call. This single hosted construction case
+does not establish all-model reliability, broad delegation, process recovery
+or a return edge from the external semantic judge into the researcher.
+Interpretation citations remain model-authored; preserving native evidence
+does not itself guarantee their correctness. No generated stub, skipped
+assertion or skeleton counts as coverage. The specification diagnostics
+retain 39 warnings, 113 informational diagnostics, zero errors and zero
+process findings; this is not a clean structural check.
+
+
+## CSV entity context and definition composition
+
+1 scoped obligation, 1 covered, 0 uncovered: the authored CSV definition stage
+executes preparation and enrichment in order for each entity, passes the actual
+entity and prepared context to the model, and retains generated definition
+fields under that entity's original identity. The public SQLite/HTTP regression
+uses two distinct entities and actual canonical value readback. Before the
+correction, two cases produced 12 assertion failures out of 21 assertions, with
+zero errors. After the correction, both cases pass all 21 assertions. The old
+two-direct-child topology remains a failing negative control and produces no
+canonical definition aggregate; no required field or validator was weakened.
+
+The workflow uses its existing sequential map default. This witness does not
+establish parallel composite collection, per-item provider-failure recovery,
+process restart, whole-CSV extraction, or real-model semantic quality. Scripted
+HTTP responses prove context/transport/composition, not those broader claims.
+The failed hosted CI supplied the integration counterexample; a post-fix hosted
+result is not claimed here. No mock, placeholder, omitted assertion or skeleton
+substitutes for the named public stage obligation.
+
+## Researcher setup, output and recovery repairs
+
+The setup feedback contract covers field-level refusal details in a generated
+child and their preservation through a researcher checkpoint. Three named
+obligations are covered by public HTTP/SIO/SQLite tests; the setup and existing
+admission controls pass 4 tests and 77 assertions. Diagnostics retain an allowed
+set of public fields and trusted message strings. They do not provide arbitrary
+content redaction. A local fixture correction selects strict JSON explicitly;
+the production provider parser remains unchanged.
+
+`SandboxOutputBelongsToCurrentEvaluation` maps to host and SCI output bindings.
+The three named stdout obligations are covered by 4 tests and 78 assertions,
+plus public native output/projection checks. Binding restoration preserves
+normal return values and thrown exceptions. The repair grants no additional
+I/O and adds no persisted stdout result field.
+
+The remaining eight configuration and recovery obligations are covered:
+**8 obligations, 8 covered, 0 uncovered**. The packaged focused command passes
+66 tests and 1,378 assertions, with zero failures or errors. Its composed
+researcher-parent restart contributes 47 assertions to that total. The runner
+verifies 64 production resource origins and hashes. Earlier source-specific
+counts remain historical evidence and are not added to the current total.
+
+Specification/code mapping:
+
+- `ResearcherConfigurationSurvivesRoundTrip`: authored timeout/options through
+  construction, build, EDN export/import and source rendering.
+- `GeneratedCodeIsDurableEvidence`: exact source-bound function metadata through
+  commands, events, projections, reconstruction and conservative cleanup.
+- `RejoinedGeneratedChildFreshModelAuthority`: pending plan retention cannot
+  spend; dispatch requires current parent/frontier/claim/configuration and CAS.
+- `TimeoutScopesRemainIndependent` and the LLM failure contract: typed deadline
+  evidence survives normalization and replay; explicit non-timeout categories
+  retain priority, while a nil category remains unavailable information.
+
+Inspection exposed failures during reducible event consumption and missing or
+anomalous cleanup projections. Cleanup now retains bindings when observation is
+unknown and preserves the primary execution outcome. Nil-category timeout
+controls retain the prior explicit-category negatives. No prior assertion was
+removed to obtain these results.
+
+Reproduction and scope appear in
+[the verification guide](../docs/RESEARCHER-RECOVERY-VERIFICATION.md).
+Arbitrary captured closures, compiled-sheet export/import of callable metadata,
+all restart windows and hosted reasoning quality remain unproven. The repair
+adds no excluded production domain. The existing specification baseline remains
+12 modules, 39 warnings, 116 informational diagnostics, zero errors and zero
+process findings; check exits 1 and analyse exits 0. This is not a clean check.

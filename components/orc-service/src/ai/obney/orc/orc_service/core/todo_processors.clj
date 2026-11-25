@@ -3995,10 +3995,6 @@
                             (tick-ctx-of context tick-id))
 
             target-sheet-id (:target-sheet-id node)
-            target-checkpointed-campaign?
-            (boolean
-             (some researcher-mode/checkpointed?
-                   (vals (rm/get-nodes-by-id context target-sheet-id))))
             read-keys (:reads node)
             write-keys (:writes node)
             parent-tick-ctx (tick-ctx-of context tick-id)
@@ -4108,8 +4104,10 @@
                                            (normalize-output-keys target-input-sources)
                                            :correlation-id correlation-id
                                            :input-sources target-input-sources
-                                           :checkpointed-campaign?
-                                           target-checkpointed-campaign?
+                                           ;; Target contents do not make ordinary siblings
+                                           ;; members of a researcher campaign. The actual
+                                           ;; researcher handler owns prime/inline admission;
+                                           ;; generated children carry their real campaign IDs.
                                            :llm-call-budget
                                            (:budget inherited-budget-root)
                                            :llm-budget-root-sheet-id
@@ -5141,18 +5139,34 @@
 
 (defn- map-each-result-events
   [context sheet-id tick-id parent-id output-key into-value status summary]
-  (let [completion-body (cond-> {:sheet-id sheet-id
+  (let [validated (executor/validate-leaf-outputs
+                    (resolve-blackboard context sheet-id tick-id)
+                    {:status :success :outputs {output-key into-value}})
+        rejected? (= :failure (:status validated))
+        completion-body (cond-> {:sheet-id sheet-id
                                  :tick-id tick-id
                                  :node-id parent-id
                                  :node-type :map-each
-                                 :status status
-                                 :write-keys [output-key]
-                                 :write-profile (profile-values {output-key into-value})}
-                          summary (assoc :partial-summary summary))]
+                                 :status (if rejected? :failure status)
+                                 :write-keys (if rejected? [] [output-key])
+                                 :write-profile (profile-values (:outputs validated))}
+                          summary (assoc :partial-summary summary)
+                          rejected? (assoc :error (:error validated)
+                                           :rejected-write-keys [output-key]
+                                           :rejected-write-profile (profile-values (:rejected-writes validated))))]
     [;; The aggregate is produced by this parent execution, not an item seed.
      ;; Canonical completion readback joins writes by execution identity.
-     (make-bb-write-event context sheet-id tick-id output-key into-value
-                          {:node-id parent-id})
+     (if rejected?
+       ;; Keep the candidate as diagnostic evidence, never canonical state.
+       (->event
+        {:type :sheet/execution-value-rejected
+         :tags #{[:sheet sheet-id] [:tick tick-id]}
+         :body (value-storage/prepare-write
+                 context {:sheet-id sheet-id :tick-id tick-id :node-id parent-id
+                          :key output-key :value into-value})})
+       (make-bb-write-event context sheet-id tick-id output-key
+                            (get-in validated [:outputs output-key])
+                            {:node-id parent-id}))
      (->event
       {:type :sheet/node-execution-completed
        :tags #{[:sheet sheet-id] [:node parent-id] [:tick tick-id]}

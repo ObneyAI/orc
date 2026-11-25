@@ -915,6 +915,26 @@ Implementation briefs: docs/issues/gepa-recovery/. Existing GEPA-RESULT checks c
 
 - [x] GEPA-RECOVERY-10: Managed aggregate commands reject unfinished, unrelated or mismatched task evidence; legitimate parent-perfect skips are explicit; terminal completion preserves admitted unfinished work.
 
+## GEPA reflection from the parent's training minibatch
+
+Source: `components/gepa/test/ai/obney/orc/gepa/parent_minibatch_reflection_test.clj`, plus the wired
+`feedback_path_test.clj` and `output_path_test.clj` (distinct training and validation sets). Contract
+`ReflectiveInstructionProposer` (`ReflectionFromTheParentsTrainingMinibatch`, `FailureFocusedReflection`),
+`ParetoPopulationSelection.StrictMutationAcceptance`, rules `ReflectOnTheParentsMinibatch` and
+`SkipAParentPerfectOnItsMinibatch`.
+
+- [x] GEPA-REFLECT-1: With distinct training and validation sets (training longer, and shorter), every reflective example's inputs, generated output and feedback belong to one training example; no validation value or empty input reaches the proposer.
+- [x] GEPA-REFLECT-2: Reordered equal examples stay paired by identity; failing examples come first.
+- [x] GEPA-REFLECT-3: The examples come from the sampled parent evaluated on its minibatch, not the just-evaluated candidate.
+- [x] GEPA-REFLECT-4: The parent's minibatch is evaluated before the proposer call and once only: the acceptance gate reuses those tasks (no second dispatch, metric call or charge), and a redelivered round reuses them.
+- [x] GEPA-REFLECT-5: A parent perfect on its minibatch makes no proposer call, publishes the skipped comparison, creates no candidate, and does not block completion; with `:skip-perfect-score false` the proposer is called.
+- [x] GEPA-REFLECT-6: A training set smaller than the minibatch size reflects on each example once (distinct indices) and reaches the proposer.
+- [x] GEPA-REFLECT-7: A metric exception or failed workflow yields no score on the unmanaged path (refuses with `:gepa/evaluation-status :failed`) and no task result on the managed path.
+- [x] GEPA-REFLECT-8: The wired loop (`gepa/optimize!`) hands the proposer feedback and outputs of the parent's training examples only.
+- [x] GEPA-REFLECT-9: A round interrupted during the parent's evaluation is recorded first; `resume!` continues the same round (same parent, component and minibatch), does not run or charge completed parent tasks again, and reaches `proposal-ready`; a second `resume!` makes no second proposal.
+- [x] GEPA-REFLECT-10: A round that already has its proposal, or a published skip, is not resumed as a round.
+- [x] GEPA-REFLECT-11: `:gepa/request-recovery` carries an interrupted round to its proposal through the recovery processor.
+
 - [x] GEPA-RECOVERY-11: Built-in metrics select canonical keyword blackboard answer fields rather than echoed inputs; configured reflection generation limits reach the provider request.
 
 - [x] GEPA-RECOVERY-12: After SQLite close/reopen before task-manifest creation, the actual named GEPA evaluation processor catches up the durable evaluation-start event without manual resume; one task, workflow, metric invocation and aggregate result survive repeated named startup. Existing-behavior verification for DurableOptimizationLifecycle.ResumeFromRecordedBoundary; expected green, with no production changes.
@@ -1233,8 +1253,94 @@ Independent replay/trace integration evidence: `complex-portability/ai-receipt-r
 
 INPUT-SHAPE-3 verification: private final runtime manifest aac96291, eight hosted cases/56 raw-schema-valid responses, all actual input descriptions and sent/native values independently audited. Six exact task successes; MiniMax ordering and MiMo literal-fidelity failures were correctly rejected, not presented as successful semantics. Evidence: complex-portability/protocol-hosted-described/ROOT-REVIEW.json and hosted-described-read-audit/EIGHT-CASE-REPORT.md. INPUT-SHAPE-1/2/4 retain their scoped constructor/metadata proof separately; no claim of an all-mode datastore E2E from this strict-JSON batch.
 
+## Typed workflow results and recoverable diagnostics
+
+- [x] RESEARCHER-ADMISSION-FEEDBACK — Public HTTP/SIO/SQLite execution returns a child admission refusal and exact nested schema reason in the next researcher request, then executes only the corrected child and publishes its canonical result.
+- [x] MAP-AGGREGATE-OUTPUT — Successful scalar-item observations cannot publish an invalid parent aggregate. The parent fails with exact schema evidence, the rejected candidate remains diagnostic, and successful item values stay canonical. Valid partial aggregation preserves status and failure indices.
+- [x] RESEARCHER-FINAL-REPAIR — Nested invalid final attempts yield schema feedback before completion and permit bounded correction. Native false/zero/null and optional omission remain intact; function candidates checkpoint safely, a caught later rejection clears an earlier final capture, and exhausted allowance cannot publish invalid values or dispatch extra calls.
+- [x] RESEARCHER-NATIVE-EVIDENCE — Public researcher requests in legacy, recursive and RLM terminal modes receive shared native-evidence ownership guidance. Executed code assembles a typed result from unchanged native observations and separately produced interpretation, preserving opaque references, order, duplicate identities, false, zero and null without matching or repairing identifiers. A recursive emitted semantic-child plus code-assembly case verifies the same ownership through canonical projections.
+
+
+## Generated researcher setup diagnostics
+
+Derived from `ResearcherFeedbackMatchesCurrentState`. Controlled HTTP/SIO/SQLite
+proves transport and recovery, not unscripted semantic quality.
+
+- [x] RESEARCHER-SETUP-FEEDBACK — A generated LLM missing its required instruction is refused before child execution. The actual next researcher request names the setup command, refusal category/reason and offending field. A corrected subsequent child runs once and its typed output is canonical.
+- [x] RESEARCHER-SETUP-CHECKPOINT — The same safe setup diagnostic survives an actual researcher checkpoint/quantum boundary; both the next request and durable child outcome retain actionable field information. Bounded iteration excerpts do not hide the field behind a generic prefix.
+- [x] RESEARCHER-SETUP-BOUNDARY — Refusals without field details retain that absence. Diagnostic propagation excludes raw commands, authorization, source values and unrelated handler data, and preserves existing child-admission feedback.
+
+## CSV per-entity definition enrichment
+
+- [x] CSV-ENTITY-CONTEXT — Public SQLite execution of the authored CSV definition stage prepares and enriches two distinct entities, exposes each entity's full native context to the actual model request, and publishes the generated fields under their original entity identities without global or prior-item bleed. The original two-direct-child topology remains a failing negative control; the aggregate contract stays strict. Controlled HTTP proves transport/composition, not live semantic quality.
+
+## GEPA component rotation, reflection prompt template and reflection token budget
+
+Source: `components/gepa/test/ai/obney/orc/gepa/rotation_prompt_budget_test.clj`.
+
+- [ ] GEPA-ROTATE-1: Successive rounds of one parent rotate through its components in a stable order; a round skipped for a perfect parent does not advance the rotation; a redelivered round keeps its recorded component; a child continues from its parent's pointer while an unrelated candidate starts at the first component.
+- [ ] GEPA-PROMPT-1: A template string reaches every component's proposer prompt; a map reaches its component while another component gets the default; a template missing a placeholder is refused at start, before any evaluation; the template is used after `resume!`.
+- [ ] GEPA-PROMPT-2: The optional `general-rules-prompt-template` is GEPA's default plus the three sentences, passes validation, is re-exported from the public interface, and reaches the proposer prompt when passed as `:reflection-prompt-template`.
+- [ ] GEPA-TOKENS-1: With `:max-reflection-tokens` set, no round opens and no proposer call starts once the recorded tokens reach it, and the run completes with the best fully evaluated candidate (or fails naming the budget when none exists); a completed proposer call reused on redelivery or resume is not counted again; progress and `resume!` report the tokens used.
+- [ ] GEPA-TOKENS-2: A provider-reported cost is kept in the proposer-call evidence.
+
+
+## Checkpointed emission recovery and mixed delegate admission
+
+- [x] **RESEARCHER-PARTIAL-EMISSION-RECOVERY** — Public HTTP/SIO/SQLite execution repairs a quoted emit followed by a parse error without dispatching the rejected tree; prior executed tree raw/source, ordinary native scratch and an actual completed tool receipt survive once. Clean emission still succeeds. Unsupported user KeySeq and function scratch still fail explicitly. Source: `ai.obney.orc.orc-service.emission-parse-recovery-regression-test`.
+- [x] **MIXED-TARGET-MODEL-ADMISSION** — One delegated target runs ordinary producer, checkpointed researcher and ordinary consumer under a positive shared call budget; false/zero/null and nested values survive, and real native reservation/campaign identities remain owned by the actual invoking node. Exhaustion prevents a request beyond the cap. Source: `ai.obney.orc.orc-service.mixed-target-admission-regression-test`.
+
+The two regression namespaces pass 4 tests and 51 assertions through public ORC/Grain commands, SQLite and scripted loopback HTTP. These checks establish recovery and admission mechanics, not hosted semantic quality.
+
+## SCI output capture repair
+
+- [x] SCI-STDOUT-EVALUATION — Actual plain and recursive researcher evaluation retains exact mixed permitted printer output, normal no-print computation and real failure with printed prefix; unavailable host I/O stays unavailable.
+- [x] SCI-STDOUT-GENERATED — Actual public HTTP/SQLite recursive emission executes a generated SCI function that prints through the caller destination and produces exact canonical/projected output; authored host code retains its original behavior.
+- [x] SCI-STDOUT-RESTORATION — Distinct surrounding host/SCI destinations are restored after success and failure, including original thrown exception identity at the writer helper. Native output observation is separate from persisted code-leaf output APIs.
+
+The stdout namespace passes 4 tests and 78 assertions. Public HTTP/SQLite
+workflows additionally verify caller output, canonical values and restoration
+of surrounding output bindings. Generated stdout remains a caller observation,
+not a new persisted leaf-result field.
+
+## Researcher configuration and recovery contracts
+
+- [x] RESEARCHER-TIMEOUT-ROUNDTRIP — Public constructor, fresh/changed/no-op build, EDN import/export and executable source rendering preserve an explicitly positive total-work timeout and honest omission; absent, empty and supplied options retain their distinct valid meaning. Existing node/tick/fallback precedence and immutable deadline remain unchanged.
+- [x] GENERATED-FN-SOURCE-BOUNDARY — Exact version/context/source/hash and empty-capture metadata survives public command/event/projection boundaries and reconstructs only supported functions; malformed, captured/shadowed or identity-conflicting definitions refuse without widening capabilities.
+- [x] GENERATED-FN-LIFETIME — Restored callable uses the original identity, refuses different bindings and releases only its matching terminal binding after all actual live users finish. Healthy shared/unrelated work remains.
+- [x] GENERATED-FN-COLD-RECOVERY — A distinct owned process/registry lifetime reconstructs admitted code at the actual pending/abandoned-callable boundary, preserving original tick/node/source/deadline and once-only completed effects. A completed-child terminal boundary consumes the saved result without reinvocation; these are separate controls.
+- [x] EMITTED-AUTH-RETENTION — A legitimately late first generated descendant may retain its exact plan while frontier/claim installation is pending, but pending retention causes no provider reservation or request; configuration and original budget/deadline remain authoritative.
+- [x] EMITTED-AUTH-ORDER — Both actual parent/child delivery orders preserve valid first-start ownership, while stale/unresumed/superseded/conflicting configurations and changed facts at append/CAS refuse before spend. No completed prefix/tool work is replayed.
+
+- [x] RESEARCHER-PROVIDER-TIMEOUT — Typed Java provider deadlines and normalized transport-timeout evidence survive LLM normalization and durable researcher receipts, allowing later classification without an exception cause. Explicit non-timeout categories take precedence; prose or HTTP status alone cannot imply timeout. Existing candidate exhaustion, deadline, cancellation and call-budget rules remain authoritative; replay classification alone causes no dispatch.
+
+- [x] RESEARCHER-REPAIR-COMPOSITION — The assembled repair source runs an actual checkpointed researcher through public local HTTP/SIO/SQLite, emits self-contained typed code plus a later semantic descendant, survives a genuinely new owned JVM while callable work is pending, preserves original campaign/child/function/deadline/cap and completed prefix effects, and returns exact canonical output without replaying completed work. This integration is distinct from generic callable-leaf recovery and staged-parent authority controls; no hosted quality or uncertain external-effect exactly-once claim.
+
+The eight configuration and recovery obligations above are covered. The
+packaged focused command passes 66 tests and 1,378 assertions, with zero
+failures or errors. The composed two-JVM researcher restart contributes 47
+assertions to that total. The runner verifies 64 production resource origins
+and hashes before execution. Counts from earlier source cuts remain historical
+evidence and are not added to this total.
+
+Source namespaces and reproducible commands are listed in
+[RESEARCHER-RECOVERY-VERIFICATION.md](RESEARCHER-RECOVERY-VERIFICATION.md).
+Hosted semantic quality, arbitrary captured closures and compiled-sheet
+export/import of callable metadata remain outside this proof. Specification
+checking retains 39 warnings, 116 informational diagnostics, zero errors and
+zero process findings. Check exits 1; analyse exits 0. The baseline is not clean.
+
+
 ## Researcher timeout meaning across model boundaries
 
 - [x] RESEARCHER-TIMEOUT-1 — Raw and wrapped typed timeouts, safely normalized timeout evidence, and durable recorded timeout outcomes retain provider-timeout meaning through actual researcher execution. The original iteration limit/retry/checkpoint contract remains intact. Ordinary and native LLM normalization preserve timeout type without raw causes/payloads or invented status/model/usage. Configured receipt replay does not redispatch, and configured fallback exhaustion acquires no extra retry allowance. Ordinary errors and misleading timeout prose stay distinct.
 
-RESEARCHER-TIMEOUT-1 verification: independent 142 tests / 1,133 assertions across the offline LLM boundary, actual Grain campaigns and SQLite receipt replay. Existing timeout classification tests remain unchanged. Recorded receipt replay makes no additional dispatch or event write. Full process restart and hosted provider failure are outside this bounded contract.
+Earlier RESEARCHER-TIMEOUT-1 verification: independent 142 tests / 1,133 assertions across the offline LLM boundary, actual Grain campaigns and SQLite receipt replay. Existing timeout classification tests remain unchanged. Recorded receipt replay makes no additional dispatch or event write. Full process restart and hosted provider failure are outside this bounded contract.
+
+Reconciliation with the merged recovery repair preserves all 70 runtime files.
+The focused native-input checks pass 149 tests and 750 assertions, including
+all 48 RLM mode tests, six reconciled-contract cases and retained timeout replay.
+The corrected score assertions distinguish supplied evidence, declared optional
+shape, native predictor inputs and JSON-ready transport values. The earlier
+two failed expectations remain documented; no production contract or assertion
+is weakened.

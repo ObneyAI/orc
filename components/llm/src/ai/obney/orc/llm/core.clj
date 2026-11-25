@@ -704,9 +704,10 @@
     :litellm/internal-error :litellm/resource-exhausted})
 
 (defn transport-timeout?
-  "Recognize a provider deadline from exception types or normalized transport
-   evidence, never prose or HTTP status. An explicit category takes precedence
-   over nested causes. The cause walk is cycle guarded."
+  "Recognize a provider deadline from exception types, normalized transport
+   evidence or a durable provider timeout marker, never prose or HTTP status.
+   Explicit failure and transport categories take precedence over the marker
+   and nested causes. The cause walk is cycle guarded."
   [throwable]
   (loop [e throwable seen #{}]
     (if (or (nil? e) (contains? seen e))
@@ -715,9 +716,9 @@
             normalized-type (get-in data [:provider-evidence :transport :type])]
         (cond
           (and (:failure-kind data) (not= :transport-failure (:failure-kind data))) false
-          (contains? data :type) (= :litellm/timeout (:type data))
-          (and (= :transport-failure (:failure-kind data)) (some? normalized-type))
-          (= :litellm/timeout normalized-type)
+          (some? (:type data)) (= :litellm/timeout (:type data))
+          (some? normalized-type) (= :litellm/timeout normalized-type)
+          (= :provider (:timeout-kind data)) true
           (or (instance? java.net.http.HttpTimeoutException e)
               (instance? java.net.SocketTimeoutException e)
               (instance? java.util.concurrent.TimeoutException e)) true

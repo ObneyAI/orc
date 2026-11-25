@@ -941,17 +941,18 @@
       ;; PHASE 3: DEFINITION GENERATION (LLM per class)
       ;; =======================================================================
       (sheet/map-each "generate-definitions" :from :entities :as :current-entity :into :definition-results
-        (sheet/code "prepare-entity-context"
-          :fn "ai.obney.orc.ontology.sheets.csv-ontology/prepare-entity-context-fn"
-          :reads [:entities]
-          :writes [:entity-name :source-columns :sample-instances :related-entities])
+        (sheet/sequence "enrich-current-entity"
+          (sheet/code "prepare-entity-context"
+            :fn "ai.obney.orc.ontology.sheets.csv-ontology/prepare-entity-context-fn"
+            :reads [:current-entity :csv-data :column-analysis :entities]
+            :writes [:entity-name :source-columns :sample-instances :related-entities])
 
-        (sheet/llm "enrich-entity-definition"
-          :model "google/gemini-2.5-flash"
-          :instruction "Generate a formal 2-3 sentence definition for this entity class. Include usage boundaries in the scope note. Suggest alignments to standard ontologies (schema.org, SKOS, Dublin Core)."
-          :reads [:domain]
-          :writes [:definition-reasoning :definition :scope-note :external-alignments]
-          :retry {:max-attempts 2 :backoff-ms [200 1000]}))
+          (sheet/llm "enrich-entity-definition"
+            :model "google/gemini-2.5-flash"
+            :instruction "Generate a formal 2-3 sentence definition for this entity class. Include usage boundaries in the scope note. Suggest alignments to standard ontologies (schema.org, SKOS, Dublin Core)."
+            :reads [:domain :current-entity :entity-name :source-columns :sample-instances :related-entities]
+            :writes [:definition-reasoning :definition :scope-note :external-alignments]
+            :retry {:max-attempts 2 :backoff-ms [200 1000]})))
 
       (sheet/code "collect-definitions"
         :fn "ai.obney.orc.ontology.sheets.csv-ontology/collect-entity-definitions-fn"

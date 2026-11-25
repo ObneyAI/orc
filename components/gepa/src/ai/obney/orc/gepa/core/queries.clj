@@ -124,6 +124,8 @@
                                        :reserved (:reserved-metric-calls opt-state)
                                        :available (:available-metric-calls opt-state)
                                        :budget (:max-metric-calls config)}
+                        :reflection-tokens {:used (rm/get-reflection-tokens-used ctx optimization-id)
+                                            :budget (:max-reflection-tokens config)}
                         :candidates {:total (:total-candidates opt-state)
                                      :evaluated (count (:evaluated pop-state))}
                         :frontier {:size (count (:frontier-members frontier))

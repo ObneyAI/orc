@@ -2,9 +2,10 @@
   "Event-sourced integration test (NO LLM): prove that the per-instance
    generated OUTPUT threads all the way through the wired GEPA loop —
    candidate-evaluated carries per-instance :outputs, the population read-model
-   surfaces them via get-candidate-outputs, and build-reflective-dataset puts the
-   REAL output (not {}) into the 'Generated Outputs' slot of each reflective
-   example. Mirrors feedback_path_test. Uses a trivial code-only sheet so the
+   surfaces them via get-candidate-outputs, and the reflective examples handed to
+   the proposer put the REAL output of the parent's TRAINING example (not {}, not
+   a validation output) into the 'Generated Outputs' slot. Training and
+   validation sets are distinct. Mirrors feedback_path_test. Uses a trivial code-only sheet so the
    loop runs instantly."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as string]
@@ -35,7 +36,7 @@
    :feedback "completeness (0.00): the response is the literal word and answers nothing"})
 
 (deftest generated-output-threads-through-wired-loop
-  (testing "candidate-evaluated carries :outputs and reflective dataset uses them"
+  (testing "candidate-evaluated carries :outputs and reflection shows the training example's output"
     (tu/with-test-context [ctx]
       (let [cp (control-plane/start {:event-store (:event-store ctx)
                                      :cache (:cache ctx)
@@ -43,23 +44,30 @@
                                      :heartbeat-interval-ms 100
                                      :staleness-threshold-ms 1000})
             sheet-id (sheet/build-workflow! ctx (make-echo-workflow))
-            data [{"input" "banana"} {"input" "kiwi"}]
-            result (gepa/optimize! ctx
-                     {:sheet-id sheet-id
-                      :trainset data
-                      :valset data
-                      :metric-fn fake-judge-metric
-                      :config {:max-metric-calls 2
-                               :reflection-lm "us.anthropic.claude-sonnet-4-20250514-v1:0"}
-                      :inherit-from-previous false
-                      :block? true
-                      :timeout-ms 10000})
+            trainset [{"input" "TRAIN-banana"} {"input" "TRAIN-mango"} {"input" "TRAIN-plum"}]
+            valset [{"input" "VAL-kiwi"} {"input" "VAL-fig"}]
+            proposed (atom [])
+            result (with-redefs [tp/generate-mutated-instruction
+                                 (fn [_ _ _ examples & _]
+                                   (swap! proposed conj examples)
+                                   "FIXED-INSTRUCTION")]
+                     (gepa/optimize! ctx
+                       {:sheet-id sheet-id
+                        :trainset trainset
+                        :valset valset
+                        :metric-fn fake-judge-metric
+                        :config {:max-metric-calls 10
+                                 :reflection-lm "us.anthropic.claude-sonnet-4-20250514-v1:0"}
+                        :inherit-from-previous false
+                        :block? true
+                        :timeout-ms 60000}))
             opt-id (:optimization-id result)
             all (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx)}))
             evaluated (filter #(and (= :gepa/candidate-evaluated (:event/type %))
                                     (= opt-id (:optimization-id %))) all)
             seed (first (sort-by (comp str :evaluated-at) evaluated))
-            seed-id (:candidate-id seed)]
+            seed-id (:candidate-id seed)
+            examples (mapcat identity @proposed)]
 
         (is (= :completed (:status result))
             (str "code-only GEPA timed out; durable event inventory: "
@@ -72,7 +80,7 @@
           ;; The echo workflow writes :output "ECHO:<input>" onto the blackboard.
           (let [out0 (get (:outputs seed) 0)]
             (is (map? out0) "each per-instance output is the output blackboard map")
-            (is (some #(and (string? %) (string/includes? % "ECHO:"))
+            (is (some #(and (string? %) (string/includes? % "ECHO:VAL-"))
                       (vals out0))
                 "the real generated output text is present")))
 
@@ -80,17 +88,16 @@
           (is (= (:outputs seed)
                  (rm/get-candidate-outputs ctx opt-id seed-id))))
 
-        (testing "build-reflective-dataset puts the REAL output (not {}) into Generated Outputs"
-          (let [refl (tp/build-reflective-dataset ctx opt-id seed-id
-                                                  {:reflection-minibatch-size 3})
-                gen-outputs (map #(get % "Generated Outputs") refl)]
-            (is (seq refl) "produced reflective examples from the failing instances")
-            (is (every? map? gen-outputs)
-                "every reflective example's Generated Outputs is the real output map")
-            (is (not-any? empty? gen-outputs)
-                "NONE fall back to the empty {} output placeholder")
-            (is (some #(string/includes? % "ECHO:")
-                      (mapcat (comp (partial map str) vals) gen-outputs))
-                "the reflective examples carry the real generated output text")))
+        (testing "reflective examples carry the REAL output of their own training example"
+          (let [gen-outputs (map #(get % "Generated Outputs") examples)]
+            (is (seq examples) "the proposer was given reflective examples")
+            (is (every? map? gen-outputs))
+            (is (not-any? empty? gen-outputs) "NONE fall back to the empty {} placeholder")
+            (is (every? #(= (str "ECHO:" (get-in % ["Inputs" "input"]))
+                            (:output (get % "Generated Outputs")))
+                        examples)
+                "each output is the echo of its own training input")
+            (is (not-any? #(string/includes? (pr-str %) "VAL-") examples)
+                "no validation value reaches reflection")))
 
         (control-plane/stop cp)))))

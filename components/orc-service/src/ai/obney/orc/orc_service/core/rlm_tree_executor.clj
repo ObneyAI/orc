@@ -14,7 +14,10 @@
    This follows the delegate node pattern but is specialized for
    inline tree execution rather than referencing an existing sheet."
   (:require [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
+            [ai.obney.orc.orc-service.core.recoverable-function :as recoverable-function]
+            [ai.obney.orc.orc-service.core.read-models :as read-models]
             [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
+            [ai.obney.orc.orc-service.core.researcher-setup-diagnostics :as setup-diagnostics]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.commands] ;; Load command handlers
             [ai.obney.orc.orc-service.core.streaming :as streaming]
@@ -25,7 +28,7 @@
             [ai.obney.grain.time.interface :as time]
             [malli.core :as m]))
 
-(declare compute-by-node-from-tick-events)
+(declare compute-by-node-from-tick-events clear-terminal-functions!)
 
 (defn- persisted-tick-events [context tick-id]
   (when (and tick-id (:event-store context))
@@ -61,7 +64,8 @@
                         {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}
                         events)
           by-node (compute-by-node-from-tick-events
-                   (:event-store context) (:tenant-id context) tick-id)]
+                   (:event-store context) (:tenant-id context) tick-id)
+          _ (clear-terminal-functions! context (:sheet-id completion) tick-id)]
       (cond-> {:status (runtime/terminal-root-status->result-status root-status)
                :outputs (value-log/final-values context (:tenant-id context) tick-id)
                :sheet-id (:sheet-id completion)
@@ -204,6 +208,62 @@
   [fn-id]
   (get @ephemeral-fn-registry fn-id))
 
+(defn restore-ephemeral-fn!
+  "Restore this node's durable binding under its original registry identity."
+  [fn-id binding]
+  (let [f (recoverable-function/compile-binding binding)]
+    (get (swap! ephemeral-fn-registry
+                (fn [registry]
+                  (if-let [existing (get registry fn-id)]
+                    (if (= binding (:orc/recoverable-fn (meta existing)))
+                      registry
+                      (throw (ex-info "Generated function identity has a different source binding"
+                                      {:reason :recoverable-function-identity-collision
+                                       :function-id fn-id})))
+                    (assoc registry fn-id f)))) fn-id)))
+
+(defn- clear-terminal-functions!
+  "Release only this terminal tick's exact callable bindings. Another live
+   tick of the same sheet may still need them; uncertain ownership retains them.
+   Returns observed recoverable keys, or nil when cleanup observation failed."
+  [context sheet-id tick-id]
+  (let [observation
+        (try
+          (let [events (es/read (:event-store context)
+                                {:tenant-id (:tenant-id context) :tags #{[:sheet sheet-id]}
+                                 :types #{:sheet/tree-tick-started :sheet/tree-tick-completed :sheet/tick-cancelled}})]
+            (when (and events (not (:cognitect.anomalies/category events)))
+              ;; Grain reads may fail only when their reducible is consumed.
+              ;; Observe ownership and all node bindings before registry mutation.
+              (let [live (reduce (fn [active event]
+                                   (case (:event/type event)
+                                     :sheet/tree-tick-started (conj active (:tick-id event))
+                                     :sheet/tree-tick-completed
+                                     (if (runtime/terminal-root-status->result-status (:root-status event))
+                                       (disj active (:tick-id event)) active)
+                                     :sheet/tick-cancelled (disj active (:tick-id event))
+                                     active)) #{} events)
+                    snapshot (read-models/get-tick-execution-context context tick-id)
+                    nodes (:nodes-by-id snapshot)]
+                ;; Missing/anomalous projection is unknown, not proof of no bindings.
+                (when (and (map? snapshot) (not (:cognitect.anomalies/category snapshot))
+                           (map? nodes))
+                  {:live live
+                   :bindings (into []
+                                   (keep #(when (:recoverable-fn %)
+                                            (select-keys % [:fn :recoverable-fn])))
+                                   (vals nodes))}))))
+          (catch Exception _ nil))]
+    (when observation
+      (when (empty? (:live observation))
+        (doseq [{:keys [fn recoverable-fn]} (:bindings observation)]
+          (swap! ephemeral-fn-registry
+                 (clojure.core/fn [registry]
+                   (if (= recoverable-fn (:orc/recoverable-fn (meta (get registry fn))))
+                     (dissoc registry fn)
+                     registry)))))
+      (into #{} (map :fn) (:bindings observation)))))
+
 (defn clear-ephemeral-fn!
   "Remove an ephemeral function from the registry."
   [fn-id]
@@ -218,14 +278,15 @@
   [ctx command-data]
   (let [result (cp/process-command (assoc ctx :command command-data))]
     (when-let [category (:cognitect.anomalies/category result)]
-      (throw (ex-info
-              (str "Generated child setup command " (:command/name command-data)
-                   " rejected: "
-                   (or (:cognitect.anomalies/message result) (str category)))
-              {:reason :generated-child-setup-rejected
-               :preflight-rejected? true
-               :command-name (:command/name command-data)
-               :cognitect.anomalies/category category})))
+      (let [diagnostic (setup-diagnostics/from-refusal (:command/name command-data) result)]
+        (throw (ex-info
+                (if diagnostic (setup-diagnostics/render diagnostic)
+                    "Generated child setup command rejected")
+                (cond-> {:reason :generated-child-setup-rejected
+                         :preflight-rejected? true
+                         :command-name (:command/name command-data)
+                         :cognitect.anomalies/category category}
+                  diagnostic (assoc :setup-diagnostic diagnostic))))))
     result))
 
 (defn- make-create-sheet-command
@@ -538,6 +599,7 @@
     (let [opts (parse-keyword-args (rest tree))
           f (:fn opts)
           string-fn? (string? f)
+          recoverable-fn (:orc/recoverable-fn (meta f))
           ;; Inline-fn → ephemeral registry; symbol-string → use directly
           fn-value (if string-fn? f (register-ephemeral-fn! f))
           ephemeral-keys (if string-fn? [] [fn-value])
@@ -572,6 +634,7 @@
                  :node-id leaf-id
                  :executor :code
                  :fn fn-value}
+          recoverable-fn (assoc :recoverable-fn recoverable-fn)
           tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
           (seq tool-contracts) (assoc :tool-contracts tool-contracts)))
       {:node-id leaf-id
@@ -811,6 +874,7 @@
                      (println "[DEBUG Tree] tick-tree command rejected:"
                               (:cognitect.anomalies/message tick-cmd-result))
                      {:status :failure
+                      :admission-rejected? true
                       :error (str ":sheet/tick-tree command rejected: "
                                   (:cognitect.anomalies/message tick-cmd-result)
                                   (when-let [explain (:error/explain tick-cmd-result)]
@@ -866,9 +930,14 @@
           _ (when (:error result) (println "[DEBUG Tree] Error:" (:error result)))
           _ (println "[DEBUG Tree] Output keys:" (keys (:outputs result)))]
 
-      ;; Clean up ephemeral functions after execution completes
-      (doseq [fn-key ephemeral-fn-keys]
-        (clear-ephemeral-fn! fn-key))
+      ;; Durable callables retain exact binding/active-tick ownership on the
+      ;; ordinary completion path as well as terminal result reconstruction.
+      (when-let [recoverable-keys (clear-terminal-functions! context sheet-id tick-id)]
+        ;; Preserve the existing cleanup contract for ephemeral-only helpers.
+        ;; Failed cleanup observation conservatively retains every callable.
+        (doseq [fn-key ephemeral-fn-keys
+                :when (not (contains? recoverable-keys fn-key))]
+          (clear-ephemeral-fn! fn-key)))
 
       ;; Enrich :usage with :by-node breakdown by reading the tick's
       ;; node-execution-completed events from the event store. Universal
@@ -958,11 +1027,15 @@
     (catch Exception e
       (println "[DEBUG Tree] EXECUTION ERROR:" (.getMessage e))
       (.printStackTrace e)
-      (cond-> {:status :failure
-               :error (str "Tree execution failed: " (.getMessage e))
-               :duration-ms 0}
-        (:preflight-rejected? (ex-data e))
-        (assoc :preflight-rejected? true)
-        (:blackboard-keys (ex-data e))
-        (assoc :preflight-rejected? true
-               :missing-schema-keys (:blackboard-keys (ex-data e)))))))))
+      (let [diagnostic (setup-diagnostics/from-exception e)]
+        (cond-> {:status :failure
+                 :error (str "Tree execution failed: " (.getMessage e))
+                 :duration-ms 0}
+          diagnostic
+          (assoc :setup-diagnostic diagnostic
+                 :error (setup-diagnostics/render diagnostic))
+          (:preflight-rejected? (ex-data e))
+          (assoc :preflight-rejected? true)
+          (:blackboard-keys (ex-data e))
+          (assoc :preflight-rejected? true
+                 :missing-schema-keys (:blackboard-keys (ex-data e))))))))))

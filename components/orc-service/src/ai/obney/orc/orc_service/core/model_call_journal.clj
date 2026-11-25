@@ -295,12 +295,20 @@
         incompatible? (or (some #(not (contains? configurations (:configuration-id %))) work)
                           (some #(and (same-operation? owner %)
                                       (or (nil? retained) (not= (:configuration-id retained) (:configuration-id %)))) work))
-        plan (get-in ctx [:command :plan])]
+        plan (get-in ctx [:command :plan])
+        retention-eligible? (fn [xs]
+                              (or (fresh-specialist-work? topology owner xs)
+                                  (and (:emitted? topology)
+                                       (emitted-authority/new-plan-retention-eligible?
+                                        owner (:campaign topology) xs))))
+        provisional? (not (fresh-specialist-work? topology owner facts))]
     (cond
       (not (specialist-owned? topology owner facts)) (rejected "Model plan does not own the current node start")
-      (not (fresh-specialist-work? topology owner facts)) (rejected "Model plan does not own the current campaign")
+      (not (retention-eligible? facts)) (rejected "Model plan does not own the current campaign")
       (not= (:configuration-id owner) (retained-configuration-id plan)) (rejected "Model plan configuration identity does not match its retained data")
       incompatible? (rejected "Historical model work already owns this operation")
+      (and provisional? retained (not= (:configuration-id owner) (:configuration-id retained)))
+      (rejected "An existing retained plan owns this configuration scope")
       retained {:command-result/events []}
       :else
       {:command-result/events
@@ -312,7 +320,8 @@
         :predicate-fn (fn [stream]
                         (let [xs (merge-facts legacy (into [] stream))]
                           (and (specialist-owned? topology owner xs)
-                               (fresh-specialist-work? topology owner xs)
+                               (retention-eligible? xs)
+                               (= (:configuration-id owner) (retained-configuration-id plan))
                                (= selected (specialist-plan-facts topology xs owner scope-id)))))}})))
 
 (defcommand :sheet retain-model-plan {:authorized? authorized?} [ctx]

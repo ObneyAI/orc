@@ -73,6 +73,8 @@
     [:reflection-minibatch-size {:default 3} :int]
     [:reflection-lm {:default "anthropic/claude-sonnet-4"} :string]
     [:reflection-options {:optional true} :map]
+    [:reflection-prompt-template {:optional true} [:or :string [:map-of :string :string]]]
+    [:max-reflection-tokens {:optional true} [:maybe :int]]
     [:use-merge {:default true} :boolean]
     [:crossover-rate {:default 0.3} :double]
     [:val-overlap-floor {:default 5} :int]
@@ -113,6 +115,8 @@
               [:reflection-minibatch-size :int]
               [:reflection-lm :string]
               [:reflection-options {:optional true} :map]
+              [:reflection-prompt-template {:optional true} [:or :string [:map-of :string :string]]]
+              [:max-reflection-tokens {:optional true} [:maybe :int]]
               [:use-merge :boolean]
               [:crossover-rate :double]
               [:val-overlap-floor {:optional true} :int]
@@ -217,7 +221,8 @@
     [:usage [:map
              [:prompt-tokens :int]
              [:completion-tokens :int]
-             [:total-tokens :int]]]
+             [:total-tokens :int]
+             [:cost {:optional true} :double]]]
     [:prompt :string]
     [:response :string]
     [:prompt-sha256 :string]
@@ -242,6 +247,16 @@
     [:model {:optional true} [:maybe :string]]
     [:usage {:optional true} [:maybe :map]]
     [:completed-at :any]]
+
+   :gepa/parent-minibatch-evaluation-requested
+   [:map
+    [:optimization-id :uuid]
+    [:request-id :uuid]
+    [:parent-id :uuid]
+    [:component :string]
+    [:iteration :int]
+    [:subsample-indices [:vector :int]]
+    [:requested-at :any]]
 
    :gepa/proposal-ready
    [:map
@@ -365,6 +380,8 @@
               [:reflection-minibatch-size {:optional true :default 3} :int]
               [:reflection-lm {:optional true :default "anthropic/claude-sonnet-4"} :string]
               [:reflection-options {:optional true} :map]
+              [:reflection-prompt-template {:optional true} [:or :string [:map-of :string :string]]]
+              [:max-reflection-tokens {:optional true} [:maybe :int]]
               [:use-merge {:optional true :default true} :boolean]
               [:crossover-rate {:optional true :default 0.3} :double]
               [:val-overlap-floor {:optional true :default 5} :int]
@@ -448,7 +465,8 @@
     [:usage [:map
              [:prompt-tokens :int]
              [:completion-tokens :int]
-             [:total-tokens :int]]]
+             [:total-tokens :int]
+             [:cost {:optional true} :double]]]
     [:prompt :string]
     [:response :string]
     [:prompt-sha256 :string]
@@ -470,6 +488,14 @@
     [:feedback {:optional true} [:maybe :string]]
     [:model {:optional true} [:maybe :string]]
     [:usage {:optional true} [:maybe :map]]]
+
+   :gepa/request-parent-minibatch-evaluation
+   [:map
+    [:optimization-id :uuid]
+    [:parent-id :uuid]
+    [:component :string]
+    [:iteration :int]
+    [:subsample-indices [:vector :int]]]
 
    :gepa/record-proposal-ready
    [:map

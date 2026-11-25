@@ -626,7 +626,8 @@
                "Configured policy exhaustion retains its existing outcome guard")
            (is (= (mapv :event/id before) (mapv :event/id after)))
            (is (not (str/includes? (pr-str after) secret)))
-           (is (nil? (ex-cause replay))))
+           (is (nil? (ex-cause replay)))
+           (is (true? (llm/transport-timeout? replay)) "Public classifier recognizes normalized durable replay without a cause"))
          (finally (router/unregister! primary)))))))
 
 (deftest competing-prime-preparations-and-current-request-ownership-are-fenced

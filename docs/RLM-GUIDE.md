@@ -56,6 +56,23 @@ A useful test: *would two different inputs to this step want two structurally di
 
 > **RLM tunes tree *shape*, GEPA tunes instruction *text*.** These are complementary, not competing. If your problem is "this fixed `:llm` node's prompt isn't getting good results," that's a [GEPA](GEPA-GUIDE.md) job — it optimizes the static instruction string. If your problem is "I don't know what nodes this step should even have," that's RLM. You can use both: GEPA on the static nodes around the researcher, RLM for the open-ended step.
 
+## Keep native evidence separate from interpretation
+
+The shared researcher guidance covers legacy researchers and both recursive and
+terminal RLM modes. When a final result includes exact source records alongside
+new judgments, retain the original records as native values. Have semantic work
+produce its interpretations, then assemble the declared result in ordinary code
+from those interpretations and the original evidence. This preserves opaque
+references, order, duplicate observations and explicit false, zero or null values
+without asking a model to reproduce them.
+
+Use the existing primitives and declared contracts. The model still chooses the
+tree; this pattern adds no node type, configuration flag or mandatory model call.
+Task-requested transformations remain valid when their ownership is explicit.
+Guidance does not enforce model compliance: inspect actual child inputs, outputs
+and canonical values. Required evidence errors need focused correction within the
+remaining allowance; cosmetic differences alone do not require another pass.
+
 ## Composition: `repl-researcher` as a node inside a larger workflow
 
 `orc/repl-researcher` is a leaf-style node like `orc/llm` or `orc/code` — it sits anywhere in your behavior tree, not just at the root. Upstream nodes can write to blackboard keys the researcher reads; downstream nodes can consume what the researcher wrote.

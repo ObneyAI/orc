@@ -168,8 +168,9 @@
    - :call-tool-fn - Function (tool-name args-map) -> result for MCP calls
    - :mcp-tools - Vector of MCP tool names to inject
    - :browser-tools - Vector of browser tool names to inject (e.g., [\"open\" \"snapshot\" \"click\"])
-   - :stdout-writer - StringWriter to capture stdout (optional)"
-  [{:keys [call-tool-fn mcp-tools browser-tools stdout-writer]}]
+   - :stdout-writer - StringWriter to capture stdout (optional)
+   - :deny - Additional global symbols to reject during SCI analysis (optional)"
+  [{:keys [call-tool-fn mcp-tools browser-tools stdout-writer deny]}]
   (let [{:keys [flat namespaces]} (build-tool-bindings call-tool-fn mcp-tools)
 
         ;; Browser tool bindings (shell-based, no session management)
@@ -222,7 +223,8 @@
                              'realize-all realize-all})]
 
     (sci/init
-     {:namespaces (merge {'clojure.core safe-core-final
+     {:deny deny
+      :namespaces (merge {'clojure.core safe-core-final
                           'user (merge flat browser-bindings)}
                          namespaces)  ;; e.g., {'linear {'list_issues <fn>}}
       :bindings all-bindings
@@ -242,6 +244,14 @@
 ;; Code Execution
 ;; ============================================================================
 
+(defn call-with-output-writer
+  "Run one evaluation or generated invocation with matching host and SCI output.
+   Both dynamic bindings are restored even when the supplied function throws."
+  [writer f]
+  (binding [*out* writer]
+    (sci/with-bindings {sci/out writer}
+      (f))))
+
 (defn execute-code
   "Execute Clojure code in the SCI sandbox.
 
@@ -253,8 +263,8 @@
   [sci-ctx code-string]
   (let [stdout-writer (StringWriter.)]
     (try
-      (let [result (binding [*out* stdout-writer]
-                     (sci/eval-string* sci-ctx code-string))]
+      (let [result (call-with-output-writer stdout-writer
+                     #(sci/eval-string* sci-ctx code-string))]
         {:stdout (str stdout-writer)
          :result (pr-str result)
          :raw-result result
