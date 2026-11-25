@@ -10,6 +10,7 @@
             [ai.obney.orc.gepa.core.sampler :as sampler]
             [ai.obney.orc.gepa.core.todo-processors :as tp]
             [ai.obney.orc.gepa.core.read-models :as rm]
+            [ai.obney.orc.gepa.core.task-ledger :as ledger]
             [ai.obney.orc.gepa.interface :as gepa]
             [ai.obney.orc.orc-service.interface :as sheet]))
 
@@ -362,3 +363,43 @@
             (do (is (= best (lvl (:parent-id e))) "the parent is not dominated")
                 (recur more best))
             (recur more best)))))))
+
+;; ---------------------------------------------------------------------------
+;; A changed validation set re-evaluates only its new and changed examples
+;; ---------------------------------------------------------------------------
+
+(deftest a-changed-validation-set-charges-only-its-new-and-changed-examples
+  (ct/with-cp [ctx ct/stepping-proposer]
+    (let [sid (sheet/build-workflow! ctx (ct/wf))
+          new-ex {"request" "ex-9"}
+          edited {"request" "ex-8"}
+          v2 (into [new-ex] (assoc ct/data 2 edited))
+          _ (reset! ct/step 1)
+          run-1 (ct/run! ctx sid {:config {:inherit-from-previous false}})
+          run-2 (ct/run! ctx sid {:valset v2 :budget 60})
+          level (fn [instr] (ct/level (get instr "route")))
+          expected-scores (fn [instr valset]
+                            (mapv (fn [ex] (if (>= (level instr) (ct/ex-n ex)) 1.0 0.0)) valset))
+          created-2 (ct/cands ctx run-2)
+          starting (filterv #(nil? (some some? (:parent-ids %))) created-2)
+          ev-2 (into {} (map (juxt :candidate-id identity)) (ct/evaluated ctx run-2))
+          instr-1 (into {} (map (juxt :candidate-id :instructions)) (ct/cands ctx run-1))
+          recorded-1 (into {} (for [e (ct/evaluated ctx run-1)
+                                    [i ex] (map-indexed vector ct/data)]
+                                [[(instr-1 (:candidate-id e)) ex] (nth (:scores e) i)]))]
+      (is (>= (count starting) 2) "the seed and at least one inherited candidate start the run")
+      (doseq [c starting :let [e (get ev-2 (:candidate-id c))]]
+        (is (= 2 (:metric-calls e)) "one call for the new and one for the edited example")
+        (is (= 2 (count (:trace-ids e))) "traces exist for the evaluated examples only")
+        (is (= (expected-scores (:instructions c) v2) (:scores e))
+            "scores are in the new validation set's order, fresh for the new and edited examples")
+        (doseq [[i ex] (map-indexed vector v2)
+                :let [before (get recorded-1 [(:instructions c) ex])]
+                :when (some? before)]
+          (is (= before (nth (:scores e) i))
+              "an unchanged example keeps the score recorded for the same content")))
+      (let [charged (+ (reduce + (map :metric-calls (ct/evaluated ctx run-2)))
+                       (reduce + (map #(or (:metric-calls %) 0)
+                                      (events ctx run-2 #{:gepa/subsample-evaluated}))))]
+        (is (= charged (:spent (ledger/get-accounting ctx run-2)))
+            "the budget accounting equals the calls charged")))))
