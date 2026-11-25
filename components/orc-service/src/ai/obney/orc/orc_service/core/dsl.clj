@@ -451,6 +451,7 @@
      :tool-caller-fn - FQN of a consumer builder (fn [blackboard context] call-tool-fn)
      :browser-tools - Vector of agent-browser tool names (e.g., [\"open\" \"snapshot\" \"click\"])
      :max-iterations - Max research iterations (default 10)
+     :timeout-ms - Optional positive total Phase 1 + cumulative Phase 2 budget in ms
      :rlm - Enable RLM mode with BT primitives (default: false)
      :judges - Vector of judge names (defined in sheet/judges)
      :options - Per-node executor/ORC LLM options map. W38-F2:
@@ -481,8 +482,11 @@
      - (final! {:key value}) - Capture validated output
      - (get-input :key) - Load full input value
      - inputs - Preview map (metadata only)"
-  [name & {:keys [model instruction reads writes mcp-tools tool-contracts tool-caller-fn browser-tools max-iterations rlm judges context options provider fallback-models fallback-policy] :as config}]
-  (validate-model-config-keys! config #{:model :instruction :reads :writes :mcp-tools :tool-contracts :tool-caller-fn :browser-tools :max-iterations :rlm :judges :context :options :provider :fallback-models :fallback-policy})
+  [name & {:keys [model instruction reads writes mcp-tools tool-contracts tool-caller-fn browser-tools max-iterations rlm judges context options provider fallback-models fallback-policy timeout-ms] :as config}]
+  (validate-model-config-keys! config #{:model :instruction :reads :writes :mcp-tools :tool-contracts :tool-caller-fn :browser-tools :max-iterations :rlm :judges :context :options :provider :fallback-models :fallback-policy :timeout-ms})
+  (when (and (some? timeout-ms) (not (pos-int? timeout-ms)))
+    (throw (ex-info "Researcher :timeout-ms must be a positive integer"
+                    {:timeout-ms timeout-ms})))
   (model-fallback/validate-config!
    (merge (select-keys config [:provider :fallback-models :fallback-policy])
          (cond-> {:node-type :repl-researcher
@@ -495,6 +499,7 @@
            :browser-tools (vec (or browser-tools []))
            :max-iterations (or max-iterations 10)}
     (some? rlm) (assoc :rlm rlm)
+    (some? timeout-ms) (assoc :timeout-ms timeout-ms)
     judges (assoc :judges (vec judges))
     tool-contracts (assoc :tool-contracts tool-contracts)
     tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
@@ -878,6 +883,7 @@
             :max-iterations (:max-iterations node)
             :browser-tools (:browser-tools node)
             :rlm (:rlm node)
+            :timeout-ms (:timeout-ms node)
             :options (:options node)))
         ;; Set ontology context if configured. The runtime processor's
         ;; apply-ontology-context reads :context from the node and prepends
@@ -1154,7 +1160,8 @@
         (cond-> {:id (:id node)
                  :type (:type node)
                  :name (:name node)}
-          true (merge (select-keys node [:provider :fallback-models :fallback-policy :options]))
+          true (merge (cond-> (select-keys node [:provider :fallback-models :fallback-policy :options])
+                        (nil? (:options node)) (dissoc :options)))
           (:model-fallback-policy node) (assoc :model-fallback-policy (:model-fallback-policy node))
           ;; Any node may carry attached judges
           (seq (:judges node)) (assoc :judges (vec (:judges node)))
@@ -1220,6 +1227,7 @@
                    (:model node) (assoc :model (:model node))
                    (:options node) (assoc :options (:options node))
                    (:max-iterations node) (assoc :max-iterations (:max-iterations node))
+                   (some? (:timeout-ms node)) (assoc :timeout-ms (:timeout-ms node))
                    (some? (:rlm node)) (assoc :rlm (:rlm node))
                    (:context node) (assoc :context (:context node))
                    (:options node) (assoc :options (:options node))))
@@ -1347,6 +1355,7 @@
               :max-iterations (:max-iterations node)
               :browser-tools (:browser-tools node)
               :rlm (:rlm node)
+              :timeout-ms (:timeout-ms node)
               :options (:options node))))
         (when-let [context (:context node)]
           (h/run-and-apply! ctx
@@ -1641,11 +1650,12 @@
                 :tool-caller-fn (:tool-caller-fn node)
                 :browser-tools (:browser-tools node)
                 :max-iterations (:max-iterations node)
+                :timeout-ms (:timeout-ms node)
                 :rlm (:rlm node)
                 :judges (:judges node)
                 :context (:context node)
                 :options (:options node)}
-               #{:rlm :context :fallback-models})]
+               #{:rlm :context :fallback-models :options})]
     (if (empty? opts)
       (list (dsl-sym 'repl-researcher) (:name node))
       (apply list (dsl-sym 'repl-researcher) (:name node) opts))))

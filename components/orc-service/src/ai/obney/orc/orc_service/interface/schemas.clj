@@ -438,6 +438,12 @@
     [:model-configuration-id {:optional true} :string]
     [:model-logical-action-id {:optional true} :string]])
 
+(def recoverable-fn
+  [:map {:closed true}
+   [:version [:= 1]] [:context-version [:= 1]]
+   [:source :string] [:sha256 [:re #"[0-9a-f]{64}"]]
+   [:bindings [:map {:closed true}]]])
+
 (defschemas domain
   {::sheet
    [:map
@@ -483,6 +489,7 @@
     [:min-confidence {:optional true} :double]
     [:abstain {:optional true} :any]
     [:fn {:optional true} :string]                 ;; Fully-qualified fn symbol for :code executor
+    [:recoverable-fn {:optional true} recoverable-fn]
     [:tool {:optional true} :string]               ;; Authored tool name for :tool executor
     [:tools {:optional true} [:vector :keyword]]   ;; Tools available to AI for :ai executor
     [:options {:optional true} :map]               ;; Per-node executor/ORC LLM options
@@ -867,6 +874,7 @@
     [:executor executor-type]
     [:model {:optional true} :string]
     [:fn {:optional true} :string]
+    [:recoverable-fn {:optional true} recoverable-fn]
     [:tool {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
@@ -1593,6 +1601,7 @@
     [:executor executor-type]
     [:model {:optional true} :string]
     [:fn {:optional true} :string]
+    [:recoverable-fn {:optional true} recoverable-fn]
     [:tool {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]

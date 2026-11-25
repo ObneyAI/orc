@@ -122,7 +122,7 @@
 
 (deftest native-score-question-receives-the-focused-input-field-guide
   (h/with-async-test-context [ctx {:context {:llm-provider :reconciled-score}}]
-    (let [requests (atom [])]
+    (let [requests (atom []) native-inputs (atom []) predict llm/predict]
       (llm/register-provider! :reconciled-score
         {:provider :openrouter :protocol :decision :model "typesafe/jev-1.13"
          :config {:api-key "synthetic-never-sent"
@@ -134,7 +134,10 @@
                                         "probabilities" {"0" 0.0 "1" 0.2 "2" 0.8}
                                         "confidence" 0.6}}})}})
       (let [sheet (bt/build-workflow! ctx (score-workflow "score-input-guide"))
-            result (bt/execute ctx sheet score-inputs :max-ticks 1 :timeout-ms 30000 :llm-call-budget 1)
+            result (with-redefs [llm/predict (fn [& args]
+                                               (swap! native-inputs conj (nth args 2))
+                                               (apply predict args))]
+                     (bt/execute ctx sheet score-inputs :max-ticks 1 :timeout-ms 30000 :llm-call-budget 1))
             request (first @requests)
             question (get-in request [:questions "band"])]
         (is (= :success (:status result)))
@@ -145,8 +148,23 @@
         (doseq [description ["Evidence packet for this specific decision."
                              "Exact claim to assess." "Authoritative supporting evidence."]]
           (is (str/includes? (:instructions question) description)))
-        (is (not (str/includes? (:instructions question) "Omitted private context.")))
-        (is (= (:packet score-inputs) (get-in request [:state :packet])))
+        (let [[shown declared] (str/split (:instructions question) #"DECLARED CONTRACT" 2)]
+          (is (not (str/includes? shown "Omitted private context."))
+              "An absent optional child is not presented as supplied evidence.")
+          (is (and (string? declared)
+                   (str/includes? declared "Omitted private context."))
+              "The declared optional child retains its meaning.")
+          (is (and (string? declared)
+                   (re-find #"`withheld` \([^\n)]*optional\): Omitted private context\.(?:\n|$)" declared))
+              "The declaration retains both optionality and the exact child description."))
+        (is (= 1 (count @native-inputs)))
+        (is (= (:packet score-inputs) (:packet (first @native-inputs)))
+            "The predictor receives the complete native input before transport rendering.")
+        (is (= (json/parse-string (json/generate-string (:packet score-inputs)))
+               (get-in request [:state :packet]))
+            "The decision transport receives the same object with JSON field names.")
+        (is (not (contains? (get-in request [:state :packet]) "withheld"))
+            "A declared optional child does not become a supplied value.")
         (is (= (:packet score-inputs)
                (get-in (json/parse-string (json/generate-string request) true) [:state :packet]))
             "The JSON request carries an object, preserving its exact nested values.")

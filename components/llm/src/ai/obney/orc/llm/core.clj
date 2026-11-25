@@ -703,11 +703,33 @@
     :litellm/invalid-response :litellm/streaming-error :litellm/content-filter
     :litellm/internal-error :litellm/resource-exhausted})
 
+(defn transport-timeout?
+  "Recognize a provider deadline from exception types, normalized transport
+   evidence or a durable provider timeout marker, never prose or HTTP status.
+   Explicit failure and transport categories take precedence over the marker
+   and nested causes. The cause walk is cycle guarded."
+  [throwable]
+  (loop [e throwable seen #{}]
+    (if (or (nil? e) (contains? seen e))
+      false
+      (let [data (ex-data e)
+            normalized-type (get-in data [:provider-evidence :transport :type])]
+        (cond
+          (and (:failure-kind data) (not= :transport-failure (:failure-kind data))) false
+          (some? (:type data)) (= :litellm/timeout (:type data))
+          (some? normalized-type) (= :litellm/timeout normalized-type)
+          (= :provider (:timeout-kind data)) true
+          (or (instance? java.net.http.HttpTimeoutException e)
+              (instance? java.net.SocketTimeoutException e)
+              (instance? java.util.concurrent.TimeoutException e)) true
+          :else (recur (.getCause ^Throwable e) (conj seen e)))))))
+
 (defn- transport-evidence [^Exception e]
   (let [{:keys [type http-status]} (ex-data e)]
     (not-empty
      (cond-> {}
        (contains? transport-error-types type) (assoc :type type)
+       (and (nil? type) (transport-timeout? e)) (assoc :type :litellm/timeout)
        (and (integer? http-status) (<= 100 http-status 599))
        (assoc :http-status http-status)))))
 
@@ -1142,6 +1164,7 @@
         status (when (and (integer? raw-status) (<= 100 raw-status 599)) raw-status)
         transport (cond-> {}
                     (transport-error-types (:type data)) (assoc :type (:type data))
+                    (and (nil? (:type data)) (transport-timeout? e)) (assoc :type :litellm/timeout)
                     status (assoc :http-status status))]
     (structured-failure
      (str "Decision transport failed" (when status (str " (HTTP " status ")")))
