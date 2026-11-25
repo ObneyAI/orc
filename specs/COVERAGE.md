@@ -1768,3 +1768,24 @@ does not itself guarantee their correctness. No generated stub, skipped
 assertion or skeleton counts as coverage. The specification diagnostics
 retain 39 warnings, 113 informational diagnostics, zero errors and zero
 process findings; this is not a clean structural check.
+
+
+## CSV entity context and definition composition
+
+1 scoped obligation, 1 covered, 0 uncovered: the authored CSV definition stage
+executes preparation and enrichment in order for each entity, passes the actual
+entity and prepared context to the model, and retains generated definition
+fields under that entity's original identity. The public SQLite/HTTP regression
+uses two distinct entities and actual canonical value readback. Before the
+correction, two cases produced 12 assertion failures out of 21 assertions, with
+zero errors. After the correction, both cases pass all 21 assertions. The old
+two-direct-child topology remains a failing negative control and produces no
+canonical definition aggregate; no required field or validator was weakened.
+
+The workflow uses its existing sequential map default. This witness does not
+establish parallel composite collection, per-item provider-failure recovery,
+process restart, whole-CSV extraction, or real-model semantic quality. Scripted
+HTTP responses prove context/transport/composition, not those broader claims.
+The failed hosted CI supplied the integration counterexample; a post-fix hosted
+result is not claimed here. No mock, placeholder, omitted assertion or skeleton
+substitutes for the named public stage obligation.
