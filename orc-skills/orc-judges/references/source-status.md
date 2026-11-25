@@ -95,9 +95,7 @@ Inspect provider evidence as well as the returned tree status and report coverag
 
 The cited `4908162` observations are historical. Decision/tool APIs were inspected at ORC `1851212396cced2fc4533fda30b824bd4b691390`; see [current source status](../../SOURCE-STATUS.md) for the public integration checkpoint. Preserve those original experiment claims at their original pin; use current owning skills for supported integration.
 
-Focused GEPA adapter probes at `9f7c27357b9f9bcf765fbd86baaedf5911261cd8`
-confirmed dataset attribution, artifact selection and evaluator-failure concerns
-described in [GEPA readiness](gepa-readiness.md). These probes do not re-establish
+Current GEPA reflection behavior and adapter limits are described in [GEPA readiness](gepa-readiness.md); the convenience judge metric's output extraction is the remaining limit. Focused probes at `9f7c27357b9f9bcf765fbd86baaedf5911261cd8` do not re-establish
 every historical background-runtime limitation above and do not demonstrate a
 full optimization run. Judge scheduling, assessment persistence and optimizer
 metric consumption require separate revision-specific verification.
