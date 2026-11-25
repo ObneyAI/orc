@@ -92,10 +92,24 @@ This managed path is distinct from attached judge assessments: those have durabl
 
 A completed optimization is final. `resume!` continues only an interrupted run
 and answers `:already-terminal` for a completed one. To keep training, start a
-new `optimize!` on the same workflow: it begins from the best candidates of the
-earlier runs, so rounds accumulate. Two rounds of 50 metric calls build on each
-other like one run of 100, but they do not replay it, because runs are not
-seeded and the candidates differ.
+new `optimize!` on the same workflow: it begins from the best scored candidates
+of the earlier runs, so no round loses the best result of the rounds before it.
+
+Several short rounds do not equal one long run. Each new run:
+
+- restarts the training minibatch schedule, which is deterministic per round
+  number (seed 42), so it draws the same minibatches in the same order as the
+  run before it;
+- opens one mutation chain for each starting candidate (its own instructions and
+  each inherited one). The chains share the budget, so near its end another
+  chain's rounds can take the calls that an accepted proposal needs for its full
+  evaluation. A proposal without a full evaluation is not inherited;
+- scores the workflow's own instructions again, one validation pass.
+
+In a deterministic check, four rounds of 30 metric calls in separate processes
+never passed the best candidate of the first round, while one run of 120 calls
+improved three times. Prefer one run with the whole budget; use rounds to keep a
+best result safe across processes, not to split one budget.
 
 Every round needs:
 
