@@ -120,6 +120,9 @@ select instructions. Verify exact example/artifact attribution, stable grading
 goals, genuine feedback and evaluator-failure handling through the consuming
 optimizer path. Working background judges do not prove the direct GEPA metric
 path is ready. Preserve untouched final evaluation cases outside optimization.
+To train in rounds, read its section on training in rounds before the first run:
+continuation needs a durable store, the same workflow name and a stable metric
+identity.
 
 ## Verify runtime support before promising it
 

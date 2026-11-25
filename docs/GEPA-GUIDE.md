@@ -569,9 +569,13 @@ Task-ledger writes from concurrent evaluation tasks can be refused because
 another writer changed the same stream first. Every event store reports this as
 a conflict under a key named `cas` (plain or namespaced), and the ledger retries
 it with jittered backoff up to 200 times (`:gepa/ledger-retry` in the context overrides `:max-attempts`
-and `:max-backoff-ms`). If the retries run out, the task is left at a recoverable
-boundary and `resume!` continues it, so a run never stalls on a task whose
-workflow finished but whose metric never started. A refusal that the ledger
+and `:max-backoff-ms`). If the retries run out, the evaluation stops at a
+recoverable boundary, and the run waits until the task's lease lapses
+(`:gepa/task-lease-ms` in the context, default 90 seconds). After that, `resume!`
+takes the task over and continues the run; calls made earlier answer `:resumed`
+without progress. When the application runs GEPA's periodic tasks, the recovery
+scan (every 30 seconds) does the same without a call. Without either, the run
+stays `:running`. A refusal that the ledger
 itself decides, such as a second result for a finished task, is not retried.
 
 #### Durable task recovery and metric identity

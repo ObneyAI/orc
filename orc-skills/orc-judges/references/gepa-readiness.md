@@ -1,8 +1,8 @@
 # Judges and feedback for GEPA
 
-Use this readiness check when assessments become optimization evidence. Reflection
-pairing, component rotation, reflection templates, the reflection token budget and
-provider cost are described below. Optimization quality remains task-specific:
+Use this readiness check when assessments become optimization evidence. Training in
+rounds, reflection pairing, component rotation, reflection templates, the
+reflection token budget and provider cost are described below. Optimization quality remains task-specific:
 judge it on an untouched holdout. Native background judging, custom judge trees and
 GEPA metric calls are distinct paths; verify the one actually consumed.
 
@@ -87,6 +87,79 @@ Restore custom metrics before workers consume persisted work:
 The first public API restores the trusted two-argument metric under tenant, metric ID and revision. Missing registration yields `:recovery-required`; it does not silently select a default. Load GEPA's public interface to register processors and its periodic trigger, then start and own the Grain schedules explicitly. The second API requests recovery through those processors, leaving healthy ownership and completed boundaries alone. Restore providers and other trusted capabilities too. Metric retries require the persisted retry-safe policy, remaining attempts and budget; they reuse original workflow output. A timeout does not prove remote work stopped.
 
 This managed path is distinct from attached judge assessments: those have durable requests/outcomes but still launch process-local background futures. GEPA recovery does not establish recovery or bounded admission for attached judges. The API/source inspection is not a fresh-process runtime proof or a demonstrated quality improvement.
+
+## Training in rounds
+
+A completed optimization is final. `resume!` continues only an interrupted run
+and answers `:already-terminal` for a completed one. To keep training, start a
+new `optimize!` on the same workflow: it begins from the best candidates of the
+earlier runs, so rounds accumulate. Two rounds of 50 metric calls build on each
+other like one run of 100, but they do not replay it, because runs are not
+seeded and the candidates differ.
+
+Every round needs:
+
+- **One durable event store** (SQLite or Postgres) shared by all rounds. The
+  in-memory store, which test contexts use, keeps nothing after its process ends.
+- **The same workflow name.** `build-workflow!` derives the sheet id from the
+  name, so rebuild under that name in each process.
+- **A stable metric identity.** Pass `:metric-id` with a custom `:metric-fn`,
+  and a new `:metric-revision` whenever the scoring changes. Without
+  `:metric-id` each run gets a fresh identity, so no recorded score is reused
+  and every inherited candidate is evaluated again at full cost.
+- **The metric restored before recovery** (`register-metric!`, above).
+
+What a new run inherits:
+
+- By default, the Pareto candidates of every completed earlier run of the
+  workflow: one per distinct instruction set, best aggregate first, at most
+  `:inherit-limit` in `:config` (default 10).
+- With `:inherit-from <optimization-id>`, only that run's Pareto candidates,
+  even when `:inherit-from-previous` is false. A run of another workflow
+  supplies none.
+- With `:inherit-from-previous false`, at the top level of `optimize!` or in
+  `:config`, nothing: the run starts from the workflow's own instructions.
+
+Only completed runs pass on candidates by default, so resume an interrupted or
+stalled round to completion before starting the next one. Each inherited
+candidate is created with the mutation reason `"inherited-from-previous-run"`
+and its `:source-optimization-id`.
+
+When an inherited candidate costs nothing:
+
+- Recorded scores are keyed per example by a fingerprint of the example
+  content, the workflow content hash and the metric identity (kind, id,
+  revision, configuration).
+- The candidate costs 0 metric calls only when every example of the new
+  validation set has a recorded score under an equal fingerprint, in any order.
+  Otherwise it is evaluated on the whole new validation set when the run starts,
+  and the calls are charged to the new run's budget.
+- One added or changed validation example therefore re-evaluates every
+  inherited candidate on every example. So does any edit to the workflow,
+  including its seed instructions, and any change to the metric. With the
+  default limit and n validation examples, that can take up to 10 × n metric
+  calls before the first new proposal; size the budget for it, or narrow it
+  with `:inherit-limit` or `:inherit-from`.
+- When one instruction set appears in several runs, its scores merge by the
+  maximum per fingerprint.
+
+On a durable store, concurrent evaluation tasks can conflict on a ledger write.
+The ledger retries a conflict that the store reports under a key named `cas`,
+with jittered backoff, up to 200 times; `:gepa/ledger-retry` in the context sets
+`:max-attempts` and `:max-backoff-ms`. A refusal that the ledger decides
+itself, such as a second result for a finished task, is returned at once.
+When the retries run out, the evaluation stops at a recoverable boundary and
+the run waits until the task's lease lapses (`:gepa/task-lease-ms` in the
+context, default 90 seconds); a blocking `optimize!` returns `:timeout` in the
+meantime. Then `resume!` takes the task over and continues the run; earlier calls
+answer `:resumed` without progress. An application that runs GEPA's periodic
+tasks recovers it through the 30-second recovery scan without a call. Without
+either, as in a test context, the run stays `:running`, so a caller that drives
+GEPA directly calls `resume!` until it answers `:already-terminal`.
+
+Before relying on continuation, run two short rounds on the durable store and
+check round 2: the inherited candidates and their source runs in
+`:gepa/candidate-created`, and the metric calls charged in `get-progress`.
 
 ## Configuring reflection
 
