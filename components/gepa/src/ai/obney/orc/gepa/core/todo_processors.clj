@@ -1004,19 +1004,18 @@
 
    `fallback-parent-id` is used when the frontier is empty."
   [context optimization-id fallback-parent-id]
-  (let [gate (rm/get-round-state context optimization-id)]
-    (cond
-      ;; Another starting candidate is still being evaluated, or a round is
-      ;; undecided: that candidate's or round's own decision opens the next.
-      (not (:admissible? gate)) nil
+  (cond
+    ;; No round may open once the recorded reflection tokens reach the budget:
+    ;; no metric call is spent on a round that cannot propose.
+    (reflection-budget-exhausted? context optimization-id)
+    (finish-at-admission-budget-exhaustion! context optimization-id :reflection-tokens)
 
-      ;; No round may open once the recorded reflection tokens reach the budget:
-      ;; no metric call is spent on a round that cannot propose.
-      (reflection-budget-exhausted? context optimization-id)
-      (finish-at-admission-budget-exhaustion! context optimization-id :reflection-tokens)
+    ;; Another starting candidate is still being evaluated, or a round is
+    ;; undecided: that candidate's or round's own decision opens the next.
+    (not (:admissible? (rm/get-round-state context optimization-id))) nil
 
-      :else
-      (request-mutation-round-within-budget! context optimization-id fallback-parent-id))))
+    :else
+    (request-mutation-round-within-budget! context optimization-id fallback-parent-id)))
 
 (defn- request-mutation-round-within-budget!
   [context optimization-id fallback-parent-id]
