@@ -304,3 +304,39 @@
         (is (every? #(= (:opt @round-1) (:source-optimization-id %)) inh))
         (is (every? #(zero? (:metric-calls (get evals (:candidate-id %)))) inh)
             "inherited candidates cost no calls on the same evidence")))))
+
+;; ---------------------------------------------------------------------------
+;; A run whose next round is refused because the budget is spent still finishes
+;; ---------------------------------------------------------------------------
+
+(defn- exhausted-run!
+  "A running optimization with one fully evaluated candidate and its whole
+   metric budget recorded as spent."
+  [ctx]
+  (let [opt (get-in (tu/process-command! ctx
+                      {:command/name :gepa/start-optimization :sheet-id (random-uuid)
+                       :trainset [{"request" "ex-1"}] :valset [{"request" "ex-1"}]
+                       :config {:max-metric-calls 6}})
+                    [:command/result :optimization-id])
+        cand (get-in (tu/process-command! ctx
+                       {:command/name :gepa/create-candidate :optimization-id opt
+                        :instructions {"route" "LEVEL-0"} :parent-ids [nil] :mutation-reason nil})
+                     [:command/result :candidate-id])]
+    (tu/process-command! ctx
+      {:command/name :gepa/record-evaluation-result :optimization-id opt :candidate-id cand
+       :scores [1.0] :trace-ids [] :metric-calls 6})
+    {:optimization-id opt :candidate-id cand}))
+
+(defn- status [ctx opt]
+  (:status (ai.obney.orc.gepa.core.read-models/get-optimization-summary ctx opt)))
+
+(deftest proposal-refused-for-budget-finishes-the-run
+  (tu/with-test-context [ctx]
+    (let [{:keys [optimization-id candidate-id]} (exhausted-run! ctx)]
+      (is (= :running (status ctx optimization-id)))
+      (tp/on-proposal-ready
+        (assoc ctx :event {:optimization-id optimization-id :parent-id candidate-id
+                           :proposed-instructions {"route" "LEVEL-1"} :component-updated "route"
+                           :subsample-indices [0] :iteration 1}))
+      (is (= :completed (status ctx optimization-id))
+          "the refused subsample evaluation ends the run instead of leaving it running"))))

@@ -782,6 +782,18 @@
                                          "Metric budget")
                                        " exhausted before a complete candidate evaluation")))))))))
 
+(defn- finish-if-refused-for-budget!
+  "A command that opens more metric work refuses with a conflict once the
+   recorded metric budget is spent. Nothing else would ever end the run, so a
+   refusal for that reason finishes it exactly as an admission refusal does
+   (unfinished work defers the decision to the last task to finish)."
+  [context optimization-id result]
+  (when (and (map? result)
+             (= :cognitect.anomalies/conflict (:cognitect.anomalies/category result))
+             (rm/budget-exhausted? context optimization-id))
+    (finish-at-admission-budget-exhaustion! context optimization-id))
+  result)
+
 (defn- reflection-budget-exhausted?
   "True once the durable proposer-call evidence has reached the optimization's
    `:max-reflection-tokens` (a call may take the total past it by its own usage)."
@@ -1159,16 +1171,17 @@
         config (:config (rm/get-optimization-summary context optimization-id))]
     (when-not (and (:pause-after-proposal? config)
                    (not (optimization-resumed? context optimization-id)))
-      (run-command! context
-        {:command/id (random-uuid)
-         :command/timestamp (time/now)
-         :command/name :gepa/evaluate-on-subsample
-         :optimization-id optimization-id
-         :parent-id parent-id
-         :proposed-instructions proposed-instructions
-         :component-updated component-updated
-         :subsample-indices subsample-indices
-         :iteration iteration}))))
+      (->> (run-command! context
+             {:command/id (random-uuid)
+              :command/timestamp (time/now)
+              :command/name :gepa/evaluate-on-subsample
+              :optimization-id optimization-id
+              :parent-id parent-id
+              :proposed-instructions proposed-instructions
+              :component-updated component-updated
+              :subsample-indices subsample-indices
+              :iteration iteration})
+           (finish-if-refused-for-budget! context optimization-id)))))
 
 (defn on-subsample-evaluation-started
   "Handle subsample-evaluation-started event.
