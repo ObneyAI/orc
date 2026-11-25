@@ -22,7 +22,8 @@
    Key principle: Separates variable space (sandbox memory) from token space
    (what the LLM sees). Large data stays in variable space; only sliced data
    goes to sub-LLM calls."
-  (:require [sci.core :as sci]
+  (:require [ai.obney.orc.orc-service.core.recoverable-function :as recoverable-function]
+            [sci.core :as sci]
             [clojure.walk :as walk]
             [clojure.string :as str]
             [clojure.set]
@@ -717,6 +718,9 @@
                            (ex-info
                             quoted-inline-function-source-message
                             {:requirement :quoted-inline-function-source})))
+                        ;; Validate structure while feedback still contains only data.
+                        ;; The existing vector grammar accepts quoted function data.
+                        (rlm-dsl/validate-emitted-tree! tree)
                         ;; Preserve the authored source first. Compile only
                         ;; quoted inline code-node function forms for execution.
                         (let [executable-tree
@@ -726,7 +730,9 @@
                                           (= :fn (key node))
                                           (seq? (val node))
                                           (#{'fn 'fn*} (first (val node))))
-                                   [:fn (sci/eval-form @sci-ctx* (val node))]
+                                   [:fn (if durable-source-required?
+                                          (recoverable-function/prepare-function (val node) @sci-ctx*)
+                                          (sci/eval-form @sci-ctx* (val node)))]
                                    node))
                                tree)
                               canonical (rlm-dsl/rlm-dsl->orc-dsl executable-tree)]
@@ -1097,8 +1103,8 @@
   [{:keys [sci-ctx final-output usage-tracker]} code-string]
   (let [stdout-writer (StringWriter.)]
     (try
-      (let [result (binding [*out* stdout-writer]
-                     (sci/eval-string* sci-ctx code-string))]
+      (let [result (base-sandbox/call-with-output-writer stdout-writer
+                     #(sci/eval-string* sci-ctx code-string))]
         {:stdout (str stdout-writer)
          :result (pr-str result)
          :raw-result result

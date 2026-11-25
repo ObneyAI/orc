@@ -212,6 +212,13 @@ contract StructuredPrediction {
         -- configuration remains a distinct safely summarized failure and does
         -- not establish that an outbound request occurred. Existing schema,
         -- parse, finish and semantic outcomes are not reclassified as outages.
+        -- Actual Java HTTP, socket and concurrent deadlines, including wrapped
+        -- causes, retain their structural timeout meaning before safe cause
+        -- removal. Normalized transport evidence and a durable provider-deadline
+        -- marker remain recognizable without a live exception cause. An explicit
+        -- non-timeout failure or transport category takes precedence over a
+        -- conflicting marker or nested deadline; prose/status alone never proves
+        -- timeout. Missing response/model/status/usage remains missing.
         -- Classification is evidence, not authorization to retry or choose a
         -- different model. Native decision and asynchronous streaming failure
         -- surfaces require separate verification.
@@ -258,6 +265,8 @@ contract DecisionProtocolPrediction {
         -- one-response streaming wrapper's single error terminal. That wrapper
         -- closes after the error; this is not a contract for partial chat streams.
         -- Invalid decision answers retain their distinct validation failure.
+        -- A native decision transport preserves the same structurally known
+        -- deadline category before dropping unsafe exception text and causes.
 
     @invariant ProtocolFollowsRegisteredProvider
         -- A registered provider declares whether it is a conversational model

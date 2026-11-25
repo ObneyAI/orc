@@ -1,5 +1,24 @@
 # ORC Allium distillation coverage
 
+## Checkpoint recovery and delegate admission review
+
+The scoped regression witnesses cover two existing contracts: rejected partial
+emissions preserve the preceding checkpoint's emission provenance, and ordinary
+siblings in a delegate target do not acquire a researcher's campaign identity.
+The corresponding named checklist entries retain their native HTTP/SQLite
+evidence. They do not close the broader budget/restart obligations below.
+
+The full main `83479e348d271950960ad14e7996111adb0bd9f0` snapshot reports
+39 warnings, 116 informational diagnostics, zero errors and zero process
+findings both before and after these annotations (check exit 1, analyse exit 0).
+No diagnostic identity or message changes. This is a warning baseline, not a
+clean check. The earlier 113-info account below predates three GEPA
+`allium.rule.unreachableTrigger` diagnostics: `ReflectOnTheParentsMinibatch`
+and `SkipAParentPerfectOnItsMinibatch` lack a local `ParentMinibatchEvaluated`
+source, and `CompleteOptimizationAtReflectionBudget` lacks a local
+`ReflectionBudgetExhausted` source. These pre-existing findings remain tracked
+and unresolved; this repair neither accepts nor removes them.
+
 ## Mixed-family call budget repair: approved intent, verification open
 
 The independently reproduced mixed workflow exceeds a native cap of six:
@@ -1794,3 +1813,52 @@ HTTP responses prove context/transport/composition, not those broader claims.
 The failed hosted CI supplied the integration counterexample; a post-fix hosted
 result is not claimed here. No mock, placeholder, omitted assertion or skeleton
 substitutes for the named public stage obligation.
+
+## Researcher setup, output and recovery repairs
+
+The setup feedback contract covers field-level refusal details in a generated
+child and their preservation through a researcher checkpoint. Three named
+obligations are covered by public HTTP/SIO/SQLite tests; the setup and existing
+admission controls pass 4 tests and 77 assertions. Diagnostics retain an allowed
+set of public fields and trusted message strings. They do not provide arbitrary
+content redaction. A local fixture correction selects strict JSON explicitly;
+the production provider parser remains unchanged.
+
+`SandboxOutputBelongsToCurrentEvaluation` maps to host and SCI output bindings.
+The three named stdout obligations are covered by 4 tests and 78 assertions,
+plus public native output/projection checks. Binding restoration preserves
+normal return values and thrown exceptions. The repair grants no additional
+I/O and adds no persisted stdout result field.
+
+The remaining eight configuration and recovery obligations are covered:
+**8 obligations, 8 covered, 0 uncovered**. The packaged focused command passes
+66 tests and 1,378 assertions, with zero failures or errors. Its composed
+researcher-parent restart contributes 47 assertions to that total. The runner
+verifies 64 production resource origins and hashes. Earlier source-specific
+counts remain historical evidence and are not added to the current total.
+
+Specification/code mapping:
+
+- `ResearcherConfigurationSurvivesRoundTrip`: authored timeout/options through
+  construction, build, EDN export/import and source rendering.
+- `GeneratedCodeIsDurableEvidence`: exact source-bound function metadata through
+  commands, events, projections, reconstruction and conservative cleanup.
+- `RejoinedGeneratedChildFreshModelAuthority`: pending plan retention cannot
+  spend; dispatch requires current parent/frontier/claim/configuration and CAS.
+- `TimeoutScopesRemainIndependent` and the LLM failure contract: typed deadline
+  evidence survives normalization and replay; explicit non-timeout categories
+  retain priority, while a nil category remains unavailable information.
+
+Inspection exposed failures during reducible event consumption and missing or
+anomalous cleanup projections. Cleanup now retains bindings when observation is
+unknown and preserves the primary execution outcome. Nil-category timeout
+controls retain the prior explicit-category negatives. No prior assertion was
+removed to obtain these results.
+
+Reproduction and scope appear in
+[the verification guide](../docs/RESEARCHER-RECOVERY-VERIFICATION.md).
+Arbitrary captured closures, compiled-sheet export/import of callable metadata,
+all restart windows and hosted reasoning quality remain unproven. The repair
+adds no excluded production domain. The existing specification baseline remains
+12 modules, 39 warnings, 116 informational diagnostics, zero errors and zero
+process findings; check exits 1 and analyse exits 0. This is not a clean check.

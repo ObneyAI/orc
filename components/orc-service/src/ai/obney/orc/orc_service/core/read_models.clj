@@ -362,6 +362,7 @@
       (assoc-in [(:node-id event) :executor] (:executor event))
       (assoc-in [(:node-id event) :model] (:model event))
       (assoc-in [(:node-id event) :fn] (:fn event))
+      (assoc-in [(:node-id event) :recoverable-fn] (:recoverable-fn event))
       (assoc-in [(:node-id event) :tool] (:tool event))
       (assoc-in [(:node-id event) :tools] (:tools event))
       (assoc-in [(:node-id event) :options] (:options event))

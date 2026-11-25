@@ -38,6 +38,7 @@
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.core.iteration-evidence :as iteration-evidence]
+            [ai.obney.orc.orc-service.core.researcher-setup-diagnostics :as setup-diagnostics]
             [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
             [ai.obney.orc.orc-service.core.tool-invocation :as tool-invocation]
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
@@ -164,19 +165,6 @@
                   :else v)))]
       (decode* value))))
 
-(def ^:private transport-timeout-classes
-  "Exception types that mean exactly one thing: the call did not complete within
-   its deadline. A checkpointed provider call races TWO timers set from the same
-   live remainder — ORC's own `bounded-call` deadline and the request timeout ORC
-   hands the transport — so either can fire first. Both must classify the same
-   way, or which timer wins decides whether the campaign retries or dies.
-
-   Classified by TYPE and cause chain, never by message text.
-   `HttpConnectTimeoutException` is a subtype of `HttpTimeoutException`."
-  #{java.net.http.HttpTimeoutException
-    java.net.SocketTimeoutException
-    java.util.concurrent.TimeoutException})
-
 (def provider-classification-lead-ms
   "How much EARLIER than the transport's deadline ORC's own provider deadline fires.
 
@@ -214,17 +202,10 @@
     provider-timeout-ms))
 
 (defn transport-timeout?
-  "True when `throwable`, or anything in its cause chain, is a transport-level
-   deadline expiry. The chain walk is cycle-guarded: a self-referencing cause
-   must not hang the classifier."
+  "Recognize durable researcher deadlines and the LLM boundary's structural
+   transport timeout contract. No exception cause is needed after replay."
   [throwable]
-  (loop [e throwable
-         seen #{}]
-    (cond
-      (nil? e) false
-      (contains? seen e) false
-      (some #(instance? % e) transport-timeout-classes) true
-      :else (recur (.getCause ^Throwable e) (conj seen e)))))
+  (llm/transport-timeout? throwable))
 
 (defn bounded-call
   "Invoke f within timeout-ms. Returns a tagged result and interrupts the worker
@@ -540,6 +521,9 @@
 
       (:admission-rejected? phase2-result)
       (assoc :admission-rejected? true)
+
+      (:setup-diagnostic phase2-result)
+      (assoc :setup-diagnostic (:setup-diagnostic phase2-result))
 
       (:preflight-rejected? phase2-result)
       (assoc :preflight-rejected? true))))
@@ -1563,7 +1547,16 @@
         ;; Support both inline functions and symbol strings
         resolved (if (fn? fn-or-symbol)
                    {:fn fn-or-symbol}
-                   (resolve-fn fn-or-symbol))]
+                   (if (and (:recoverable-fn node)
+                            (string? fn-or-symbol)
+                            (str/starts-with? fn-or-symbol "ephemeral-fn-"))
+                     (try
+                       {:fn (tree-executor/restore-ephemeral-fn!
+                              fn-or-symbol (:recoverable-fn node))}
+                       (catch Exception e
+                         {:error (str "Cannot restore generated function " fn-or-symbol ": "
+                                      (ex-message e))}))
+                     (resolve-fn fn-or-symbol)))]
     (if (:error resolved)
       {:status :failure
        :error (:error resolved)
@@ -1596,7 +1589,8 @@
               call-tool-fn (resolve-node-tool-caller node blackboard gate-context)
               code-context (assoc gate-context :call-tool-fn call-tool-fn)
               ;; Call the function with context
-              result (f (assoc code-context :inputs inputs :execution-context code-context))
+              result (sci-sandbox/call-with-output-writer *out*
+                       #(f (assoc code-context :inputs inputs :execution-context code-context)))
               duration-ms (- (System/currentTimeMillis) start-time)
               writes (:writes node)
               ;; U7: Reconcile the function's return value with the declared :writes.
@@ -5270,7 +5264,21 @@
                   ;; Recoverable error - add to history and continue iteration
                   ;; This gives the model a chance to self-correct
                   (:error exec-result)
-                  (let [error-msg (:error exec-result)
+                  (let [;; A later SCI error may follow a partial emit-tree!.
+                        ;; Restore only pending emission state; ordinary values
+                        ;; and actual effects survive. Prior completed tree
+                        ;; provenance remains available for inspection/harvest.
+                        _ (when (and recursive-mode? checkpointed?)
+                            (swap! sandbox-vars
+                                   (fn [vars]
+                                     (merge (dissoc vars :generated-tree
+                                                    :generated-tree-raw
+                                                    :generated-tree-source)
+                                            (select-keys sandbox-before-iteration
+                                                         [:generated-tree
+                                                          :generated-tree-raw
+                                                          :generated-tree-source])))))
+                        error-msg (:error exec-result)
                         available-vars (concat (keys blackboard) (keys @sandbox-vars))
                         enhanced-error (format-error-with-suggestions error-msg available-vars)
                         error-history (conj history
@@ -5561,16 +5569,20 @@
                                             (catch Exception e
                                               (println "[DEBUG RLM] Phase 2 execution ERROR:" (.getMessage e))
                                               (.printStackTrace e)
-                                              {:status :failure
-                                               :preflight-rejected? true
-                                               :missing-schema-keys (:blackboard-keys (ex-data e))
-                                               :error (str "Phase 2 execution failed: " (.getMessage e))})))
+                                              (let [diagnostic (setup-diagnostics/from-exception e)]
+                                                (cond-> {:status :failure
+                                                         :preflight-rejected? true
+                                                         :missing-schema-keys (:blackboard-keys (ex-data e))
+                                                         :error (str "Phase 2 execution failed: " (.getMessage e))}
+                                                  diagnostic
+                                                  (assoc :setup-diagnostic diagnostic
+                                                         :error (setup-diagnostics/render diagnostic)))))))
                             durable-phase2-result
                             (select-keys phase2-result
                                          [:status :outputs :usage :duration-ms :error :trace-id
                                           :sheet-id :breakdown :phase1-elapsed-ms
                                           :phase2-elapsed-ms :block-payload :preflight-rejected?
-                                          :missing-schema-keys])
+                                          :missing-schema-keys :setup-diagnostic])
                             phase2-completion-result
                             (when (and checkpointed?
                                        (nil? completed-phase2-action)
@@ -5820,7 +5832,8 @@
                                                                                             :nodes-succeeded
                                                                                             :nodes-failed
                                                                                             :nodes-timed-out
-                                                                                            :error])
+                                                                                            :error
+                                                                                            :setup-diagnostic])
                                                                :tree-outcome outcome)))))]
                         (or (checkpoint-result (inc iteration) new-history
                                                attempt-start-ms)

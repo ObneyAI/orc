@@ -69,16 +69,17 @@
       ;; omitting configuration cannot evade a retained configured operation.
       (and node (not (seq (:fallback-models node))) (empty? operation)))))
 
-(defn assess
+(defn- assess-decision
   "Pure canonical decision. A binding is single-assignment per actual child start,
    independent of configuration buckets. Callers must check it again in append CAS."
-  [owner campaign xs]
+  [owner campaign xs retaining-plan?]
   (let [parent (select-keys campaign [:sheet-id :tick-id :node-id :exec-context])
         child-start (latest-start owner xs) parent-start (latest-start parent xs)
         child-tree (first (filter #(and (= :sheet/tree-tick-started (:event/type %)) (= (:tick-id owner) (:tick-id %))) xs))
-        frontier (last (filter #(and (= effects/frontier-event-type (:event/type %))
-                                     (= (:sheet-id parent) (:sheet-id %)) (= (:tick-id parent) (:tick-id %))
-                                     (= (:node-id parent) (:node-id %))) xs))
+        frontiers (filter #(and (= effects/frontier-event-type (:event/type %))
+                                 (= (:sheet-id parent) (:sheet-id %)) (= (:tick-id parent) (:tick-id %))
+                                 (= (:node-id parent) (:node-id %))) xs)
+        frontier (last frontiers)
         epoch (:ownership-epoch frontier)
         claim (last (filter #(and (= effects/claim-event-type (:event/type %)) (= :generated-child (:kind %))
                                   (= (:sheet-id parent) (:sheet-id %)) (= (:tick-id parent) (:tick-id %))
@@ -88,6 +89,21 @@
                                                         (.getBytes (:logical-action-identity %) "UTF-8")))) xs))
         binding (first (filter #(and (= event-type (:event/type %)) (= (:node-start-id owner) (:node-start-id %))) xs))
         positions (zipmap (map :event/id xs) (range))
+        parent-frontier (first (filter #(< (get positions (:event/id parent-start) Long/MAX_VALUE)
+                                             (get positions (:event/id %) -1)) frontiers))
+        declared-parent-epoch (:researcher-ownership-epoch parent-start)
+        current-parent-frontier?
+        (and parent-frontier (= (:event/id parent-frontier) (:event/id frontier))
+             (or (not (contains? parent-start :researcher-ownership-epoch))
+                 (and (pos-int? declared-parent-epoch) (= epoch declared-parent-epoch))))
+        parent-frontier-superseded?
+        (or (and parent-frontier (not= (:event/id parent-frontier) (:event/id frontier)))
+            (and (pos-int? declared-parent-epoch) (pos-int? epoch) (> epoch declared-parent-epoch))
+            (and parent-frontier (contains? parent-start :researcher-ownership-epoch)
+                 (not= epoch declared-parent-epoch)))
+        claim-completed? (some #(and (= effects/completion-event-type (:event/type %))
+                                     (= (:logical-action-identity claim) (:logical-action-identity %))
+                                     (= (:tick-id parent) (:tick-id %))) xs)
         ordered? (and parent-start frontier claim
                       (< (get positions (:event/id parent-start) Long/MAX_VALUE)
                          (get positions (:event/id frontier) -1)
@@ -99,9 +115,23 @@
         claim-current? (and (pos-int? epoch) (= epoch (:ownership-epoch claim))
                             (or (not (contains? parent-start :researcher-ownership-epoch))
                                 (= epoch (:researcher-ownership-epoch parent-start))) ordered?
-                            (not-any? #(and (= effects/completion-event-type (:event/type %))
-                                            (= (:logical-action-identity claim) (:logical-action-identity %))
-                                            (= (:tick-id parent) (:tick-id %))) xs))
+                            (not claim-completed?))
+        ;; The sequence can advance before the recovering parent records its
+        ;; frontier or reclaims this generated action. Prove newer ownership
+        ;; from that actual parent start, not a guessed next epoch. Readiness
+        ;; still requires the exact current frontier and generated claim.
+        first-after-parent?
+        (and (pos-int? (:ownership-epoch campaign))
+             (nil? (:resumed-from-event-id child-start))
+             (= (:event/id child-start)
+                (:event/id (first (filter #(and (= :sheet/node-execution-started (:event/type %))
+                                                (same-node? owner %)) xs))))
+             (< (get positions (:event/id parent-start) Long/MAX_VALUE)
+                (get positions (:event/id child-start) -1))
+             (or (and (pos-int? declared-parent-epoch)
+                      (> declared-parent-epoch (:ownership-epoch campaign)))
+                 (and current-parent-frontier? (pos-int? epoch)
+                      (> epoch (:ownership-epoch campaign)))))
         authority (merge (select-keys owner owner-keys)
                          {:campaign-sheet-id (:sheet-id campaign) :campaign-tick-id (:tick-id campaign)
                           :campaign-node-id (:node-id campaign) :parent-node-start-id (:event/id parent-start)
@@ -118,11 +148,38 @@
       (and (nil? (:resumed-from-event-id child-start))
            (= (:ownership-epoch campaign) epoch) claim-current?)
       {:status :original :authority authority}
-      (not (recovered-start? owner child-start xs)) {:status :refused :reason :emitted-resumed-start-required}
-      (not (configuration-admitted? owner campaign xs)) {:status :refused :reason :emitted-configuration-mismatch}
+      (not (or (recovered-start? owner child-start xs) first-after-parent?))
+      {:status :refused :reason :emitted-resumed-start-required}
+      ;; Provisional retention is restricted to genuinely new work. It grants
+      ;; no dispatch authority; exact configuration admission follows append.
+      (and retaining-plan? (not first-after-parent?))
+      {:status :refused :reason :emitted-resumed-start-required}
+      (and first-after-parent? (or parent-frontier-superseded? claim-completed?))
+      {:status :refused :reason :emitted-authority-superseded}
+      ;; Pending is not configuration or dispatch authority. This also lets a
+      ;; configured node retain nonspending plan metadata while the parent's
+      ;; exact generated claim is still being recorded.
+      (and first-after-parent?
+           (or (not current-parent-frontier?) (not claim-current?)
+               (not (> (or epoch 0) (:ownership-epoch campaign)))))
+      {:status :pending :reason :emitted-parent-reclaim-pending}
+      (and (not retaining-plan?) (not (configuration-admitted? owner campaign xs)))
+      {:status :refused :reason :emitted-configuration-mismatch}
       (or (not claim-current?) (not (> (or epoch 0) (or (:ownership-epoch campaign) 0))))
       {:status :pending :reason :emitted-parent-reclaim-pending}
       :else {:status :ready :authority authority})))
+
+(defn assess
+  "Canonical invocation authority, including exact retained configuration."
+  [owner campaign xs]
+  (assess-decision owner campaign xs false))
+
+(defn new-plan-retention-eligible?
+  "Retention-only eligibility for a first node after a proven newer parent start.
+   The frontier/claim may still be pending. Callers must validate and CAS the
+   proposed plan; this never authorizes a request or provider reservation."
+  [owner campaign xs]
+  (contains? #{:ready :pending} (:status (assess-decision owner campaign xs true))))
 
 (defn fresh-authorized? [owner campaign xs]
   (contains? #{:original :authorized} (:status (assess owner campaign xs))))
