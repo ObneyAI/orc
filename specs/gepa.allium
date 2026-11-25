@@ -253,7 +253,8 @@ contract DurableOptimizationLifecycle {
     @invariant ConflictedLedgerWritesRetry
         -- A task-ledger write refused because another writer changed the same
         -- stream first is retried with bounded, jittered backoff on every event
-        -- store, however the store reports the conflict. When retries run out,
+        -- store, however the store reports the conflict. A refusal the ledger
+        -- decides itself is returned at once, not retried. When retries run out,
         -- the task is left at a recoverable boundary that resume continues. A
         -- run never stalls with a task whose workflow completed and whose
         -- metric never started.
@@ -262,7 +263,8 @@ contract DurableOptimizationLifecycle {
         -- A run inherits earlier candidates only when inheritance is allowed
         -- for it, and turning inheritance off when starting a run takes effect
         -- however the caller passes the option. A run that names one earlier
-        -- optimization inherits only that optimization's candidates; otherwise
+        -- optimization inherits only that optimization's candidates, even when
+        -- inheritance is otherwise turned off; otherwise
         -- it inherits the best candidates of every completed run of the
         -- workflow.
 
