@@ -567,11 +567,12 @@ store. Round 2 starts from round 1's candidates:
 
 Task-ledger writes from concurrent evaluation tasks can be refused because
 another writer changed the same stream first. Every event store reports this as
-a conflict, under its own key, and the ledger retries it with jittered backoff
-up to 200 times (`:gepa/ledger-retry` in the context overrides `:max-attempts`
+a conflict under a key named `cas` (plain or namespaced), and the ledger retries
+it with jittered backoff up to 200 times (`:gepa/ledger-retry` in the context overrides `:max-attempts`
 and `:max-backoff-ms`). If the retries run out, the task is left at a recoverable
 boundary and `resume!` continues it, so a run never stalls on a task whose
-workflow finished but whose metric never started.
+workflow finished but whose metric never started. A refusal that the ledger
+itself decides, such as a second result for a finished task, is not retried.
 
 #### Durable task recovery and metric identity
 

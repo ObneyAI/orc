@@ -319,12 +319,21 @@
 
 (def ^:private default-retry {:max-attempts 200 :max-backoff-ms 25})
 
+(defn- store-conflict?
+  "True when the event store refused the append because another writer changed
+   the stream first. Every store reports this under a key named `cas`, plain or
+   namespaced; a refusal decided by the ledger itself carries no such key."
+  [result]
+  (and (= ::anom/conflict (::anom/category result))
+       (boolean (some #(and (keyword? %) (= "cas" (name %))) (keys result)))))
+
 (defn- command!
   "Run one ledger command. A write refused because another writer changed the
    same stream first is retried with jittered, bounded backoff, whichever
-   key the event store uses to report it. When the retries run out the task is
-   left at a recoverable boundary: the result is `:recovery-required`, which
-   the evaluation raises as recoverable work that `resume!` continues."
+   key the event store uses to report it. A refusal decided by the ledger is
+   returned at once. When the retries run out the task is left at a
+   recoverable boundary: the result is `:recovery-required`, which the
+   evaluation raises as recoverable work that `resume!` continues."
   [context operation data]
   (let [{:keys [max-attempts max-backoff-ms]} (merge default-retry (:gepa/ledger-retry context))]
     (loop [attempt 0]
@@ -333,7 +342,7 @@
                             (merge {:command/id (random-uuid) :command/timestamp (time/now)
                                     :command/name :gepa/manage-task :operation operation} data)))]
         (cond
-          (not= ::anom/conflict (::anom/category result))
+          (not (store-conflict? result))
           (or (:command/result result) result)
 
           (< attempt max-attempts)

@@ -118,6 +118,13 @@
         (is (= :ledger-conflict (:reason r)))
         (is (= 6 @calls) "one attempt plus the bounded retries")))))
 
+(deftest a-refusal-decided-by-the-ledger-is-not-retried
+  (let [calls (atom 0)
+        refusal {::anom/category ::anom/conflict ::anom/message "Workflow result is immutable"}]
+    (with-redefs [cp/process-command (fn [_] (swap! calls inc) refusal)]
+      (is (= refusal (ledger/record-workflow! {:gepa/ledger-retry {:max-backoff-ms 1}} {})))
+      (is (= 1 @calls) "only a store conflict is retried"))))
+
 (deftest default-retry-cap-is-well-above-32
   (let [calls (atom 0)]
     (with-redefs [cp/process-command
