@@ -9,6 +9,7 @@
             [ai.obney.orc.gepa.continuation-test :as ct]
             [ai.obney.orc.gepa.core.sampler :as sampler]
             [ai.obney.orc.gepa.core.todo-processors :as tp]
+            [ai.obney.orc.gepa.core.read-models :as rm]
             [ai.obney.orc.gepa.interface :as gepa]
             [ai.obney.orc.orc-service.interface :as sheet]))
 
@@ -313,3 +314,51 @@
     (is (> (peek levels) (first levels)) "the chain's best rises above round 1's")
     (is (<= (Math/abs (- (:level single) (peek levels))) 1)
         "the chain ends within one level of the single run")))
+
+;; ---------------------------------------------------------------------------
+;; Parent selection never names a dominated candidate
+;; ---------------------------------------------------------------------------
+
+(deftest a-dominated-candidate-is-never-sampled-as-a-parent
+  (tu/with-test-context [ctx]
+    (let [opt (get-in (tu/process-command! ctx
+                        {:command/name :gepa/start-optimization :sheet-id (random-uuid)
+                         :trainset ct/data :valset ct/data
+                         :config {:max-metric-calls 200 :reflection-minibatch-size 3}})
+                      [:command/result :optimization-id])
+          add! (fn [instr reason scores]
+                 (let [c (get-in (tu/process-command! ctx
+                                   {:command/name :gepa/create-candidate :optimization-id opt
+                                    :instructions {"route" instr} :parent-ids [nil]
+                                    :mutation-reason reason})
+                                 [:command/result :candidate-id])]
+                   (tu/process-command! ctx
+                     {:command/name :gepa/record-evaluation-result :optimization-id opt
+                      :candidate-id c :scores scores :trace-ids [] :metric-calls 0})
+                   (tu/process-command! ctx
+                     {:command/name :gepa/update-frontier :optimization-id opt
+                      :candidate-id c :scores scores})
+                   c))
+          dominated (add! "LEVEL-1" nil [1.0 1.0 0.0 0.0 0.0 0.0])
+          dominator (add! "LEVEL-2" "inherited-from-previous-run" [1.0 1.0 1.0 0.0 0.0 0.0])
+          picks (frequencies (repeatedly 300 #(rm/sample-pareto-frontier ctx opt)))]
+      (is (= #{dominator} (set (keys picks))) (str "picked " picks))
+      (is (not (contains? picks dominated))))))
+
+(deftest no-round-names-a-dominated-parent
+  (ct/with-cp [ctx ct/fake-proposer]
+    (let [sid (sheet/build-workflow! ctx (ct/wf))
+          opt (ct/run! ctx sid {:budget 120 :config {:inherit-from-previous false}})
+          cands (into {} (map (juxt :candidate-id identity)) (ct/cands ctx opt))
+          lvl (fn [id] (ct/level (get-in cands [id :instructions "route"])))]
+      (is (seq (requests ctx opt)))
+      ;; In this fixture a higher level answers a superset of examples, so a
+      ;; parent below the highest evaluated level at its request is dominated.
+      (loop [[e & more] (timeline ctx opt) best -1]
+        (when e
+          (case (:event/type e)
+            :gepa/candidate-evaluated (recur more (max best (lvl (:candidate-id e))))
+            :gepa/parent-minibatch-evaluation-requested
+            (do (is (= best (lvl (:parent-id e))) "the parent is not dominated")
+                (recur more best))
+            (recur more best)))))))

@@ -14,6 +14,7 @@
   (:require [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.gepa.core.task-ledger :as task-ledger]
+            [ai.obney.orc.gepa.core.pareto :as pareto]
             [clojure.set :as set]
             [com.brunobonacci.mulog :as u]))
 
@@ -636,31 +637,18 @@
   (:valset (get-datasets ctx optimization-id)))
 
 (defn sample-pareto-frontier
-  "Sample a candidate from the Pareto frontier weighted by instance coverage.
-   Uses Python GEPA's exact selection algorithm."
+  "Sample a parent candidate from the Pareto frontier: remove programs
+   dominated across examples, then weight the rest by the number of examples
+   each is best at (Python GEPA's selection). Returns a candidate id."
   [ctx optimization-id]
   (let [state (get-gepa-state ctx optimization-id)
         pareto-mapping (:pareto-front-mapping state)
         agg-scores (vec (:agg-scores state))]
     (when (and (seq pareto-mapping) (seq (filter some? agg-scores)))
-      ;; Get candidate indices that appear in any instance
-      (let [candidate-counts (->> (vals pareto-mapping)
-                                  (mapcat identity)
-                                  frequencies)
-            ;; Weight by number of instances each candidate is best at
-            candidates-with-weights (vec candidate-counts)
-            total-weight (reduce + (map second candidates-with-weights))]
-        (when (pos? total-weight)
-          ;; Weighted random selection
-          (let [r (rand total-weight)]
-            (loop [remaining r
-                   [[cand-idx weight] & rest-cands] candidates-with-weights]
-              (if (or (nil? cand-idx) (< remaining weight))
-                ;; Return the candidate-id for this index
-                (let [idx->id (into {} (map (fn [[id idx]] [idx id])
-                                            (:candidate-id->idx state)))]
-                  (get idx->id cand-idx))
-                (recur (- remaining weight) rest-cands)))))))))
+      (let [cand-idx (pareto/select-program-candidate-from-pareto-front
+                       pareto-mapping agg-scores rand-int)
+            idx->id (into {} (map (fn [[id idx]] [idx id]) (:candidate-id->idx state)))]
+        (get idx->id cand-idx)))))
 
 (defn get-candidate-feedbacks
   "Get the per-instance RICH judge feedback recorded for a candidate.
