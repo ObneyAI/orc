@@ -560,8 +560,28 @@ store. Round 2 starts from round 1's candidates:
 - **Metric identity.** An anonymous custom `:metric-fn` gets a fresh identity per
   run, so its scores are never reused. Pass `:metric-id` (and bump
   `:metric-revision` when the scoring changes) to let rounds share scores.
-- **Runs are not seeded.** Two rounds of 50 calls accumulate candidates; they do
-  not replay one run of 100 calls exactly.
+- **The seed.** When a run inherits, its own starting instructions reuse the
+  scores recorded by the runs it inherits from (any evaluated candidate of those
+  runs, not only Pareto ones), under the same fingerprint rule. On identical
+  evidence the seed costs 0 metric calls; otherwise it is evaluated and charged.
+  A run that inherits nothing scores its seed.
+- **The minibatch schedule continues.** Training minibatches follow one
+  deterministic schedule. A run that inherits continues it from one position past
+  the furthest position reached by the runs it inherits from, so round 2 never
+  repeats round 1's minibatches in the same order. The position is recorded on
+  each round's request event (`:position`), so a resumed or repeated request draws
+  the same minibatch. A run that inherits nothing starts at the beginning.
+- **One round at a time.** A run has at most one undecided mutation round. A round
+  is decided when its proposal is rejected, its parent is skipped as perfect, or
+  its accepted proposal has a full validation evaluation. The first round opens
+  only after the seed and every inherited candidate have an evaluation.
+- **A round opens only when it can finish.** The remaining metric budget must pay
+  for the whole cycle: twice `:reflection-minibatch-size` plus the validation set
+  size. Otherwise the run finishes with the best fully evaluated candidate, which
+  can leave a few metric calls unused.
+- **Rounds add up.** Splitting a budget into rounds on one durable store reaches
+  about what one run of the total budget reaches; the rounds are not seeded, so
+  they do not replay one run exactly.
 
 ##### Ledger conflict retry
 
