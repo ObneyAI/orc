@@ -118,6 +118,49 @@
         (is (= :ledger-conflict (:reason r)))
         (is (= 6 @calls) "one attempt plus the bounded retries")))))
 
+(deftest a-run-stalled-by-exhausted-retries-completes-through-resume-once-the-lease-lapses
+  (let [real cp/process-command
+        target (atom nil)
+        hits (atom 0)]
+    (tu/with-test-context [base]
+      (let [ctx (assoc base :gepa/task-lease-ms 1500 :gepa/task-renew-ms 500
+                            :gepa/ledger-retry {:max-attempts 3 :max-backoff-ms 1})]
+        (with-redefs [llm/predict fake-predict
+                      tp/generate-mutated-instruction fake-proposer
+                      cp/process-command
+                      (fn [c]
+                        (let [cmd (:command c)]
+                          (if (and (= :gepa/manage-task (:command/name cmd))
+                                   (= :metric-started (:operation cmd))
+                                   (do (compare-and-set! target nil (:call-id cmd))
+                                       (= @target (:call-id cmd)))
+                                   (<= (swap! hits inc) 4))
+                            {::anom/category ::anom/conflict ::anom/message "CAS failed"
+                             :ai.obney.grain.event-store-sqlite-v3.core/cas {:x 1}}
+                            (real c))))]
+          (let [cp (control-plane/start {:event-store (:event-store ctx) :cache (:cache ctx)
+                                         :context ctx :heartbeat-interval-ms 100
+                                         :staleness-threshold-ms 1000})]
+            (try
+              (let [sid (sheet/build-workflow! ctx (wf))
+                    r (gepa/optimize! ctx {:sheet-id sid :trainset data :valset data
+                                           :metric-fn metric :metric-id metric-id
+                                           :config {:max-metric-calls 30 :reflection-minibatch-size 3
+                                                    :inherit-from-previous false}
+                                           :block? true :timeout-ms 5000})
+                    opt (:optimization-id r)]
+                (is (not= :completed (:status r)) "one task's metric start ran out of retries; the run waits for recovery")
+                (let [deadline (+ (System/currentTimeMillis) 60000)]
+                  (loop []
+                    (when (and (not= :already-terminal (:status (gepa/resume! ctx opt)))
+                               (< (System/currentTimeMillis) deadline))
+                      (Thread/sleep 250)
+                      (recur))))
+                (let [progress (:query/result (gepa/get-progress ctx opt))]
+                  (is (= :completed (:status progress)) "resume! takes the task over after its lease lapses")
+                  (is (<= (get-in progress [:metric-calls :used]) 30))))
+              (finally (control-plane/stop cp)))))))))
+
 (deftest a-refusal-decided-by-the-ledger-is-not-retried
   (let [calls (atom 0)
         refusal {::anom/category ::anom/conflict ::anom/message "Workflow result is immutable"}]
