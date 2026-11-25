@@ -1261,6 +1261,15 @@ INPUT-SHAPE-3 verification: private final runtime manifest aac96291, eight hoste
 - [x] RESEARCHER-NATIVE-EVIDENCE — Public researcher requests in legacy, recursive and RLM terminal modes receive shared native-evidence ownership guidance. Executed code assembles a typed result from unchanged native observations and separately produced interpretation, preserving opaque references, order, duplicate identities, false, zero and null without matching or repairing identifiers. A recursive emitted semantic-child plus code-assembly case verifies the same ownership through canonical projections.
 
 
+## Generated researcher setup diagnostics
+
+Derived from `ResearcherFeedbackMatchesCurrentState`. Controlled HTTP/SIO/SQLite
+proves transport and recovery, not unscripted semantic quality.
+
+- [x] RESEARCHER-SETUP-FEEDBACK — A generated LLM missing its required instruction is refused before child execution. The actual next researcher request names the setup command, refusal category/reason and offending field. A corrected subsequent child runs once and its typed output is canonical.
+- [x] RESEARCHER-SETUP-CHECKPOINT — The same safe setup diagnostic survives an actual researcher checkpoint/quantum boundary; both the next request and durable child outcome retain actionable field information. Bounded iteration excerpts do not hide the field behind a generic prefix.
+- [x] RESEARCHER-SETUP-BOUNDARY — Refusals without field details retain that absence. Diagnostic propagation excludes raw commands, authorization, source values and unrelated handler data, and preserves existing child-admission feedback.
+
 ## CSV per-entity definition enrichment
 
 - [x] CSV-ENTITY-CONTEXT — Public SQLite execution of the authored CSV definition stage prepares and enriches two distinct entities, exposes each entity's full native context to the actual model request, and publishes the generated fields under their original entity identities without global or prior-item bleed. The original two-direct-child topology remains a failing negative control; the aggregate contract stays strict. Controlled HTTP proves transport/composition, not live semantic quality.
@@ -1274,3 +1283,49 @@ Source: `components/gepa/test/ai/obney/orc/gepa/rotation_prompt_budget_test.clj`
 - [ ] GEPA-PROMPT-2: The optional `general-rules-prompt-template` is GEPA's default plus the three sentences, passes validation, is re-exported from the public interface, and reaches the proposer prompt when passed as `:reflection-prompt-template`.
 - [ ] GEPA-TOKENS-1: With `:max-reflection-tokens` set, no round opens and no proposer call starts once the recorded tokens reach it, and the run completes with the best fully evaluated candidate (or fails naming the budget when none exists); a completed proposer call reused on redelivery or resume is not counted again; progress and `resume!` report the tokens used.
 - [ ] GEPA-TOKENS-2: A provider-reported cost is kept in the proposer-call evidence.
+
+
+## Checkpointed emission recovery and mixed delegate admission
+
+- [x] **RESEARCHER-PARTIAL-EMISSION-RECOVERY** — Public HTTP/SIO/SQLite execution repairs a quoted emit followed by a parse error without dispatching the rejected tree; prior executed tree raw/source, ordinary native scratch and an actual completed tool receipt survive once. Clean emission still succeeds. Unsupported user KeySeq and function scratch still fail explicitly. Source: `ai.obney.orc.orc-service.emission-parse-recovery-regression-test`.
+- [x] **MIXED-TARGET-MODEL-ADMISSION** — One delegated target runs ordinary producer, checkpointed researcher and ordinary consumer under a positive shared call budget; false/zero/null and nested values survive, and real native reservation/campaign identities remain owned by the actual invoking node. Exhaustion prevents a request beyond the cap. Source: `ai.obney.orc.orc-service.mixed-target-admission-regression-test`.
+
+The two regression namespaces pass 4 tests and 51 assertions through public ORC/Grain commands, SQLite and scripted loopback HTTP. These checks establish recovery and admission mechanics, not hosted semantic quality.
+
+## SCI output capture repair
+
+- [x] SCI-STDOUT-EVALUATION — Actual plain and recursive researcher evaluation retains exact mixed permitted printer output, normal no-print computation and real failure with printed prefix; unavailable host I/O stays unavailable.
+- [x] SCI-STDOUT-GENERATED — Actual public HTTP/SQLite recursive emission executes a generated SCI function that prints through the caller destination and produces exact canonical/projected output; authored host code retains its original behavior.
+- [x] SCI-STDOUT-RESTORATION — Distinct surrounding host/SCI destinations are restored after success and failure, including original thrown exception identity at the writer helper. Native output observation is separate from persisted code-leaf output APIs.
+
+The stdout namespace passes 4 tests and 78 assertions. Public HTTP/SQLite
+workflows additionally verify caller output, canonical values and restoration
+of surrounding output bindings. Generated stdout remains a caller observation,
+not a new persisted leaf-result field.
+
+## Researcher configuration and recovery contracts
+
+- [x] RESEARCHER-TIMEOUT-ROUNDTRIP — Public constructor, fresh/changed/no-op build, EDN import/export and executable source rendering preserve an explicitly positive total-work timeout and honest omission; absent, empty and supplied options retain their distinct valid meaning. Existing node/tick/fallback precedence and immutable deadline remain unchanged.
+- [x] GENERATED-FN-SOURCE-BOUNDARY — Exact version/context/source/hash and empty-capture metadata survives public command/event/projection boundaries and reconstructs only supported functions; malformed, captured/shadowed or identity-conflicting definitions refuse without widening capabilities.
+- [x] GENERATED-FN-LIFETIME — Restored callable uses the original identity, refuses different bindings and releases only its matching terminal binding after all actual live users finish. Healthy shared/unrelated work remains.
+- [x] GENERATED-FN-COLD-RECOVERY — A distinct owned process/registry lifetime reconstructs admitted code at the actual pending/abandoned-callable boundary, preserving original tick/node/source/deadline and once-only completed effects. A completed-child terminal boundary consumes the saved result without reinvocation; these are separate controls.
+- [x] EMITTED-AUTH-RETENTION — A legitimately late first generated descendant may retain its exact plan while frontier/claim installation is pending, but pending retention causes no provider reservation or request; configuration and original budget/deadline remain authoritative.
+- [x] EMITTED-AUTH-ORDER — Both actual parent/child delivery orders preserve valid first-start ownership, while stale/unresumed/superseded/conflicting configurations and changed facts at append/CAS refuse before spend. No completed prefix/tool work is replayed.
+
+- [x] RESEARCHER-PROVIDER-TIMEOUT — Typed Java provider deadlines and normalized transport-timeout evidence survive LLM normalization and durable researcher receipts, allowing later classification without an exception cause. Explicit non-timeout categories take precedence; prose or HTTP status alone cannot imply timeout. Existing candidate exhaustion, deadline, cancellation and call-budget rules remain authoritative; replay classification alone causes no dispatch.
+
+- [x] RESEARCHER-REPAIR-COMPOSITION — The assembled repair source runs an actual checkpointed researcher through public local HTTP/SIO/SQLite, emits self-contained typed code plus a later semantic descendant, survives a genuinely new owned JVM while callable work is pending, preserves original campaign/child/function/deadline/cap and completed prefix effects, and returns exact canonical output without replaying completed work. This integration is distinct from generic callable-leaf recovery and staged-parent authority controls; no hosted quality or uncertain external-effect exactly-once claim.
+
+The eight configuration and recovery obligations above are covered. The
+packaged focused command passes 66 tests and 1,378 assertions, with zero
+failures or errors. The composed two-JVM researcher restart contributes 47
+assertions to that total. The runner verifies 64 production resource origins
+and hashes before execution. Counts from earlier source cuts remain historical
+evidence and are not added to this total.
+
+Source namespaces and reproducible commands are listed in
+[RESEARCHER-RECOVERY-VERIFICATION.md](RESEARCHER-RECOVERY-VERIFICATION.md).
+Hosted semantic quality, arbitrary captured closures and compiled-sheet
+export/import of callable metadata remain outside this proof. Specification
+checking retains 39 warnings, 116 informational diagnostics, zero errors and
+zero process findings. Check exits 1; analyse exits 0. The baseline is not clean.

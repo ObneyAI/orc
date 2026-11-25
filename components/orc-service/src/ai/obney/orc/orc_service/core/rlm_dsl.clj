@@ -53,6 +53,13 @@
         :else (fail! "a recognized node tag"
                      (str "Unknown node type: " tag))))))
 
+(defn validate-emitted-tree!
+  "Validate the existing emitted vector grammar before quoted source becomes
+   executable. Returns the original data tree; adds no node or option support."
+  [tree]
+  (validate-tree! tree [])
+  tree)
+
 (defn- transform-children
   "Transform a sequence of child nodes."
   [children]
@@ -206,5 +213,5 @@
    Fixed nodes consume exactly their documented operands; composite children
    remain variadic. Option values are left to their existing contract checks."
   [tree]
-  (validate-tree! tree [])
+  (validate-emitted-tree! tree)
   (transform-node tree))

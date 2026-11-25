@@ -3995,10 +3995,6 @@
                             (tick-ctx-of context tick-id))
 
             target-sheet-id (:target-sheet-id node)
-            target-checkpointed-campaign?
-            (boolean
-             (some researcher-mode/checkpointed?
-                   (vals (rm/get-nodes-by-id context target-sheet-id))))
             read-keys (:reads node)
             write-keys (:writes node)
             parent-tick-ctx (tick-ctx-of context tick-id)
@@ -4108,8 +4104,10 @@
                                            (normalize-output-keys target-input-sources)
                                            :correlation-id correlation-id
                                            :input-sources target-input-sources
-                                           :checkpointed-campaign?
-                                           target-checkpointed-campaign?
+                                           ;; Target contents do not make ordinary siblings
+                                           ;; members of a researcher campaign. The actual
+                                           ;; researcher handler owns prime/inline admission;
+                                           ;; generated children carry their real campaign IDs.
                                            :llm-call-budget
                                            (:budget inherited-budget-root)
                                            :llm-budget-root-sheet-id
