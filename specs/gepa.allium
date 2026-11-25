@@ -255,9 +255,9 @@ contract DurableOptimizationLifecycle {
         -- stream first is retried with bounded, jittered backoff on every event
         -- store, however the store reports the conflict. A refusal the ledger
         -- decides itself is returned at once, not retried. When retries run out,
-        -- the task is left at a recoverable boundary that resume continues. A
-        -- run never stalls with a task whose workflow completed and whose
-        -- metric never started.
+        -- the task is left at a recoverable boundary that resume continues once
+        -- the task's lease lapses. A run never stalls with a task whose workflow
+        -- completed and whose metric never started.
 
     @invariant InheritanceIsExplicitlyControlled
         -- A run inherits earlier candidates only when inheritance is allowed
