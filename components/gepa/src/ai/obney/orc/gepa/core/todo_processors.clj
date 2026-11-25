@@ -681,7 +681,8 @@
          :optimization-id (:optimization-id event))
 
   (let [{:keys [optimization-id sheet-id config]} event
-        inherit? (get config :inherit-from-previous true)
+        inherit-from (:inherit-from config)
+        inherit? (or (some? inherit-from) (get config :inherit-from-previous true))
         inherit-limit (get config :inherit-limit 10)
 
         ;; 1. Extract seed instructions from workflow
@@ -700,9 +701,13 @@
 
         ;; 3. Query inherited candidates (cumulative across ALL runs)
         inherited-candidates (when inherit?
-                               (rm/get-all-unique-candidates
-                                 context sheet-id
-                                 :limit inherit-limit))]
+                               (if inherit-from
+                                 (rm/get-candidates-from-optimization
+                                   context sheet-id inherit-from
+                                   :limit inherit-limit)
+                                 (rm/get-all-unique-candidates
+                                   context sheet-id
+                                   :limit inherit-limit)))]
 
     ;; 4. Create inherited candidates (skip if same as seed)
     (when (seq inherited-candidates)
@@ -712,7 +717,7 @@
 
       (doseq [cand inherited-candidates
               :let [inst (:instructions cand)
-                    subscores (:val-subscores cand)]
+                    subscores (:scores-by-fingerprint cand)]
               :when (not= inst seed-instructions)]  ;; Don't duplicate seed
         (u/log ::inheriting-candidate
                :source-optimization-id (:source-optimization-id cand)
@@ -727,7 +732,7 @@
            :parent-ids [nil]  ;; No parent - inherited from previous run
            :mutation-reason "inherited-from-previous-run"
            :source-optimization-id (:source-optimization-id cand)
-           :historical-val-subscores subscores})))))
+           :historical-scores subscores})))))
 
 ;; =============================================================================
 ;; On Candidate Created
@@ -809,25 +814,23 @@
 
         ;; Get candidate (includes historical-val-subscores if inherited)
         candidate (rm/get-candidate context optimization-id candidate-id)
-        historical-scores (:historical-val-subscores candidate)]
+        historical-scores (:historical-scores candidate)
+        ;; A recorded score is reused only for an example identical in content,
+        ;; on the same workflow content and metric: look each example of this
+        ;; run's valset up by fingerprint. Any example without a record means
+        ;; the candidate is evaluated in this run and charged to its budget.
+        fingerprints (when (seq historical-scores)
+                       (rm/valset-fingerprints context optimization-id))
+        reusable? (and (seq fingerprints)
+                       (every? #(and % (contains? historical-scores %)) fingerprints))]
 
-    ;; Check if this is an inherited candidate with historical scores
-    (if (and historical-scores (seq historical-scores))
-      ;; SKIP EVALUATION - Reuse historical per-instance scores
-      ;; This is key for true single-run parity: inherited candidates don't consume metric budget
-      (let [;; Convert subscores map to ordered vector for consistency
-            ;; Historical subscores are {instance-id -> score}
-            max-instance-id (if (seq historical-scores)
-                              (apply max (keys historical-scores))
-                              -1)
-            scores-vec (mapv (fn [idx]
-                               (get historical-scores idx 0.0))
-                             (range (inc max-instance-id)))]
+    (if reusable?
+      ;; Reuse the recorded per-example scores: 0 metric calls.
+      (let [scores-vec (mapv historical-scores fingerprints)]
         (u/log ::reusing-historical-scores
                :candidate-id candidate-id
-               :num-instances (count historical-scores)
-               :mean-score (when (seq scores-vec)
-                             (/ (reduce + scores-vec) (count scores-vec))))
+               :num-instances (count scores-vec)
+               :mean-score (/ (reduce + scores-vec) (count scores-vec)))
         (run-command! context
           {:command/id (random-uuid)
            :command/timestamp (time/now)
@@ -836,7 +839,7 @@
            :candidate-id candidate-id
            :scores scores-vec
            :trace-ids []  ;; No traces - reusing history
-           :metric-calls 0}))  ;; 0 metric calls - key for budget savings!
+           :metric-calls 0}))
 
       ;; FRESH EVALUATION - Normal path for new candidates
       (let [opt-state (rm/get-optimization-summary context optimization-id)

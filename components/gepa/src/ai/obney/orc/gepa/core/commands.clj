@@ -13,6 +13,7 @@
             [ai.obney.orc.gepa.core.task-ledger :as ledger]
             [ai.obney.orc.gepa.core.pareto :as pareto]
             [ai.obney.orc.gepa.core.proposer :as proposer]
+            [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :as command-processor :refer [defcommand]]
             [ai.obney.grain.time.interface :as time]
@@ -73,6 +74,7 @@
                                 {:kind :default :metric-id "orc/default" :revision "1"
                                  :configuration {} :retry-safe? true
                                  :max-attempts 3 :timeout-ms 300000}))
+        workflow-hash (:content-hash (sheet/get-sheet ctx sheet-id))
         now (time/now)
         ;; Normalize trainset/valset to use string keys for JSON compatibility
         normalize-keys (fn [m] (into {} (map (fn [[k v]] [(name k) v]) m)))
@@ -91,7 +93,8 @@
                        :trainset-size (count trainset)
                        :valset-size (count valset)
                        :started-at now}
-                        metric-descriptor (assoc :metric-descriptor metric-descriptor))})
+                        metric-descriptor (assoc :metric-descriptor metric-descriptor)
+                        workflow-hash (assoc :workflow-hash workflow-hash))})
       ;; Event 2: Store full datasets for evaluation and cross-run persistence
       (->event {:type :gepa/datasets-stored
                 :tags #{[:optimization optimization-id]}
@@ -139,7 +142,7 @@
    Source-optimization-id tracks cross-run inheritance.
    Historical-val-subscores enables skipping re-evaluation for inherited candidates."
   [{{:keys [optimization-id instructions parent-ids mutation-reason
-            source-optimization-id historical-val-subscores]} :command
+            source-optimization-id historical-val-subscores historical-scores]} :command
     :keys [event-store] :as ctx}]
   (let [opt-state (rm/get-optimization-summary ctx optimization-id)]
     (cond
@@ -177,7 +180,8 @@
                            :generation generation
                            :mutation-reason mutation-reason
                            :source-optimization-id source-optimization-id  ;; Track cross-run inheritance
-                           :historical-val-subscores historical-val-subscores  ;; Skip eval if present
+                           :historical-val-subscores historical-val-subscores
+                           :historical-scores historical-scores
                            :created-at (time/now)}})]
          :command/result {:candidate-id candidate-id
                           :generation generation}}))))

@@ -269,6 +269,14 @@ that verifies the stated observable results.
   decision's and the model-backed condition's provider call (it previously never reached a
   condition). gepa `EveryModelInstructionIsAComponent`. Verified by
   `components/gepa/.../decision_instructions_test.clj` (3 tests).
+- [x] **DET-E2E-308b — GEPA training continues on a durable store.** Concurrent task-ledger writes
+  refused as conflicts are retried whichever key the store reports, and exhausted retries leave a
+  recoverable boundary; `:inherit-from-previous false` and `:inherit-from` take effect however passed;
+  inherited scores are reused only for an identical example on the same workflow content and metric
+  (reordered valset reuses by example at 0 calls, changed examples, an edited workflow or a changed
+  metric are re-evaluated and charged); two rounds in fresh contexts on one SQLite store continue each
+  other. gepa `ConflictedLedgerWritesRetry`, `InheritanceIsExplicitlyControlled`,
+  `InheritedScoresOnlyForTheSameEvidence`. Verified by `components/gepa/.../continuation_test.clj`.
 - [x] **DET-E2E-309 — REAL-model end-to-end decision + tool runtime.** One workflow under the
   `ORC_OPENROUTER_E2E_TESTS` gate: a native decision model (Jev, selected per node by `:model`)
   routes; the lookup branch calls a contract-enforced tool leaf and delegates a summary to a
