@@ -428,6 +428,9 @@
 (defn evaluate-candidate-on-valset
   "Evaluate a candidate's instructions on the full validation set.
 
+   With `:example-indices` in the call context only those examples are
+   evaluated; :scores and :trace-ids then follow that order and :indices names them.
+
    Returns {:scores [double ...] :trace-ids [uuid ...]
             :feedbacks {instance-idx -> feedback-string}
             :outputs {instance-idx -> output-map} :metric-calls int}.
@@ -438,26 +441,25 @@
   ([context sheet-id instructions valset metric-fn]
    (evaluate-candidate-on-valset context sheet-id instructions valset metric-fn nil))
   ([context sheet-id instructions valset metric-fn call-context]
-  (let [call-context (prepare-task-batch! context sheet-id instructions
-                       (map-indexed vector valset) call-context)
+  (let [indices (or (:example-indices call-context) (range (count valset)))
+        indexed (mapv (fn [i] [i (nth valset i)]) indices)
+        call-context (prepare-task-batch! context sheet-id instructions indexed call-context)
         results (doall  ;; Force evaluation for side effects
-                  (map-indexed
-                    (fn [idx example]
-                      (u/log ::evaluating-example
-                             :index idx
-                             :total (count valset))
-                      (execute-workflow-with-instructions
-                        context sheet-id instructions example metric-fn
-                        (assoc call-context :example-index idx)))
-                    valset))]
+                  (map (fn [[idx example]]
+                         (u/log ::evaluating-example
+                                :index idx
+                                :total (count valset))
+                         (execute-workflow-with-instructions
+                           context sheet-id instructions example metric-fn
+                           (assoc call-context :example-index idx)))
+                       indexed))]
     {:scores (mapv :score results)
+     :indices (vec indices)
      :trace-ids (mapv :trace-id results)
-     :feedbacks (into {} (keep-indexed (fn [idx r]
-                                         (when (:feedback r) [idx (:feedback r)]))
-                                       results))
-     :outputs (into {} (keep-indexed (fn [idx r]
-                                       (when (some? (:output r)) [idx (:output r)]))
-                                     results))
+     :feedbacks (into {} (keep (fn [[[idx _] r]] (when (:feedback r) [idx (:feedback r)]))
+                               (map vector indexed results)))
+     :outputs (into {} (keep (fn [[[idx _] r]] (when (some? (:output r)) [idx (:output r)]))
+                             (map vector indexed results)))
      :metric-calls (if (:boundary-id call-context)
                      (reduce + (map :attempt-count results))
                      (count (filter :charged? results)))
@@ -846,8 +848,15 @@
         ;; the candidate is evaluated in this run and charged to its budget.
         fingerprints (when (seq historical-scores)
                        (rm/valset-fingerprints context optimization-id))
-        reusable? (and (seq fingerprints)
-                       (every? #(and % (contains? historical-scores %)) fingerprints))]
+        recorded? (fn [fp] (and fp (contains? historical-scores fp)))
+        reusable? (and (seq fingerprints) (every? recorded? fingerprints))
+        ;; Examples with a recorded score under an equal fingerprint keep it; the
+        ;; others are evaluated here and charged, in the validation set's order.
+        reused-indices (when (seq fingerprints)
+                         (vec (keep-indexed (fn [i fp] (when (recorded? fp) i)) fingerprints)))
+        partial? (and (seq reused-indices) (not reusable?))
+        missing-indices (when partial?
+                          (vec (remove (set reused-indices) (range (count fingerprints)))))]
 
     (if reusable?
       ;; Reuse the recorded per-example scores: 0 metric calls.
@@ -881,14 +890,15 @@
 
             ;; Evaluate the actual workflow. Fabricated scores would make a
             ;; provider/runtime failure look like optimization evidence.
-            eval-result
+            raw-result
             (if (and valset (seq valset) sheet-id)
               (try
                 (evaluate-candidate-on-valset
                   context sheet-id instructions valset metric-fn
-                  {:optimization-id optimization-id
-                   :role :candidate
-                   :call-scope candidate-id})
+                  (cond-> {:optimization-id optimization-id
+                           :role :candidate
+                           :call-scope candidate-id}
+                    partial? (assoc :example-indices missing-indices)))
                 (catch Exception e
                   (u/log ::evaluation-error
                          :error (.getMessage e)
@@ -910,7 +920,14 @@
                    :command/name :gepa/fail-optimization
                    :optimization-id optimization-id
                    :error-message "Candidate evaluation requires a persisted non-empty validation set and workflow"})
-                nil))]
+                nil))
+            eval-result
+            (if (and raw-result partial?)
+              (assoc raw-result :scores
+                     (reduce (fn [v [i score]] (assoc v i score))
+                             (mapv #(get historical-scores %) fingerprints)
+                             (map vector (:indices raw-result) (:scores raw-result))))
+              raw-result)]
 
         (when eval-result
           (u/log ::evaluation-complete

@@ -272,17 +272,31 @@
                                 (when-some [feedback (get-in task [:result :feedback])]
                                   [(:example-index task) feedback]))) tasks)}))
 
-(defn- valid-managed-candidate? [ctx command]
+(defn- valid-managed-candidate?
+  "The scores of a managed evaluation are its completed tasks' scores. When the
+   tasks cover only some validation examples, every other score must be the one
+   recorded for that example's fingerprint on the candidate, never one carried
+   over by position."
+  [ctx command]
   (let [{:keys [optimization-id candidate-id task-call-ids scores trace-ids metric-calls]} command
         tasks (sort-by :example-index
                 (managed-tasks ctx optimization-id
-                  {:kind :candidate :candidate-id candidate-id} task-call-ids))]
+                  {:kind :candidate :candidate-id candidate-id} task-call-ids))
+        task-indices (set (map :example-index tasks))
+        historical (:historical-scores (rm/get-candidate ctx optimization-id candidate-id))
+        fingerprints (delay (rm/valset-fingerprints ctx optimization-id))]
     (and (seq tasks)
          (every? (fn [[k v]] (or (not (contains? command k)) (= v (get command k))))
                  (managed-candidate-evidence ctx command))
          (every? #(= :candidate (:role %)) tasks)
-         (= (vec (range (count tasks))) (mapv :example-index tasks))
-         (= scores (mapv #(get-in % [:result :score]) tasks))
+         (= (count tasks) (count task-indices))
+         (every? #(< -1 % (count scores)) task-indices)
+         (every? #(= (nth scores (:example-index %)) (get-in % [:result :score])) tasks)
+         (every? (fn [i]
+                   (or (contains? task-indices i)
+                       (let [fp (nth @fingerprints i nil)]
+                         (and fp (contains? historical fp) (= (nth scores i) (get historical fp))))))
+                 (range (count scores)))
          (= trace-ids (mapv :trace-id tasks))
          (= metric-calls (reduce + (map :attempt-count tasks))))))
 

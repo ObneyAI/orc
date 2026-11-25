@@ -550,12 +550,15 @@ store. Round 2 starts from round 1's candidates:
   workflow's own instructions; an explicit `:inherit-from` takes precedence over it.
 - **When scores are reused.** Each recorded per-example score is stored under a
   fingerprint of the example content, the workflow content hash and the metric
-  identity (kind, id, revision, configuration). An inherited candidate costs 0
-  metric calls only when every example of the new run's validation set has a
-  recorded score under an equal fingerprint, in any order. Otherwise the
-  candidate is evaluated on the new validation set and charged to the new
-  run's budget. Editing the workflow, changing the metric, or changing an
-  example therefore never reuses an earlier score. The sheet id stays
+  identity (kind, id, revision, configuration). Each example of the new run's validation set is looked up by its fingerprint,
+  in any order. An inherited candidate (or the seed) costs 0 metric calls when
+  every example has a recorded score. When some examples are new or changed, the
+  recorded scores of the unchanged ones are kept and only the new or changed
+  examples are evaluated and charged to the new run's budget, one metric call
+  each; the stored scores follow the new validation set's order. With none
+  recorded, the candidate is evaluated in full. Editing the workflow or changing
+  the metric changes every fingerprint, so nothing earlier is reused; changing an
+  example changes only that example's. The sheet id stays
   name-derived.
 - **Metric identity.** An anonymous custom `:metric-fn` gets a fresh identity per
   run, so its scores are never reused. Pass `:metric-id` (and bump
@@ -563,7 +566,7 @@ store. Round 2 starts from round 1's candidates:
 - **The seed.** When a run inherits, its own starting instructions reuse the
   scores recorded by the runs it inherits from (any evaluated candidate of those
   runs, not only Pareto ones), under the same fingerprint rule. On identical
-  evidence the seed costs 0 metric calls; otherwise it is evaluated and charged.
+  evidence the seed costs 0 metric calls; with new or changed examples only those are evaluated and charged.
   A run that inherits nothing scores its seed.
 - **The minibatch schedule continues.** Training minibatches follow one
   deterministic schedule. A run that inherits continues it from one position past
