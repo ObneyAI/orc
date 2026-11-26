@@ -100,6 +100,14 @@
                      :trace-id trace-id
                      :trace-instance-id trace-instance-id})))
 
+(deftest historical-completions-retain-keys-without-inventing-profiles
+  (let [keys-recorded {:read-keys [:question] :write-keys [:answer]
+                       :missing-write-keys [:extra] :rejected-write-keys [:invalid]}]
+    (is (= keys-recorded
+           (service-logic/trace-value-metadata (assoc keys-recorded :write-profile nil))))
+    (is (= (assoc keys-recorded :output-profile {})
+           (service-logic/trace-value-metadata (assoc keys-recorded :write-profile {}))))))
+
 (deftest trace-storage-uses-the-context-background-supervisor
   (testing "trace work is owned by the execution context instead of an orphan future"
     (let [submitted (atom [])

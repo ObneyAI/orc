@@ -55,3 +55,24 @@
       (is (= {"unconfirmed-ids" []} (get-in @captured [:state :audit])))
       (is (not (str/includes? (pr-str (:state @captured)) "DECLARED CONTRACT")))
       (is (not (str/includes? sent "TOP LEVEL ABSENT"))))))
+
+(deftest observed-and-unobserved-union-items-have-distinct-contracts
+  (llm/register-provider! :union-input-guide {:provider :openrouter :model "test/model"})
+  (let [item [:or [:nil {:description "No measurement supplied"}]
+                  [:enum {:description "Empty measurement label"} ""]]
+        spec {:inputs [{:name :records :spec [:vector [:map [:value item]]]}]
+              :outputs [{:name :out :spec :string}]}
+        sent (atom nil)]
+    (with-redefs [router/completion
+                  (fn [_ request]
+                    (reset! sent (get-in request [:messages 0 :content]))
+                    {:choices [{:message {:content "[[ ## out ## ]]\nok"}}]})]
+      (doseq [[records null-meaning? empty-meaning?]
+              [[[] true true]
+               [[{:value nil}] true false]
+               [[{:value ""}] false true]
+               [[{:value nil} {:value ""}] true true]]]
+        (is (= {:out "ok"} (llm/predict :union-input-guide spec {:records records}
+                                        {:use-function-calling? false :max-retries 0})))
+        (is (= null-meaning? (str/includes? @sent "No measurement supplied")) (pr-str records))
+        (is (= empty-meaning? (str/includes? @sent "Empty measurement label")) (pr-str records))))))

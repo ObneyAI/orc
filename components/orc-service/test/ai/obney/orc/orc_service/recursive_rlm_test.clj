@@ -8,6 +8,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface.schemas]
+            [ai.obney.orc.orc-service.retained-prime-model-plan-test :as prime]
             [ai.obney.orc.orc-service.core.todo-processors :as tp-core]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -24,16 +25,16 @@
    Contexts produced by the real todo processor retain their Grain-backed
    capabilities because caller-provided entries override these test fakes."
   [test-fn]
-  (let [execute tp-core/execute-repl-researcher-rlm]
+  (let [execute tp-core/execute-repl-researcher-rlm
+        effect-capabilities {:researcher-ownership-epoch 1
+                             :claim-researcher-effect! (fn [_] {:command-result/events []})
+                             :complete-researcher-effect! (fn [_] {:command-result/events []})}]
     (with-redefs [tp-core/execute-repl-researcher-rlm
                   (fn [node blackboard provider context & options]
                     (apply execute node blackboard provider
-                           (merge {:researcher-ownership-epoch 1
-                                   :claim-researcher-effect!
-                                   (fn [_] {:command-result/events []})
-                                   :complete-researcher-effect!
-                                   (fn [_] {:command-result/events []})}
-                                  context)
+                           (if (service-logic/checkpointed? node)
+                             (merge effect-capabilities context)
+                             context)
                            options))]
       (test-fn))))
 
@@ -1271,8 +1272,29 @@
           (is (zero? @provider-calls)
               "an incompatible host contract fails before model work"))))))
 
+(defn- claim-campaign-frontier! [{:keys [sheet-id tick-id node-id] :as ctx} epoch]
+  (let [owner (select-keys ctx [:sheet-id :tick-id :node-id])
+        frontier (prime/frontier! ctx owner epoch)]
+    (is (nil? (:cognitect.anomalies/category frontier)) (pr-str frontier))
+    (merge ctx
+           {:researcher-ownership-epoch epoch}
+           (#'tp-core/campaign-effect-capabilities
+            ctx {:researcher-campaign-sheet-id sheet-id
+                 :researcher-campaign-tick-id tick-id
+                 :researcher-campaign-node-id node-id
+                 :researcher-ownership-epoch epoch}))))
+
+(defmacro ^:private with-campaign-ctx
+  "Run the executor against a started parent researcher and its durable effect claims."
+  [[ctx] & body]
+  `(prime/staged-prime!
+    (fn [base# owner# _# _# _#]
+      (let [~ctx (claim-campaign-frontier!
+                  (merge base# (select-keys owner# [:sheet-id :tick-id :node-id])) 1)]
+        ~@body))))
+
 (deftest completed-phase2-child-is-not-repeated-after-resume
-  (with-test-ctx [ctx]
+  (with-campaign-ctx [ctx]
     (let [phase1-calls (atom 0)
           phase2-calls (atom 0)
           phase1-module? #(boolean (some (fn [output] (= :code (:name output)))
@@ -1305,7 +1327,7 @@
               "the completed child tree is incorporated from the checkpoint, not run again"))))))
 
 (deftest completed-phase2-action-survives-pre-checkpoint-crash
-  (with-test-ctx [ctx]
+  (with-campaign-ctx [ctx]
     (let [phase1-calls (atom 0)
           phase2-calls (atom 0)
           actions (atom {})
@@ -1321,8 +1343,6 @@
           blackboard {:document {:key :document :schema :string :value "x" :version 1}
           }
           context (assoc ctx
-                         :tick-id (random-uuid)
-                         :node-id (random-uuid)
                          :persist-researcher-action!
                          (fn [action] (swap! actions assoc (:action-id action) action)))]
       (with-redefs [llm/predict
@@ -1349,7 +1369,7 @@
           (is (= 1 @phase2-calls)))))))
 
 (deftest completed-phase2-tick-is-rejoined-before-action-recording
-  (with-test-ctx [ctx]
+  (with-campaign-ctx [ctx]
     (let [phase1-calls (atom 0)
           phase2-calls (atom 0)
           actions (atom {})
@@ -1361,8 +1381,7 @@
                 :writes [:summary]
                 :rlm {:checkpointed? true}
                 :max-iterations 3}
-          blackboard {:document {:key :document :schema :string :value "x" :version 1}}
-          base-context (assoc ctx :tick-id (random-uuid) :node-id (random-uuid))]
+          blackboard {:document {:key :document :schema :string :value "x" :version 1}}]
       (with-redefs [llm/predict
                     (fn [_ module _ _]
                       (if (phase1-module? module)
@@ -1376,17 +1395,21 @@
         (let [interrupted
               (tp-core/execute-repl-researcher-rlm
                node blackboard :openrouter
-               (assoc base-context :persist-researcher-action!
-                      (fn [action]
-                        (if (= :phase2 (:action-kind action))
-                          (throw (ex-info "simulated crash before parent action record" {}))
-                          (swap! actions assoc (:action-id action) action)))))]
-          (is (= :failure (:status interrupted)) (pr-str interrupted))))
+               (assoc ctx
+                      :persist-researcher-action! #(swap! actions assoc (:action-id %) %)
+                      :complete-researcher-effect!
+                      (fn [effect]
+                        (if (get-in effect [:result :trace-id])
+                          (throw (ex-info "simulated crash before child result was recorded" {}))
+                          ((:complete-researcher-effect! ctx) effect)))))]
+          (is (= :failure (:status interrupted)) (pr-str interrupted))
+          (is (= "simulated crash before child result was recorded" (:error interrupted)))
+          (is (= #{:provider} (set (map :action-kind (vals @actions)))))))
       (with-redefs [llm/predict (fn [& _]
                                   (throw (ex-info "provider or child was repeated" {})))]
         (let [resumed (tp-core/execute-repl-researcher-rlm
                        node blackboard :openrouter
-                       (assoc base-context
+                       (assoc (claim-campaign-frontier! ctx 2)
                               :researcher-actions @actions
                               :persist-researcher-action!
                               #(swap! actions assoc (:action-id %) %)))]

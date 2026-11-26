@@ -23,3 +23,15 @@ runs:
           ~/.gitlibs
         key: ${{ runner.os }}-clojure-${{ hashFiles('**/deps.edn') }}
         restore-keys: ${{ runner.os }}-clojure-
+
+    - name: Prepare test dependencies
+      shell: bash
+      run: |
+        for delay in 10 30; do
+          if clojure -Sthreads 4 -P -M:dev:test; then
+            exit 0
+          fi
+          echo "::warning::Dependency preparation failed. Retrying in ${delay}s."
+          sleep "$delay"
+        done
+        clojure -Sthreads 4 -P -M:dev:test

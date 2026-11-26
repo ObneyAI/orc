@@ -4104,6 +4104,19 @@
 (def trace-publication-event-types
   #{:sheet/execution-traced :sheet/execution-trace-refreshed})
 
+(defn trace-value-metadata
+  "Completion events can name the keys they forwarded without recording value profiles."
+  [{:keys [read-keys write-keys missing-write-keys rejected-write-keys
+           input-profile write-profile rejected-write-profile]}]
+  (cond-> {}
+    (seq read-keys) (assoc :read-keys read-keys)
+    (seq write-keys) (assoc :write-keys write-keys)
+    (seq missing-write-keys) (assoc :missing-write-keys missing-write-keys)
+    (seq rejected-write-keys) (assoc :rejected-write-keys rejected-write-keys)
+    (some? input-profile) (assoc :input-profile input-profile)
+    (some? write-profile) (assoc :output-profile write-profile)
+    (some? rejected-write-profile) (assoc :rejected-output-profile rejected-write-profile)))
+
 (defn execution-trace-event
   [event-type {:keys [trace-id sheet-id parent-trace-id correlation-id root-trace-id child-trace-ids
                       version-number started-at completed-at

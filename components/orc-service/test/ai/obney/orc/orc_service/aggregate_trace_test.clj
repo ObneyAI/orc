@@ -70,12 +70,13 @@
     (sheet/blackboard {:items [:vector :int] :item [:or :int :string]
                        :results [:vector [:or :int :string]]})
     (sheet/sequence "outer"
-      (sheet/sequence "forwarder"
-        (apply sheet/map-each "aggregate" :from :items :as :item :into :results :parallel 2
-          (when function-name
-            [(sheet/code "item" :fn (str "ai.obney.orc.orc-service.aggregate-trace-test/" function-name)
-               :reads [:item] :writes [:item]
-               :retry {:max-attempts 1 :backoff-ms []})]))))))
+      (sheet/fallback "fallback"
+        (sheet/sequence "forwarder"
+          (apply sheet/map-each "aggregate" :from :items :as :item :into :results :parallel 2
+            (when function-name
+              [(sheet/code "item" :fn (str "ai.obney.orc.orc-service.aggregate-trace-test/" function-name)
+                 :reads [:item] :writes [:item]
+                 :retry {:max-attempts 1 :backoff-ms []})])))))))
 
 (deftest aggregate-and-forwarder-profiles-match-canonical-values
   (doseq [[label function-name items expected expected-status]
@@ -110,7 +111,7 @@
             (is (= 1 (count aggregate-writes)) "aggregate payload has exactly one canonical home")
             (is (= (:node-id aggregate) (:node-id (first aggregate-writes))))
             (is (= expected (:value (first aggregate-writes))))
-            (doseq [name ["aggregate" "forwarder" "outer"]
+            (doseq [name ["aggregate" "forwarder" "fallback" "outer"]
                     :let [node (first (filter #(= name (:node-name %)) (:node-traces trace)))
                           completion (first (filter #(= (:node-id node) (:node-id %)) completions))
                           detail (:query/result

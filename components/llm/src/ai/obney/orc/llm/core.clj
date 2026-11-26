@@ -151,6 +151,61 @@
   [spec]
   (update spec :outputs #(mapv wire-output %)))
 
+(defn- request-input-contract
+  "Keep the declared shape of unobserved children. Where values were supplied,
+   describe the union alternatives those values can actually represent."
+  [schema observed]
+  (if (or (empty? observed) (not (vector? schema)))
+    schema
+    (let [[kind & tail] schema
+          [props children] (split-schema-props tail)
+          entries (fn [values-for]
+                    (mapv (fn [entry]
+                            (update entry (dec (count entry)) request-input-contract
+                                    (values-for (first entry))))
+                          children))
+          narrowed
+          (case kind
+            :map (entries (fn [k] (map val (keep #(find % k) (filter map? observed)))))
+            (:vector :sequential :list :set)
+            [(request-input-contract (first children) (mapcat seq (filter coll? observed)))]
+            :map-of [(first children)
+                     (request-input-contract (second children) (mapcat vals (filter map? observed)))]
+            :maybe [(request-input-contract (first children) (remove nil? observed))]
+            :tuple (map-indexed (fn [i child]
+                                  (request-input-contract child
+                                    (map #(nth % i) (filter #(< i (count %)) (filter sequential? observed)))))
+                                children)
+            :and (map #(request-input-contract % observed) children)
+            :or (let [applicable (keep (fn [child]
+                                         (let [matches (filter (m/validator child) observed)]
+                                           (when (seq matches)
+                                             (request-input-contract child matches))))
+                                       children)]
+                  (or (seq applicable) children))
+            :multi (let [by-tag (group-by (:dispatch props) observed)
+                         tags (set (map first children))
+                         fallback (mapcat val (remove #(contains? tags (key %)) by-tag))
+                         applicable (keep (fn [entry]
+                                            (let [tag (first entry)
+                                                  values (if (= tag :malli.core/default) fallback (get by-tag tag))]
+                                              (when (seq values)
+                                                (update entry (dec (count entry)) request-input-contract values))))
+                                          children)]
+                     (or (seq applicable) children))
+            children)]
+      (into (cond-> [kind] props (conj props)) narrowed))))
+
+(defn- prepare-request-inputs [fields inputs]
+  (let [{:keys [native-values] :as view} (input-identity/prepare-inputs fields inputs)]
+    (update view :inputs
+            (fn [prepared]
+              (mapv (fn [{:keys [name type] :as field}]
+                      (if (and (not= type :image) (contains? native-values name))
+                        (update field :spec request-input-contract [(get native-values name)])
+                        field))
+                    prepared)))))
+
 (defn- input-value-text
   "Render native text inputs once, after the guide has inspected their values.
    Explicit null stays distinct from an empty string; images bypass this path."
@@ -1050,7 +1105,7 @@
               :schema-validation-failed base-evidence)))
     (let [transport (or (:decision-transport (:config config))
                         (default-decision-transport (:config config) options))
-          view (input-identity/prepare-inputs (:inputs spec) inputs)
+          view (prepare-request-inputs (:inputs spec) inputs)
           request (decision-request (or (:model options) (:model config))
                                     (assoc spec :inputs (:inputs view)) (:native-values view) kinds)
           response (try (transport request)
@@ -1091,7 +1146,7 @@
   (let [options (or options {})
         validate? (get options :validate? true)
         inputs (if validate? (sio/validate-inputs (:inputs spec) inputs) inputs)
-        view (input-identity/prepare-inputs (:inputs spec) inputs)
+        view (prepare-request-inputs (:inputs spec) inputs)
         request-spec (assoc spec :inputs (:inputs view))
         mode (selected-output-mode provider options)
         strict? (= :json-schema mode)
@@ -1307,7 +1362,7 @@
         (throw (structured-failure "Strict JSON streaming is not supported"
                                    :schema-validation-failed {:provider (provider-name provider)})))
       (let [inputs (if validate? (sio/validate-inputs (:inputs spec) inputs) inputs)
-            view (input-identity/prepare-inputs (:inputs spec) inputs)
+            view (prepare-request-inputs (:inputs spec) inputs)
             stream-ch (router/completion
                        provider
                        (assoc (marker-request (assoc spec :inputs (:inputs view)) (:values view) options) :stream true))

@@ -18,7 +18,6 @@
             [ai.obney.grain.control-plane.interface :as control-plane]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.grain-test-utils.interface :as tu]
-            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.gepa.interface :as gepa]
@@ -294,7 +293,7 @@
 ;; -----------------------------------------------------------------------------
 
 (defn- two-rounds-with-model! [ctx seeded metric prompts usage]
-  (with-redefs [llm/predict (stub-predict prompts usage)]
+  (binding [logic/*predict-reflection* (stub-predict prompts usage)]
     (dotimes [_ 2] (full-round! ctx seeded metric (atom []) {:proposer real-generate}))))
 
 (deftest a-template-string-reaches-every-components-prompt
@@ -369,13 +368,13 @@
                       (fn [& [_ _ _ _ _ call-context :as args]]
                         (if (and (= :subsample-parent (:role call-context)) (>= @done 1))
                           (throw (ex-info "worker died" {:gepa/evaluation-status :recovery-required}))
-                          (do (swap! done inc) (apply real-execute args))))
-                      llm/predict (stub-predict prompts hundred-tokens)]
-          (run-round! ctx seeded metric (fn [& _] (throw (ex-info "not reached" {}))) nil))
+                          (do (swap! done inc) (apply real-execute args))))]
+          (binding [logic/*predict-reflection* (stub-predict prompts hundred-tokens)]
+            (run-round! ctx seeded metric (fn [& _] (throw (ex-info "not reached" {}))) nil)))
         (is (empty? @prompts))
-        (with-redefs [tp/generate-mutated-instruction real-generate
-                      llm/predict (stub-predict prompts hundred-tokens)]
-          (gepa/resume! (assoc ctx :gepa/metric-fn metric) (:optimization-id seeded)))
+        (with-redefs [tp/generate-mutated-instruction real-generate]
+          (binding [logic/*predict-reflection* (stub-predict prompts hundred-tokens)]
+            (gepa/resume! (assoc ctx :gepa/metric-fn metric) (:optimization-id seeded))))
         (is (= 1 (count @prompts)))
         (is (string/starts-with? (first @prompts) "RESUMED-TEMPLATE"))))))
 
@@ -409,7 +408,7 @@
             seeded (seed! ctx {:trainset (examples "TRAIN" 5) :valset (examples "VAL" 4)
                                :instructions three-components
                                :config (cond-> {} tpl (assoc :reflection-prompt-template tpl))})]
-        (with-redefs [llm/predict (stub-predict prompts hundred-tokens)]
+        (binding [logic/*predict-reflection* (stub-predict prompts hundred-tokens)]
           (full-round! ctx seeded (counting-metric counts (constantly 0.0)) (atom [])
                        {:proposer real-generate}))
         (is (= 1 (count @prompts)))
@@ -432,7 +431,7 @@
                                :instructions three-components
                                :config {:max-reflection-tokens 150}})
             {:keys [optimization-id]} seeded]
-        (with-redefs [llm/predict (stub-predict prompts hundred-tokens)]
+        (binding [logic/*predict-reflection* (stub-predict prompts hundred-tokens)]
           (dotimes [_ 3] (full-round! ctx seeded metric (atom []) {:proposer real-generate})))
         (is (= 2 (count @prompts)) "the third proposer call never started")
         (is (= 200 (tokens-recorded ctx optimization-id)))
@@ -455,7 +454,7 @@
         (request-round! ctx seeded metric real-generate)
         (is (= 1 (count (requested-rounds ctx optimization-id))) "opened under budget")
         (record-proposer-tokens! ctx seeded 100)
-        (with-redefs [llm/predict (stub-predict prompts hundred-tokens)]
+        (binding [logic/*predict-reflection* (stub-predict prompts hundred-tokens)]
           (drive-requested! ctx optimization-id metric real-generate))
         (is (empty? @prompts) "no model call")
         (is (empty? (events-of ctx optimization-id #{:gepa/proposal-ready})))
@@ -487,7 +486,7 @@
                                :instructions three-components
                                :config {:max-reflection-tokens 100}})
             {:keys [optimization-id]} seeded]
-        (with-redefs [llm/predict (stub-predict prompts hundred-tokens)]
+        (binding [logic/*predict-reflection* (stub-predict prompts hundred-tokens)]
           (run-round! ctx seeded metric real-generate nil)
           (is (= 1 (count @prompts)))
           (is (= 100 (tokens-recorded ctx optimization-id)))
@@ -510,7 +509,7 @@
                                :instructions three-components
                                :config {:max-reflection-tokens 150}})
             {:keys [optimization-id]} seeded]
-        (with-redefs [llm/predict (stub-predict prompts hundred-tokens)]
+        (binding [logic/*predict-reflection* (stub-predict prompts hundred-tokens)]
           (run-round! ctx seeded metric real-generate nil))
         (let [progress (gepa/get-progress ctx optimization-id)
               result (or (:query/result progress) progress)]
@@ -524,7 +523,7 @@
             seeded (seed! ctx {:trainset (examples "TRAIN" 5) :valset (examples "VAL" 4)
                                :instructions three-components})
             {:keys [optimization-id]} seeded]
-        (with-redefs [llm/predict (stub-predict prompts (assoc hundred-tokens :cost 0.0123))]
+        (binding [logic/*predict-reflection* (stub-predict prompts (assoc hundred-tokens :cost 0.0123))]
           (run-round! ctx seeded (counting-metric counts (constantly 0.0)) real-generate nil))
         (let [evidence (first (proposer-evidence ctx optimization-id))]
           (is (= 0.0123 (get-in evidence [:usage :cost])))

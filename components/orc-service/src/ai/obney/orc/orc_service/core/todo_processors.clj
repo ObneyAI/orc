@@ -8098,7 +8098,9 @@
                                  :status child-status}
                           (seq write-sources)
                           (assoc :write-keys (vec (keys write-sources))
-                                 :write-sources write-sources)
+                                 :write-sources write-sources
+                                 :write-profile (logic/profile-values
+                                                 (select-keys child-writes (keys write-sources))))
                           (seq exec-context) (assoc :inputs exec-context))})]})
             (:failure :timeout)
             (if next-child-id
@@ -8647,20 +8649,7 @@
                               (assoc :failure-kind (:failure-kind completed))
                               (:provider-evidence completed)
                               (assoc :provider-evidence (:provider-evidence completed))
-                              (seq (:write-keys completed))
-                              (assoc :write-keys (:write-keys completed)
-                                     :output-profile (:write-profile completed))
-
-                              (seq (:missing-write-keys completed))
-                              (assoc :missing-write-keys (:missing-write-keys completed))
-                              (seq (:rejected-write-keys completed))
-                              (assoc :rejected-write-keys (:rejected-write-keys completed)
-                                     :rejected-output-profile
-                                     (:rejected-write-profile completed))
-
-                              (seq (:read-keys completed))
-                              (assoc :read-keys (:read-keys completed)
-                                     :input-profile (:input-profile completed)))))
+                              completed (merge (logic/trace-value-metadata completed)))))
             ephemeral-node-traces
             (vec
              (mapcat (fn [summary]

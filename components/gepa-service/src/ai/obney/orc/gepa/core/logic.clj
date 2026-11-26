@@ -863,6 +863,10 @@ Provide the new instructions within ``` blocks.")
 ;; LLM Function for Instruction Proposal
 ;; =============================================================================
 
+(def ^:dynamic *predict-reflection*
+  "Provider call used for a GEPA reflection proposal."
+  #'llm/predict)
+
 (defn make-llm-fn
   "Create the reflection LLM function (prompt) -> response-string for the
    instruction proposer.
@@ -887,7 +891,7 @@ Provide the new instructions within ``` blocks.")
                                    "include the full new instruction inside a ``` block.")}]
     (fn [prompt]
       (u/log :ai.obney.orc.gepa.core.todo-processors/calling-llm :model model-name :prompt-length (count prompt))
-      (let [result (llm/predict provider module {:prompt prompt}
+      (let [result (*predict-reflection* provider module {:prompt prompt}
                      (merge (:gepa/reflection-options context)
                             {:model model-name
                              :use-function-calling? true
