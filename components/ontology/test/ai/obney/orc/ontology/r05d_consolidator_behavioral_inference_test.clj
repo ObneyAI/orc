@@ -9,7 +9,8 @@
    - dispatch-observed-composes-into-edges! grows behavior:composes-into
      edges when inferred (behavior, shell) pairs aren't yet in the graph
    - idempotency: re-running edge growth doesn't duplicate"
-  (:require [ai.obney.orc.ontology.core.read-models :as rm]
+  (:require [ai.obney.orc.ontology.core.managed-graph :as managed]
+            [ai.obney.orc.ontology.core.read-models :as rm]
             [clojure.test :refer [deftest testing is]]
             [malli.core :as m]
             [ai.obney.orc.ontology.interface :as ontology]
@@ -257,28 +258,7 @@
   "Lazy-create a tree-class concept (the structural shell) directly so the
    composes-into edge has a target URI to point at."
   [ctx shell-id]
-  (let [ontology-id (java.util.UUID/nameUUIDFromBytes
-                     (.getBytes "tree-class-ontology" "UTF-8"))]
-    (cp/process-command
-      (assoc ctx :command
-             {:command/name :ontology/create-ontology
-              :command/id ontology-id
-              :command/timestamp (time/now)
-              :name "Tree class ontology"
-              :scope :tree-class
-              :base-uri "tree-class:"}))
-    (cp/process-command
-      (assoc ctx :command
-             {:command/name :ontology/create-concept
-              :command/id (random-uuid)
-              :command/timestamp (time/now)
-              :ontology-id ontology-id
-              :uri (str "tree-class:" shell-id)
-              :label (str shell-id)
-              :description (str "Tree-class concept for " shell-id)
-              :scope :tree-class
-              :broader []
-              :indicators []}))))
+  (managed/ensure-concept! ctx :tree-class shell-id))
 
 (defn- count-composes-into [ctx behavior-uri]
   (count (get-in (rm/get-concept-map ctx)

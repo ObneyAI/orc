@@ -1319,9 +1319,7 @@ Which rule applies? What action should be taken?"
 
 ORC supports an empty, event-sourced custom ontology independently of its built-in
 failure/success/problem graph. Use `ai.obney.orc.ontology.interface`; its public
-functions construct Grain command metadata, preserve anomalies, and return generated
-identities plus emitted effects. Loading internal command namespaces is not part of the
-consumer contract. Every call is tenant-scoped through `ctx`.
+functions return generated identities and revisions or a categorized anomaly. Every call is tenant-scoped through `ctx`.
 
 ```clojure
 (require '[ai.obney.orc.ontology.interface :as ontology])
@@ -1334,7 +1332,7 @@ consumer contract. Every call is tenant-scoped through `ctx`.
         :base-uri "urn:example:principal:"}))
 
 (def ontology-id (:ontology-id created))
-;; created => {:ontology-id #uuid "..." :events [...]}
+;; created => {:ontology-id #uuid "..." :revision 1}
 
 (ontology/get-ontology ctx ontology-id)
 ;; => {:ontology-id #uuid "..." :name "Principal concept graph"
@@ -1374,17 +1372,16 @@ tenant-scoped `ontology-id`; equal metadata in another tenant remains isolated.
 
 (ontology/update-concept!
  ctx ontology-id (:concept-id child)
- {:description "A preference for concise, decision-oriented status updates"
-  :indicators ["brief" "summary" "decision"]})
+ {:changes {:description "A preference for concise, decision-oriented status updates"
+            :indicators ["brief" "summary" "decision"]}})
 
 (ontology/get-concept-by-uri ctx ontology-id "urn:example:concise-updates")
 ```
 
-`concept-id` identifies the creation event; `(ontology-id, uri)` is the scoped graph
-identity. URI is immutable through `update-concept!`; only `:label`, `:description`,
-`:broader`, and `:indicators` can change. Creation rejects nonexistent ontologies,
-blank required text, duplicate same-ontology URIs, and missing broader URIs. Updates
-reject missing identities, empty/no-op changes, missing broader concepts, and cycles.
+`concept-id` is the generated concept UUID. The ontology ID and URI also
+identify the concept. Updates accept label, description, scope, alternate labels,
+entity type, parents, indicators, attributes, provenance and embedding fields.
+The library validates parent existence and rejects hierarchy cycles.
 The same URI may exist in another ontology. An ambiguous unscoped lookup returns `nil`;
 prefer the three-argument `get-concept-by-uri` form above.
 
@@ -1405,34 +1402,30 @@ outside ORC and should reference concepts by ID and URI.
       :metadata {:source-reference "source:conversation:456"
                  :trace-id trace-id}})
 ;; => {:relationship-id #uuid "..." :source-uri ... :target-uri ...
-;;     :predicate "skos:related" :events [...]}
+;;     :predicate "skos:related" :revision ...}
 ```
 
-Both endpoints must exist in the caller's tenant. Supported predicates are
-`skos:broader`, `skos:narrower`, `skos:related`, and `behavior:composes-into`.
-Self-links and duplicate edges are rejected. SKOS links remain within one ontology;
-`behavior:composes-into` is the explicit cross-ontology composition seam. Metadata is
-limited to `:source-reference` and `:trace-id`.
+Both endpoints must exist in the caller's tenant. The source ontology's predicate
+policy governs cross-ontology edges. ORC registers `behavior:composes-into` for
+its managed graphs. Callers can attach application metadata to a relationship.
 
 ### Retry and Recovery Semantics
 
-The wrappers generate a Grain `:command/id` unless the caller supplies one. Persist a
-command ID with an outgoing mutation and reuse it for retries:
+Persist a UUID request key with an outgoing mutation and reuse it on retries.
 
 ```clojure
 (ontology/create-concept!
  ctx ontology-id
- {:command/id durable-command-id
+ {:request-id durable-request-id
   :uri "urn:example:retry-safe"
   :label "Retry-safe concept"
-  :description "Created at most once for this command identity"
+  :description "Created at most once for this request"
   :scope :custom})
 ```
 
-Retrying ontology, concept, update, or relationship creation with the same command ID
-returns the durable identity without appending the mutation again. Projections rebuild
-the same state after restart. A semantic duplicate under a different command ID remains
-a conflict. Concept updates currently have no public optimistic-version precondition.
+Replaying the same payload and request key returns the original result.
+Reusing the key for a different payload returns a conflict. Supply
+`:expected-revision` on an update to reject a stale graph revision.
 
 ### Evolving a Manually Created Ontology
 
@@ -2478,27 +2471,21 @@ Build ontology context using hybrid search:
 3. **Active Learning** - Suggest which evaluations to label next
 4. **Cross-Ontology Retrieval** - Search across failure/success/problem simultaneously
 
-## Known issues
+## Searching a stored graph
 
-### BFS scoping — fixed in feature branch, not yet on main
-
-**Source:** `components/ontology/src/ai/obney/orc/ontology/core/retrieval.clj:116`
-
-On the current `main` branch, `expand-concept-neighborhood` has no `:ontology-id` parameter and walks all concepts regardless of ontology boundary. Embedding and ColBERT searches are correctly scoped; BFS is not.
+Pass `:ontology-id` or `:ontology-ids` to `hybrid-search` or
+`hybrid-search-batch`. Traversal follows the stored parent, child and related
+links within each selected graph. Results carry the ontology ID and URI, so
+concepts with a shared URI keep their own labels and ranks.
 
 ```clojure
-;; Current signature on main — no :ontology-id:
-(defn expand-concept-neighborhood
-  [seed-uris & {:keys [max-depth decay graph]
-                :or {max-depth 2 decay 0.6}}]
-  ...)
+(ontology/hybrid-search ctx {:ontology-id ontology-id
+                            :seed-uris ["urn:example:communication"]
+                            :signals #{:graph}
+                            :limit 5})
 ```
 
-**Workaround today:** call `hybrid-search` with `:signals #{:embedding}` or `:signals #{:graph :embedding}` AND pass `:ontology-id` — the embedding signal is correctly scoped. For purely scoped results, use `semantic-search-concepts` directly.
-
-**Fix landed:** `feature/ontology-architecture` (S02) — `expand-concept-neighborhood` now accepts `:ontology-id`/`:ontology-ids` and builds a scoped concept graph accordingly. Back-compat preserved: callers without `:ontology-id` behave identically to before. Merges to `main` when that branch lands.
-
----
+## Known issues
 
 ### `tree-fingerprint` is structural — instruction variants collapse
 

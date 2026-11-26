@@ -1,6 +1,6 @@
 (ns ai.obney.orc.ontology.core.graph
   "ORC integration adapter for the standalone ontology algorithms."
-  (:require [ai.obney.ontology.algorithms :as ontology]))
+  (:require [ai.obney.ontology.core.graph :as ontology]))
 
 (def default-edge-weights ontology/default-edge-weights)
 (def default-traversal-config ontology/default-traversal-config)

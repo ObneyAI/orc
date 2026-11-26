@@ -18,6 +18,8 @@
   (:require [ai.obney.ontology.interface :as ontology]
             [clojure.string]
             [ai.obney.orc.ontology.core.static-ontology :as static]
+            [ai.obney.orc.ontology.interface.schemas]
+            [ai.obney.orc.ontology.core.queries]
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.serialization :as serialization]
             [ai.obney.orc.ontology.core.classifier :as classifier]
@@ -1814,9 +1816,9 @@
 ;; =============================================================================
 
 (defn get-concept-embedding
-  "Get embedding for a specific concept by URI."
-  [ctx uri]
-  (rm/get-concept-embedding ctx uri))
+  "Read a stored vector by URI. Supply the ontology ID when URIs overlap."
+  ([ctx uri] (rm/get-concept-embedding ctx uri))
+  ([ctx ontology-id uri] (rm/get-concept-embedding ctx ontology-id uri)))
 
 (defn get-all-concept-embeddings
   "Get all concept embeddings, optionally filtered by scope."
@@ -1848,32 +1850,12 @@
 ;; =============================================================================
 
 (defn semantic-search-concepts
-  "Search concepts using embedding similarity.
-
-   Generates an embedding for the query text and finds similar concepts
-   based on cosine similarity with stored concept embeddings.
-
-   Args:
-     event-store: Grain event store (required)
-     query-text: Natural language search query
-     opts:
-       :scope - Filter to specific ontology scope (:failure, :success, :problem)
-       :limit - Maximum results (default 10)
-       :min-similarity - Minimum cosine similarity threshold (default 0.5)
-       :model-id - Embedding model to use (default: all-MiniLM-L6-v2)
-
-   Returns:
-     Vector of {:uri :similarity :label :description} sorted by similarity
-
-   Requires concept embeddings to be generated first via ontology/embed-concepts-batch."
-  [event-store query-text & {:keys [scope limit min-similarity model-id]
-                              :or {limit 10 min-similarity 0.5}
-                              :as opts}]
-  (retrieval/semantic-search-concepts event-store query-text
-                                       :scope scope
-                                       :limit limit
-                                       :min-similarity min-similarity
-                                       :model-id model-id))
+  "Compare a query embedding to stored concept vectors from the same model.
+   Select graphs with :ontology-id or :ontology-ids and restrict concepts with
+   :scope. Accepts :model-id, :min-similarity and :limit. Results include each
+   concept's ontology ID, URI, label, description and similarity."
+  [ctx query-text & opts]
+  (apply retrieval/semantic-search-concepts ctx query-text opts))
 
 (defn semantic-search-tree-profiles
   "Search tree profiles using embedding similarity.

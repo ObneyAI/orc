@@ -10,7 +10,9 @@
    - Embedding concepts and profiles (Phase 4)
 
    All commands emit events that are processed by read models."
-  (:require [ai.obney.ontology.interface :as ontology]
+  (:require [ai.obney.ontology.grain :as grain]
+            [ai.obney.orc.ontology.core.managed-graph :as managed]
+            [ai.obney.ontology.interface :as ontology]
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.evidence-guard :as guard]
             [ai.obney.orc.ontology.core.static-ontology :as static]
@@ -65,67 +67,23 @@
 
 
 (defcommand :ontology initialize-static-ontology
-  "Initialize the static ontology by emitting concept-created events.
-   Optional :scope to only initialize specific ontology layer."
-  [{{:keys [scope]} :command
-    :keys [event-store]}]
-  (let [ontology-id (generate-uuid)
-        concepts (if scope
-                   (static/get-concepts-by-scope scope)
-                   (static/get-all-static-concepts))
-        relationships (static/get-all-static-relationships)
-        now (now-str)
-
-        ;; Create ontology lifecycle event
-        ontology-event (->event
-                        {:type :ontology/ontology-created
-                         :tags #{[:ontology ontology-id]}
-                         :body {:ontology-id ontology-id
-                                :name (case scope
-                                        :failure "Failure Ontology"
-                                        :success "Success Ontology"
-                                        :problem "Problem Domain Ontology"
-                                        "ObneyAI Workshop Ontology")
-                                :scope (or scope :all)
-                                :description "Three-layer ontology system: Failure, Success, Problem Domain"
-                                :base-uri "http://obney.ai/workshop/ontology/"
-                                :created-at now}})
-
-        ;; Create concept events
-        concept-events (mapv (fn [concept]
-                               (let [concept-id (generate-uuid)]
-                                 (->event
-                                  {:type :ontology/concept-created
-                                   :tags #{[:ontology ontology-id]
-                                           [:concept concept-id]}  ;; Only UUID-based tags allowed
-                                   :body {:ontology-id ontology-id
-                                          :concept-id concept-id
-                                          :uri (:uri concept)
-                                          :label (:label concept)
-                                          :description (:description concept)
-                                          :scope (:scope concept)
-                                          :broader (:broader concept)
-                                          :indicators (:indicators concept)
-                                          :created-at now}})))
-                             concepts)
-
-        ;; Create relationship events
-        relationship-events (mapv (fn [rel]
-                                    (->event
-                                     {:type :ontology/relationship-created
-                                      :tags #{[:ontology ontology-id]}
-                                      :body {:relationship-id (generate-uuid)
-                                             :source-ontology-id ontology-id
-                                             :target-ontology-id ontology-id
-                                             :source-uri (:source rel)
-                                             :target-uri (:target rel)
-                                             :predicate (:predicate rel)
-                                             :created-at now}}))
-                                  relationships)]
-
-    {:command-result/events (vec (concat [ontology-event]
-                                         concept-events
-                                         relationship-events))}))
+  "Install the selected static vocabulary in one graph commit."
+  [{{:keys [scope] :as cmd} :command :as ctx}]
+  (let [concepts (if scope (static/get-concepts-by-scope scope) (static/get-all-static-concepts))
+        uris (set (map :uri concepts))
+        edges (for [rel (static/get-all-static-relationships)
+                    :when (and (uris (:source rel)) (uris (:target rel)))]
+                {:source-uri (:source rel) :target-uri (:target rel) :predicate (:predicate rel)})
+        parents (for [concept concepts parent (:broader concept)]
+                  {:source-uri (:uri concept) :target-uri parent :predicate "skos:broader"})]
+    (grain/prepare-vocabulary ctx
+      {:ontology {:request-id (:command/id cmd)
+                  :name (case scope :failure "Failure Ontology" :success "Success Ontology"
+                                    :problem "Problem Domain Ontology" "ObneyAI Workshop Ontology")
+                  :scope (or scope :all) :description "Three-layer ontology system: Failure, Success, Problem Domain"
+                  :base-uri "http://obney.ai/workshop/ontology/"}
+       :concepts (mapv #(dissoc % :broader) concepts)
+       :relationships (vec (concat edges parents))})))
 
 ;; =============================================================================
 ;; Tree Profile Commands
@@ -339,167 +297,58 @@
 ;; RS-3 — birth a domain child through ONE command
 ;; =============================================================================
 ;;
-;; RS-P2's verdict: the claim path cannot carry a parent, and the description
-;; projector ignores :tree-class-scoped bodies — ensuring both tree-class
-;; concepts and dispatching a skos:broader relationship (no description body)
-;; produced the edge with NO second body writer (CC-6). This command is that
-;; COMMAND path, as ONE dispatch: it lazy-creates the parent's tree-class
-;; concept exactly as `ensure-tree-class-concept!` does (todo_processors.clj),
-;; creates the child's tree-class concept with :label = the judged domain
-;; label, and creates the skos:broader edge — emitting only the events that
-;; are actually missing, so a repeat mint of the SAME identity (same parent +
-;; same canonical label, per `stable-domain-child-identity`) emits nothing new
-;; (@invariant DomainChildIdentityIsStable: "its parent edge exists in the
-;; concept graph from the moment it is minted, and it describes itself from
-;; birth with its label").
-;;
-;; `tree-class-ontology-id` is duplicated here rather than shared, matching
-;; this codebase's existing precedent (consolidator.clj derives its own copy
-;; of the same deterministic UUID) — a command handler cannot dispatch a
-;; nested command the way a processor's `ensure-tree-class-concept!` does, so
-;; the lazy-create is inlined as direct event construction instead.
-
-(def ^:private tree-class-ontology-id
-  "Stable UUID for the dedicated tree-class ontology (mirrors
-   todo_processors.clj's identically-derived constant)."
-  (java.util.UUID/nameUUIDFromBytes (.getBytes "tree-class-ontology" "UTF-8")))
-
-(defn- tree-class-uri [target-id]
-  (str "tree-class:" target-id))
-
 (defcommand :ontology mint-domain-child
-  "RS-3 + CV-A item 5: birth a domain child under a tree-class parent
-   through ONE command — the child's tree-class concept (labelled with the
-   judged domain label) and its skos:broader edge to the parent, plus the
-   audit-trail :ontology/domain-child-minted event. Dispatched by the wedge
-   BEFORE the CV-1 signature claim and BEFORE :ontology/assign-task-class,
-   so the concept and edge exist before anything references the child.
-
-   CV-A: an OPTIONAL `:birth-description` string — sent only for a genuine
-   tenant-wide family birth, never the legacy per-parent sibling mint —
-   becomes the child concept's `:description` (in place of the generic
-   placeholder) AND is embedded synchronously into the SAME event batch as
-   an `:ontology/concept-embedded` event
-   (`DomainFamilyDescribesItselfFromBirth`: \"its concept is embedded at
-   birth\"). Embedding here, rather than as a second dispatched command,
-   is deliberate: a checkpointed campaign prepares every staged effect from
-   ONE pre-commit snapshot, so a separate embed command could never read
-   back a concept THIS SAME commit is creating (empirically confirmed — a
-   staged `:ontology/embed-concept` effect threw \"Concept not found\")."
+  "Prepare the parent, child, edge, birth embedding and audit record for one append."
   [{{:keys [parent-tree-id child-tree-id domain-label birth-description
-            source-sheet-id source-tick-id source-node-id]} :command
-    :as ctx}]
-  (let [parent-uri (tree-class-uri parent-tree-id)
-        child-uri (tree-class-uri child-tree-id)
-        now (now-str)
-        ;; Read the same graph projection as the classifier. The mint batch also
-        ;; has to recognize concepts created by earlier ORC mint commands.
-        concepts (ontology/get-concepts (dissoc ctx :command) {:scope :tree-class})
-        by-uri (into {} (comp (filter #(= tree-class-ontology-id (:ontology-id %)))
-                              (map (juxt :uri identity))) concepts)
-        parent-concept (get by-uri parent-uri)
-        child-concept (get by-uri child-uri)
-        already-linked? (contains? (:broader child-concept) parent-uri)
-        child-concept-id (random-uuid)
-        parent-concept-event
-        (when-not parent-concept
-          (->event
-           {:type :ontology/concept-created
-            :tags #{[:ontology tree-class-ontology-id] [:concept (random-uuid)]}
-            :body {:ontology-id tree-class-ontology-id
-                   :concept-id (random-uuid)
-                   :uri parent-uri
-                   :label (str parent-tree-id)
-                   :description (str "Tree-class concept for " parent-tree-id)
-                   :scope :tree-class
-                   :broader []
-                   :indicators []
-                   :provenance {:kind :system-static}
-                   :created-at now}}))
-        child-is-new? (not child-concept)
-        child-concept-event
-        (when child-is-new?
-          (->event
-           {:type :ontology/concept-created
-            :tags #{[:ontology tree-class-ontology-id] [:concept child-concept-id]}
-            :body {:ontology-id tree-class-ontology-id
-                   :concept-id child-concept-id
-                   :uri child-uri
-                   :label domain-label
-                   :description (or birth-description
-                                    (str "Domain child of " parent-tree-id))
-                   :scope :tree-class
-                   :broader [parent-uri]
-                   :indicators []
-                   :provenance {:kind :agent-authored}
-                   :created-at now}}))
-        relationship-event
-        (when-not already-linked?
-          (->event
-           {:type :ontology/relationship-created
-            :tags #{[:relationship (random-uuid)] [:ontology tree-class-ontology-id]}
-            :body {:relationship-id (random-uuid)
-                   :source-ontology-id tree-class-ontology-id
-                   :target-ontology-id tree-class-ontology-id
-                   :source-uri child-uri
-                   :target-uri parent-uri
-                   :predicate "skos:broader"
-                   :created-at now}}))
-        embed-event
-        (when (and child-is-new? (seq birth-description))
-          (let [embedding-vec (embedding/embed-text birth-description)]
-            ;; embed-text answers nil on failure. A family born without its
-            ;; embedding is invisible to the hybrid search's embedding leg, so
-            ;; the birth fails loudly (as :ontology/embed-concept does) rather
-            ;; than landing an unembedded family with no trace of why.
-            (when-not embedding-vec
-              (throw (ex-info "Failed to generate the domain family's birth embedding"
-                              {:child-tree-id child-tree-id :uri child-uri
-                               :requirement :birth-embedding})))
-            (do
-              (->event
-               {:type :ontology/concept-embedded
-                :tags #{[:concept child-concept-id]}
-                :body {:concept-id child-concept-id
-                       :uri child-uri
-                       :ontology-id tree-class-ontology-id
-                       :scope :tree-class
-                       :text-embedded birth-description
-                       :field-source "birth-description"
-                       :embedding embedding-vec
-                       :model-id embedding/default-model-id
-                       :embedded-at now}}))))
-        ;; Standalone graph reads obtain vectors from concept creation/updates.
-        ;; Keep the embedding event for ORC subscribers and attach its vector
-        ;; to the new concept in the same atomic batch.
-        child-with-embedding (if embed-event
-                               (assoc child-concept-event
-                                      :embedding (:embedding embed-event)
-                                      :embedding-model (:model-id embed-event))
-                               child-concept-event)
-        already-minted? (and (some? child-concept) already-linked?)]
-    (if already-minted?
-      {:command-result/events []}
-      {:command-result/events
-       (into [] (remove nil?)
-             [parent-concept-event
-              child-with-embedding
-              relationship-event
-              embed-event
-              (->event
-               {:type :ontology/domain-child-minted
-                :tags #{[:tree-class-child child-tree-id]
-                        [:description-target child-tree-id]}
-                :body (cond-> {:parent-tree-id parent-tree-id
-                               :child-tree-id child-tree-id
-                               :domain-label domain-label
-                               :minted-at now}
-                        source-sheet-id (assoc :source-sheet-id source-sheet-id)
-                        source-tick-id (assoc :source-tick-id source-tick-id)
-                        source-node-id (assoc :source-node-id source-node-id))})])
-       :command-result/data {:parent-tree-id parent-tree-id
-                             :child-tree-id child-tree-id
-                             :domain-label domain-label}})))
+            source-sheet-id source-tick-id source-node-id]} :command :as ctx}]
+  (let [parent-uri (str "tree-class:" parent-tree-id)
+        child-uri (str "tree-class:" child-tree-id)
+        definition (managed/definition :tree-class)
+        parent {:uri parent-uri :scope :tree-class :label (str parent-tree-id)
+                :description (str "Tree-class concept for " parent-tree-id)
+                :provenance {:kind :system-static}}
+        child {:uri child-uri :scope :tree-class :label domain-label
+               :description (or birth-description (str "Domain child of " parent-tree-id))
+               :provenance {:kind :agent-authored}}
+        prepare (fn [c]
+                  (managed/checked (grain/prepare-vocabulary ctx
+                    {:ontology definition :concepts [parent c]
+                     :relationships [{:source-uri child-uri :target-uri parent-uri
+                                      :predicate "skos:broader"}]})))
+        plan (prepare child)
+        new-child (fn [result]
+                    (some #(when (and (= :ontology/concept-created (:event/type %))
+                                      (= child-uri (:uri %))) %)
+                          (:command-result/events result)))
+        vector (when (and (seq birth-description) (new-child plan))
+                 (or (embedding/embed-text birth-description)
+                     (throw (ex-info "Failed to generate the domain family's birth embedding"
+                                     {:child-tree-id child-tree-id :uri child-uri}))))
+        plan (if vector (prepare (assoc child :embedding (mapv double vector)
+                                       :embedding-model embedding/default-model-id)) plan)
+        born (new-child plan)
+        oid (get-in plan [:command-result/data :ontology-id])
+        now (now-str)]
+    (if (empty? (:command-result/events plan)) plan
+      (-> plan
+          (assoc :command-result/data {:parent-tree-id parent-tree-id :child-tree-id child-tree-id
+                                       :domain-label domain-label})
+          (update :command-result/events
+                  (fn [events]
+                    (cond-> events
+                      (and born vector) (conj (->event
+                        {:type :ontology/concept-embedded :tags #{[:concept (:concept-id born)]}
+                         :body {:concept-id (:concept-id born) :uri child-uri :ontology-id oid
+                                :scope :tree-class :text-embedded birth-description :field-source "birth-description"
+                                :embedding (mapv double vector) :model-id embedding/default-model-id :embedded-at now}}))
+                      true (conj (->event
+                        {:type :ontology/domain-child-minted
+                         :tags #{[:tree-class-child child-tree-id] [:description-target child-tree-id]}
+                         :body (cond-> {:parent-tree-id parent-tree-id :child-tree-id child-tree-id
+                                        :domain-label domain-label :minted-at now}
+                                 source-sheet-id (assoc :source-sheet-id source-sheet-id)
+                                 source-tick-id (assoc :source-tick-id source-tick-id)
+                                 source-node-id (assoc :source-node-id source-node-id))})))))))))
 
 ;; =============================================================================
 ;; Discovery Commands
@@ -554,8 +403,8 @@
         vector (embedding/embed-text text)]
     (if-not vector
       {::anom/category ::anom/fault ::anom/message "Failed to generate embedding" :uri (:uri concept)}
-      (let [result (ontology/update-concept! ctx (:ontology-id concept) (:id concept)
-                     {:embedding (mapv double vector) :embedding-model embedding/default-model-id})]
+      (let [result (ontology/update-concept! ctx (:ontology-id concept) (:concept-id concept)
+                     {:changes {:embedding (mapv double vector) :embedding-model embedding/default-model-id}})]
         (if (::anom/category result) result
             {:uri (:uri concept) :ontology-id (:ontology-id concept)
              :dimensions (count vector) :text-embedded text})))))
@@ -564,32 +413,35 @@
   "Generate a model vector in ORC and persist it through the ontology API.
    ontology-id is required when a URI is present in more than one ontology."
   [{{:keys [ontology-id uri fields]} :command :as ctx}]
-  (if-let [concept (if ontology-id
-                    (ontology/get-concept-by-uri ctx ontology-id uri)
-                    (ontology/get-concept-by-uri ctx uri))]
-    (let [result (embed-stored-concept! ctx concept fields)]
-      (if (::anom/category result) result
-          {:command-result/data result :command-result/events []}))
-    {::anom/category ::anom/not-found
-     ::anom/message "Concept not found or URI is ambiguous; supply ontology-id"
-     :uri uri :ontology-id ontology-id}))
+  (let [concept (if ontology-id
+                  (ontology/get-concept-by-uri ctx ontology-id uri)
+                  (rm/get-concept-by-uri (dissoc ctx :command) uri))]
+    (cond
+      (::anom/category concept) concept
+      (nil? concept) {::anom/category ::anom/not-found
+                      ::anom/message "Concept not found or URI is ambiguous; supply ontology-id"
+                      :uri uri :ontology-id ontology-id}
+      :else (let [result (embed-stored-concept! ctx concept fields)]
+              (if (::anom/category result) result
+                  {:command-result/data result :command-result/events []})))))
 
 (defcommand :ontology embed-concepts-batch
   "Embed stored concepts selected by ontology IDs, scope, and optional URIs.
    Each vector update is a separate validated ontology command."
   [{{:keys [ontology-id ontology-ids scope uris fields]} :command :as ctx}]
-  (let [concepts (cond->> (ontology/get-concepts ctx
-                            (cond-> {} ontology-id (assoc :ontology-id ontology-id)
-                                       ontology-ids (assoc :ontology-ids ontology-ids)
-                                       scope (assoc :scope scope)))
-                   (seq uris) (filterv #(contains? (set uris) (:uri %))))
-        result (reduce (fn [count concept]
-                         (let [result (embed-stored-concept! ctx concept fields)]
-                           (if (::anom/category result) (reduced result) (inc count))))
-                       0 concepts)]
-    (if (map? result) result
-        {:command-result/data {:embedded-count result :total-concepts (count concepts)}
-         :command-result/events []})))
+  (let [concepts (ontology/get-concepts ctx
+                   (cond-> {} ontology-id (assoc :ontology-id ontology-id)
+                              ontology-ids (assoc :ontology-ids ontology-ids)
+                              scope (assoc :scope scope)))]
+    (if (::anom/category concepts) concepts
+      (let [selected (if (seq uris) (filterv (comp (set uris) :uri) concepts) concepts)
+            result (reduce (fn [n concept]
+                             (let [result (embed-stored-concept! ctx concept fields)]
+                               (if (::anom/category result) (reduced result) (inc n))))
+                           0 selected)]
+        (if (::anom/category result) result
+            {:command-result/data {:embedded-count result :total-concepts (count selected)}
+             :command-result/events []})))))
 
 (defcommand :ontology embed-tree-profile
   "Generate and store embedding for a tree profile summary."

@@ -21,8 +21,8 @@
                  (merge {:uri uri :label label :description label :scope :custom} fields))))
 
 (defn contribution! [ctx oid concepts & [relationships]]
-  (successful! (graph/import-contribution! ctx
-                 {:ontology-id oid :contribution-id (random-uuid)
+  (successful! (graph/import-contribution! ctx oid
+                 {:contribution-id (random-uuid)
                   :expected-revision (graph/get-revision ctx oid)
                   :source {:source-id (random-uuid) :content-hash "fixture-content"}
                   :concepts concepts :relationships (vec relationships)})))

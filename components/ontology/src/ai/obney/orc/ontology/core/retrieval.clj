@@ -10,7 +10,9 @@
    - hybrid-search - Combines graph BFS + embeddings + ColBERT via RRF
 
    Uses BFS spreading activation and RRF fusion from graph.clj"
-  (:require [ai.obney.orc.ontology.core.graph :as graph]
+  (:require [ai.obney.orc.ontology.core.entity-resolver :as resolver]
+            [ai.obney.orc.ontology.core.managed-graph :as managed]
+            [ai.obney.orc.ontology.core.graph :as graph]
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.static-ontology :as static]
             [ai.obney.orc.ontology.core.embedding :as embedding]
@@ -628,36 +630,23 @@
   [ctx query-text & {:keys [scope ontology-id ontology-ids limit min-similarity model-id]
                       :or {limit 10 min-similarity 0.5}}]
   (when (and ctx query-text)
-    (let [;; Generate query embedding
-          query-embedding (embedding/embed-text query-text
-                                                 (when model-id {:model-id model-id}))
-
-          ;; Get stored concept embeddings (filtered by scope and/or ontology-id)
-          filter-opts (cond-> {}
-                        scope (assoc :scope scope)
-                        ontology-id (assoc :ontology-id ontology-id)
-                        ontology-ids (assoc :ontology-ids ontology-ids))
-          concept-embeddings (rm/get-all-concept-embeddings ctx
-                                                             (when (seq filter-opts) filter-opts))]
-
-      (when (and query-embedding (seq concept-embeddings))
-        ;; Search using embedding similarity
-        (->> (embedding/search-concepts-by-embedding
-               query-embedding
-               concept-embeddings
-               :limit limit
-               :min-similarity min-similarity)
-
-             ;; Enrich with concept metadata from static ontology
-             (map (fn [{:keys [uri similarity]}]
-                    (let [concept (static/get-concept-by-uri uri)]
-                      {:uri uri
-                       :similarity similarity
-                       :label (:label concept)
-                       :description (:description concept)
-                       :scope (:scope concept)})))
-
-             vec)))))
+    (let [model (or model-id embedding/default-model-id)
+          filters (cond-> {} scope (assoc :scope scope)
+                             ontology-id (assoc :ontology-id ontology-id)
+                             ontology-ids (assoc :ontology-ids ontology-ids))
+          concepts (managed/checked (rm/get-concepts ctx filters))
+          candidates (filter #(and (:embedding %) (= model (:embedding-model %))) concepts)]
+      (when (seq candidates)
+        (when-let [query-vector (embedding/embed-text query-text {:model-id model})]
+          (->> candidates
+               (keep (fn [concept]
+                       (when-let [score (resolver/cosine-similarity query-vector (:embedding concept))]
+                         (when (>= score min-similarity)
+                           (assoc (select-keys concept [:ontology-id :concept-id :uri :label :description :scope])
+                                  :similarity score)))))
+               (sort-by (juxt (comp - :similarity) :uri :ontology-id))
+               (take limit)
+               vec))))))
 
 (defn semantic-search-tree-profiles
   "Search tree profiles using embedding similarity.
@@ -780,6 +769,46 @@
 ;; Hybrid Search (Graph + Embeddings + ColBERT via RRF)
 ;; =============================================================================
 
+(defn- retrieval-concepts [ctx opts]
+  (when (:event-store ctx)
+    (let [filters (into {} (remove (comp nil? val)) (select-keys opts [:ontology-id :ontology-ids :scope]))]
+      (managed/checked (rm/get-concepts ctx filters)))))
+
+(defn- graph-hits [concepts opts]
+  (let [{:keys [seed-uris max-depth decay limit ontology-id ontology-ids]
+         :or {max-depth 2 decay 0.6 limit 10}} opts
+        stored (for [[oid records] (group-by :ontology-id concepts)
+                     :let [by-uri (into {} (map (juxt :uri identity)) records)
+                           seeds (filter by-uri seed-uris)]
+                     :when (seq seeds)
+                     hit (expand-concept-neighborhood seeds :graph (graph/concepts->graph by-uri)
+                                                      :max-depth max-depth :decay decay)
+                     :let [concept (get by-uri (:uri hit))]
+                     :when concept]
+                 (merge hit (select-keys concept [:ontology-id :concept-id :label :description :scope])))
+        ;; The built-in ontology also supports callers without a populated store.
+        static-seeds (when-not (or ontology-id ontology-ids)
+                       (remove (set (map :uri concepts)) seed-uris))
+        predefined (when (seq static-seeds)
+                     (expand-concept-neighborhood static-seeds :max-depth max-depth :decay decay))]
+    (->> (concat stored predefined)
+         (sort-by (juxt (comp - :score) :uri :ontology-id))
+         (take (* 2 limit)) vec)))
+
+(defn- qualify-index-hits [hits by-uri scoped?]
+  ;; A URI-only index hit cannot distinguish two graphs that share that URI.
+  (keep (fn [{:keys [uri ontology-id] :as hit}]
+          (let [candidates (cond->> (get by-uri uri)
+                             ontology-id (filter #(= ontology-id (:ontology-id %))))]
+            (cond
+              (= 1 (count candidates))
+              (merge hit (select-keys (first candidates) [:ontology-id :concept-id :label :description :scope]))
+              (and (empty? candidates) (not scoped?) (nil? ontology-id)) hit)))
+        hits))
+
+(defn- hit-key [{:keys [ontology-id uri]}]
+  (if ontology-id [ontology-id uri] uri))
+
 (defn- fuse-and-enrich
   "Fuse graph/embedding/colbert result-lists via RRF and enrich the top `limit` with
    concept metadata + per-signal ranks. The shared fusion core of hybrid-search (one
@@ -788,16 +817,17 @@
   [{:keys [graph-results embedding-results colbert-results weights limit signals]
     :or {weights {:graph 1.0 :embedding 1.0 :colbert 1.0} limit 10}}]
   (let [;; Prepare batches for RRF — each batch is [{:uri :score} ...]
+        records (into {} (map (juxt hit-key identity)) (concat colbert-results embedding-results graph-results))
         graph-batch (when (seq graph-results)
-                      (mapv (fn [{:keys [uri score]}]
-                              {:uri uri :score (* (:graph weights 1.0) score)})
+                      (mapv (fn [{:keys [score] :as hit}]
+                              {:uri (hit-key hit) :score (* (:graph weights 1.0) score)})
                             graph-results))
         embedding-batch (when (seq embedding-results)
-                          (mapv (fn [{:keys [uri similarity]}]
-                                  {:uri uri :score (* (:embedding weights 1.0) similarity)})
+                          (mapv (fn [{:keys [similarity] :as hit}]
+                                  {:uri (hit-key hit) :score (* (:embedding weights 1.0) similarity)})
                                 embedding-results))
         ;; ColBERT batch is already formatted with :uri :score
-        colbert-batch (when (seq colbert-results) colbert-results)
+        colbert-batch (mapv #(assoc % :uri (hit-key %)) colbert-results)
         batches (filterv seq [graph-batch embedding-batch colbert-batch])
         merged (when (seq batches)
                  (graph/merge-batches batches :method "rrf"))
@@ -810,15 +840,15 @@
         enriched-results (->> merged
                               (take limit)
                               (mapv (fn [{:keys [uri score]}]
-                                      (let [concept (static/get-concept-by-uri uri)]
-                                        {:uri uri
-                                         :score score
-                                         :graph-rank (get graph-ranks uri)
-                                         :embedding-rank (get embedding-ranks uri)
-                                         :colbert-rank (get colbert-ranks uri)
-                                         :label (:label concept)
-                                         :description (:description concept)
-                                         :scope (:scope concept)}))))]
+                                      (let [hit (get records uri)
+                                            concept (if (:ontology-id hit) hit (or (static/get-concept-by-uri (:uri hit)) hit))]
+                                        (merge {:uri (:uri hit) :score score
+                                                :graph-rank (get graph-ranks uri)
+                                                :embedding-rank (get embedding-ranks uri)
+                                                :colbert-rank (get colbert-ranks uri)
+                                                :label (:label concept) :description (:description concept)
+                                                :scope (:scope concept)}
+                                               (select-keys hit [:ontology-id :concept-id]))))))]
     {:results enriched-results
      :graph-results (vec graph-results)
      :embedding-results (vec embedding-results)
@@ -871,18 +901,15 @@
                        colbert-index-id weights signals]
                 :or {limit 10 min-similarity 0.3 max-depth 2 decay 0.6
                      weights {:graph 1.0 :embedding 1.0 :colbert 1.0}
-                     signals #{:graph :embedding :colbert}}}]
+                     signals #{:graph :embedding :colbert}} :as opts}]
   (let [;; Check which signals are enabled
         graph-enabled? (contains? signals :graph)
         embedding-enabled? (contains? signals :embedding)
         colbert-enabled? (contains? signals :colbert)
 
-        ;; Graph-based BFS results (when enabled and seeds provided)
-        graph-results (when (and graph-enabled? (seq seed-uris))
-                        (->> (expand-concept-neighborhood seed-uris
-                                                          :max-depth max-depth
-                                                          :decay decay)
-                             (take (* 2 limit))))  ;; Get more for fusion
+        concepts (when (or (and graph-enabled? (seq seed-uris)) (and colbert-enabled? colbert-index-id))
+                   (retrieval-concepts ctx opts))
+        graph-results (when (and graph-enabled? (seq seed-uris)) (graph-hits concepts opts))
 
         ;; Embedding-based results (when enabled and query provided)
         embedding-results (when (and embedding-enabled? query-text)
@@ -890,6 +917,7 @@
                                                        :scope scope
                                                        :ontology-id ontology-id
                                                        :ontology-ids ontology-ids
+                                                       :model-id (:model-id opts)
                                                        :limit (* 2 limit)
                                                        :min-similarity min-similarity))
 
@@ -903,7 +931,7 @@
     ;; RRF-fuse the three signals + enrich (shared with hybrid-search-batch).
     (fuse-and-enrich {:graph-results graph-results
                       :embedding-results embedding-results
-                      :colbert-results colbert-results
+                      :colbert-results (qualify-index-hits colbert-results (group-by :uri concepts) (or ontology-id ontology-ids))
                       :weights weights
                       :limit limit
                       :signals signals})))
@@ -928,11 +956,15 @@
                max-depth decay colbert-index-id weights signals]
         :or {limit 10 min-similarity 0.3 max-depth 2 decay 0.6
              weights {:graph 1.0 :embedding 1.0 :colbert 1.0}
-             signals #{:graph :embedding :colbert}}}]
+             signals #{:graph :embedding :colbert}} :as opts}]
   (let [graph-enabled? (contains? signals :graph)
         embedding-enabled? (contains? signals :embedding)
         colbert-enabled? (contains? signals :colbert)
         query-texts (vec query-texts)
+        concepts (when (or (and graph-enabled? (seq seed-uris)) (and colbert-enabled? colbert-index-id))
+                   (retrieval-concepts ctx opts))
+        by-uri (group-by :uri concepts)
+        graph-results (when (and graph-enabled? (seq seed-uris)) (graph-hits concepts opts))
         ;; ColBERT — ONE batched pass for ALL queries (index loaded once, reused).
         colbert-batches (when (and colbert-enabled? (seq query-texts) colbert-index-id)
                           (colbert-search-concepts-batch ctx query-texts
@@ -940,22 +972,18 @@
                                                          :limit (* 2 limit)
                                                          :weight (:colbert weights 1.0)))]
     (mapv (fn [i query-text]
-            (let [graph-results (when (and graph-enabled? (seq seed-uris))
-                                  (->> (expand-concept-neighborhood seed-uris
-                                                                    :max-depth max-depth
-                                                                    :decay decay)
-                                       (take (* 2 limit))))
-                  embedding-results (when (and embedding-enabled? query-text)
+            (let [embedding-results (when (and embedding-enabled? query-text)
                                       (semantic-search-concepts ctx query-text
                                                                  :scope scope
                                                                  :ontology-id ontology-id
                                                                  :ontology-ids ontology-ids
+                                                                 :model-id (:model-id opts)
                                                                  :limit (* 2 limit)
                                                                  :min-similarity min-similarity))
                   colbert-results (when colbert-batches (nth colbert-batches i nil))]
               (fuse-and-enrich {:graph-results graph-results
                                 :embedding-results embedding-results
-                                :colbert-results colbert-results
+                                :colbert-results (qualify-index-hits colbert-results by-uri (or ontology-id ontology-ids))
                                 :weights weights
                                 :limit limit
                                 :signals signals})))

@@ -1,6 +1,6 @@
 (ns ai.obney.orc.ontology.core.entity-resolver
   "ORC integration adapter for the standalone ontology algorithms."
-  (:require [ai.obney.ontology.algorithms :as ontology]))
+  (:require [ai.obney.ontology.core.entity-resolver :as ontology]))
 
 (def normalize-label ontology/normalize-label)
 (def group-by-entity-type ontology/group-by-entity-type)

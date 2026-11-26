@@ -1,6 +1,6 @@
 (ns ai.obney.orc.ontology.core.graph-evolver
   "ORC integration adapter for the standalone ontology algorithms."
-  (:require [ai.obney.ontology.algorithms :as ontology]))
+  (:require [ai.obney.ontology.core.graph-evolver :as ontology]))
 
 (def apply-canonical-uri ontology/apply-canonical-uri)
 (def apply-canonical-to-concept ontology/apply-canonical-to-concept)

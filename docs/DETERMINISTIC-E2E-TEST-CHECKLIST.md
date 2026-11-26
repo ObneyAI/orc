@@ -804,6 +804,8 @@ prove isolation, lineage, terminal fencing, or durable recovery.
 
 ## Standalone ontology extraction
 
+- [x] Public queries and single and batched hybrid retrieval preserve graph identity, parent links and stored metadata when two graphs share a URI.
+- [x] Static initialization and domain-child birth are visible through the standalone UUID, URI and hierarchy queries. Replaying the command preserves graph revision.
 - [x] Source extraction submits tenant/ontology-scoped contributions through the standalone API and preserves schema, instances and source provenance.
 - [x] Build start is durable before extraction; a later source failure records failure while retaining earlier accepted contributions.
 - [x] ORC embedding generation persists qualified vectors in standalone concepts and scoped queries retrieve them.

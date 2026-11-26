@@ -32,7 +32,8 @@
    removed rather than tuned. The prompt-level anti-recency FRAMING stays on
    the legacy body path, where whole-body rewriting is still how that path
    works and gradual movement is still the right instruction."
-  (:require [ai.obney.orc.ontology.core.read-models :as rm]
+  (:require [ai.obney.orc.ontology.core.managed-graph :as managed]
+            [ai.obney.orc.ontology.core.read-models :as rm]
             [malli.core :as m]
             [malli.error :as me]
             [cheshire.core :as json]
@@ -1454,39 +1455,10 @@
    description-updated event lands."
   [context shell-id behavior-ids]
   (when (seq behavior-ids)
-    (let [behavioral-ontology-id (java.util.UUID/nameUUIDFromBytes
-                                  (.getBytes "behavioral-subtree-ontology" "UTF-8"))
-          tree-class-ontology-id (java.util.UUID/nameUUIDFromBytes
-                                  (.getBytes "tree-class-ontology" "UTF-8"))
-          shell-uri (str "tree-class:" shell-id)
-          concepts (rm/get-concept-map context)]
-      (when-not (ontology/ontology-exists? context behavioral-ontology-id)
-        (ontology/create-ontology! context
-                                   {:command/id behavioral-ontology-id
-                                    :name "Behavioral subtree ontology"
-                                    :scope :behavioral-subtree
-                                    :base-uri "behavioral-subtree:"}))
-      (when-not (ontology/ontology-exists? context tree-class-ontology-id)
-        (ontology/create-ontology! context
-                                   {:command/id tree-class-ontology-id
-                                    :name "Tree class ontology"
-                                    :scope :tree-class
-                                    :base-uri "tree-class:"}))
-      (doseq [behavior-id behavior-ids]
-        (let [behavior-uri (str "behavioral-subtree:" behavior-id)
-              already-linked? (contains? (get-in concepts [behavior-uri :composes-into])
-                                          shell-uri)]
-          (when-not already-linked?
-            (command-processor/process-command
-              (assoc context :command
-                     {:command/name :ontology/create-relationship
-                      :command/id (random-uuid)
-                      :command/timestamp (time/now)
-                      :source-ontology-id behavioral-ontology-id
-                      :target-ontology-id tree-class-ontology-id
-                      :source-uri behavior-uri
-                      :target-uri shell-uri
-                      :predicate "behavior:composes-into"}))))))))
+    (let [target (managed/ensure-concept! context :tree-class shell-id)]
+      (doseq [id behavior-ids]
+        (managed/ensure-edge! context (managed/ensure-concept! context :behavioral-subtree id)
+                              target "behavior:composes-into")))))
 
 (defn maybe-hydrate-parent-tree-id
   "Return `body` possibly with :parent-tree-id assoc'ed per the C-2d-2

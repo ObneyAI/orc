@@ -2,7 +2,8 @@
   "ORC source loading and extraction workflows connected to the ontology contribution API."
   (:require [ai.obney.orc.ontology.core.build-lifecycle :as lifecycle]
             [ai.obney.ontology.interface :as ontology]
-            [ai.obney.ontology.algorithms :as algorithms]
+            [ai.obney.ontology.core.source-registry :as sources]
+            [ai.obney.ontology.core.rdf :as rdf]
             [ai.obney.orc.ontology.core.colbert-indexer :as colbert-indexer]
             [ai.obney.orc.ontology.core.field-analyzer :as field-analyzer]
             [ai.obney.orc.ontology.core.embedding :as embedding]
@@ -11,7 +12,6 @@
             [clojure.string :as str]
             [clojure.data.csv :as csv]
             [clojure.data.json :as json]
-            [clojure.java.io :as io]
             [com.brunobonacci.mulog :as mu]))
 
 ;; =============================================================================
@@ -52,7 +52,9 @@
   [id]
   (if (uuid? id)
     id
-    (java.util.UUID/nameUUIDFromBytes (.getBytes (str id)))))
+    (try (java.util.UUID/fromString (str id))
+         (catch IllegalArgumentException _
+           (java.util.UUID/nameUUIDFromBytes (.getBytes (str id) "UTF-8"))))))
 
 ;; =============================================================================
 ;; Source Loading
@@ -487,7 +489,7 @@
                        :source-id source-id
                        :status (:status result)})))))
 
-(def extract-concepts-from-rdf algorithms/extract-concepts-from-rdf)
+(def extract-concepts-from-rdf rdf/extract-concepts-from-rdf)
 
 (defn extract-from-source
   "Extract concepts and relationships from a source.
@@ -551,16 +553,9 @@
         content (:content loaded)]
     {:source source :loaded-content content :db-path (:db-path loaded)
      :source-id (or (:source-id source) (random-uuid))
-     :content-hash (if (:db-path loaded)
-                     ;; Hash database bytes, never its path or an attempted text decoding.
-                     (let [digest (java.security.MessageDigest/getInstance "SHA-256")]
-                       (with-open [in (io/input-stream (:db-path loaded))]
-                         (let [buffer (byte-array 8192)]
-                           (loop []
-                             (let [n (.read in buffer)]
-                               (when (pos? n) (.update digest buffer 0 n) (recur))))))
-                       (apply str (map #(format "%02x" (bit-and % 0xff)) (.digest digest))))
-                     (algorithms/sha256 content))}))
+     :content-hash (if-let [path (:db-path loaded)]
+                     (sources/compute-content-hash path nil)
+                     (sources/sha256 content))}))
 
 (defn- extraction-model-provenance [ctx extraction]
   (or (:model-provenance extraction)
@@ -575,10 +570,10 @@
             {:trace-id trace-id :models (vec (distinct (map :model calls)))
              :calls (mapv #(select-keys % [:node-id :model :usage]) calls)})))))
 
-(defn- extract-and-contribute! [ctx ontology-id build-id config prepared]
+(defn- extract-and-contribute! [ctx ontology-id build-id config revision prepared]
   (let [{:keys [source source-id content-hash loaded-content db-path]} prepared
         extraction (extract-from-source ctx source-id
-                     (or (:type source) (algorithms/detect-source-type (:path source)))
+                     (or (:type source) (sources/detect-source-type (:path source)))
                      loaded-content (cond-> config db-path (assoc :db-path db-path :path (:path source))))
         concepts (mapv #(-> %
                             (assoc :description (or (:description %) (:definition %) "")
@@ -597,9 +592,9 @@
                            (assoc c :embedding (mapv double (:embedding e))
                                     :embedding-model (:model-id embedding-result)) c)) concepts)
         result (require-result!
-                 (ontology/import-contribution! ctx
-                   {:ontology-id ontology-id :contribution-id (random-uuid)
-                    :expected-revision (ontology/get-revision ctx ontology-id)
+                 (ontology/import-contribution! ctx ontology-id
+                   {:contribution-id (random-uuid)
+                    :expected-revision revision
                     :source {:source-id source-id :content-hash content-hash
                              :uri (:path source) :type (:type source)
                              :producer {:application "orc" :build-reference (str build-id)
@@ -623,13 +618,14 @@
     (try
       (let [results (reduce (fn [results source]
                               (let [prepared (prepare-source source)
-                                    prior (ontology/get-sources ctx ontology-id)]
+                                    revision (require-result! (ontology/get-revision ctx ontology-id))
+                                    prior (require-result! (ontology/get-sources ctx ontology-id))]
                                 (if (and (not (:reextract? config))
                                          (some #(= (:content-hash prepared) (:content-hash %)) prior))
                                   results
-                                  (conj results (extract-and-contribute! ctx ontology-id build-id config prepared)))))
+                                  (conj results (extract-and-contribute! ctx ontology-id build-id config revision prepared)))))
                             [] sources)
-            snapshot (ontology/export-snapshot ctx ontology-id)
+            snapshot (require-result! (ontology/export-snapshot ctx ontology-id))
             concepts (:concepts snapshot)
             colbert-result (when (:enable-colbert? config)
                              (try
@@ -645,9 +641,9 @@
                   {:ontology-id ontology-id :index-id (:index-id colbert-result)
                    :index-name (:index-name colbert-result) :document-count (:document-count colbert-result)
                    :colbert-fields (:colbert-fields colbert-result)}))
-            entities-resolved (count (filter (fn [[a b]] (not= a b)) (ontology/get-canonical-mappings ctx ontology-id)))
+            entities-resolved (count (filter (fn [[a b]] (not= a b)) (require-result! (ontology/get-canonical-mappings ctx ontology-id))))
             summary {:ontology-id ontology-id :build-id build-id
-                     :total-sources (count (ontology/get-sources ctx ontology-id))
+                     :total-sources (count (require-result! (ontology/get-sources ctx ontology-id)))
                      :new-sources-processed (count results)
                      :total-concepts (count concepts) :total-triples (:triple-count snapshot)
                      :entities-resolved entities-resolved :revision (:revision snapshot)
@@ -669,26 +665,27 @@
   [ctx {:keys [sources config]}]
   (let [config (merge default-config config)
         requested-id (some-> (:ontology-id config) normalize-ontology-id)
-        created (require-result!
-                  (ontology/create-ontology! ctx
-                    (cond-> {:name (or (:name config) "Source ontology") :scope :custom
-                             :description "Ontology built from source contributions"
-                             :base-uri (:base-uri config)
-                             :predicate-policies (or (:predicate-policies config) {})}
-                      requested-id (assoc :command/id requested-id))))]
+        created (or (when requested-id (require-result! (ontology/get-ontology ctx requested-id)))
+                    (require-result!
+                      (ontology/create-ontology! ctx
+                        (cond-> {:name (or (:name config) "Source ontology") :scope :custom
+                                 :description "Ontology built from source contributions"
+                                 :base-uri (:base-uri config)
+                                 :predicate-policies (or (:predicate-policies config) {})}
+                          requested-id (assoc :request-id requested-id)))))]
     (run-source-workflow! ctx (:ontology-id created) sources config "batch")))
 
 (defn evolve
   "Run new extraction work and submit it to an existing standalone ontology."
   [ctx {:keys [ontology-id sources config]}]
   (let [ontology-id (normalize-ontology-id ontology-id)]
-    (when-not (ontology/ontology-exists? ctx ontology-id)
+    (when-not (require-result! (ontology/ontology-exists? ctx ontology-id))
       (throw (ex-info "Ontology not found"
                       {:cognitect.anomalies/category :cognitect.anomalies/not-found
                        :cognitect.anomalies/message "Ontology not found" :ontology-id ontology-id})))
     (doseq [[predicate policy] (:predicate-policies config)
-            :when (not (get-in (ontology/get-ontology ctx ontology-id) [:predicate-policies predicate]))]
-      (require-result! (ontology/register-predicate! ctx ontology-id predicate policy)))
+            :when (not (get-in (require-result! (ontology/get-ontology ctx ontology-id)) [:predicate-policies predicate]))]
+      (require-result! (ontology/register-predicate! ctx ontology-id {:predicate predicate :policy policy})))
     (run-source-workflow! ctx ontology-id sources config "incremental")))
 
 (defn get-build-result [ctx build-id]
@@ -698,4 +695,4 @@
                                     :tags #{[:build build-id]}}))))
 
 (defn get-ontology-ttl [ctx ontology-id]
-  (:ttl-output (ontology/export-snapshot ctx ontology-id)))
+  (:ttl-output (require-result! (ontology/export-snapshot ctx ontology-id))))

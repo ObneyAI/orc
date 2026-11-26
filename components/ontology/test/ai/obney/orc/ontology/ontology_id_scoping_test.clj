@@ -2,6 +2,11 @@
   "Ontology scoping through the standalone public graph boundary."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.ontology.interface :as graph]
+            [ai.obney.grain.query-processor.interface :as qp]
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.ontology.interface :as orc]
+            [ai.obney.orc.ontology.core.embedding :as embedding]
+            [ai.obney.orc.ontology.core.retrieval :as retrieval]
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.graph-test-support :as g]))
 
@@ -88,3 +93,40 @@
       (is (= a (:ontology-id (graph/get-concept-by-uri ctx a "failure:timeout"))))
       (is (= b (:ontology-id (graph/get-concept-by-uri ctx b "person:bob"))))
       (is (= ["Bob"] (mapv :label (graph/get-concepts ctx {:ontology-id b})))))))
+
+(deftest public-queries-and-hybrid-search-preserve-graph-identity
+  (g/with-context [ctx]
+    (let [a (g/ontology! ctx "A") b (g/ontology! ctx "B")
+          query (fn [op params]
+                  (qp/process-query (assoc ctx :query (assoc params :query/name op
+                                      :query/id (random-uuid) :query/timestamp (time/now)))))
+          vectors {:embedding [1.0 0.0] :embedding-model embedding/default-model-id}
+          opts {:ontology-id a :query-text "shared" :seed-uris ["urn:parent"]
+                :signals #{:graph :embedding :colbert} :colbert-index-id (random-uuid)}
+          index-hits [{:uri "urn:shared" :score 0.9} {:uri "urn:foreign" :score 0.8}]]
+      (g/concept! ctx a "urn:parent" "Parent")
+      (g/concept! ctx a "urn:shared" "Alpha" (assoc vectors :broader ["urn:parent"]))
+      (g/concept! ctx b "urn:shared" "Beta" vectors)
+      (g/concept! ctx b "urn:foreign" "Foreign" (assoc vectors :embedding-model "different"))
+      (let [rows (:query/result (query :ontology/get-concepts {:ontology-id a :include-narrower? true}))]
+        (is (= #{"Alpha" "Parent"} (set (map :label rows))))
+        (is (= #{"urn:shared"} (:narrower-concepts (first (filter #(= "Parent" (:label %)) rows))))))
+      (is (= :cognitect.anomalies/not-found
+             (:cognitect.anomalies/category (query :ontology/get-concept {:ontology-id b :uri "failure:Hallucination"}))))
+      (doseq [oid [a b]]
+        (g/concept! ctx oid "failure:Hallucination" "Stored definition"))
+      (is (= :cognitect.anomalies/not-found
+             (:cognitect.anomalies/category (query :ontology/get-concept {:uri "failure:Hallucination"}))))
+      (is (= a (:ontology-id (orc/get-concept-embedding ctx a "urn:shared"))))
+      (with-redefs [embedding/embed-text (constantly [1.0 0.0])
+                    retrieval/colbert-search-concepts (constantly index-hits)
+                    retrieval/colbert-search-concepts-batch (constantly [index-hits])]
+        (is (= ["Alpha"] (mapv :label (orc/semantic-search-concepts ctx "shared" :ontology-id a))))
+        (let [result (orc/hybrid-search ctx opts)
+              shared (first (filter #(= "urn:shared" (:uri %)) (:results result)))]
+          (is (= #{"Alpha" "Parent"} (set (map :label (:results result)))))
+          (is (= a (:ontology-id shared)))
+          (is (every? pos-int? ((juxt :graph-rank :embedding-rank :colbert-rank) shared)))
+          (is (= result (first (orc/hybrid-search-batch ctx (assoc opts :query-texts ["shared"]))))))
+        (let [result (orc/hybrid-search ctx {:ontology-ids [a b] :query-text "shared" :signals #{:embedding}})]
+          (is (= #{[a "Alpha"] [b "Beta"]} (set (map (juxt :ontology-id :label) (:results result))))))))))

@@ -3,6 +3,10 @@
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.evolutionary :as evolutionary]
             [ai.obney.orc.ontology.test-helpers :as h]
+            [ai.obney.ontology.interface :as graph]
+            [ai.obney.orc.ontology.core.static-ontology :as static]
+            [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.time.interface :as time]
             [ai.obney.grain.event-store-v3.interface :as es]))
 
 (defn anomaly? [value]
@@ -68,7 +72,7 @@
         (ai.obney.grain.read-model-processor-v2.interface/l1-clear!)
         (let [updated (ontology/update-concept!
                        ctx ontology-id (:concept-id child)
-                       {:description "An evolved preference for concise updates"})]
+                       {:changes {:description "An evolved preference for concise updates"}})]
           (is (= (:concept-id child) (:concept-id updated)))
           (is (= "An evolved preference for concise updates"
                  (:description (ontology/get-concept-by-uri
@@ -90,13 +94,12 @@
 
 (deftest custom-ontology-lifecycle-is-tenant-isolated-and-replayable
   (h/with-test-context [base]
-    (let [shared-id (random-uuid)
-          ctx-a (assoc base :tenant-id (random-uuid))
+    (let [ctx-a (assoc base :tenant-id (random-uuid))
           ctx-b (assoc base :tenant-id (random-uuid))
-          _ (ontology/create-ontology! ctx-a
-                                       {:command/id shared-id
+          shared-id (:ontology-id (ontology/create-ontology! ctx-a
+                                       {:request-id (random-uuid)
                                         :name "Tenant A"
-                                        :scope :custom})]
+                                        :scope :custom}))]
       (is (= "Tenant A" (:name (ontology/get-ontology ctx-a shared-id))))
       (is (nil? (ontology/get-ontology ctx-b shared-id)))
       (is (anomaly? (ontology/create-concept!
@@ -112,7 +115,7 @@
 (deftest public-create-is-idempotent-for-the-same-command-id
   (h/with-test-context [ctx]
     (let [command-id (random-uuid)
-          params {:command/id command-id
+          params {:request-id command-id
                   :name "Retry-safe ontology"
                   :scope :custom
                   :base-uri "urn:retry:"}
@@ -148,7 +151,7 @@
                                   ctx-b ontology-b "urn:same:concept"))))
       (is (nil? (ontology/get-ontology ctx-a ontology-b)))
       (is (anomaly? (ontology/update-concept!
-                     ctx-b ontology-a (:concept-id concept-a) {:label "stolen"})))
+                     ctx-b ontology-a (:concept-id concept-a) {:changes {:label "stolen"}})))
       (is (anomaly? (ontology/create-relationship!
                      ctx-a {:source-ontology-id ontology-a
                             :target-ontology-id ontology-b
@@ -187,11 +190,12 @@
                    :scope :custom
                    :provenance {:kind :human-authored}})
           evolved (evolutionary/evolve ctx {:ontology-id ontology-id
-                                             :sources []})
+                                             :sources []
+                                             :config {:enable-colbert? false :enable-embeddings? false}})
           projected (ontology/get-concept-by-uri
                      ctx ontology-id "urn:manual:canonical")]
       (is (not (anomaly? evolved)) (pr-str evolved))
-      (is (= (:concept-id manual) (:id projected)))
+      (is (= (:concept-id manual) (:concept-id projected)))
       (is (= :human-authored (get-in projected [:provenance :kind]))))))
 
 (deftest registered-rdf-source-evolves-the-manual-graph
@@ -225,17 +229,18 @@
                    ctx {:ontology-id ontology-id
                         :sources [{:path "memory://sormo-concepts.nt"
                                    :type "rdf"
-                                   :content rdf}]})
+                                   :content rdf}]
+                        :config {:enable-colbert? false :enable-embeddings? false}})
           manual-after (ontology/get-concept-by-uri
                         ctx ontology-id "urn:sormo:canonical")
           imported (ontology/get-concept-by-uri
                     ctx ontology-id "urn:sormo:imported")]
       (is (not (anomaly? evolved)) (pr-str evolved))
-      (is (= (:concept-id manual) (:id manual-after)))
+      (is (= (:concept-id manual) (:concept-id manual-after)))
       ;; Additive upserts preserve identity while applying the new interpretation.
       (is (= "Extracted duplicate label" (:label manual-after)))
       (is (= :source-extracted (get-in manual-after [:provenance :kind])))
-      (is (uuid? (:id imported)))
+      (is (uuid? (:concept-id imported)))
       (is (= "Imported concept" (:label imported)))
       (is (= "Imported description" (:description imported)))
       (is (= :source-extracted (get-in imported [:provenance :kind])))
@@ -258,7 +263,7 @@
                   {:uri "urn:retry:parent" :label "Parent"
                    :description "Parent" :scope :custom})
           concept-command-id (random-uuid)
-          concept-params {:command/id concept-command-id
+          concept-params {:request-id concept-command-id
                           :uri "urn:retry:child" :label "Child"
                           :description "Child" :scope :custom
                           :broader ["urn:retry:parent"]}
@@ -267,12 +272,12 @@
           update-id (random-uuid)
           update-1 (ontology/update-concept!
                     ctx ontology-id (:concept-id child-1)
-                    {:label "Updated child"} {:command/id update-id})
+                    {:changes {:label "Updated child"} :request-id update-id})
           update-2 (ontology/update-concept!
                     ctx ontology-id (:concept-id child-1)
-                    {:label "Updated child"} {:command/id update-id})
+                    {:changes {:label "Updated child"} :request-id update-id})
           relationship-id (random-uuid)
-          edge {:command/id relationship-id
+          edge {:request-id relationship-id
                 :source-ontology-id ontology-id
                 :target-ontology-id ontology-id
                 :source-uri "urn:retry:child"
@@ -281,16 +286,16 @@
           edge-1 (ontology/create-relationship! ctx edge)
           edge-2 (ontology/create-relationship! ctx edge)
           events (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx)}))]
-      (is (= concept-command-id (:concept-id child-1) (:concept-id child-2)))
+      (is (= (:concept-id child-1) (:concept-id child-2)))
       (is (= (:concept-id update-1) (:concept-id update-2)))
-      (is (= relationship-id (:relationship-id edge-1) (:relationship-id edge-2)))
+      (is (= (:relationship-id edge-1) (:relationship-id edge-2)))
       (is (= 1 (count (filter #(and (= :ontology/concept-created (:event/type %))
-                                    (= concept-command-id (:concept-id %)))
+                                    (= concept-command-id (:request-id %)))
                               events))))
       (is (= 1 (count (filter #(= update-id (:request-id %)) events))))
-      (is (= 1 (count (filter #(= relationship-id (:relationship-id %)) events))))
+      (is (= 1 (count (filter #(= relationship-id (:request-id %)) events))))
       (is (= (:concept-id parent)
-             (:id (ontology/get-concept-by-uri ctx ontology-id "urn:retry:parent")))))))
+             (:concept-id (ontology/get-concept-by-uri ctx ontology-id "urn:retry:parent")))))))
 
 (deftest invalid-graph-mutations-are-rejected
   (h/with-test-context [ctx]
@@ -314,7 +319,7 @@
                      ctx ontology-id (:concept-id one) {})))
       (is (anomaly? (ontology/update-concept!
                      ctx ontology-id (:concept-id one)
-                     {:broader ["urn:two"]})))
+                     {:changes {:broader ["urn:two"]}})))
       (is (anomaly? (ontology/create-relationship!
                      ctx {:source-ontology-id ontology-id
                           :target-ontology-id ontology-id
@@ -331,4 +336,29 @@
                           :source-uri "urn:one" :target-uri "urn:two"
                           :predicate "unsupported"})))
       (is (= (:concept-id two)
-             (:id (ontology/get-concept-by-uri ctx ontology-id "urn:two")))))))
+             (:concept-id (ontology/get-concept-by-uri ctx ontology-id "urn:two")))))))
+
+
+(deftest initialize-static-vocabulary-through-the-command-processor
+  (doseq [scope [nil :failure :success :problem]]
+    (h/with-test-context [ctx]
+      (let [cmd (cond-> {:command/name :ontology/initialize-static-ontology
+                         :command/id (random-uuid) :command/timestamp (time/now)}
+                  scope (assoc :scope scope))
+            run #(cp/process-command (assoc ctx :command-registry (cp/global-command-registry) :command cmd))
+            result (run)
+            oid (get-in result [:command-result/data :ontology-id])
+            expected (if scope (static/get-concepts-by-scope scope) (static/get-all-static-concepts))
+            uris (set (map :uri expected))]
+        (is (uuid? oid) (pr-str result))
+        (when oid
+          (let [concepts (graph/get-concept-map ctx {:ontology-id oid})
+                edges (graph/get-relationships ctx oid)
+                revision (graph/get-revision ctx oid)]
+            (is (= uris (set (map :uri (vals concepts)))))
+            (is (every? (fn [{:keys [uri broader]}]
+                          (= (set broader) (set (:broader (get concepts [oid uri]))))) expected))
+            (is (every? #(and (uris (:source-uri %)) (uris (:target-uri %))) edges))
+            (is (some #(= "skos:related" (:predicate %)) edges))
+            (is (empty? (:command-result/events (run))))
+            (is (= revision (graph/get-revision ctx oid)))))))))

@@ -10,7 +10,8 @@
    1. concepts - Ontology concept graph with relationships
    2. tree-profiles - Per-tree strengths, weaknesses, problem mappings
    3. node-experiences - Aggregated patterns by node type"
-  (:require [ai.obney.ontology.interface :as ontology]
+  (:require [ai.obney.orc.ontology.core.managed-graph :as managed]
+            [ai.obney.ontology.interface :as ontology]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
             [clojure.set :as set]
             [clojure.string :as str]))
@@ -102,7 +103,7 @@
   "ORC vocabulary view over the standalone tenant graph. Qualified identities
    are retained when URIs collide; composition is interpreted by ORC."
   [ctx]
-  (let [concepts (ontology/get-concepts ctx)
+  (let [concepts (managed/checked (ontology/get-concepts ctx))
         frequencies (frequencies (map :uri concepts))]
     (into {} (map (fn [c]
                     [(if (= 1 (get frequencies (:uri c))) (:uri c)
@@ -2196,7 +2197,7 @@
 (def ontology-exists? ontology/ontology-exists?)
 
 (defn get-concept-by-uri
-  ([ctx uri] (let [matches (filter #(= uri (:uri %)) (ontology/get-concepts ctx))]
+  ([ctx uri] (let [matches (filter #(= uri (:uri %)) (managed/checked (ontology/get-concepts ctx)))]
                (when (= 1 (count matches)) (first matches))))
   ([ctx oid uri] (ontology/get-concept-by-uri ctx oid uri)))
 
@@ -2349,12 +2350,12 @@
   "Read vectors from standalone concepts, filtered before indexing.
    Unique URIs retain URI keys; colliding URIs use [ontology-id uri] keys."
   [ctx & [opts]]
-  (let [concepts (filterv :embedding (ontology/get-concepts ctx (or opts {})))
+  (let [concepts (filterv :embedding (managed/checked (ontology/get-concepts ctx (or opts {}))))
         counts (frequencies (map :uri concepts))]
     (into {} (map (fn [c]
                     [(if (= 1 (get counts (:uri c))) (:uri c) [(:ontology-id c) (:uri c)])
                      (assoc (select-keys c [:uri :ontology-id :scope :embedding])
-                            :concept-id (:id c) :model-id (:embedding-model c))])) concepts)))
+                            :concept-id (:concept-id c) :model-id (:embedding-model c))])) concepts)))
 
 (defn get-concept-embedding
   "Read a stored vector; qualify the ontology when the URI is ambiguous."

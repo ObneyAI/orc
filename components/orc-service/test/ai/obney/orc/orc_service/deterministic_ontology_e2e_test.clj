@@ -251,17 +251,12 @@
 (deftest det-e2e-084-ontology-isolation
   (testing "the same concept URI remains independently queryable in two ontologies"
     (h/with-async-test-context [ctx]
-      (let [ontology-a (random-uuid)
-            ontology-b (random-uuid)
+      (let [create! (fn [label] (:ontology-id (ontology/create-ontology! ctx {:name label :scope :custom})))
+            ontology-a (create! "Isolation A")
+            ontology-b (create! "Isolation B")
             uri "concept:SharedName"
             parent-uri "concept:SharedParent"]
-        (doseq [[ontology-id name] [[ontology-a "Isolation A"]
-                                    [ontology-b "Isolation B"]]]
-          (let [created (ontology/create-ontology!
-                         ctx {:command/id ontology-id
-                              :name name
-                              :scope :custom})]
-            (is (= ontology-id (:ontology-id created)))))
+        (is (and (uuid? ontology-a) (uuid? ontology-b) (not= ontology-a ontology-b)))
         (command! ctx :ontology/create-concept
                   {:ontology-id ontology-a :uri uri :label "A"
                    :description "belongs to A" :scope :problem})
@@ -302,14 +297,9 @@
 (deftest det-e2e-085-string-uuid-normalization
   (testing "string and UUID ontology identifiers select one canonical identity"
     (h/with-async-test-context [ctx]
-      (let [string-id "det-e2e-085"
-            canonical (java.util.UUID/nameUUIDFromBytes (.getBytes string-id "UTF-8"))]
-        (is (= canonical
-               (:ontology-id
-                (ontology/create-ontology!
-                 ctx {:command/id canonical
-                      :name "Canonical identity"
-                      :scope :custom}))))
+      (let [canonical (:ontology-id (ontology/create-ontology! ctx {:name "Canonical identity" :scope :custom}))
+            string-id (str canonical)]
+        (is (uuid? canonical))
         (command! ctx :ontology/create-concept
                   {:ontology-id canonical :uri "concept:Canonical"
                    :label "canonical" :description "one identity" :scope :problem})
@@ -321,13 +311,8 @@
 (deftest det-e2e-086-concept-graph-export
   (testing "a seeded and extended graph exports stable valid Turtle relationships"
     (h/with-async-test-context [ctx]
-      (let [ontology-id (random-uuid)]
-        (is (= ontology-id
-               (:ontology-id
-                (ontology/create-ontology!
-                 ctx {:command/id ontology-id
-                      :name "Export graph"
-                      :scope :custom}))))
+      (let [ontology-id (:ontology-id (ontology/create-ontology! ctx {:name "Export graph" :scope :custom}))]
+        (is (uuid? ontology-id))
         (command! ctx :ontology/create-concept
                   {:ontology-id ontology-id :uri "problem:Parent"
                    :label "Parent" :description "root" :scope :problem})

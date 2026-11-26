@@ -17,7 +17,8 @@
    evaluation event no producer ever emitted) was retired under grill
    decision D6 / RR-32; tree profiles are fed only by the consumer-facing
    record-tree-strength / record-tree-weakness commands."
-  (:require [ai.obney.orc.ontology.core.classifier :as classifier]
+  (:require [ai.obney.orc.ontology.core.managed-graph :as managed]
+            [ai.obney.orc.ontology.core.classifier :as classifier]
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.grain.command-processor-v2.interface :as command-processor]
             [ai.obney.grain.event-store-v3.interface :as event-store]
@@ -935,91 +936,13 @@
 ;; happens here.
 ;; =============================================================================
 
-(def ^:private tree-class-ontology-id
-  "Stable UUID for the dedicated tree-class ontology. Concepts created
-   for tree-class hierarchy live under this ontology-id; keeps them
-   isolated from the failure/success/problem ontologies."
-  (java.util.UUID/nameUUIDFromBytes (.getBytes "tree-class-ontology" "UTF-8")))
-
-(defn- tree-class-uri
-  "Render a target-id (UUID or string fingerprint) as a tree-class URI."
-  [target-id]
-  (str "tree-class:" target-id))
-
-(defn- ensure-system-ontology!
-  [context ontology-id name scope base-uri]
-  (when-not (rm/ontology-exists? context ontology-id)
-    (command-processor/process-command
-     (assoc context :command
-            {:command/name :ontology/create-ontology
-             :command/id ontology-id
-             :command/timestamp (time/now)
-             :name name
-             :predicate-policies {"behavior:composes-into" {:cross-ontology? true}}
-             :scope scope
-             :description (str "ORC managed " name)
-             :base-uri base-uri}))))
-
-(defn- ensure-tree-class-concept!
-  "If a concept with the given target-id's URI doesn't exist in the
-   concepts read-model, dispatch :ontology/create-concept to bring it
-   into existence. Returns the URI."
-  [context target-id]
-  (let [uri (tree-class-uri target-id)
-        concepts (rm/get-concept-map context)]
-    (when-not (contains? concepts uri)
-      (ensure-system-ontology! context tree-class-ontology-id
-                               "Tree class ontology" :tree-class "tree-class:")
-      (command-processor/process-command
-        (assoc context :command
-               {:command/name :ontology/create-concept
-                :command/id (random-uuid)
-                :command/timestamp (time/now)
-                :ontology-id tree-class-ontology-id
-                :uri uri
-                :label (str target-id)
-                :description (str "Tree-class concept for " target-id)
-                :scope :tree-class
-                :broader []
-                :indicators []
-                :provenance {:kind :system-static}})))
-    uri))
-
 (defn on-tree-description-updated-project-concept
-  "C-2d-1: when a :ontology/tree-description-updated event with a
-   :parent-tree-id lands, project the parent/child relationship into
-   the standalone concept graph as a skos:broader link. Lazy-init both
-   concepts. Idempotent — re-running on the same event sees the
-   existing :broader link and skips the redundant emit.
-
-   Note: :parent-tree-id lives in the event's :body (alongside
-   :capabilities/:strengths/:summary/etc.), not at the top level —
-   matches the description-body shape stored in :ontology/descriptions."
-  [{:keys [event] :as context}]
-  (let [body (:body event)
-        parent-tree-id (:parent-tree-id body)]
-    (when (and parent-tree-id
-               (= :tree-fingerprint (:target-type event)))
-      (let [target-uri (ensure-tree-class-concept! context (:target-id event))
-            parent-uri (ensure-tree-class-concept! context parent-tree-id)
-            ;; Read AFTER lazy-create so the broader-already-set? check
-            ;; sees the just-created concepts. Re-running on the same
-            ;; event observes the parent already in :broader and skips
-            ;; the redundant create-relationship emit.
-            concepts (rm/get-concept-map context)
-            already-linked? (contains? (get-in concepts [target-uri :broader])
-                                       parent-uri)]
-        (when-not already-linked?
-          (command-processor/process-command
-            (assoc context :command
-                   {:command/name :ontology/create-relationship
-                    :command/id (random-uuid)
-                    :command/timestamp (time/now)
-                    :source-ontology-id tree-class-ontology-id
-                    :target-ontology-id tree-class-ontology-id
-                    :source-uri target-uri
-                    :target-uri parent-uri
-                    :predicate "skos:broader"})))))))
+  [{:keys [event] :as ctx}]
+  (when-let [parent (get-in event [:body :parent-tree-id])]
+    (when (= :tree-fingerprint (:target-type event))
+      (let [source (managed/ensure-concept! ctx :tree-class (:target-id event))
+            target (managed/ensure-concept! ctx :tree-class parent)]
+        (managed/ensure-edge! ctx source target "skos:broader")))))
 
 (defprocessor :ontology on-tree-description-updated-project-concept
   {:topics #{:ontology/tree-description-updated}}
@@ -1049,99 +972,16 @@
 ;;                       behavior to each shell.
 ;; =============================================================================
 
-(def ^:private behavioral-subtree-ontology-id
-  "Stable UUID for the dedicated behavioral-subtree ontology. Concepts
-   created for Layer 2 retrieval live under this ontology-id; keeps
-   them isolated from the tree-class / failure / success / problem
-   ontologies."
-  (java.util.UUID/nameUUIDFromBytes
-    (.getBytes "behavioral-subtree-ontology" "UTF-8")))
-
-(defn- behavioral-subtree-uri
-  "Render a target-id (UUID or string fingerprint) as a behavioral-subtree URI."
-  [target-id]
-  (str "behavioral-subtree:" target-id))
-
-(defn- ensure-behavioral-subtree-concept!
-  "If a behavioral-subtree concept with the given target-id's URI
-   doesn't exist in the concepts read-model, dispatch
-   :ontology/create-concept to bring it into existence. Returns the URI."
-  [context target-id]
-  (let [uri (behavioral-subtree-uri target-id)
-        concepts (rm/get-concept-map context)]
-    (when-not (contains? concepts uri)
-      (ensure-system-ontology! context behavioral-subtree-ontology-id
-                               "Behavioral subtree ontology" :behavioral-subtree
-                               "behavioral-subtree:")
-      (command-processor/process-command
-        (assoc context :command
-               {:command/name :ontology/create-concept
-                :command/id (random-uuid)
-                :command/timestamp (time/now)
-                :ontology-id behavioral-subtree-ontology-id
-                :uri uri
-                :label (str target-id)
-                :description (str "Behavioral subtree concept for " target-id)
-                :scope :behavioral-subtree
-                :broader []
-                :indicators []
-                :provenance {:kind :system-static}})))
-    uri))
-
 (defn on-behavioral-subtree-description-updated-project-concept
-  "R05a: when a :ontology/tree-description-updated event with
-   :scope :behavioral-subtree lands, project:
-   1. The behavioral-subtree concept itself (lazy-create at the
-      behavioral-subtree:<target-id> URI).
-   2. SKOS broader link to :parent-behavior when present.
-   3. behavior:composes-into edges to each entry in :composes-into.
-
-   Idempotent — re-running on the same event observes the existing
-   concept/edges and skips redundant emits. Doesn't fire on
-   :scope :tree-class events (those belong to C-2d-1's processor)."
-  [{:keys [event] :as context}]
-  (let [body (:body event)]
-    (when (and (= :tree-fingerprint (:target-type event))
-               (= :behavioral-subtree (:scope body)))
-      (let [target-uri (ensure-behavioral-subtree-concept! context (:target-id event))
-            parent-behavior (:parent-behavior body)
-            composes-into (:composes-into body)]
-
+  [{:keys [event] :as ctx}]
+  (let [{:keys [scope parent-behavior composes-into]} (:body event)]
+    (when (and (= :tree-fingerprint (:target-type event)) (= :behavioral-subtree scope))
+      (let [source (managed/ensure-concept! ctx scope (:target-id event))]
         (when parent-behavior
-          (let [parent-uri (ensure-behavioral-subtree-concept! context parent-behavior)
-                concepts (rm/get-concept-map context)
-                already-linked? (contains? (get-in concepts [target-uri :broader])
-                                           parent-uri)]
-            (when-not already-linked?
-              (command-processor/process-command
-                (assoc context :command
-                       {:command/name :ontology/create-relationship
-                        :command/id (random-uuid)
-                        :command/timestamp (time/now)
-                        :source-ontology-id behavioral-subtree-ontology-id
-                        :target-ontology-id behavioral-subtree-ontology-id
-                        :source-uri target-uri
-                        :target-uri parent-uri
-                        :predicate "skos:broader"})))))
-
-        (doseq [shell-id composes-into]
-          (let [shell-uri (tree-class-uri shell-id)
-                _ (ensure-tree-class-concept! context shell-id)
-                concepts (rm/get-concept-map context)
-                already-linked? (contains?
-                                  (get-in concepts [target-uri :composes-into])
-                                  shell-uri)]
-            (when-not already-linked?
-              (command-processor/process-command
-                (assoc context :command
-                       {:command/name :ontology/create-relationship
-                        :command/id (random-uuid)
-                        :command/timestamp (time/now)
-                        :source-ontology-id behavioral-subtree-ontology-id
-                        :target-ontology-id tree-class-ontology-id
-                        :source-uri target-uri
-                        :target-uri shell-uri
-                        :predicate "behavior:composes-into"})))))))))
+          (managed/ensure-edge! ctx source (managed/ensure-concept! ctx scope parent-behavior) "skos:broader"))
+        (doseq [shell composes-into]
+          (managed/ensure-edge! ctx source (managed/ensure-concept! ctx :tree-class shell)
+                                "behavior:composes-into"))))))
 
 (defprocessor :ontology on-behavioral-subtree-description-updated-project-concept
   {:topics #{:ontology/tree-description-updated}}

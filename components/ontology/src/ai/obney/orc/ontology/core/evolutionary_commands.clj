@@ -4,32 +4,28 @@
    These commands replace direct event-store/append calls with proper
    CQRS command processing through the Grain command processor."
   (:require [ai.obney.orc.ontology.core.evolutionary-builder :as builder]
-            [ai.obney.ontology.interface :as ontology]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
             [ai.obney.grain.event-store-v3.interface :as event-store]
             [ai.obney.grain.time.interface :as time]
             [cognitect.anomalies :as anom]))
 
+(defn- run-workflow [ctx workflow keys]
+  (try
+    (let [result (workflow (dissoc ctx :command) (select-keys (:command ctx) keys))]
+      {:command-result/events (vec (:events result))
+       :command-result/data (dissoc result :events)})
+    (catch clojure.lang.ExceptionInfo e
+      (if (::anom/category (ex-data e)) (ex-data e) (throw e)))))
+
 (defcommand :ontology build-from-sources
   "Build ontology from sources in batch mode."
   [ctx]
-  (let [params (select-keys (:command ctx) [:sources :config])
-        result (builder/build-from-sources ctx params)
-        events (filterv :event/type (or (:events result) []))]
-    {:command-result/events events
-     :command-result/data (dissoc result :events)}))
+  (run-workflow ctx builder/build-from-sources [:sources :config]))
 
 (defcommand :ontology evolve
   "Evolve existing ontology with new sources."
   [ctx]
-  (let [params (select-keys (:command ctx) [:ontology-id :sources :config])]
-    (if-not (ontology/ontology-exists? ctx (:ontology-id params))
-      {::anom/category ::anom/not-found
-       ::anom/message (str "Ontology not found: " (:ontology-id params))}
-      (let [result (builder/evolve ctx params)
-            events (vec (or (:events result) []))]
-        {:command-result/events events
-         :command-result/data (dissoc result :events)}))))
+  (run-workflow ctx builder/evolve [:ontology-id :sources :config]))
 
 (defcommand :ontology record-colbert-index
   "Record that a ColBERT index was created for an ontology."

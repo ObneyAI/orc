@@ -68,7 +68,7 @@
       (h/with-async-test-context [ctx]
         (live/register-openrouter!)
         (let [ctx (assoc ctx :llm-provider :openrouter)
-              ontology-id (random-uuid)
+              build-key (random-uuid)
               shared-text (str "A quasar routing policy sends urgent messages through a "
                                "priority channel. A normal channel handles routine messages.")
               sources [{:type "text" :content shared-text}
@@ -78,12 +78,13 @@
                                       "priority channel,urgent messages\n"
                                       "archive channel,retention\n")}]
               result (evolutionary/build-from-sources
-                      ctx {:sources sources :config (build-config ontology-id)})
+                      ctx {:sources sources :config (build-config build-key)})
+              ontology-id (:ontology-id result)
               registrations (graph/get-sources ctx ontology-id)
               extractions (contribution-extractions ctx)
               completions (events-of ctx :evolutionary/build-completed)]
           (is (not (anomaly? result)) (pr-str result))
-          (is (= ontology-id (:ontology-id result)))
+          (is (uuid? ontology-id))
           (is (= 2 (count registrations))
               "one exact duplicate must produce one registered identity")
           (is (= 2 (count extractions))
@@ -171,14 +172,15 @@
       (h/with-async-test-context [ctx]
         (live/register-openrouter!)
         (let [ctx (assoc ctx :llm-provider :openrouter)
-              ontology-id (random-uuid)
-              config (build-config ontology-id)
+              build-key (random-uuid)
+              config (build-config build-key)
               baseline (evolutionary/build-from-sources
                         ctx {:sources [{:type "text"
                                        :content (str "The exact canonical concept label is Sentinel Queue. "
                                                      "Sentinel Queue is a durable priority queue that routes "
                                                      "urgent work before routine work.")}]
                              :config config})
+              ontology-id (:ontology-id baseline)
               baseline-extraction (last (contribution-extractions ctx))
               baseline-concepts (:concepts (event-body baseline-extraction))
               baseline-source (:source-id (event-body baseline-extraction))

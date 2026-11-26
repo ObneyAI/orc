@@ -2854,14 +2854,14 @@
 (defn- cas-filter-events
   "Recreate one Grain CAS guard's filtered view from a wider transactional
    view. Tags retain Grain's all-tags (set-subset) semantics."
-  [events {:keys [types tags]}]
-  (filter
-   (fn [event]
-     (and (or (nil? types)
-              (contains? types (:event/type event)))
-          (or (nil? tags)
-              (every? (:event/tags event) tags))))
-   events))
+  [events {:keys [types tags after as-of reverse? limit]}]
+  (let [matches (filter (fn [event]
+                          (and (or (nil? types) (contains? types (:event/type event)))
+                               (or (nil? tags) (every? (:event/tags event) tags))
+                               (or (nil? after) (pos? (compare (:event/id event) after)))
+                               (or (nil? as-of) (not (pos? (compare (:event/id event) as-of))))))
+                        events)]
+    (cond->> matches reverse? reverse limit (take limit))))
 
 (defn- compose-researcher-classification-cas
   "Compose the campaign fence with every prepared effect's own CAS.

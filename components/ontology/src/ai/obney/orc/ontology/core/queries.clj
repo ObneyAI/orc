@@ -39,32 +39,30 @@
 (defquery :ontology get-concepts
   "Get concepts from the ontology, optionally filtered by scope or broader URI."
   {:authorized? tenant-scoped?}
-  [{{:keys [scope broader-uri include-narrower?]} :query
-    :keys [event-store] :as ctx}]
-  (let [concepts (rm/get-concepts ctx {:scope scope :broader-uri broader-uri})
-        ;; Optionally include narrower concepts for each
-        result (if include-narrower?
-                 (mapv (fn [c]
-                         (assoc c :narrower-concepts
-                                (rm/get-narrower-concepts ctx (:uri c))))
-                       concepts)
-                 concepts)]
-    {:query/result result}))
+  [{query :query :as ctx}]
+  (let [concepts (rm/get-concepts ctx (select-keys query [:ontology-id :ontology-ids :scope :broader-uri]))]
+    (if (::anom/category concepts) concepts
+      {:query/result (if (:include-narrower? query)
+                       (mapv #(assoc % :narrower-concepts (:narrower %)) concepts)
+                       concepts)})))
 
 (defquery :ontology get-concept
-  "Get a single concept by URI."
+  "Get a stored concept by URI. Unqualified requests also consult the built-in vocabulary."
   {:authorized? tenant-scoped?}
-  [{{:keys [ontology-id uri]} :query
-    :keys [event-store] :as ctx}]
-  (if-let [concept (if ontology-id
-                     (rm/get-concept-by-uri ctx ontology-id uri)
-                     (rm/get-concept-by-uri ctx uri))]
-    {:query/result concept}
-    ;; Fall back to static ontology
-    (if-let [static-concept (static/get-concept-by-uri uri)]
-      {:query/result static-concept}
-      {::anom/category ::anom/not-found
-       ::anom/message (str "Concept not found: " uri)})))
+  [{{:keys [ontology-id uri]} :query :as ctx}]
+  (let [concept (if ontology-id
+                  (rm/get-concept-by-uri ctx ontology-id uri)
+                  (let [stored (rm/get-concepts ctx)]
+                    (if (::anom/category stored) stored
+                      (let [matches (take 2 (filter #(= uri (:uri %)) stored))]
+                        (case (count matches)
+                          0 (static/get-concept-by-uri uri)
+                          1 (first matches)
+                          nil)))))]
+    (cond
+      (::anom/category concept) concept
+      concept {:query/result concept}
+      :else {::anom/category ::anom/not-found ::anom/message (str "Concept not found: " uri)})))
 
 (defquery :ontology get-static-concepts
   "Get concepts from the static ontology definitions."

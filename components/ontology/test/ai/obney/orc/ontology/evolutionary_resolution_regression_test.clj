@@ -12,10 +12,13 @@
              :entity-type "Component" :source-id source-a}
           b {:uri "urn:b" :label "Sentinel work queue"
              :alt-labels ["Priority Queue"]
-             :entity-type "Queue" :source-id source-b}
-          batch (resolver/resolve-within-batch [a b] {})]
+             :entity-type "Component" :source-id source-b}
+          batch (resolver/resolve-within-batch [a b] {})
+          different-types (resolver/resolve-within-batch [a (assoc b :entity-type "Queue")] {})]
       (is (= 1 (:exact-matches batch)))
-      (is (= #{"urn:a" "urn:b"} (set (keys (:canonical-map batch)))))))
+      (is (= #{"urn:a" "urn:b"} (set (keys (:canonical-map batch)))))
+      (is (zero? (:exact-matches different-types)))
+      (is (empty? (:canonical-map different-types)))))
 
   (testing "incremental matching retains the real existing URI and type"
     (let [existing {:uri "urn:existing" :label "Sentinel Queue"

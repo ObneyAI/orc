@@ -1864,11 +1864,14 @@
 
    :ontology/embed-concept
    [:map
+    [:ontology-id {:optional true} :uuid]
     [:uri :string]
     [:fields {:optional true} [:set [:enum :label :description :indicators :triggers]]]]
 
    :ontology/embed-concepts-batch
    [:map
+    [:ontology-id {:optional true} :uuid]
+    [:ontology-ids {:optional true} [:or [:sequential :uuid] [:set :uuid]]]
     [:scope {:optional true} ontology-scope]
     [:uris {:optional true} [:vector :string]]  ;; Specific URIs, or all in scope
     [:fields {:optional true} [:set [:enum :label :description :indicators :triggers]]]]
@@ -1963,6 +1966,7 @@
 
    :ontology/get-concepts
    [:map
+    [:ontology-ids {:optional true} [:or [:sequential :uuid] [:set :uuid]]]
     [:ontology-id {:optional true} [:or :uuid :string]]
     [:scope {:optional true} ontology-scope]
     [:broader-uri {:optional true} :string]
@@ -2022,6 +2026,7 @@
 
    :ontology/get-concept-embedding
    [:map
+    [:ontology-id {:optional true} :uuid]
     [:uri :string]]
 
    ;; -------------------------------------------------------------------------

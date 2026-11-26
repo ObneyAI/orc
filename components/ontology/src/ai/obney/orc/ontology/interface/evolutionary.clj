@@ -4,7 +4,8 @@
             [ai.obney.orc.ontology.core.evolutionary-commands]
             [ai.obney.orc.ontology.core.source-registry :as source-registry]
             [ai.obney.ontology.interface :as ontology]
-            [ai.obney.ontology.algorithms :as algorithms]
+            [ai.obney.ontology.core.source-registry :as sources]
+            [ai.obney.orc.ontology.core.entity-resolver :as resolver]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as event-store]
             [ai.obney.grain.time.interface :as time]))
@@ -27,15 +28,20 @@
 (defn get-source [ctx ontology-id source-id]
   (source-registry/get-source ctx ontology-id source-id))
 (defn get-all-sources [ctx ontology-id & [opts]]
-  (cond->> (ontology/get-sources ctx ontology-id)
+  (cond->> (source-registry/sources ctx ontology-id)
     (:source-type opts) (filterv #(= (:source-type opts) (:type %)))))
 (defn get-concepts [ctx ontology-id] (ontology/get-concepts ctx {:ontology-id ontology-id}))
+(defn- query-result [result f]
+  (if (:cognitect.anomalies/category result) result (f result)))
+
 (defn get-concepts-by-source [ctx ontology-id source-id]
-  (filterv #(= source-id (:source-id %)) (get-concepts ctx ontology-id)))
+  (query-result (get-concepts ctx ontology-id)
+                (fn [concepts] (filterv #(= (str source-id) (get-in % [:provenance :source-reference])) concepts))))
 (defn get-concepts-by-type [ctx ontology-id entity-type]
-  (filterv #(= entity-type (:entity-type %)) (get-concepts ctx ontology-id)))
+  (query-result (get-concepts ctx ontology-id)
+                (fn [concepts] (filterv #(= entity-type (:entity-type %)) concepts))))
 (defn get-canonical-uri [ctx ontology-id uri]
-  (get (ontology/get-canonical-mappings ctx ontology-id) uri))
+  (query-result (ontology/get-canonical-mappings ctx ontology-id) #(get % uri)))
 (defn get-all-canonical-mappings [ctx ontology-id] (ontology/get-canonical-mappings ctx ontology-id))
 (defn get-evolution-state [ctx ontology-id] (ontology/export-snapshot ctx ontology-id))
 (defn generate-ttl [ctx ontology-id] (ontology/export-snapshot ctx ontology-id))
@@ -47,11 +53,13 @@
                          :tags #{[:ontology ontology-id]}})
        (into []) (take-last (or (:limit opts) 10)) vec))
 (defn get-statistics [ctx ontology-id]
-  (let [history (get-build-history ctx ontology-id)]
-    {:ontology-id ontology-id :build-count (count history)
-     :concept-count (count (get-concepts ctx ontology-id)) :latest-build (last history)}))
-(def compute-content-hash algorithms/sha256)
-(def normalize-label algorithms/normalize-label)
+  (query-result (get-concepts ctx ontology-id)
+                (fn [concepts]
+                  (let [history (get-build-history ctx ontology-id)]
+                    {:ontology-id ontology-id :build-count (count history)
+                     :concept-count (count concepts) :latest-build (last history)}))))
+(def compute-content-hash sources/sha256)
+(def normalize-label resolver/normalize-label)
 
 (defonce ^:private build-registry (atom {}))
 

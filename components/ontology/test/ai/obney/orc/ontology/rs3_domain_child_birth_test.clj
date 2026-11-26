@@ -10,6 +10,7 @@
    Idempotent: minting the same child identity again emits nothing new
    (`@invariant DomainChildIdentityIsStable`)."
   (:require [clojure.test :refer [deftest testing is]]
+            [ai.obney.ontology.interface :as graph]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
@@ -68,6 +69,33 @@
                        (tree-class-uri child-id))
             "the parent's narrower set contains the child — the same edge
              walk-down's own child lookup reads")))))
+
+(deftest graph-api-can-find-the-born-family-by-identity-and-vector
+  (th/with-test-context [ctx]
+    (let [ctx (assoc ctx :command-registry (cp/global-command-registry))
+          child (random-uuid)
+          cmd (assoc (mint-command (random-uuid) child "race-planning")
+                     :birth-description "Plans a race training schedule.")
+          result (with-redefs [embedding/embed-text (constantly [0.25 0.75])]
+                   (dispatch! ctx cmd))
+          event (first (filter #(= :ontology/domain-child-minted (:event/type %))
+                               (:command-result/events result)))
+          concept (ontology/get-concept-by-uri ctx (tree-class-uri child))
+          oid (:ontology-id concept)
+          cid (:concept-id concept)]
+      (is (some? event))
+      (is (uuid? oid))
+      (is (uuid? cid))
+      (is (= concept (graph/get-concept ctx oid cid)))
+      (is (nil? (graph/get-concept (assoc ctx :tenant-id (random-uuid)) oid cid)))
+      (is (= [0.25 0.75] (:embedding concept)))
+      (is (= cid (:concept-id (first (graph/search ctx oid
+                                      {:query-text "training" :embed-query (constantly [0.25 0.75])
+                                       :embedding-model embedding/default-model-id
+                                       :weights {:embedding 1 :graph 0 :lexical 0} :limit 1})))))
+      (let [revision (graph/get-revision ctx oid)]
+        (is (empty? (:command-result/events (dispatch! ctx (assoc cmd :command/id (random-uuid))))))
+        (is (= revision (graph/get-revision ctx oid)))))))
 
 (deftest a-family-birth-whose-embedding-fails-is-refused-and-appends-nothing
   (testing "orchestrator inspection (DomainFamilyDescribesItselfFromBirth): a

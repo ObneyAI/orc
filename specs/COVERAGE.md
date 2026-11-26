@@ -1178,6 +1178,19 @@ duplicate and advancing publications through command, event and projection
 read-back. Its named `TraceRefreshNeverRegresses` obligation is covered (one
 obligation, one covered, zero uncovered).
 
+## ORC integration with the standalone ontology library
+
+The standalone mutation and scoped lookup contracts cover ORC graph writes,
+including vocabulary prepared for a single commit with a domain birth and a
+researcher checkpoint. The ORC `ScopedMemory` guarantee covers queries, graph
+traversal, embedding search and fusion across graphs with a common URI.
+
+The public-boundary witnesses are `grain-test` in the ontology library and
+`custom-ontology-lifecycle-test`, `rs3-domain-child-birth-test`,
+`rs3-domain-child-durable-test` and `ontology-id-scoping-test` in ORC. The
+combined Allium check reports 38 warnings, 203 informational diagnostics and
+zero errors. Combined analysis reports zero process findings.
+
 ## Ontology extraction ownership (18 September 2026)
 
 Graph lifecycle, tenant-qualified identity, predicate policy, source versions,

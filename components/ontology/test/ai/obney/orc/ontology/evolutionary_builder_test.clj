@@ -56,7 +56,11 @@
                         :config {:ontology-id "my-test-ontology"
                                  :enable-colbert? false :enable-embeddings? false}})
               oid (:ontology-id result)]
-          (is (= (normalize-ontology-id "my-test-ontology") oid))
+          (is (uuid? oid))
+          (is (= oid (:ontology-id (builder/build-from-sources ctx
+                                     {:sources [source] :config {:ontology-id "my-test-ontology"
+                                                               :enable-colbert? false :enable-embeddings? false}}))))
+          (is (not= (normalize-ontology-id "my-test-ontology") oid))
           (is (= 1 @calls) "A second input sees the first committed contribution immediately")
           (is (= 1 (count (ontology/get-sources ctx oid))))
           (is (= 1 (:new-sources-processed result)))
