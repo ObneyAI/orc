@@ -585,6 +585,11 @@ store. Round 2 starts from round 1's candidates:
 - **Rounds add up.** Splitting a budget into rounds on one durable store reaches
   about what one run of the total budget reaches; the rounds are not seeded, so
   they do not replay one run exactly.
+- **A failed workflow call stops the round.** A task step that returns no
+  usable output (for example a model that spends its output tokens on reasoning)
+  records `:gepa/task-recovery-required` with reason `workflow-failed`, and the
+  run stays `:running`; `resume!` does not retry it. Give each model step enough
+  output tokens for any reasoning it does.
 
 ##### Ledger conflict retry
 

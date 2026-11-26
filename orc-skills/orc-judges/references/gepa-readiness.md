@@ -90,6 +90,11 @@ This managed path is distinct from attached judge assessments: those have durabl
 
 ## Training in rounds
 
+This section describes ORC with the GEPA continuation changes (branch
+`fix/gepa-durable-continuation`, pending merge). Earlier
+revisions do not continue training this way, so check that the consuming
+revision includes them before relying on it.
+
 A completed optimization is final: `resume!` continues only an interrupted run
 and answers `:already-terminal` for a completed one. To keep training, start a
 new `optimize!` on the same workflow. It inherits the best candidates of the
@@ -162,13 +167,15 @@ Every round needs:
 Recovering an interrupted round:
 
 - The run's state is in the durable store. In a new process, rebuild the
-  workflow under the same name and restore the metric: `metric-runtime/register!`
-  with the stored `:metric-descriptor` (in `:gepa/optimization-started`) and the
-  function, or `:gepa/metric-fn` in the context. The registration `optimize!`
-  made does not survive the process.
-- Then call `resume!` until it answers `:already-terminal`. Each call advances
-  the first missing step (a candidate evaluation, a parent minibatch, a
-  proposal, a subsample), and the processors carry on from there.
+  workflow under the same name and restore the metric with
+  `gepa/register-metric!`, passing the stored `:metric-descriptor` (in
+  `:gepa/optimization-started`) and the function, or pass `:gepa/metric-fn` in
+  the context. The registration `optimize!` made does not survive the process.
+- Then call `gepa/resume!` until it answers `:already-terminal`. Each call
+  advances the first missing step (a candidate evaluation, a parent minibatch,
+  a proposal, a subsample), and the processors carry on from there. An
+  application that runs GEPA's processors and periodic tasks can instead call
+  `gepa/recover-in-progress!` (see "Merged managed evaluation and recovery").
 - A task held by the process that died is taken over only after its lease
   lapses (`:gepa/task-lease-ms` in the context, default 90 seconds); until then
   `resume!` answers `:resumed` without progress.
