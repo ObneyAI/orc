@@ -14,6 +14,7 @@
   (:require [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.gepa.core.task-ledger :as task-ledger]
+            [ai.obney.orc.gepa.core.pareto :as pareto]
             [clojure.set :as set]
             [com.brunobonacci.mulog :as u]))
 
@@ -297,7 +298,8 @@
                      :generation (:generation event)
                      :mutation-reason (:mutation-reason event)
                      :source-optimization-id (:source-optimization-id event)
-                     :historical-val-subscores (:historical-val-subscores event)  ;; For skip-eval
+                     :historical-val-subscores (:historical-val-subscores event)
+                     :historical-scores (:historical-scores event)
                      :created-at (str (:created-at event))
                      :status :pending})
 
@@ -327,7 +329,7 @@
     events))
 
 (defreadmodel :gepa population
-  {:events population-event-types :version 1}
+  {:events population-event-types :version 2}
   [state event] (population state [event]))
 
 ;; =============================================================================
@@ -635,31 +637,18 @@
   (:valset (get-datasets ctx optimization-id)))
 
 (defn sample-pareto-frontier
-  "Sample a candidate from the Pareto frontier weighted by instance coverage.
-   Uses Python GEPA's exact selection algorithm."
+  "Sample a parent candidate from the Pareto frontier: remove programs
+   dominated across examples, then weight the rest by the number of examples
+   each is best at (Python GEPA's selection). Returns a candidate id."
   [ctx optimization-id]
   (let [state (get-gepa-state ctx optimization-id)
         pareto-mapping (:pareto-front-mapping state)
         agg-scores (vec (:agg-scores state))]
     (when (and (seq pareto-mapping) (seq (filter some? agg-scores)))
-      ;; Get candidate indices that appear in any instance
-      (let [candidate-counts (->> (vals pareto-mapping)
-                                  (mapcat identity)
-                                  frequencies)
-            ;; Weight by number of instances each candidate is best at
-            candidates-with-weights (vec candidate-counts)
-            total-weight (reduce + (map second candidates-with-weights))]
-        (when (pos? total-weight)
-          ;; Weighted random selection
-          (let [r (rand total-weight)]
-            (loop [remaining r
-                   [[cand-idx weight] & rest-cands] candidates-with-weights]
-              (if (or (nil? cand-idx) (< remaining weight))
-                ;; Return the candidate-id for this index
-                (let [idx->id (into {} (map (fn [[id idx]] [idx id])
-                                            (:candidate-id->idx state)))]
-                  (get idx->id cand-idx))
-                (recur (- remaining weight) rest-cands)))))))))
+      (let [cand-idx (pareto/select-program-candidate-from-pareto-front
+                       pareto-mapping agg-scores rand-int)
+            idx->id (into {} (map (fn [[id idx]] [idx id]) (:candidate-id->idx state)))]
+        (get idx->id cand-idx)))))
 
 (defn get-candidate-feedbacks
   "Get the per-instance RICH judge feedback recorded for a candidate.
@@ -706,75 +695,223 @@
        (sort-by :completed-at #(compare %2 %1))
        (take limit)))
 
+(defn- canonical
+  "A value with every map ordered by its keys' printed form, so equal content
+   prints identically."
+  [x]
+  (cond
+    (map? x) (->> x (map (fn [[k v]] [(canonical k) (canonical v)])) (sort-by (comp pr-str first)) vec (cons :map) vec)
+    (sequential? x) (mapv canonical x)
+    (set? x) (->> x (map canonical) (sort-by pr-str) vec (cons :set) vec)
+    :else x))
+
+(defn- sha256-hex [^String s]
+  (let [md (java.security.MessageDigest/getInstance "SHA-256")]
+    (apply str (map #(format "%02x" (bit-and % 0xff)) (.digest md (.getBytes s "UTF-8"))))))
+
+(defn example-fingerprint
+  "Fingerprint of one validation example evaluated on one workflow with one
+   metric: it covers the example content, the workflow content hash and the
+   metric identity. A recorded score is reusable only under an equal
+   fingerprint. Nil when the workflow hash is unknown."
+  [example workflow-hash metric-descriptor]
+  (when workflow-hash
+    (sha256-hex
+      (pr-str (canonical [example workflow-hash
+                          (select-keys metric-descriptor [:kind :metric-id :revision :configuration])])))))
+
+(defn- optimization-workflow-hash [ctx optimization-id]
+  (:workflow-hash
+    (first (into [] (es/read (:event-store ctx)
+                             {:tenant-id (:tenant-id ctx)
+                              :types #{:gepa/optimization-started}
+                              :tags #{[:optimization optimization-id]}})))))
+
+(defn valset-fingerprints
+  "Per-example fingerprints of an optimization's validation set, in order.
+   Entries are nil when the run recorded no workflow content hash."
+  [ctx optimization-id]
+  (let [valset (get-valset ctx optimization-id)
+        wf-hash (optimization-workflow-hash ctx optimization-id)
+        descriptor (:metric-descriptor (get-optimization-summary ctx optimization-id))]
+    (mapv #(example-fingerprint % wf-hash descriptor) valset)))
+
 (defn get-pareto-candidates-from-optimization
   "Get all Pareto-optimal candidates from a completed optimization.
-   Returns sequence with per-instance scores for true single-run parity:
-   {:instructions, :aggregate-score, :val-subscores, :candidate-details}"
+   Returns sequence of
+   {:instructions, :aggregate-score, :val-subscores (by position, this run only),
+    :scores-by-fingerprint {example-fingerprint -> score}, :candidate-details}"
   [ctx optimization-id]
   (let [state (get-gepa-state ctx optimization-id)
         pareto-mapping (:pareto-front-mapping state)
         pareto-indices (->> (vals pareto-mapping)
                             (mapcat identity)
-                            set)]
+                            set)
+        fps (valset-fingerprints ctx optimization-id)]
     (->> pareto-indices
          (map (fn [idx]
-                {:instructions (nth (:program-candidates state) idx)
-                 :aggregate-score (nth (:agg-scores state) idx)
-                 :val-subscores (get (:val-subscores state) idx {})  ;; Per-instance scores
-                 :candidate-details (get (:candidate-details state) idx)}))
+                (let [subscores (get (:val-subscores state) idx {})]
+                  {:instructions (nth (:program-candidates state) idx)
+                   :aggregate-score (nth (:agg-scores state) idx)
+                   :val-subscores subscores
+                   :scores-by-fingerprint (into {} (keep (fn [[i score]]
+                                                           (when-let [fp (nth fps i nil)] [fp score])))
+                                                subscores)
+                   :candidate-details (get (:candidate-details state) idx)})))
          (sort-by :aggregate-score >))))
 
-(defn get-all-unique-candidates
-  "Get all unique candidates across ALL previous runs for cumulative inheritance.
-
-   Deduplicates by instruction hash - if the same instruction appears in
-   multiple runs, keeps the one with the highest aggregate score AND merges
-   per-instance scores (keeping best score per instance). This ensures:
-   - 5 epochs × 20 runs = 100 epochs × 1 run in terms of knowledge retained
-   - Per-instance diversity is preserved across runs
-   - True single-run parity with Python GEPA
-
-   Returns sequence of {:instructions :aggregate-score :val-subscores :source-optimization-id}"
-  [ctx sheet-id & {:keys [limit] :or {limit 20}}]
-  (let [;; Get ALL previous optimizations (no limit)
-        all-opts (->> (vals (rmp/project ctx :gepa/optimization-list {:tags #{[:sheet sheet-id]}}))
-                      (filter #(= :completed (:status %)))
-                      (sort-by :completed-at #(compare %2 %1)))
-
-        ;; Extract all Pareto candidates with source tracking
-        all-candidates (->> all-opts
-                            (mapcat (fn [opt-event]
-                                      (let [opt-id (:optimization-id opt-event)]
-                                        (map #(assoc % :source-optimization-id opt-id)
-                                             (get-pareto-candidates-from-optimization ctx opt-id))))))
-
-        ;; Deduplicate by instruction hash, keeping best aggregate score
-        ;; AND merging per-instance scores (keeping best per instance)
+(defn- unique-candidates
+  "Pareto candidates of the given optimizations, one per distinct instruction
+   set: the highest aggregate score wins and recorded scores are merged by
+   example fingerprint, never by position."
+  [ctx opt-ids limit]
+  (let [all-candidates (mapcat (fn [opt-id]
+                                 (map #(assoc % :source-optimization-id opt-id)
+                                      (get-pareto-candidates-from-optimization ctx opt-id)))
+                               opt-ids)
         unique-by-hash (reduce (fn [acc cand]
-                                 (let [inst-hash (hash (:instructions cand))
-                                       existing (get acc inst-hash)]
+                                 (let [k (hash (:instructions cand))
+                                       existing (get acc k)]
                                    (if (nil? existing)
-                                     ;; First time seeing this instruction
-                                     (assoc acc inst-hash cand)
-                                     ;; Merge: keep best aggregate, merge subscores
-                                     (let [merged-subscores (merge-with max
-                                                              (or (:val-subscores existing) {})
-                                                              (or (:val-subscores cand) {}))
-                                           ;; Keep the candidate with better aggregate score
-                                           ;; but use merged subscores
-                                           best-cand (if (> (or (:aggregate-score cand) 0)
-                                                            (or (:aggregate-score existing) 0))
-                                                       cand
-                                                       existing)]
-                                       (assoc acc inst-hash
-                                              (assoc best-cand :val-subscores merged-subscores))))))
+                                     (assoc acc k cand)
+                                     (let [merged (merge-with max
+                                                              (:scores-by-fingerprint existing)
+                                                              (:scores-by-fingerprint cand))
+                                           best (if (> (or (:aggregate-score cand) 0)
+                                                       (or (:aggregate-score existing) 0))
+                                                  cand existing)]
+                                       (assoc acc k (assoc best :scores-by-fingerprint merged))))))
                                {}
                                all-candidates)]
-
-    ;; Return sorted by score, limited
     (->> (vals unique-by-hash)
          (sort-by :aggregate-score >)
          (take limit))))
+
+(defn- completed-optimization-ids [ctx sheet-id]
+  (->> (vals (rmp/project ctx :gepa/optimization-list {:tags #{[:sheet sheet-id]}}))
+       (filter #(= :completed (:status %)))
+       (sort-by :completed-at #(compare %2 %1))
+       (map :optimization-id)))
+
+(defn get-all-unique-candidates
+  "Get all unique candidates across ALL completed runs of a workflow for
+   cumulative inheritance. The same instruction set appearing in several runs
+   is kept once, with the best aggregate score and the recorded scores merged
+   by example fingerprint.
+
+   Returns sequence of {:instructions :aggregate-score :scores-by-fingerprint :source-optimization-id}"
+  [ctx sheet-id & {:keys [limit] :or {limit 20}}]
+  (unique-candidates ctx (completed-optimization-ids ctx sheet-id) limit))
+
+(defn get-candidates-from-optimization
+  "The Pareto candidates of one named optimization of the workflow, or none
+   when it belongs to another workflow."
+  [ctx sheet-id optimization-id & {:keys [limit] :or {limit 20}}]
+  (when (= sheet-id (:sheet-id (get-optimization-summary ctx optimization-id)))
+    (unique-candidates ctx [optimization-id] limit)))
+
+(defn inheritance-source-ids
+  "The runs a new run of the workflow inherits from: the named run when it
+   belongs to the workflow, otherwise every completed run of the workflow."
+  [ctx sheet-id inherit-from]
+  (if inherit-from
+    (if (= sheet-id (:sheet-id (get-optimization-summary ctx inherit-from)))
+      [inherit-from]
+      [])
+    (vec (completed-optimization-ids ctx sheet-id))))
+
+(defn recorded-scores-for-instructions
+  "Recorded per-example scores, by example fingerprint, of an instruction set
+   across every evaluated candidate of the given runs (not only the Pareto
+   ones), merged by the highest score per fingerprint. Empty when none."
+  [ctx opt-ids instructions]
+  (reduce
+    (fn [acc opt-id]
+      (let [state (get-gepa-state ctx opt-id)
+            fps (valset-fingerprints ctx opt-id)]
+        (reduce (fn [acc idx]
+                  (if (= instructions (nth (:program-candidates state) idx))
+                    (merge-with max acc
+                                (into {} (keep (fn [[i score]]
+                                                 (when-let [fp (nth fps i nil)] [fp score])))
+                                      (get (:val-subscores state) idx {})))
+                    acc))
+                acc
+                (range (count (:program-candidates state))))))
+    {}
+    opt-ids))
+
+;; =============================================================================
+;; Mutation rounds and the minibatch schedule
+;; =============================================================================
+
+(def round-event-types
+  "The facts that decide whether a mutation round may open."
+  #{:gepa/candidate-created :gepa/candidate-evaluated
+    :gepa/parent-minibatch-evaluation-requested :gepa/subsample-evaluated
+    :gepa/optimization-completed :gepa/optimization-failed})
+
+(defn- starting-candidate? [created]
+  (not-any? some? (:parent-ids created)))
+
+(defn round-state
+  "The state of a run's mutation rounds, from its recorded facts. A starting
+   candidate is the seed or an inherited candidate (it has no parent). A round
+   is decided when its proposal is rejected (or its parent skipped as perfect),
+   or when the candidate its accepted proposal created has an evaluation. A new
+   round is admissible only when every starting candidate has an evaluation and
+   no round is undecided."
+  [facts]
+  (let [by-type (group-by :event/type facts)
+        created (get by-type :gepa/candidate-created)
+        evaluated (into #{} (map :candidate-id) (get by-type :gepa/candidate-evaluated))
+        starters (into #{} (comp (filter starting-candidate?) (map :candidate-id)) created)
+        mutated (into #{} (comp (remove starting-candidate?) (map :candidate-id)) created)
+        requested (count (get by-type :gepa/parent-minibatch-evaluation-requested))
+        decided (+ (count (remove :accepted? (get by-type :gepa/subsample-evaluated)))
+                   (count (filter evaluated mutated)))
+        starters-evaluated? (and (seq starters) (every? evaluated starters))]
+    {:starting-candidates (count starters)
+     :starters-evaluated? (boolean starters-evaluated?)
+     :requested requested
+     :decided decided
+     :open? (> requested decided)
+     :admissible? (boolean (and starters-evaluated? (<= requested decided)))}))
+
+(defn get-round-state [ctx optimization-id]
+  (round-state (into [] (es/read (:event-store ctx)
+                                 {:tenant-id (:tenant-id ctx)
+                                  :types round-event-types
+                                  :tags #{[:optimization optimization-id]}}))))
+
+(defn schedule-base
+  "The first minibatch-schedule position a run continuing the given runs draws:
+   one past the furthest position they reached. Nil when none of them drew a
+   minibatch."
+  [ctx opt-ids]
+  (let [positions (for [opt-id opt-ids
+                        e (into [] (es/read (:event-store ctx)
+                                            {:tenant-id (:tenant-id ctx)
+                                             :types #{:gepa/parent-minibatch-evaluation-requested}
+                                             :tags #{[:optimization opt-id]}}))]
+                    (or (:position e) (:iteration e)))]
+    (when (seq positions) (inc (apply max positions)))))
+
+(defn minibatch-position
+  "The schedule position of the round at `iteration`. A run that continues
+   earlier runs starts at its recorded base, and moves with its iteration from
+   the point its starting candidates were all evaluated. A run that inherits
+   nothing uses its iteration."
+  [ctx optimization-id iteration]
+  (let [created (into [] (es/read (:event-store ctx)
+                                  {:tenant-id (:tenant-id ctx)
+                                   :types #{:gepa/candidate-created}
+                                   :tags #{[:optimization optimization-id]}}))
+        base (some :schedule-base created)
+        starters (count (filter starting-candidate? created))]
+    (if base
+      (max 0 (+ base (- iteration starters)))
+      iteration)))
 
 (defn inherit-from-previous-runs
   "Get candidates to inherit from ALL previous optimization runs.

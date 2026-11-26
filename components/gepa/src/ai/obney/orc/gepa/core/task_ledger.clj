@@ -317,15 +317,42 @@
                                    (select-keys command [:boundary-id :call-id :owner-id :epoch :reason]))]
                            {:status :recovery-required})))))))
 
-(defn- command! [context operation data]
-  (loop [remaining 32]
-    (let [result (cp/process-command
-                   (assoc context :command
-                          (merge {:command/id (random-uuid) :command/timestamp (time/now)
-                                  :command/name :gepa/manage-task :operation operation} data)))]
-      (if (and (pos? remaining) (= ::anom/conflict (::anom/category result)) (:cas result))
-        (recur (dec remaining))
-        (or (:command/result result) result)))))
+(def ^:private default-retry {:max-attempts 200 :max-backoff-ms 25})
+
+(defn- store-conflict?
+  "True when the event store refused the append because another writer changed
+   the stream first. Every store reports this under a key named `cas`, plain or
+   namespaced; a refusal decided by the ledger itself carries no such key."
+  [result]
+  (and (= ::anom/conflict (::anom/category result))
+       (boolean (some #(and (keyword? %) (= "cas" (name %))) (keys result)))))
+
+(defn- command!
+  "Run one ledger command. A write refused because another writer changed the
+   same stream first is retried with jittered, bounded backoff, whichever
+   key the event store uses to report it. A refusal decided by the ledger is
+   returned at once. When the retries run out the task is left at a
+   recoverable boundary: the result is `:recovery-required`, which the
+   evaluation raises as recoverable work that `resume!` continues."
+  [context operation data]
+  (let [{:keys [max-attempts max-backoff-ms]} (merge default-retry (:gepa/ledger-retry context))]
+    (loop [attempt 0]
+      (let [result (cp/process-command
+                     (assoc context :command
+                            (merge {:command/id (random-uuid) :command/timestamp (time/now)
+                                    :command/name :gepa/manage-task :operation operation} data)))]
+        (cond
+          (not (store-conflict? result))
+          (or (:command/result result) result)
+
+          (< attempt max-attempts)
+          (do (Thread/sleep (long (rand-int (inc (min max-backoff-ms (bit-shift-left 1 (min attempt 10)))))))
+              (recur (inc attempt)))
+
+          :else
+          {:status :recovery-required :reason :ledger-conflict
+           ::anom/category ::anom/conflict
+           ::anom/message (::anom/message result)})))))
 
 (defn open-boundary! [context data] (command! context :open-boundary data))
 (defn claim! [context data] (command! context :claim data))

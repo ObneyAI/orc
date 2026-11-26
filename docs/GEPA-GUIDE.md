@@ -455,7 +455,9 @@ Main entry point. Takes the Grain `context` and an options map.
 | `:metric-fn` | fn | Scoring function — e.g. `make-judge-metric`, `make-exact-match-metric` |
 | `:judges` | map | Shortcut: a weight map; `optimize!` builds the judge metric for you |
 | `:config` | map | Overrides, e.g. `{:max-metric-calls 50 :reflection-lm "..."}` |
-| `:inherit-from-previous` | bool | Auto-seed from prior runs on the same sheet (default `true`) |
+| `:inherit-from-previous` | bool | Seed from the best candidates of earlier completed runs on the same workflow (default `true`); `false` inherits nothing, whether given here or in `:config` |
+| `:inherit-from` | uuid | Inherit only from this one earlier optimization of the same workflow |
+| `:metric-id`, `:metric-revision` | string | Stable identity of a custom `:metric-fn`; recorded scores are reused across runs only under an equal identity |
 | `:block?` | bool | If `true`, wait and return the result (default `false`, returns immediately) |
 | `:timeout-ms` | int | Max wait when blocking (default `300000`) |
 
@@ -528,6 +530,81 @@ The source version remains unchanged. GEPA updates the draft instructions,
 publishes a distinct version, and records `:gepa/winner-applied` linking the
 candidate and both fingerprints. Missing source versions, incomplete runs, and
 winners naming nonexistent workflow components are rejected explicitly.
+
+#### Persisted runs and continuing training
+
+Every run is stored as events, so training continues across runs and across
+processes when the event store is durable (for example SQLite or Postgres). The
+in-memory store lives and dies with its process, so it cannot continue a run
+or carry candidates into a later one.
+
+To train in rounds, rebuild the workflow with `build-workflow!` under the same
+name (the sheet id comes from the name) and call `optimize!` again on the same
+store. Round 2 starts from round 1's candidates:
+
+- **What is inherited.** The Pareto candidates of every completed earlier run of
+  the workflow, one per distinct instruction set (at most `:inherit-limit`, default 10),
+  each recorded with its source optimization. With `:inherit-from <optimization-id>`
+  only that run's candidates are inherited, provided it belongs to the same
+  workflow. `:inherit-from-previous false` inherits nothing and starts from the
+  workflow's own instructions; an explicit `:inherit-from` takes precedence over it.
+- **When scores are reused.** Each recorded per-example score is stored under a
+  fingerprint of the example content, the workflow content hash and the metric
+  identity (kind, id, revision, configuration). Each example of the new run's validation set is looked up by its fingerprint,
+  in any order. An inherited candidate (or the seed) costs 0 metric calls when
+  every example has a recorded score. When some examples are new or changed, the
+  recorded scores of the unchanged ones are kept and only the new or changed
+  examples are evaluated and charged to the new run's budget, one metric call
+  each; the stored scores follow the new validation set's order. With none
+  recorded, the candidate is evaluated in full. Editing the workflow or changing
+  the metric changes every fingerprint, so nothing earlier is reused; changing an
+  example changes only that example's. The sheet id stays
+  name-derived.
+- **Metric identity.** An anonymous custom `:metric-fn` gets a fresh identity per
+  run, so its scores are never reused. Pass `:metric-id` (and bump
+  `:metric-revision` when the scoring changes) to let rounds share scores.
+- **The seed.** When a run inherits, its own starting instructions reuse the
+  scores recorded by the runs it inherits from (any evaluated candidate of those
+  runs, not only Pareto ones), under the same fingerprint rule. On identical
+  evidence the seed costs 0 metric calls; with new or changed examples only those are evaluated and charged.
+  A run that inherits nothing scores its seed.
+- **The minibatch schedule continues.** Training minibatches follow one
+  deterministic schedule. A run that inherits continues it from one position past
+  the furthest position reached by the runs it inherits from, so round 2 never
+  repeats round 1's minibatches in the same order. The position is recorded on
+  each round's request event (`:position`), so a resumed or repeated request draws
+  the same minibatch. A run that inherits nothing starts at the beginning.
+- **One round at a time.** A run has at most one undecided mutation round. A round
+  is decided when its proposal is rejected, its parent is skipped as perfect, or
+  its accepted proposal has a full validation evaluation. The first round opens
+  only after the seed and every inherited candidate have an evaluation.
+- **A round opens only when it can finish.** The remaining metric budget must pay
+  for the whole cycle: twice `:reflection-minibatch-size` plus the validation set
+  size. Otherwise the run finishes with the best fully evaluated candidate, which
+  can leave a few metric calls unused.
+- **Rounds add up.** Splitting a budget into rounds on one durable store reaches
+  about what one run of the total budget reaches; the rounds are not seeded, so
+  they do not replay one run exactly.
+- **A failed workflow call stops the round.** A task step that returns no
+  usable output (for example a model that spends its output tokens on reasoning)
+  records `:gepa/task-recovery-required` with reason `workflow-failed`, and the
+  run stays `:running`; `resume!` does not retry it. Give each model step enough
+  output tokens for any reasoning it does.
+
+##### Ledger conflict retry
+
+Task-ledger writes from concurrent evaluation tasks can be refused because
+another writer changed the same stream first. Every event store reports this as
+a conflict under a key named `cas` (plain or namespaced), and the ledger retries
+it with jittered backoff up to 200 times (`:gepa/ledger-retry` in the context overrides `:max-attempts`
+and `:max-backoff-ms`). If the retries run out, the evaluation stops at a
+recoverable boundary, and the run waits until the task's lease lapses
+(`:gepa/task-lease-ms` in the context, default 90 seconds). After that, `resume!`
+takes the task over and continues the run; calls made earlier answer `:resumed`
+without progress. When the application runs GEPA's periodic tasks, the recovery
+scan (every 30 seconds) does the same without a call. Without either, the run
+stays `:running`. A refusal that the ledger
+itself decides, such as a second result for a finished task, is not retried.
 
 #### Durable task recovery and metric identity
 

@@ -13,6 +13,7 @@
             [ai.obney.orc.gepa.core.task-ledger :as ledger]
             [ai.obney.orc.gepa.core.pareto :as pareto]
             [ai.obney.orc.gepa.core.proposer :as proposer]
+            [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :as command-processor :refer [defcommand]]
             [ai.obney.grain.time.interface :as time]
@@ -73,6 +74,7 @@
                                 {:kind :default :metric-id "orc/default" :revision "1"
                                  :configuration {} :retry-safe? true
                                  :max-attempts 3 :timeout-ms 300000}))
+        workflow-hash (:content-hash (sheet/get-sheet ctx sheet-id))
         now (time/now)
         ;; Normalize trainset/valset to use string keys for JSON compatibility
         normalize-keys (fn [m] (into {} (map (fn [[k v]] [(name k) v]) m)))
@@ -91,7 +93,8 @@
                        :trainset-size (count trainset)
                        :valset-size (count valset)
                        :started-at now}
-                        metric-descriptor (assoc :metric-descriptor metric-descriptor))})
+                        metric-descriptor (assoc :metric-descriptor metric-descriptor)
+                        workflow-hash (assoc :workflow-hash workflow-hash))})
       ;; Event 2: Store full datasets for evaluation and cross-run persistence
       (->event {:type :gepa/datasets-stored
                 :tags #{[:optimization optimization-id]}
@@ -139,7 +142,8 @@
    Source-optimization-id tracks cross-run inheritance.
    Historical-val-subscores enables skipping re-evaluation for inherited candidates."
   [{{:keys [optimization-id instructions parent-ids mutation-reason
-            source-optimization-id historical-val-subscores]} :command
+            source-optimization-id historical-val-subscores historical-scores
+            schedule-base]} :command
     :keys [event-store] :as ctx}]
   (let [opt-state (rm/get-optimization-summary ctx optimization-id)]
     (cond
@@ -177,7 +181,9 @@
                            :generation generation
                            :mutation-reason mutation-reason
                            :source-optimization-id source-optimization-id  ;; Track cross-run inheritance
-                           :historical-val-subscores historical-val-subscores  ;; Skip eval if present
+                           :historical-val-subscores historical-val-subscores
+                           :historical-scores historical-scores
+                           :schedule-base schedule-base
                            :created-at (time/now)}})]
          :command/result {:candidate-id candidate-id
                           :generation generation}}))))
@@ -266,17 +272,31 @@
                                 (when-some [feedback (get-in task [:result :feedback])]
                                   [(:example-index task) feedback]))) tasks)}))
 
-(defn- valid-managed-candidate? [ctx command]
+(defn- valid-managed-candidate?
+  "The scores of a managed evaluation are its completed tasks' scores. When the
+   tasks cover only some validation examples, every other score must be the one
+   recorded for that example's fingerprint on the candidate, never one carried
+   over by position."
+  [ctx command]
   (let [{:keys [optimization-id candidate-id task-call-ids scores trace-ids metric-calls]} command
         tasks (sort-by :example-index
                 (managed-tasks ctx optimization-id
-                  {:kind :candidate :candidate-id candidate-id} task-call-ids))]
+                  {:kind :candidate :candidate-id candidate-id} task-call-ids))
+        task-indices (set (map :example-index tasks))
+        historical (:historical-scores (rm/get-candidate ctx optimization-id candidate-id))
+        fingerprints (delay (rm/valset-fingerprints ctx optimization-id))]
     (and (seq tasks)
          (every? (fn [[k v]] (or (not (contains? command k)) (= v (get command k))))
                  (managed-candidate-evidence ctx command))
          (every? #(= :candidate (:role %)) tasks)
-         (= (vec (range (count tasks))) (mapv :example-index tasks))
-         (= scores (mapv #(get-in % [:result :score]) tasks))
+         (= (count tasks) (count task-indices))
+         (every? #(< -1 % (count scores)) task-indices)
+         (every? #(= (nth scores (:example-index %)) (get-in % [:result :score])) tasks)
+         (every? (fn [i]
+                   (or (contains? task-indices i)
+                       (let [fp (nth @fingerprints i nil)]
+                         (and fp (contains? historical fp) (= (nth scores i) (get historical fp))))))
+                 (range (count scores)))
          (= trace-ids (mapv :trace-id tasks))
          (= metric-calls (reduce + (map :attempt-count tasks))))))
 
@@ -761,31 +781,54 @@
    boundary `resume!` re-runs. A round is identified by its optimization and
    iteration: every round ends in a recorded decision that advances the
    iteration, so a repeat, whatever parent it names, is only a redelivery and
-   is a no-op."
-  [{{:keys [optimization-id parent-id component iteration subsample-indices]} :command
+   is a no-op.
+
+   A run has at most one undecided round, and the first round opens only after
+   every starting candidate has an evaluation. A request that would break
+   either is a no-op. The append is guarded atomically, so two requests racing
+   to open a round record exactly one."
+  [{{:keys [optimization-id parent-id component iteration position subsample-indices]} :command
     :keys [event-store tenant-id]}]
   (let [request-id (java.util.UUID/nameUUIDFromBytes
                      (.getBytes (pr-str [:gepa/parent-minibatch-evaluation optimization-id
                                          iteration])
-                                java.nio.charset.StandardCharsets/UTF_8))]
-    (if (some #(= request-id (:request-id %))
-              (into [] (es/read event-store
-                         {:tenant-id tenant-id
-                          :types #{:gepa/parent-minibatch-evaluation-requested}
-                          :tags #{[:optimization optimization-id]}})))
+                                java.nio.charset.StandardCharsets/UTF_8))
+        facts (into [] (es/read event-store {:tenant-id tenant-id
+                                             :types rm/round-event-types
+                                             :tags #{[:optimization optimization-id]}}))
+        gate (rm/round-state facts)]
+    (cond
+      (some #(and (= :gepa/parent-minibatch-evaluation-requested (:event/type %))
+                  (= request-id (:request-id %)))
+            facts)
       {:command-result/events [] :command/result {:status :already-requested}}
+
+      (not (:admissible? gate))
+      {:command-result/events []
+       :command/result {:status (if (:open? gate) :round-undecided :starting-candidates-unevaluated)}}
+
+      :else
       {:command-result/events
        [(->event {:type :gepa/parent-minibatch-evaluation-requested
                   :tags #{[:optimization optimization-id]
                           [:request request-id]
                           [:parent parent-id]}
-                  :body {:optimization-id optimization-id
-                         :request-id request-id
-                         :parent-id parent-id
-                         :component component
-                         :iteration iteration
-                         :subsample-indices (vec subsample-indices)
-                         :requested-at (time/now)}})]
+                  :body (cond-> {:optimization-id optimization-id
+                                 :request-id request-id
+                                 :parent-id parent-id
+                                 :component component
+                                 :iteration iteration
+                                 :subsample-indices (vec subsample-indices)
+                                 :requested-at (time/now)}
+                          position (assoc :position position))})]
+       :command-result/cas
+       {:types rm/round-event-types
+        :tags #{[:optimization optimization-id]}
+        :predicate-fn (fn [current]
+                        (let [now (into [] current)]
+                          (and (not-any? #(#{:gepa/optimization-completed :gepa/optimization-failed}
+                                           (:event/type %)) now)
+                               (:admissible? (rm/round-state now)))))}
        :command/result {:status :requested :request-id request-id}})))
 
 (defcommand :gepa record-proposal-ready

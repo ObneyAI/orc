@@ -250,6 +250,59 @@ contract DurableOptimizationLifecycle {
         -- history is reported rather than guessed; mixed runtime writers are not
         -- permitted while an optimization crosses the accounting boundary.
 
+    @invariant ConflictedLedgerWritesRetry
+        -- A task-ledger write refused because another writer changed the same
+        -- stream first is retried with bounded, jittered backoff on every event
+        -- store, however the store reports the conflict. A refusal the ledger
+        -- decides itself is returned at once, not retried. When retries run out,
+        -- the task is left at a recoverable boundary that resume continues once
+        -- the task's lease lapses. A run never stalls with a task whose workflow
+        -- completed and whose metric never started.
+
+    @invariant InheritanceIsExplicitlyControlled
+        -- A run inherits earlier candidates only when inheritance is allowed
+        -- for it, and turning inheritance off when starting a run takes effect
+        -- however the caller passes the option. A run that names one earlier
+        -- optimization inherits only that optimization's candidates, even when
+        -- inheritance is otherwise turned off; otherwise
+        -- it inherits the best candidates of every completed run of the
+        -- workflow.
+
+    @invariant InheritedScoresOnlyForTheSameEvidence
+        -- An inherited candidate reuses a recorded per-example score only for
+        -- an example identical in content to the one scored, on the same
+        -- workflow content and the same metric. Every other example is
+        -- evaluated in this run and charged to its budget, and only those: a
+        -- candidate whose validation set gained or changed examples reuses the
+        -- scores of its unchanged examples and is charged one metric call for
+        -- each new or changed example. A reused score is
+        -- never moved to a different example by position, and an edited
+        -- workflow or metric never reuses scores from before the edit. When a
+        -- run inherits, its seed reuses the recorded scores of an identical
+        -- instruction set from the runs it inherits from under the same rule.
+
+    @invariant ContinuedRunsContinueTheMinibatchSchedule
+        -- Training minibatches follow one deterministic schedule. A run that
+        -- inherits candidates continues that schedule from the furthest point
+        -- reached by the runs it inherits from, so it never repeats their
+        -- minibatches in the same order. A run that inherits nothing starts the
+        -- schedule from its beginning. A repeated or resumed request for the
+        -- same round draws the same minibatch.
+
+    @invariant OneMutationRoundAtATime
+        -- A run has at most one undecided mutation round. A round is decided
+        -- when its proposal is rejected, its parent is skipped as perfect, or
+        -- its accepted proposal has a full validation evaluation. The first
+        -- round opens only after every starting candidate of the run, its seed
+        -- and every inherited candidate, has an evaluation.
+
+    @invariant EveryOpenedRoundCanFinish
+        -- A mutation round opens only when the remaining metric budget pays
+        -- for its whole cycle: the parent's minibatch, the proposal's minibatch
+        -- and a full validation evaluation. When it cannot, the run finishes as
+        -- at budget exhaustion, so an accepted proposal is never left without
+        -- its full evaluation for lack of budget.
+
     @invariant TerminalWinnerStable
         -- Completion waits for fully evaluated comparisons whose aggregates
         -- remain publishable. Terminal selection and aggregate publication
@@ -292,6 +345,9 @@ entity OptimizationRun {
     completed_at: Timestamp?
     failure_reason: String?
     inherited_from: OptimizationRun?
+
+    full_round_cost: configuration.reflection_minibatch_size * 2 + validation_set.count
+    can_afford_round: metric_calls_used + full_round_cost <= configuration.maximum_metric_calls
 
     transitions status {
         running -> completed
@@ -467,7 +523,7 @@ rule EvaluateSubsampleWinnerFully {
 rule ProposeReflectiveMutation {
     when: MutationRoundRequested(optimization)
     requires: optimization.status = running
-    requires: optimization.metric_calls_used < optimization.configuration.maximum_metric_calls
+    requires: optimization.can_afford_round
     requires: optimization.configuration.maximum_reflection_tokens = null or optimization.reflection_tokens_used < optimization.configuration.maximum_reflection_tokens
     let parent = select_pareto_candidate(optimization.frontier_entries)
     let component = next_round_robin_component(parent)
@@ -562,7 +618,7 @@ rule RecordRejectedMerge {
 rule CompleteOptimization {
     when: OptimizationBudgetExhausted(optimization)
     requires: optimization.status = running
-    requires: optimization.metric_calls_used >= optimization.configuration.maximum_metric_calls
+    requires: not optimization.can_afford_round
     requires: admitted_evaluations_finished(optimization)
     requires: publishable_evaluations_recorded(optimization)
 

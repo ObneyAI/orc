@@ -428,6 +428,9 @@
 (defn evaluate-candidate-on-valset
   "Evaluate a candidate's instructions on the full validation set.
 
+   With `:example-indices` in the call context only those examples are
+   evaluated; :scores and :trace-ids then follow that order and :indices names them.
+
    Returns {:scores [double ...] :trace-ids [uuid ...]
             :feedbacks {instance-idx -> feedback-string}
             :outputs {instance-idx -> output-map} :metric-calls int}.
@@ -438,26 +441,25 @@
   ([context sheet-id instructions valset metric-fn]
    (evaluate-candidate-on-valset context sheet-id instructions valset metric-fn nil))
   ([context sheet-id instructions valset metric-fn call-context]
-  (let [call-context (prepare-task-batch! context sheet-id instructions
-                       (map-indexed vector valset) call-context)
+  (let [indices (or (:example-indices call-context) (range (count valset)))
+        indexed (mapv (fn [i] [i (nth valset i)]) indices)
+        call-context (prepare-task-batch! context sheet-id instructions indexed call-context)
         results (doall  ;; Force evaluation for side effects
-                  (map-indexed
-                    (fn [idx example]
-                      (u/log ::evaluating-example
-                             :index idx
-                             :total (count valset))
-                      (execute-workflow-with-instructions
-                        context sheet-id instructions example metric-fn
-                        (assoc call-context :example-index idx)))
-                    valset))]
+                  (map (fn [[idx example]]
+                         (u/log ::evaluating-example
+                                :index idx
+                                :total (count valset))
+                         (execute-workflow-with-instructions
+                           context sheet-id instructions example metric-fn
+                           (assoc call-context :example-index idx)))
+                       indexed))]
     {:scores (mapv :score results)
+     :indices (vec indices)
      :trace-ids (mapv :trace-id results)
-     :feedbacks (into {} (keep-indexed (fn [idx r]
-                                         (when (:feedback r) [idx (:feedback r)]))
-                                       results))
-     :outputs (into {} (keep-indexed (fn [idx r]
-                                       (when (some? (:output r)) [idx (:output r)]))
-                                     results))
+     :feedbacks (into {} (keep (fn [[[idx _] r]] (when (:feedback r) [idx (:feedback r)]))
+                               (map vector indexed results)))
+     :outputs (into {} (keep (fn [[[idx _] r]] (when (some? (:output r)) [idx (:output r)]))
+                             (map vector indexed results)))
      :metric-calls (if (:boundary-id call-context)
                      (reduce + (map :attempt-count results))
                      (count (filter :charged? results)))
@@ -681,28 +683,46 @@
          :optimization-id (:optimization-id event))
 
   (let [{:keys [optimization-id sheet-id config]} event
-        inherit? (get config :inherit-from-previous true)
+        inherit-from (:inherit-from config)
+        inherit? (or (some? inherit-from) (get config :inherit-from-previous true))
         inherit-limit (get config :inherit-limit 10)
 
         ;; 1. Extract seed instructions from workflow
         seed-instructions (extract-workflow-instructions context sheet-id)
 
+        ;; The runs this run continues. The seed reuses the scores they
+        ;; recorded for an identical instruction set (the same evidence rule as
+        ;; an inherited candidate), and the run continues their minibatch
+        ;; schedule from the furthest position they reached.
+        source-ids (when inherit?
+                     (rm/inheritance-source-ids context sheet-id inherit-from))
+        seed-scores (when (seq source-ids)
+                      (not-empty (rm/recorded-scores-for-instructions
+                                   context source-ids seed-instructions)))
+        schedule-base (when (seq source-ids) (rm/schedule-base context source-ids))
+
         ;; 2. Create seed candidate (generation 0)
         _ (run-command! context
-            {:command/id (random-uuid)
-             :command/timestamp (time/now)
-             :command/name :gepa/create-candidate
-             :optimization-id optimization-id
-             :instructions seed-instructions
-             :parent-ids [nil]
-             :mutation-reason nil
-             :source-optimization-id nil})
+            (cond-> {:command/id (random-uuid)
+                     :command/timestamp (time/now)
+                     :command/name :gepa/create-candidate
+                     :optimization-id optimization-id
+                     :instructions seed-instructions
+                     :parent-ids [nil]
+                     :mutation-reason nil
+                     :source-optimization-id nil}
+              seed-scores (assoc :historical-scores seed-scores)
+              schedule-base (assoc :schedule-base schedule-base)))
 
         ;; 3. Query inherited candidates (cumulative across ALL runs)
         inherited-candidates (when inherit?
-                               (rm/get-all-unique-candidates
-                                 context sheet-id
-                                 :limit inherit-limit))]
+                               (if inherit-from
+                                 (rm/get-candidates-from-optimization
+                                   context sheet-id inherit-from
+                                   :limit inherit-limit)
+                                 (rm/get-all-unique-candidates
+                                   context sheet-id
+                                   :limit inherit-limit)))]
 
     ;; 4. Create inherited candidates (skip if same as seed)
     (when (seq inherited-candidates)
@@ -712,7 +732,7 @@
 
       (doseq [cand inherited-candidates
               :let [inst (:instructions cand)
-                    subscores (:val-subscores cand)]
+                    subscores (:scores-by-fingerprint cand)]
               :when (not= inst seed-instructions)]  ;; Don't duplicate seed
         (u/log ::inheriting-candidate
                :source-optimization-id (:source-optimization-id cand)
@@ -727,7 +747,7 @@
            :parent-ids [nil]  ;; No parent - inherited from previous run
            :mutation-reason "inherited-from-previous-run"
            :source-optimization-id (:source-optimization-id cand)
-           :historical-val-subscores subscores})))))
+           :historical-scores subscores})))))
 
 ;; =============================================================================
 ;; On Candidate Created
@@ -777,6 +797,18 @@
                                          "Metric budget")
                                        " exhausted before a complete candidate evaluation")))))))))
 
+(defn- finish-if-refused-for-budget!
+  "A command that opens more metric work refuses with a conflict once the
+   recorded metric budget is spent. Nothing else would ever end the run, so a
+   refusal for that reason finishes it exactly as an admission refusal does
+   (unfinished work defers the decision to the last task to finish)."
+  [context optimization-id result]
+  (when (and (map? result)
+             (= :cognitect.anomalies/conflict (:cognitect.anomalies/category result))
+             (rm/budget-exhausted? context optimization-id))
+    (finish-at-admission-budget-exhaustion! context optimization-id))
+  result)
+
 (defn- reflection-budget-exhausted?
   "True once the durable proposer-call evidence has reached the optimization's
    `:max-reflection-tokens` (a call may take the total past it by its own usage)."
@@ -809,25 +841,30 @@
 
         ;; Get candidate (includes historical-val-subscores if inherited)
         candidate (rm/get-candidate context optimization-id candidate-id)
-        historical-scores (:historical-val-subscores candidate)]
+        historical-scores (:historical-scores candidate)
+        ;; A recorded score is reused only for an example identical in content,
+        ;; on the same workflow content and metric: look each example of this
+        ;; run's valset up by fingerprint. Any example without a record means
+        ;; the candidate is evaluated in this run and charged to its budget.
+        fingerprints (when (seq historical-scores)
+                       (rm/valset-fingerprints context optimization-id))
+        recorded? (fn [fp] (and fp (contains? historical-scores fp)))
+        reusable? (and (seq fingerprints) (every? recorded? fingerprints))
+        ;; Examples with a recorded score under an equal fingerprint keep it; the
+        ;; others are evaluated here and charged, in the validation set's order.
+        reused-indices (when (seq fingerprints)
+                         (vec (keep-indexed (fn [i fp] (when (recorded? fp) i)) fingerprints)))
+        partial? (and (seq reused-indices) (not reusable?))
+        missing-indices (when partial?
+                          (vec (remove (set reused-indices) (range (count fingerprints)))))]
 
-    ;; Check if this is an inherited candidate with historical scores
-    (if (and historical-scores (seq historical-scores))
-      ;; SKIP EVALUATION - Reuse historical per-instance scores
-      ;; This is key for true single-run parity: inherited candidates don't consume metric budget
-      (let [;; Convert subscores map to ordered vector for consistency
-            ;; Historical subscores are {instance-id -> score}
-            max-instance-id (if (seq historical-scores)
-                              (apply max (keys historical-scores))
-                              -1)
-            scores-vec (mapv (fn [idx]
-                               (get historical-scores idx 0.0))
-                             (range (inc max-instance-id)))]
+    (if reusable?
+      ;; Reuse the recorded per-example scores: 0 metric calls.
+      (let [scores-vec (mapv historical-scores fingerprints)]
         (u/log ::reusing-historical-scores
                :candidate-id candidate-id
-               :num-instances (count historical-scores)
-               :mean-score (when (seq scores-vec)
-                             (/ (reduce + scores-vec) (count scores-vec))))
+               :num-instances (count scores-vec)
+               :mean-score (/ (reduce + scores-vec) (count scores-vec)))
         (run-command! context
           {:command/id (random-uuid)
            :command/timestamp (time/now)
@@ -836,7 +873,7 @@
            :candidate-id candidate-id
            :scores scores-vec
            :trace-ids []  ;; No traces - reusing history
-           :metric-calls 0}))  ;; 0 metric calls - key for budget savings!
+           :metric-calls 0}))
 
       ;; FRESH EVALUATION - Normal path for new candidates
       (let [opt-state (rm/get-optimization-summary context optimization-id)
@@ -853,14 +890,15 @@
 
             ;; Evaluate the actual workflow. Fabricated scores would make a
             ;; provider/runtime failure look like optimization evidence.
-            eval-result
+            raw-result
             (if (and valset (seq valset) sheet-id)
               (try
                 (evaluate-candidate-on-valset
                   context sheet-id instructions valset metric-fn
-                  {:optimization-id optimization-id
-                   :role :candidate
-                   :call-scope candidate-id})
+                  (cond-> {:optimization-id optimization-id
+                           :role :candidate
+                           :call-scope candidate-id}
+                    partial? (assoc :example-indices missing-indices)))
                 (catch Exception e
                   (u/log ::evaluation-error
                          :error (.getMessage e)
@@ -882,7 +920,14 @@
                    :command/name :gepa/fail-optimization
                    :optimization-id optimization-id
                    :error-message "Candidate evaluation requires a persisted non-empty validation set and workflow"})
-                nil))]
+                nil))
+            eval-result
+            (if (and raw-result partial?)
+              (assoc raw-result :scores
+                     (reduce (fn [v [i score]] (assoc v i score))
+                             (mapv #(get historical-scores %) fingerprints)
+                             (map vector (:indices raw-result) (:scores raw-result))))
+              raw-result)]
 
         (when eval-result
           (u/log ::evaluation-complete
@@ -951,6 +996,13 @@
 
 (declare request-mutation-round-within-budget!)
 
+(defn- round-cost
+  "The metric calls one whole mutation round needs: the parent's minibatch, the
+   proposal's minibatch and a full validation evaluation."
+  [opt-summary valset]
+  (+ (* 2 (get-in opt-summary [:config :reflection-minibatch-size] 3))
+     (count valset)))
+
 (defn- request-mutation-round!
   "Open a mutation round: choose the parent, the component and the training
    minibatch, and record the request (`ParentMinibatchEvaluationRequested`) as
@@ -958,40 +1010,61 @@
    event runs the round from the recorded values, and `resume!` re-runs it from
    the same record after an interruption.
 
-   The minibatch is drawn by the deterministic epoch-shuffled sampler. The
-   sampler pads a short last batch with a repeated index; one example is
-   evaluated, and reflected on, once, so the recorded indices are distinct.
+   A round opens only when every starting candidate has an evaluation, no other
+   round is undecided, and the remaining metric budget pays for the whole round.
+   When the budget cannot, the run finishes as at budget exhaustion.
+
+   The minibatch is drawn by the deterministic epoch-shuffled sampler at the
+   round's schedule position. The sampler pads a short last batch with a
+   repeated index; one example is evaluated, and reflected on, once, so the
+   recorded indices are distinct.
 
    `fallback-parent-id` is used when the frontier is empty."
   [context optimization-id fallback-parent-id]
-  (if (reflection-budget-exhausted? context optimization-id)
+  (cond
     ;; No round may open once the recorded reflection tokens reach the budget:
     ;; no metric call is spent on a round that cannot propose.
+    (reflection-budget-exhausted? context optimization-id)
     (finish-at-admission-budget-exhaustion! context optimization-id :reflection-tokens)
+
+    ;; Another starting candidate is still being evaluated, or a round is
+    ;; undecided: that candidate's or round's own decision opens the next.
+    (not (:admissible? (rm/get-round-state context optimization-id))) nil
+
+    :else
     (request-mutation-round-within-budget! context optimization-id fallback-parent-id)))
 
 (defn- request-mutation-round-within-budget!
   [context optimization-id fallback-parent-id]
-  (let [parent-id (or (rm/sample-pareto-frontier context optimization-id)
-                      fallback-parent-id)
-        component (select-component context optimization-id parent-id)
-        opt-summary (rm/get-optimization-summary context optimization-id)
-        minibatch-size (get-in opt-summary [:config :reflection-minibatch-size] 3)
-        iteration (rm/get-iteration-count context optimization-id)
-        trainset (rm/get-trainset context optimization-id)]
-    (if-not (and (seq trainset) (:sheet-id opt-summary))
+  (let [opt-summary (rm/get-optimization-summary context optimization-id)
+        trainset (rm/get-trainset context optimization-id)
+        valset (rm/get-valset context optimization-id)]
+    (cond
+      (not (and (seq trainset) (:sheet-id opt-summary)))
       (fail-optimization! context optimization-id
                           "Subsample evaluation requires a persisted non-empty training set and workflow")
-      (run-command! context
-        {:command/id (random-uuid)
-         :command/timestamp (time/now)
-         :command/name :gepa/request-parent-minibatch-evaluation
-         :optimization-id optimization-id
-         :parent-id parent-id
-         :component component
-         :iteration iteration
-         :subsample-indices (vec (distinct (sampler/epoch-shuffled-batch-sampler
-                                             (count trainset) minibatch-size iteration)))}))))
+
+      (< (:available-metric-calls opt-summary 0) (round-cost opt-summary valset))
+      (finish-at-admission-budget-exhaustion! context optimization-id)
+
+      :else
+      (let [parent-id (or (rm/sample-pareto-frontier context optimization-id)
+                          fallback-parent-id)
+            component (select-component context optimization-id parent-id)
+            minibatch-size (get-in opt-summary [:config :reflection-minibatch-size] 3)
+            iteration (rm/get-iteration-count context optimization-id)
+            position (rm/minibatch-position context optimization-id iteration)]
+        (run-command! context
+          {:command/id (random-uuid)
+           :command/timestamp (time/now)
+           :command/name :gepa/request-parent-minibatch-evaluation
+           :optimization-id optimization-id
+           :parent-id parent-id
+           :component component
+           :iteration iteration
+           :position position
+           :subsample-indices (vec (distinct (sampler/epoch-shuffled-batch-sampler
+                                               (count trainset) minibatch-size position)))})))))
 
 (defn on-parent-minibatch-evaluation-requested
   "Handle parent-minibatch-evaluation-requested: run the mutation round from
@@ -1156,16 +1229,17 @@
         config (:config (rm/get-optimization-summary context optimization-id))]
     (when-not (and (:pause-after-proposal? config)
                    (not (optimization-resumed? context optimization-id)))
-      (run-command! context
-        {:command/id (random-uuid)
-         :command/timestamp (time/now)
-         :command/name :gepa/evaluate-on-subsample
-         :optimization-id optimization-id
-         :parent-id parent-id
-         :proposed-instructions proposed-instructions
-         :component-updated component-updated
-         :subsample-indices subsample-indices
-         :iteration iteration}))))
+      (->> (run-command! context
+             {:command/id (random-uuid)
+              :command/timestamp (time/now)
+              :command/name :gepa/evaluate-on-subsample
+              :optimization-id optimization-id
+              :parent-id parent-id
+              :proposed-instructions proposed-instructions
+              :component-updated component-updated
+              :subsample-indices subsample-indices
+              :iteration iteration})
+           (finish-if-refused-for-budget! context optimization-id)))))
 
 (defn on-subsample-evaluation-started
   "Handle subsample-evaluation-started event.

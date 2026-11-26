@@ -150,9 +150,11 @@
                                       :sheet-id sheet-id
                                       :trainset trainset
                                       :valset valset
-                                      :config (or config {})
-                                      :inherit-from-previous inherit-from-previous
-                                      :inherit-from inherit-from}))]
+                                      :config (cond-> (or config {})
+                                                (contains? opts :inherit-from-previous)
+                                                (assoc :inherit-from-previous (boolean inherit-from-previous))
+                                                (some? inherit-from)
+                                                (assoc :inherit-from inherit-from))}))]
 
     (if (::anom/category cmd-result)
       ;; Command failed
