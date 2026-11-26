@@ -22,13 +22,10 @@
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.grain.command-processor-v2.interface :as cp]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-;; =============================================================================
-;; Budgets — ceilings, not targets
-;; =============================================================================
 
 (def ^:private budgets
   "Measured on this fixture BEFORE the change (values cached in L2), by
@@ -100,7 +97,7 @@
 
 (defn- dispatch! [ctx sheet-id inputs]
   (let [tick-id (random-uuid)
-        p (runtime/register-completion! tick-id)
+        p (service-logic/register-completion! tick-id)
         r (cp/process-command
            (assoc ctx :command {:command/id (random-uuid)
                                 :command/timestamp (time/now)
@@ -151,15 +148,9 @@
         (is (pos? l2-total) "L2 accounting must observe writes")
         (is (pos? l2-tick-ctx) "tick-execution-contexts must be attributable")))))
 
-;; =============================================================================
-;; Invariant: the cached entry must not carry blackboard VALUES
-;; =============================================================================
 
 (deftest l2-holds-no-blackboard-values
   (testing "the stored tick-execution-context blackboard is metadata only"
-    ;; Asserted on the DECODED STORED BYTES, not on an accessor's return: an
-    ;; accessor-level check can be satisfied by a resolver that quietly re-adds
-    ;; values, whereas this cannot.
     (h/with-async-test-context [ctx {:count-cache? true}]
       (let [{:keys [sheet-id tick-id]} (run-fixture! ctx 2)
             stored (h/tick-context-l2-entry ctx sheet-id tick-id 4)
@@ -172,9 +163,6 @@
 
 (deftest l2-entry-does-not-contain-payload
   (testing "the raw stored bytes contain no trace of the payload"
-    ;; The strongest available proof, and the one that makes no assumption
-    ;; about stored shape: search the raw LMDB bytes for the payload marker.
-    ;; It cannot be satisfied by relocating a value to a different key.
     (h/with-async-test-context [ctx {:count-cache? true}]
       (let [{:keys [sheet-id tick-id]} (run-fixture! ctx 2)
             raw (h/l2-entry-raw ctx :sheet/tick-execution-contexts 4
@@ -185,9 +173,6 @@
 
 (deftest l2-holds-a-profile-for-every-valued-key
   (testing "trace assembly can work from the cache alone"
-    ;; assemble-execution-trace derives :input-snapshot / :output-snapshot from
-    ;; value SHAPES. Once values leave the cache it must read those shapes from
-    ;; the stored :profile, so every key that has a value needs one.
     (h/with-async-test-context [ctx {:count-cache? true}]
       (let [{:keys [sheet-id tick-id]} (run-fixture! ctx 2)
             stored (h/tick-context-l2-entry ctx sheet-id tick-id 4)
@@ -198,9 +183,6 @@
             (is (some? (:profile e))
                 (str "key " k " has a value but no cached :profile"))))))))
 
-;; =============================================================================
-;; Invariant: L2 cost must not scale with payload
-;; =============================================================================
 
 (deftest l2-entry-does-not-scale-with-payload
   (testing "stored entry size is independent of payload size"

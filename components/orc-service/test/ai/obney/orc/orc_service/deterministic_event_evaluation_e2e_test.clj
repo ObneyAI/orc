@@ -14,10 +14,11 @@
             [ai.obney.orc.evaluation.interface :as evaluation]
             [ai.obney.orc.evaluation.interface.schemas]
             [ai.obney.orc.evaluation.core.commands]
-            [ai.obney.orc.evaluation.core.judge-runtime :as judge-runtime]
+            [ai.obney.orc.evaluation.core.judge-runtime]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def ^:private excellent-tree
   [:sequence
@@ -168,9 +169,6 @@
             _ (h/run-and-apply! ctx (h/make-set-key-value-command sheet-id :input "projected"))
             result (sheet/execute ctx sheet-id {})]
         (is (h/settle-until! #(h/trace-stored? ctx (:trace-id result))))
-        ;; Creation alone is not a replay barrier: the terminal event can be
-        ;; published before the final ephemeral routing summary. Wait for this
-        ;; workflow's complete evidence before freezing the event prefix.
         (is (h/settle-until!
              #(let [trace (get-in (h/run-query ctx (h/make-get-trace-query (:trace-id result)))
                                  [:query/result :trace])
@@ -184,14 +182,14 @@
                      (= (:trace-instance-id main) (:parent-trace-instance-id copy)))))
             "the routing summary and leaf parent link must be projected before replay")
         (let [events (all-events ctx)
-              replayed-sheet (get (reduce rm/sheets* {} events) sheet-id)
-              replayed-nodes (->> (vals (reduce rm/nodes* {} events))
+              replayed-sheet (get (reduce service-logic/sheets* {} events) sheet-id)
+              replayed-nodes (->> (vals (reduce service-logic/nodes* {} events))
                                   (filterv #(= sheet-id (:sheet-id %))))
-              replayed-bb (->> (vals (reduce rm/blackboard* {} events))
+              replayed-bb (->> (vals (reduce service-logic/blackboard* {} events))
                                (filter #(= sheet-id (:sheet-id %)))
                                (map (juxt :key identity))
                                (into {}))
-              replayed-trace (get (reduce rm/traces* {} events) (:trace-id result))
+              replayed-trace (get (reduce service-logic/traces* {} events) (:trace-id result))
               live-nodes (sheet/get-nodes-for-sheet ctx sheet-id)]
           (is (= (sheet/get-sheet ctx sheet-id) replayed-sheet))
           (is (= (into {} (map (juxt :id identity)) live-nodes)
@@ -214,9 +212,6 @@
         (with-redefs [cp/process-command
                       (fn [context]
                         (let [result (original-command context)]
-                          ;; Delay only the return, after the real command has
-                          ;; durably emitted its terminal event. The frontier's
-                          ;; summary cannot be appended until this returns.
                           (when (= :sheet/emit-tick-completed
                                    (get-in context [:command :command/name]))
                             (deliver entered true)
@@ -241,8 +236,6 @@
                           (when (= :sheet/get-trace (:query/name query))
                             (swap! observations assoc :final (:trace (:query/result result))))
                           result))]
-          ;; Reuse every full projection equality from 074 under the controlled
-          ;; legal event ordering. In particular, do not normalize trace fields.
           ((:test (meta #'det-e2e-074-projection-replay))))
         (finally (deliver release true)))
       (let [{:keys [initial final]} @observations]
@@ -252,10 +245,6 @@
         (is (= (:trace-id initial) (:trace-id final)))))))
 
 (deftest det-e2e-075-attached-judge-assesses-with-evaluation-disabled
-  ;; S7 (ADR 0008, AttachmentIsMonitoring): attaching a judge is what enables it.
-  ;; This test used to assert the opposite - that an attached judge stayed silent
-  ;; while the Living Description flag was off - which is the defect J01 records.
-  ;; The flag now gates only the opt-in DEFAULT judges.
   (testing "an attached deterministic judge scores its node while Living Description evaluation is disabled"
     (h/with-async-test-context [ctx]
       (is (false? (ontology/get-living-description-enabled? ctx)))

@@ -1,13 +1,13 @@
 (ns ai.obney.orc.orc-service.deterministic-observability-e2e-test
   "Deterministic end-to-end coverage for durable execution observability."
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
-            [cognitect.anomalies :as anom]))
+            [cognitect.anomalies :as anom]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]))
 
 (defn uppercase [{:keys [inputs]}]
   {:middle (.toUpperCase ^String (:input inputs))})
@@ -292,7 +292,7 @@
                              :source-event-count source-event-count
                              :node-traces node-traces})
             publish! (fn [source-event-count node-traces]
-                       (trace-publication/publish!
+                       (service-commands/publish!
                         ctx (trace-payload source-event-count node-traces)))
             premature-refresh
             (h/run-and-apply!
@@ -381,9 +381,6 @@
     (h/with-async-test-context [ctx]
       (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-118-export-isolation"))
             control (sheet/execute ctx sheet-id {:input "same"})
-            ;; The public trace is the sequence summary plus two durable
-            ;; leaves. The returned :node-trace contains only those leaves,
-            ;; so it cannot be used as the settle count.
             control-trace-ready?
             (h/settle-until!
              #(= 3
@@ -420,7 +417,6 @@
         (is (= :success (:status foreign-result))
             "an unrelated terminal exercises the exporter predicate")
         (is control-trace-ready? "the durable control trace is fully projected")
-        ;; The exporter worker is deliberately blocked while all workflows run.
         (is (every? #(= (select-keys control [:status :outputs])
                         (select-keys % [:status :outputs]))
                     results))
@@ -449,9 +445,6 @@
             (is (<= (:max-occupancy before-stop) (:capacity before-stop)))
             (is (:stopped? stopped))
             (is (< elapsed-ms 2000.0))))
-        ;; Verify durable projections after the deliberately blocked exporter
-        ;; has drained and stopped. The exporter may delay sibling subscribers,
-        ;; but it must not alter their eventual durable result.
         (is (every?
              (fn [result]
                (and (h/settle-until!

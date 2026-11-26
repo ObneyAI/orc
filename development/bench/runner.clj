@@ -19,27 +19,16 @@
      (runner/stop!)
   "
   (:require [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
             [ai.obney.orc.ontology.core.todo-processors :as ont-tp]
-            [ai.obney.orc.ontology.core.reranker :as reranker]
-            [ai.obney.orc.ontology.core.evidence-guard :as evidence-guard]
             [model-registry :as mr]
             [ai.obney.orc.colbert.interface :as colbert]
             [ai.obney.orc.colbert.interface.schemas]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-v3.interface.schemas]
-            ;; RS7-PS: loading this registers the `:postgres` defmethod on
-            ;; `event-store-v3/start-event-store` (event_store_postgres_v3
-            ;; core.clj's `(defmethod start-event-store :postgres ...)`).
-            ;; Without this require, `{:event-store-conn {:type :postgres
-            ;; ...}}` dispatches to `:default` and throws "Unsupported
-            ;; event store type" even though the dep resolves on the
-            ;; classpath — same pattern as how orc-service's sqlite tests
-            ;; require ai.obney.grain.event-store-sqlite-v3.interface.
             [ai.obney.grain.event-store-postgres-v3.interface]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.query-processor.interface :as qp]
@@ -52,7 +41,10 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [clojure.edn :as edn]
-            [clojure.pprint :as pprint]))
+            [clojure.pprint :as pprint]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]))
 
 ;; =============================================================================
 ;; Configuration
@@ -60,42 +52,11 @@
 
 (def config
   {:model "google/gemini-3-flash-preview"
-   ;; RR-CFG: the reranker's model is now CONFIGURABLE (context slot
-   ;; :ontology-reranker-model, resolved by reranker/resolve-model). ONE value
-   ;; must drive both halves or the CH-1 guarantee breaks: `create-context`
-   ;; puts this on the bench context (so it is what EXECUTES) and the model
-   ;; lists below read it (so it is what gets REGISTERED). Reading
-   ;; `reranker/default-model` in one place and configuring another is exactly
-   ;; the class of defect RR-CFG exists to close — it would register the
-   ;; default while an unregistered configured model made the call.
-   ;;
-   ;; nil means "whatever the engine's ratified default is AT CALL TIME".
-   ;; It must NOT be `reranker/default-model` itself: that would cache the
-   ;; var's value here at load time and break `required-models`' documented
-   ;; CH-1 property of re-reading the engine rather than caching a literal
-   ;; (model_registry_test's "the required set FOLLOWS the engine" case
-   ;; pins exactly that). Set a real model id here to pin the reranker —
-   ;; e.g. a `:free` model for a free shakeout.
    :reranker-model nil
-   :timeout-ms 600000  ;; 10 minutes for complex tasks
+   :timeout-ms 600000
    :documents-dir "development/bench/documents"
    :results-dir "development/bench/generalization-results"})
 
-;; =============================================================================
-;; Model registration (CH-1)
-;; =============================================================================
-;; Two lists, deliberately kept SEPARATE:
-;;
-;;   declared-models — what this harness has DECIDED to talk to and registers.
-;;   required-models — what the harness WILL talk to, read from the ENGINE's
-;;                     own :model slots.
-;;
-;; They must agree, and `register-models!` refuses to start if they do not.
-;; Keeping them separate is what makes the check able to fail: if it were one
-;; list driving both registration and verification it could never disagree
-;; with itself. An engine-side default that moves (RR-2's reranker slot, the
-;; evidence guard's verifier) and is not followed here is a LOUD startup
-;; failure instead of an undeclared model quietly answering a live probe.
 
 (def declared-models
   "Every OpenRouter model this harness has decided it talks to. Each gets its
@@ -107,8 +68,8 @@
      every bench caller. CH-1: it was NEVER registered here, so no reader of
      this file could tell which models the harness would use."
   [(:model config)
-   (or (:reranker-model config) reranker/default-model)
-   evidence-guard/verifier-model])
+   (or (:reranker-model config) ontology-logic/default-model)
+   ontology-logic/verifier-model])
 
 (defn required-models
   "The models this harness WILL use, read from the engines' own defaults at
@@ -116,13 +77,10 @@
    default change is picked up rather than cached."
   []
   (distinct [(:model config)
-             ;; RR-CFG: resolve through the reranker's own precedence against
-             ;; the bench's configured slot, so this stays "what the engine
-             ;; WILL use" rather than "what the engine defaults to".
-             (reranker/resolve-model {:ontology-reranker-model
+             (ontology-logic/resolve-model {:ontology-reranker-model
                                       (:reranker-model config)}
                                      nil)
-             evidence-guard/verifier-model]))
+             ontology-logic/verifier-model]))
 
 (defn register-models!
   "Register every declared model with litellm, then ASSERT that every model
@@ -140,13 +98,7 @@
    (let [base {:provider :openrouter
                :config {:api-base "https://openrouter.ai/api/v1"
                         :api-key api-key}}]
-     ;; The generic entry stays: the llm component resolves the provider by the
-     ;; context's :llm-provider keyword (:openrouter) and passes the model as a
-     ;; per-request override, so :openrouter must exist. It is pinned to the
-     ;; runner's own model — the value it already had.
      (litellm-router/register! :openrouter (assoc base :model (:model config)))
-     ;; …and every declared model additionally gets its own named entry, which
-     ;; is what makes "declared" checkable rather than assumed.
      (doseq [m (distinct declared-models)]
        (litellm-router/register! (keyword (str "openrouter/" m))
                                  (assoc base :model m))))
@@ -158,13 +110,17 @@
 
 (defonce ^:private system-state (atom nil))
 
+(defn current-context
+  "Return the running benchmark context, or nil before startup."
+  []
+  @system-state)
+
 (def bench-cache-map-size
   "The bench runner's LMDB cache ceiling: 16 GB of address space."
   (* 16 1024 1024 1024))
 
 (defn create-context
-  "PUBLIC (CH-1): the convergence probe already reached in here through
-   `requiring-resolve`, and the CH-1 startup-ordering test redefines it.
+  "The convergence probe uses this entry point, and the startup-ordering test redefines it.
 
    RS7-PS: accepts an optional options map so a caller can point the harness
    at a durable store instead of the default in-memory one:
@@ -187,10 +143,6 @@
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
         event-store (es/start {:conn event-store-conn :event-pubsub ps :logger nil})
         cache-dir (or cache-dir (str "development/bench/.runner-cache/" (random-uuid)))
-        ;; LMDB's default map size is 10 MB, and a long sweep's projections outgrow
-        ;; it: the RS-7 baseline arm failed every task past ~220 with
-        ;; MapFullException. The map size only reserves address space, so a large
-        ;; ceiling costs nothing until used.
         cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "bench"
                                                :map-size bench-cache-map-size}))
         tenant-id (or tenant-id (random-uuid))
@@ -200,22 +152,9 @@
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   :llm-provider :openrouter
-                  ;; RR-CFG: the SAME value the model lists register, so what
-                  ;; the reranker executes and what the registry knows about
-                  ;; cannot drift apart.
                   :ontology-reranker-model (:reranker-model config)
-                  ;; CC-13: the bench is exactly the consumer that wants the
-                  ;; VERBATIM rendered prepend on the injection record (the
-                  ;; reports quote it). Production renders leave this off and
-                  ;; store only the hash + size. Must be on base-ctx BEFORE the
-                  ;; processors start — each captures the context by value.
                   :injection-capture-rendered-block? true
                   ::cache-dir cache-dir}
-        ;; Skip the async reindex processor — seed-corpus-and-build-index!
-        ;; emits 125 description-updated events at startup which would
-        ;; otherwise trigger 125 parallel ColBERT rebuilds (and hang the
-        ;; system). seed-corpus-and-build-index! calls maybe-rebuild!
-        ;; once synchronously after all seeds land.
         skip-procs #{:ontology/on-description-updated-maybe-reindex}
         processors (reduce-kv
                     (fn [acc proc-name {:keys [handler-fn topics]}]
@@ -274,26 +213,18 @@
                                                        " — " (random-uuid))))
         sheet-id (-> sheet-result :command-result/events first :sheet-id)]
 
-    ;; Declare document keys based on task
     (doseq [[doc-key _] documents]
       (h/run-and-apply! ctx (h/make-declare-key-command sheet-id doc-key :string)))
 
-    ;; Declare output keys
     (doseq [write-key (:writes task)]
       (h/run-and-apply! ctx (h/make-declare-key-command sheet-id write-key :string)))
 
-    ;; Create repl-researcher node
     (let [seq-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
           seq-id (-> seq-result :command-result/events first :node-id)
           node-result (h/run-and-apply! ctx (h/make-create-node-command
                                              sheet-id :repl-researcher :parent-id seq-id))
           node-id (-> node-result :command-result/events first :node-id)]
 
-      ;; Configure RLM mode. Per-task :rlm map override merges over the
-      ;; bench default of {:debug? true}. Tasks can opt into auto-classify
-      ;; (so the C-2c-2 wedge fires and the model sees Layer-1 + Layer-2
-      ;; classifier context) by setting :rlm {:auto-classify? true} in
-      ;; the task definition.
       (h/run-and-apply! ctx (h/make-set-repl-researcher-config-command
                               sheet-id node-id
                               (:instruction task)
@@ -307,7 +238,7 @@
 
 (defn- execute-task! [ctx sheet-id documents timeout-ms]
   (let [tick-id (random-uuid)
-        p (runtime/register-completion! tick-id)
+        p (service-logic/register-completion! tick-id)
         start-time (System/currentTimeMillis)
         _ (cp/process-command
             (assoc ctx :command
@@ -325,12 +256,6 @@
 ;; =============================================================================
 ;; Node-trace aggregation helper
 ;; =============================================================================
-;; ORC's repl-researcher delivers `:node-trace` as a first-class field on
-;; the tick completion result (see todo_processors.clj → build-node-trace).
-;; The runner just propagates it. This helper sums per-event :usage into a
-;; comparable shape so reports can show total system cost (Phase 1 + Phase 2
-;; sub-LLM calls aggregated). Cross-check against the executor's :usage
-;; field — divergence implies a missed aggregation somewhere upstream.
 
 (defn- summarize-trace-tokens
   "Sum :usage :total-tokens across a node-trace vector. Returns a map with
@@ -364,9 +289,6 @@
            (java.time.format.DateTimeFormatter/ISO_INSTANT)))
 
 (defn- task-slug [task]
-  ;; Derive a filename slug from the task's :name field
-  ;; e.g. "Risk & Obligation Analysis" -> "risk-obligation-analysis"
-  ;; For consistency with prior runs, prefer explicit :slug if present
   (or (:slug task)
       (-> (:name task)
           str/lower-case
@@ -398,15 +320,12 @@
    the concept graph reflects the replayed events synchronously rather than
    racing the live pubsub-subscribed processors."
   [ctx]
-  (let [c2d1 (requiring-resolve
-               'ai.obney.orc.ontology.core.todo-processors/on-tree-description-updated-project-concept)
-        r05a (requiring-resolve
-               'ai.obney.orc.ontology.core.todo-processors/on-behavioral-subtree-description-updated-project-concept)]
-    (doseq [e (into [] (es/read (:event-store ctx)
-                                {:tenant-id (:tenant-id ctx)
-                                 :types #{:ontology/tree-description-updated}}))]
-      (c2d1 (assoc ctx :event e))
-      (r05a (assoc ctx :event e)))))
+  (doseq [event (into [] (es/read (:event-store ctx)
+                                  {:tenant-id (:tenant-id ctx)
+                                   :types #{:ontology/tree-description-updated}}))]
+    (let [context (assoc ctx :event event)]
+      (ontology-logic/on-tree-description-updated-project-concept context)
+      (ontology-logic/on-behavioral-subtree-description-updated-project-concept context))))
 
 (defn- emit-synthetic-padding!
   "Emit N synthetic placeholder node-instance descriptions so the
@@ -490,8 +409,6 @@
   ([opts]
    (when @system-state
      (stop-context @system-state))
-   ;; CH-1: register every declared model AND assert the precondition BEFORE
-   ;; anything is built, so an undeclared model can never reach a live call.
    (register-models!)
    (let [ctx (create-context opts)]
      (reset! system-state ctx)
@@ -577,13 +494,11 @@
     (println "  Pattern:" (:pattern task))
     (println "\n" (apply str (repeat 70 "=")) "\n")
 
-    ;; Load documents
     (println "Loading documents...")
     (let [documents (load-task-documents task)
           _ (doseq [[k v] documents]
               (println (str "  " (name k) ": " (count v) " chars")))
 
-          ;; Setup and execute
           _ (println "\nSetting up task sheet...")
           {:keys [sheet-id]} (setup-task-sheet! ctx task documents)
 
@@ -593,26 +508,11 @@
           result (execute-task! ctx sheet-id documents (:timeout-ms config))
           duration-ms (- (System/currentTimeMillis) start-time)
 
-          ;; Extract usage
           usage (or (:usage result) {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0})
 
-          ;; Per-leaf-node trace is now a first-class field on the result
-          ;; delivered by ORC's deliver-completion! (todo_processors.clj —
-          ;; build-node-trace). We just propagate; no event-store query
-          ;; needed here. Future bench/eval harnesses can do the same.
           node-trace (or (:node-trace result) [])
           node-trace-usage-total (summarize-trace-tokens node-trace)
 
-          ;; CC-13: the R-Inject trace now comes from the EVENT STORE, not
-          ;; from a `/tmp/r-inject-trace-<sheet>.edn` sidecar. Same
-          ;; information, joinable to the turn and to its judge scores, and
-          ;; bounded — the sidecar was an unbounded per-sheet file nothing
-          ;; ever cleaned up.
-          ;;
-          ;; The runner sets :injection-capture-rendered-block? on its context
-          ;; (see start!), so :rendered-block carries the verbatim prepend the
-          ;; model saw — the field the reports quote. Production renders leave
-          ;; it off and store only the hash + size.
           r-inject-trace (let [records (->> (es/read (:event-store ctx)
                                                     {:types #{:intervention/injection-recorded}
                                                      :tags #{[:sheet sheet-id]}
@@ -628,7 +528,6 @@
                               :candidates (:candidates r)
                               :injection-records records}))
 
-          ;; Build result record
           record (cond-> {:task slug
                           :task-name (:name task)
                           :pattern (:pattern task)
@@ -648,22 +547,13 @@
                    (assoc :iteration-reasonings (or (:iteration-reasonings result)
                                                     (:iteration-reasonings (:outputs result))))
                    r-inject-trace (assoc :r-inject-trace r-inject-trace)
-                   ;; Node-trace: per-leaf-node completion events from the
-                   ;; event store, each with their own :usage. Sum equals
-                   ;; total system token cost (Phase 1 + Phase 2 sub-LLM).
-                   ;; Pair this with the executor's :usage field for the
-                   ;; report's headline number.
                    (seq node-trace) (assoc :node-trace node-trace
                                            :node-trace-usage-total node-trace-usage-total)
-                   ;; Full Phase 1 iteration history (code + error + vars-created
-                   ;; per iteration). Lets reports show what the model TRIED at
-                   ;; each step, including any syntax-error recovery.
                    (or (contains? result :iterations)
                        (contains? (:outputs result) :iterations))
                    (assoc :iterations (or (:iterations result)
                                           (:iterations (:outputs result)))))]
 
-      ;; Print summary
       (println "\n" (apply str (repeat 70 "-")))
       (println "RESULT SUMMARY:")
       (println "  Status:" (:status result))
@@ -676,12 +566,10 @@
       (when (:phase2-error result)
         (println "  PHASE 2 ERROR:" (:phase2-error result)))
 
-      ;; Print generated tree if present
       (when-let [tree-raw (get-in result [:outputs :generated-tree-raw])]
         (println "\nGENERATED TREE (raw S-expr):")
         (pprint/pprint tree-raw))
 
-      ;; Print outputs preview
       (println "\nOUTPUTS PREVIEW:")
       (doseq [[k v] (:outputs result)]
         (when (and (string? v) (not= k :generated-tree-raw))
@@ -689,12 +577,10 @@
                        (subs v 0 (min 150 (count v)))
                        (when (> (count v) 150) "...")))))
 
-      ;; Print evaluation criteria
       (println "\nEVALUATION CRITERIA (manual check):")
       (doseq [criterion (:evaluation-criteria task)]
         (println (str "  [ ] " criterion)))
 
-      ;; Save result
       (println)
       (save-result! task record)
       (println (apply str (repeat 70 "-")))
@@ -729,7 +615,6 @@
         files (when (.exists dir)
                 (filter #(.endsWith (.getName %) ".edn") (.listFiles dir)))
         results (map #(edn/read-string (slurp %)) files)
-        ;; Group by task and take latest
         by-task (group-by :task results)
         latest (into {} (map (fn [[k vs]]
                               [k (last (sort-by :timestamp vs))])
@@ -751,7 +636,6 @@
                       (get-in result [:usage :total-tokens] 0)
                       (name (:status result)))))
 
-    ;; Save as markdown
     (let [md-path (str results-dir "/SUMMARY.md")]
       (println (str "\nSummary saved to: " md-path))
       md-path)))

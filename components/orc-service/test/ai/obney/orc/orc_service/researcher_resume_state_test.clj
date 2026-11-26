@@ -34,8 +34,8 @@
    a real Postgres store lives in development/test
    (resume_state_postgres_roundtrip_test.clj)."
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.researcher-resume-state :as resume]
-            [ai.obney.grain.fressian-util.interface :as fressian-util]))
+            [ai.obney.grain.fressian-util.interface :as fressian-util]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Pure unit coverage of canonical-value / sandbox-hash
@@ -44,48 +44,48 @@
 (deftest rs7-a-list-and-an-equal-vector-hash-the-same
   (testing "a durable store round trip may legitimately turn a list into a
             vector (see ns docstring); the hash must not depend on that"
-    (is (= (resume/sandbox-hash {:a (list 1 2 3)})
-           (resume/sandbox-hash {:a [1 2 3]})))
-    (is (= (resume/sandbox-hash {:a (list)})
-           (resume/sandbox-hash {:a []})))
-    (is (= (resume/sandbox-hash {:a {:nested (list 1 (list 2 3))}})
-           (resume/sandbox-hash {:a {:nested [1 [2 3]]}})))))
+    (is (= (service-logic/sandbox-hash {:a (list 1 2 3)})
+           (service-logic/sandbox-hash {:a [1 2 3]})))
+    (is (= (service-logic/sandbox-hash {:a (list)})
+           (service-logic/sandbox-hash {:a []})))
+    (is (= (service-logic/sandbox-hash {:a {:nested (list 1 (list 2 3))}})
+           (service-logic/sandbox-hash {:a {:nested [1 [2 3]]}})))))
 
 (deftest rs7-a-list-and-a-differently-shaped-vector-still-differ
   (testing "the normalization does not erase genuinely different values"
-    (is (not= (resume/sandbox-hash {:a (list 1 2 3)})
-              (resume/sandbox-hash {:a [1 2 3 4]})))
-    (is (not= (resume/sandbox-hash {:a (list 1 2 3)})
-              (resume/sandbox-hash {:a #{1 2 3}})))))
+    (is (not= (service-logic/sandbox-hash {:a (list 1 2 3)})
+              (service-logic/sandbox-hash {:a [1 2 3 4]})))
+    (is (not= (service-logic/sandbox-hash {:a (list 1 2 3)})
+              (service-logic/sandbox-hash {:a #{1 2 3}})))))
 
 (deftest rs7-an-integer-and-an-equal-long-hash-the-same
   (testing "a durable store round trip normalizes every integral width to
             Long on decode; a Java-interop-produced java.lang.Integer at
             write time (e.g. a collection's .size()) must hash the same as
             the java.lang.Long the store hands back for the same value"
-    (is (= (resume/sandbox-hash {:a (int 0)})
-           (resume/sandbox-hash {:a (long 0)})))
-    (is (= (resume/sandbox-hash {:a (int 42)})
-           (resume/sandbox-hash {:a (long 42)})))
-    (is (= (resume/sandbox-hash {:a (short 7)})
-           (resume/sandbox-hash {:a (long 7)})))
-    (is (= (resume/sandbox-hash {:a (bigint 999999999999999999999)})
-           (resume/sandbox-hash {:a (biginteger 999999999999999999999)})))
-    (is (= (resume/sandbox-hash {:nested {:nodes-failed (int 0)
+    (is (= (service-logic/sandbox-hash {:a (int 0)})
+           (service-logic/sandbox-hash {:a (long 0)})))
+    (is (= (service-logic/sandbox-hash {:a (int 42)})
+           (service-logic/sandbox-hash {:a (long 42)})))
+    (is (= (service-logic/sandbox-hash {:a (short 7)})
+           (service-logic/sandbox-hash {:a (long 7)})))
+    (is (= (service-logic/sandbox-hash {:a (bigint 999999999999999999999)})
+           (service-logic/sandbox-hash {:a (biginteger 999999999999999999999)})))
+    (is (= (service-logic/sandbox-hash {:nested {:nodes-failed (int 0)
                                            :nodes-succeeded (int 3)
                                            :nodes-total (int 3)}})
-           (resume/sandbox-hash {:nested {:nodes-failed (long 0)
+           (service-logic/sandbox-hash {:nested {:nodes-failed (long 0)
                                            :nodes-succeeded (long 3)
                                            :nodes-total (long 3)}})))))
 
 (deftest rs7-different-integers-still-differ
-  (is (not= (resume/sandbox-hash {:a (int 1)})
-            (resume/sandbox-hash {:a (int 2)})))
+  (is (not= (service-logic/sandbox-hash {:a (int 1)})
+            (service-logic/sandbox-hash {:a (int 2)})))
   (testing "an integer and an equal-valued double remain distinct — = is
             false between them in Clojure, and the hash must not collide
             them into the same identity"
-    (is (not= (resume/sandbox-hash {:a (int 5)})
-              (resume/sandbox-hash {:a (double 5.0)})))))
+    (is (not= (service-logic/sandbox-hash {:a (int 5)})
+              (service-logic/sandbox-hash {:a (double 5.0)})))))
 
 (deftest rs7-equal-instants-hash-the-same-regardless-of-identity
   (testing "two independently constructed, equal instants must hash
@@ -97,23 +97,20 @@
           b (java.time.Instant/ofEpochMilli epoch-ms)]
       (is (not (identical? a b)) "fixture sanity: two distinct objects")
       (is (= a b) "fixture sanity: equal instants")
-      (is (= (resume/sandbox-hash {:at a})
-             (resume/sandbox-hash {:at b})))))
+      (is (= (service-logic/sandbox-hash {:at a})
+             (service-logic/sandbox-hash {:at b})))))
   (testing "a java.util.Date and an equal java.time.Instant are different
             :inst values represented the same way, so they hash the same"
     (let [epoch-ms 1790684860265
           d (java.util.Date. ^long epoch-ms)
           i (java.time.Instant/ofEpochMilli epoch-ms)]
-      (is (= (resume/sandbox-hash {:at d})
-             (resume/sandbox-hash {:at i}))))))
+      (is (= (service-logic/sandbox-hash {:at d})
+             (service-logic/sandbox-hash {:at i}))))))
 
 (deftest rs7-different-instants-still-differ
-  (is (not= (resume/sandbox-hash {:at (java.time.Instant/ofEpochMilli 1)})
-            (resume/sandbox-hash {:at (java.time.Instant/ofEpochMilli 2)}))))
+  (is (not= (service-logic/sandbox-hash {:at (java.time.Instant/ofEpochMilli 1)})
+            (service-logic/sandbox-hash {:at (java.time.Instant/ofEpochMilli 2)}))))
 
-;; =============================================================================
-;; Round trip through the store's own serialization layer (no database)
-;; =============================================================================
 
 (deftest a-sandbox-survives-the-stores-serialization-round-trip
   (let [sandbox {:memo "kept"
@@ -126,18 +123,18 @@
       (is (vector? (:iteration-reasonings decoded)) "a list comes back a vector")
       (is (instance? Long (get-in decoded [:tree-stats :nodes-total])) "an Integer comes back a Long"))
     (is (= sandbox decoded) "the value is unchanged under =")
-    (is (= (resume/sandbox-hash sandbox) (resume/sandbox-hash decoded))
+    (is (= (service-logic/sandbox-hash sandbox) (service-logic/sandbox-hash decoded))
         "the hash is computed over the value, so it survives the round trip")))
 
 (deftest a-fact-saved-under-the-old-hash-still-hydrates
   (testing "upgrade safety: a full-snapshot fact whose hash was computed with the
             pre-upgrade preimage verifies; a hash matching neither preimage fails"
     (let [sandbox {:memo "kept" :count 3 :items [1 2]}
-          legacy-hash @(resolve 'ai.obney.orc.orc-service.core.researcher-resume-state/legacy-sandbox-hash)
-          fact (assoc (resume/encode-full {:version 2 :revision 1 :sandbox-vars sandbox})
+          legacy-hash @#'service-logic/legacy-sandbox-hash
+          fact (assoc (service-logic/encode-full {:version 2 :revision 1 :sandbox-vars sandbox})
                       :resulting-state-hash (legacy-hash sandbox))]
-      (is (not= (legacy-hash sandbox) (resume/sandbox-hash sandbox))
+      (is (not= (legacy-hash sandbox) (service-logic/sandbox-hash sandbox))
           "non-vacuous: the two preimages differ for this sandbox")
-      (is (= sandbox (:sandbox-vars (resume/hydrate nil fact))))
+      (is (= sandbox (:sandbox-vars (service-logic/researcher-resume-state-hydrate nil fact))))
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"full snapshot hash mismatch"
-            (resume/hydrate nil (assoc fact :resulting-state-hash "sha256:0000")))))))
+            (service-logic/researcher-resume-state-hydrate nil (assoc fact :resulting-state-hash "sha256:0000")))))))

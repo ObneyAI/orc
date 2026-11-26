@@ -3,8 +3,8 @@
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.recoverable-generated-function-test :as source]
-            [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree]
-            [ai.obney.orc.orc-service.core.rlm-sandbox :as sandbox]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (deftest terminal-generated-child-reconstruction-cleans-only-its-matching-binding
   (h/with-async-test-context [ctx]
@@ -25,16 +25,14 @@
                  :command/timestamp (java.time.OffsetDateTime/now)
                  :sheet-id sheet :node-id (:id node) :executor :code :fn key :recoverable-fn binding})
                (is (= :success (:status (orc/execute ctx sheet {:n 4} :tick-id tick :timeout-ms 5000 :force-draft true))))
-               (is (fn? (tree/lookup-ephemeral-fn key)) "Keep the binding until child terminal reconstruction")
-               (is (= {:result 5} (select-keys (:outputs (tree/execute-tree nil ctx {:stable-tick-id tick :timeout-ms 1000})) [:result])))
-               (is (nil? (tree/lookup-ephemeral-fn key)) "Release this completed child's restored callable")
-               ;; A different registration under that key belongs to someone else;
-               ;; terminal reconstruction must not delete it.
-               (tree/clear-ephemeral-fn! key)
-               (let [replacement (tree/restore-ephemeral-fn! key different)]
-                 (tree/execute-tree nil ctx {:stable-tick-id tick :timeout-ms 1000})
-                 (is (identical? replacement (tree/lookup-ephemeral-fn key))))
-               (finally (tree/clear-ephemeral-fn! key))))))
+               (is (fn? (service-logic/lookup-ephemeral-fn key)) "Keep the binding until child terminal reconstruction")
+               (is (= {:result 5} (select-keys (:outputs (service-processors/execute-tree nil ctx {:stable-tick-id tick :timeout-ms 1000})) [:result])))
+               (is (nil? (service-logic/lookup-ephemeral-fn key)) "Release this completed child's restored callable")
+               (service-logic/clear-ephemeral-fn! key)
+               (let [replacement (service-logic/restore-ephemeral-fn! key different)]
+                 (service-processors/execute-tree nil ctx {:stable-tick-id tick :timeout-ms 1000})
+                 (is (identical? replacement (service-logic/lookup-ephemeral-fn key))))
+               (finally (service-logic/clear-ephemeral-fn! key))))))
 
 (deftest completing-one-tick-keeps-a-shared-callable-needed-by-another-live-tick
   (let [entered (promise) release (promise)]
@@ -60,28 +58,28 @@
             :command/timestamp (java.time.OffsetDateTime/now)
             :sheet-id sheet :node-id (:id node) :executor :code :fn key :recoverable-fn binding})
           (is (= :success (:status (orc/execute ctx sheet {:n 4 :wait false} :tick-id first-tick :timeout-ms 5000 :force-draft true))))
-          (let [registered (tree/lookup-ephemeral-fn key)]
+          (let [registered (service-logic/lookup-ephemeral-fn key)]
             (reset! work (future (orc/execute ctx sheet {:n 4 :wait true} :tick-id second-tick :timeout-ms 5000 :force-draft true)))
             (is (= true (deref entered 3000 :timeout)))
-            (tree/execute-tree nil ctx {:stable-tick-id first-tick :timeout-ms 1000})
-            (is (identical? registered (tree/lookup-ephemeral-fn key)) "The other live tick still owns this callable")
+            (service-processors/execute-tree nil ctx {:stable-tick-id first-tick :timeout-ms 1000})
+            (is (identical? registered (service-logic/lookup-ephemeral-fn key)) "The other live tick still owns this callable")
             (deliver release true)
             (is (= :success (:status (deref @work 5000 {:status :timeout}))))
-            (tree/execute-tree nil ctx {:stable-tick-id second-tick :timeout-ms 1000})
-            (is (nil? (tree/lookup-ephemeral-fn key)) "Release after all same-sheet ticks become terminal"))
+            (service-processors/execute-tree nil ctx {:stable-tick-id second-tick :timeout-ms 1000})
+            (is (nil? (service-logic/lookup-ephemeral-fn key)) "Release after all same-sheet ticks become terminal"))
           (finally
             (deliver release true)
             (when @work (deref @work 5000 nil))
-            (tree/clear-ephemeral-fn! key)))))))
+            (service-logic/clear-ephemeral-fn! key)))))))
 
 (deftest generated-source-metadata-crosses-public-command-event-and-projection
   (h/with-async-test-context [ctx]
-    (let [sctx (sandbox/build-rlm-context {:blackboard {} :durable-source-required? true})
-          emitted (sandbox/execute-rlm-code sctx
+    (let [sctx (service-processors/build-rlm-context {:blackboard {} :durable-source-required? true})
+          emitted (service-logic/execute-rlm-code sctx
                     "(emit-tree! '[:code {:reads [:n] :writes [:result] :output-schemas {:result :int} :fn (fn [{:keys [inputs]}] {:result (inc (:n inputs))})}])")
           _ (is (nil? (:error emitted)))
           canonical (:generated-tree @(:sandbox-vars sctx))
-          result (tree/execute-tree canonical ctx {:blackboard {:n 4} :timeout-ms 5000})
+          result (service-processors/execute-tree canonical ctx {:blackboard {:n 4} :timeout-ms 5000})
           configurations (filter #(= :sheet/node-executor-set (:event/type %)) (h/read-all-events ctx))
           configured (first configurations)
           sheet (:sheet-id configured)

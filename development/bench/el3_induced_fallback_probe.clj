@@ -17,14 +17,13 @@
      clojure -M:dev -m el3-induced-fallback-probe"
   (:require [runner]
             [ai.obney.orc.ontology.interface :as ont]
-            [ai.obney.orc.ontology.core.task-classifier :as tc]
-            [ai.obney.orc.ontology.core.reranker :as reranker]
             [ai.obney.orc.orc-service.core.todo-processors :as otp]
             [ai.obney.orc.colbert.interface :as colbert]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
 (defn build-sig [instruction]
-  (tc/build-task-signature {:instruction instruction
+  (ontology-logic/build-task-signature {:instruction instruction
                             :reads [:user-message :active-plan :workspace-root]
                             :writes [:assistant-response]
                             :mcp-tools ["shell/exec" "fs/read" "fs/list"]}))
@@ -38,19 +37,17 @@
   (println "=== EL-3 INDUCED-FALLBACK PROBE (live, fault ONLY at reranker/rerank!) ===")
   (try
     (runner/start!)
-    (let [ctx (deref (var-get (requiring-resolve 'runner/system-state)))
+    (let [ctx (runner/current-context)
           sig (build-sig in-domain-instruction)]
 
-      ;; ---- 0. RULE OUT THE HARNESS FIRST: real index + real hits, no fault ----
       (println "\n--- 0. harness check: real ColBERT hits WITHOUT fault ---")
       (let [tf (ont/search-descriptions ctx {:query sig :granularity :tree-fingerprint
                                              :rerank-with-intent "fit?" :k 5})]
         (println "  tree-fingerprint hits (no fault):" (count tf)
                  " (must be > 0 or the probe is measuring an empty index, NOT EL-3)"))
 
-      ;; ---- 1. UNDER FALLBACK: classifiers return :outcome :uncertain ----
       (println "\n--- 1. classifiers under induced rerank! fallback ---")
-      (with-redefs [reranker/rerank! (fn [& _] (throw (ex-info "induced reranker failure (EL-3 probe)" {})))]
+      (with-redefs [ontology-logic/reranker-rerank! (fn [& _] (throw (ex-info "induced reranker failure (EL-3 probe)" {})))]
         (let [tres (ont/classify-task ctx {:task-signature sig :threshold 0.7 :walk-down? true})
               bres (ont/classify-behaviors ctx {:task-signature sig :threshold 0.6 :top-n 5})]
           (println "  classify-task   :outcome =" (:outcome tres)
@@ -68,7 +65,6 @@
             (println "  classify-task :uncertain & no-mint? =" ok-task)
             (println "  classify-behaviors :uncertain & no-mint? =" ok-behav))))
 
-      ;; ---- 2. THE WEDGE under fallback: NO assign-task-class event in store ----
       (println "\n--- 2. wedge under fallback: read the event store back ---")
       (let [sheet-id (random-uuid)
             tick-id (random-uuid)
@@ -81,7 +77,7 @@
             before (count (into [] (es/read (:event-store ctx)
                                             {:tenant-id (:tenant-id ctx)
                                              :types #{:ontology/task-classified}})))]
-        (with-redefs [reranker/rerank! (fn [& _] (throw (ex-info "induced reranker failure (EL-3 probe)" {})))]
+        (with-redefs [ontology-logic/reranker-rerank! (fn [& _] (throw (ex-info "induced reranker failure (EL-3 probe)" {})))]
           (let [result-node (otp/maybe-auto-classify-and-set-context node wedge-ctx)
                 after-events (into [] (es/read (:event-store ctx)
                                                {:tenant-id (:tenant-id ctx)

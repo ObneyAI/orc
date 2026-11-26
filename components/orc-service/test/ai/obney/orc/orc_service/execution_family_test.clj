@@ -8,9 +8,10 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.event-store-v3.interface :as es]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.llm.interface :as llm]
-            [litellm.router :as router]))
+            [litellm.router :as router]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
 (defn one [{:keys [inputs]}] {:mid (str "one:" (:request inputs))})
 (defn two [{:keys [inputs]}] {:answer (str "two:" (:mid inputs))})
@@ -44,14 +45,14 @@
     (into []
           (mapcat
            (fn [{:keys [tick-id event-id node-name] :as entry}]
-             (let [events (value-log/read-tick-events ctx tenant tick-id)
+             (let [events (service-read-models/read-tick-events ctx tenant tick-id)
                    completed (some #(when (and (= :sheet/node-execution-completed (:event/type %))
                                                (= event-id (:event/id %)))
                                       %)
                                    events)
-                   expect {:inputs (value-log/resolve-reads ctx tenant tick-id completed)
-                           :outputs (value-log/resolve-writes ctx tenant tick-id completed)
-                           :rejected-outputs (not-empty (value-log/rejected-writes-for events completed))}
+                   expect {:inputs (service-read-models/resolve-reads ctx tenant tick-id completed)
+                           :outputs (service-read-models/resolve-writes ctx tenant tick-id completed)
+                           :rejected-outputs (not-empty (service-logic/rejected-writes-for events completed))}
                    actual {:inputs (:inputs entry)
                            :outputs (:outputs entry)
                            :rejected-outputs (:rejected-outputs entry)}]

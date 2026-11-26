@@ -6,144 +6,4924 @@
    - Handle sequence/fallback/parallel composite node logic
    - Handle map-each iteration
    - Update blackboard with node outputs"
-  (:require [ai.obney.orc.orc-service.core.budget-facts :as budget-facts]
-            [ai.obney.orc.orc-service.core.emitted-model-authority :as emitted-authority]
-            [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.executor :as executor]
-            [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
-            [ai.obney.orc.orc-service.core.provider-observations :as provider-observations]
-            [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
-            [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
-            [ai.obney.orc.orc-service.core.researcher-mode :as researcher-mode]
-            [ai.obney.orc.orc-service.core.block :as block]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
-            [ai.obney.orc.orc-service.core.family-usage :as family-usage]
-            [ai.obney.orc.orc-service.core.streaming :as streaming]
-            [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
-            [ai.obney.orc.orc-service.core.profile :as profile]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
-            [ai.obney.orc.orc-service.core.value-storage :as value-storage]
+  (:require [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
-            [ai.obney.grain.command-processor-v2.interface :as cp]
-            [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.time.interface :as time]
+            [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
+            [ai.obney.orc.integrations.interface :as integrations]
+            [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.orc-service.core.commands :as commands]
+            [ai.obney.orc.orc-service.core.logic :as logic]
+            [ai.obney.orc.orc-service.core.read-models :as rm]
+            [clojure.core.async :as async]
+            [clojure.pprint :as pprint]
+            [clojure.set]
             [clojure.string :as str]
-            [com.brunobonacci.mulog :as u]))
+            [clojure.walk :as walk]
+            [com.brunobonacci.mulog :as u]
+            [malli.core :as m]
+            [sci.core :as sci]))
 
-(declare advance-ephemeral-frontier complete-tree-tick)
+(defn read-facts [ctx owner campaign] (:facts (commands/fact-state ctx owner campaign)))
+
+(defn ensure!
+  "Wait only for actual parent recovery facts, under the original absolute deadline.
+   No model outcome is recorded while a legitimate recovery binding is pending."
+  [ctx owner deadline-ms]
+  (when-let [campaign (rm/researcher-campaign ctx (:tick-id owner))]
+    (let [now-ms (or (:orc/model-authority-now-ms ctx) #(System/currentTimeMillis))
+          sleep! (or (:orc/model-authority-sleep! ctx) #(Thread/sleep %))
+          deadline (or deadline-ms (+ (now-ms) 30000))]
+      (loop []
+        (when (>= (now-ms) deadline)
+          (throw (ex-info "Emitted model recovery authority deadline exhausted"
+                          {:failure-kind :model-plan-incompatible :reason :emitted-authority-deadline})))
+        (when (.isInterrupted (Thread/currentThread)) (throw (InterruptedException. "Emitted model recovery interrupted")))
+        (let [{:keys [status authority reason]} (logic/assess owner campaign (read-facts ctx owner campaign))]
+          (case status
+            (:original :authorized) authority
+            :ready (let [r (cp/process-command (assoc ctx :command
+                             (merge owner {:command/name :sheet/authorize-emitted-model-work
+                                           :command/id (random-uuid) :command/timestamp (time/now)})))]
+                     (when-let [category (:cognitect.anomalies/category r)]
+                       (when-not (= :cognitect.anomalies/conflict category)
+                         (throw (ex-info "Emitted model recovery authority could not be recorded"
+                                         {:failure-kind :model-plan-incompatible :reason :emitted-authority-write-failed})))
+                       (sleep! 5))
+                     (recur))
+            :pending (if (< (now-ms) deadline)
+                       (do (sleep! (min 25 (max 1 (- deadline (now-ms))))) (recur))
+                       (throw (ex-info "Emitted model recovery authority was not established before the execution deadline"
+                                       {:failure-kind :model-plan-incompatible :reason :emitted-authority-deadline})))
+            (throw (ex-info "Emitted model recovery authority is no longer current"
+                            {:failure-kind :model-plan-incompatible :reason reason}))))))))
+
+(defn begin!
+  "Mark one execution live in this process and start renewing its lease.
+   Returns a handle for `end!`. Call on the dispatching thread, before the
+   work is handed to its future, so liveness is visible from the moment the
+   worker accepts the start."
+  [context {:keys [tick-id node-id exec-context start-event-id] :as ids}]
+  (let [k (logic/work-key tick-id node-id exec-context)
+        stop (promise)
+        interval-ms (max 1 (quot (logic/lease-ms context) 3))]
+    (logic/mark-live! k)
+    (logic/untrack-queued! k)
+    (let [renewer
+          (try
+            (doto (Thread.
+                   ^Runnable
+                   (fn []
+                     (loop []
+                       (when (= :ai.obney.orc.orc-service.core.execution-lease/wait (deref stop interval-ms :ai.obney.orc.orc-service.core.execution-lease/wait))
+                         (commands/renew! context ids)
+                         (recur))))
+                   "orc-lease-renewer")
+              (.setDaemon true)
+              (.start))
+            (catch Throwable t
+              (logic/unmark-live! k)
+              (throw t)))]
+      {:key k :stop stop :renewer renewer :ended? (atom false)
+       :start-event-id start-event-id})))
+
+;; --- Rlm tree executor ---
+
+(defn- persisted-tick-events [context tick-id]
+  (when (and tick-id (:event-store context))
+    (into [] (es/read (:event-store context)
+                      {:tenant-id (:tenant-id context)
+                       :tags #{[:tick tick-id]}}))))
+
+(defn- compute-by-node-from-tick-events
+  "Read the event store for a tick's :sheet/node-execution-completed events
+   and aggregate per-node usage."
+  [event-store tenant-id tick-id]
+  (let [tick-events (into [] (es/read event-store
+                              (cond-> {:tags #{[:tick tick-id]}}
+                                tenant-id (assoc :tenant-id tenant-id))))
+        completions (filter #(= :sheet/node-execution-completed (:event/type %))
+                            tick-events)]
+    (logic/aggregate-by-node completions)))
+
+(defn- clear-terminal-functions!
+  "Release only this terminal tick's exact callable bindings. Another live
+   tick of the same sheet may still need them; uncertain ownership retains them.
+   Returns observed recoverable keys, or nil when cleanup observation failed."
+  [context sheet-id tick-id]
+  (let [observation
+        (try
+          (let [events (es/read (:event-store context)
+                                {:tenant-id (:tenant-id context) :tags #{[:sheet sheet-id]}
+                                 :types #{:sheet/tree-tick-started :sheet/tree-tick-completed :sheet/tick-cancelled}})]
+            (when (and events (not (:cognitect.anomalies/category events)))
+              (let [live (reduce (fn [active event]
+                                   (case (:event/type event)
+                                     :sheet/tree-tick-started (conj active (:tick-id event))
+                                     :sheet/tree-tick-completed
+                                     (if (logic/terminal-root-status->result-status (:root-status event))
+                                       (disj active (:tick-id event)) active)
+                                     :sheet/tick-cancelled (disj active (:tick-id event))
+                                     active)) #{} events)
+                    snapshot (rm/get-tick-execution-context context tick-id)
+                    nodes (:nodes-by-id snapshot)]
+                (when (and (map? snapshot) (not (:cognitect.anomalies/category snapshot))
+                           (map? nodes))
+                  {:live live
+                   :bindings (into []
+                                   (keep #(when (:recoverable-fn %)
+                                            (select-keys % [:fn :recoverable-fn])))
+                                   (vals nodes))}))))
+          (catch Exception _ nil))]
+    (when observation
+      (when (empty? (:live observation))
+        (doseq [{:keys [fn recoverable-fn]} (:bindings observation)]
+          (swap! logic/ephemeral-fn-registry
+                 (clojure.core/fn [registry]
+                   (if (= recoverable-fn (:orc/recoverable-fn (meta (get registry fn))))
+                     (dissoc registry fn)
+                     registry)))))
+      (into #{} (map :fn) (:bindings observation)))))
+
+(defn- reconstruct-completed-tick
+  "Return a durable child result when the stable Phase-2 tick already reached a
+   terminal event. This closes the crash window between child completion and
+   recording the result in the parent researcher action log."
+  [context tick-id]
+  (let [events (persisted-tick-events context tick-id)]
+  (when-let [completion (last (filter #(and (= :sheet/tree-tick-completed
+                                                (:event/type %))
+                                             (some? (logic/terminal-root-status->result-status
+                                                     (:root-status %))))
+                                      events))]
+    (let [root-status (:root-status completion)
+          started (first (filter #(= :sheet/tree-tick-started (:event/type %))
+                                 events))
+          duration-ms (logic/elapsed-ms (:event/timestamp started)
+                                             (:event/timestamp completion))
+          usage (reduce (fn [acc event]
+                          (if (and (= :sheet/node-execution-completed (:event/type event))
+                                   (:usage event))
+                            (merge-with + acc
+                                        (select-keys (:usage event)
+                                                     [:prompt-tokens
+                                                      :completion-tokens
+                                                      :total-tokens]))
+                            acc))
+                        {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}
+                        events)
+          by-node (compute-by-node-from-tick-events
+                   (:event-store context) (:tenant-id context) tick-id)
+          _ (clear-terminal-functions! context (:sheet-id completion) tick-id)]
+      (cond-> {:status (logic/terminal-root-status->result-status root-status)
+               :outputs (rm/final-values context (:tenant-id context) tick-id)
+               :sheet-id (:sheet-id completion)
+               :trace-id tick-id
+               :replayed? true}
+        (some? duration-ms) (assoc :duration-ms duration-ms)
+        (pos? (:total-tokens usage 0))
+        (assoc :usage (cond-> usage (seq by-node) (assoc :by-node by-node)))
+        (:error completion) (assoc :error (:error completion))
+        (= :blocked root-status)
+        (assoc :block-payload (:block-payload completion)))))))
+
+(defn- await-existing-tick
+  [context tick-id timeout-ms]
+  (when-let [started (first (filter #(= :sheet/tree-tick-started (:event/type %))
+                                    (persisted-tick-events context tick-id)))]
+    (or (reconstruct-completed-tick context tick-id)
+        (let [p (logic/register-completion! tick-id)]
+          (or (reconstruct-completed-tick context tick-id)
+              (let [result (deref p timeout-ms :ai.obney.orc.orc-service.core.rlm-tree-executor/deref-expired)]
+                (if (= :ai.obney.orc.orc-service.core.rlm-tree-executor/deref-expired result)
+                  (do
+                    (logic/deregister-completion! tick-id)
+                    {:status :timeout
+                     :error "Tree execution timed out"
+                     :sheet-id (:sheet-id started)
+                     :trace-id tick-id})
+                  (or (reconstruct-completed-tick context tick-id)
+                      (assoc result :replayed? true)))))))))
+
+(defn- run-command!
+  "Run a child setup command, stopping compilation when the command is rejected."
+  [ctx command-data]
+  (let [result (cp/process-command (assoc ctx :command command-data))]
+    (when-let [category (:cognitect.anomalies/category result)]
+      (let [diagnostic (logic/from-refusal (:command/name command-data) result)]
+        (throw (ex-info
+                (if diagnostic (logic/render diagnostic)
+                    "Generated child setup command rejected")
+                (cond-> {:reason :generated-child-setup-rejected
+                         :preflight-rejected? true
+                         :command-name (:command/name command-data)
+                         :cognitect.anomalies/category category}
+                  diagnostic (assoc :setup-diagnostic diagnostic))))))
+    result))
+
+(defn- compile-tree-node
+  "Compile a single tree node into ORC sheet nodes.
+   Returns {:node-id N :ephemeral-fn-keys [...]} where ephemeral-fn-keys
+   are the keys of any inline functions registered during compilation.
+
+   Supported node types:
+   - sheet/sequence - Creates a sequence node
+   - sheet/llm - Creates a leaf node with instruction
+   - sheet/code - Creates a leaf node with code executor
+   - sheet/map-each - Creates a map-each iteration node
+   - final! - Creates a leaf node that just writes outputs"
+  [context sheet-id tree parent-id & {:keys [index]}]
+  (cond
+    (and (seq? tree) (= 'sheet/sequence (first tree)))
+    (let [seq-result (run-command! context
+                       (logic/rlm-tree-executor-make-create-node-command sheet-id :sequence :parent-id parent-id :index index))
+          seq-id (-> seq-result :command-result/events first :node-id)
+          children (rest tree)
+          child-results (vec (map-indexed
+                               (fn [idx child-tree]
+                                 (compile-tree-node context sheet-id child-tree seq-id :index idx))
+                               children))
+          all-fn-keys (vec (mapcat :ephemeral-fn-keys child-results))]
+      {:node-id seq-id
+       :ephemeral-fn-keys all-fn-keys})
+
+    (and (seq? tree) (= 'sheet/parallel (first tree)))
+    (let [par-result (run-command! context
+                       (logic/rlm-tree-executor-make-create-node-command sheet-id :parallel :parent-id parent-id :index index))
+          par-id (-> par-result :command-result/events first :node-id)
+          children (rest tree)
+          child-results (vec (map-indexed
+                               (fn [idx child-tree]
+                                 (compile-tree-node context sheet-id child-tree par-id :index idx))
+                               children))
+          all-fn-keys (vec (mapcat :ephemeral-fn-keys child-results))]
+      {:node-id par-id
+       :ephemeral-fn-keys all-fn-keys})
+
+    (and (seq? tree) (= 'sheet/llm (first tree)))
+    (let [opts (logic/parse-keyword-args (rest tree))
+          leaf-result (run-command! context
+                        (logic/rlm-tree-executor-make-create-node-command sheet-id :leaf :parent-id parent-id :index index))
+          leaf-id (-> leaf-result :command-result/events first :node-id)
+          reads (vec (:reads opts))
+          writes (vec (:writes opts))]
+      (run-command! context
+        {:command/name :sheet/set-node-instruction
+         :command/id (random-uuid)
+         :command/timestamp (time/now)
+         :sheet-id sheet-id
+         :node-id leaf-id
+         :instruction (:instruction opts)})
+      (run-command! context
+        {:command/name :sheet/set-node-io
+         :command/id (random-uuid)
+         :command/timestamp (time/now)
+         :sheet-id sheet-id
+         :node-id leaf-id
+         :reads reads
+         :writes writes})
+      (when (:retry opts)
+        (run-command! context
+          {:command/name :sheet/set-node-retry
+           :command/id (random-uuid)
+           :command/timestamp (time/now)
+           :sheet-id sheet-id
+           :node-id leaf-id
+           :retry (:retry opts)}))
+      (run-command! context
+        (cond-> {:command/name :sheet/set-node-executor
+                 :command/id (random-uuid)
+                 :command/timestamp (time/now)
+                 :sheet-id sheet-id
+                 :node-id leaf-id
+                 :executor :ai}
+          (:model opts) (assoc :model (:model opts))
+          (contains? opts :options) (assoc :options (:options opts))))
+      (when (some #(contains? opts %) [:provider :fallback-models :fallback-policy])
+        (run-command! context
+          (merge {:command/name :sheet/set-node-model-policy
+                  :command/id (random-uuid) :command/timestamp (time/now)
+                  :sheet-id sheet-id :node-id leaf-id}
+                 (select-keys opts [:provider :fallback-models :fallback-policy]))))
+      {:node-id leaf-id
+       :ephemeral-fn-keys []})
+
+    (and (seq? tree) (= 'sheet/map-each (first tree)))
+    (let [
+          args (rest tree)
+          child-node (last args)
+          keyword-args (butlast args)
+          opts (logic/parse-keyword-args keyword-args)
+          map-each-result (run-command! context
+                            (logic/rlm-tree-executor-make-create-node-command sheet-id :map-each :parent-id parent-id :index index))
+          map-each-id (-> map-each-result :command-result/events first :node-id)]
+      (run-command! context
+        (cond-> {:command/name :sheet/set-map-each-config
+                 :command/id (random-uuid)
+                 :command/timestamp (time/now)
+                 :sheet-id sheet-id
+                 :node-id map-each-id
+                 :source-key (:from opts)
+                 :item-key (:as opts)
+                 :output-key (:into opts)}
+          (:max-concurrency opts) (assoc :max-concurrency (:max-concurrency opts))
+          (some? (:preserve-failures? opts)) (assoc :preserve-failures? (:preserve-failures? opts))))
+      (let [child-result (compile-tree-node context sheet-id child-node map-each-id :index 0)]
+        {:node-id map-each-id
+         :ephemeral-fn-keys (:ephemeral-fn-keys child-result)}))
+
+    (and (seq? tree) (= 'sheet/code (first tree)))
+    (let [opts (logic/parse-keyword-args (rest tree))
+          f (:fn opts)
+          string-fn? (string? f)
+          recoverable-fn (:orc/recoverable-fn (meta f))
+          fn-value (if string-fn? f (logic/register-ephemeral-fn! f))
+          ephemeral-keys (if string-fn? [] [fn-value])
+          leaf-result (run-command! context
+                        (logic/rlm-tree-executor-make-create-node-command sheet-id :leaf :parent-id parent-id :index index))
+          leaf-id (-> leaf-result :command-result/events first :node-id)
+          reads (vec (:reads opts))
+          writes (vec (:writes opts))
+          tool-caller-fn (:tool-caller-fn opts)
+          tool-contracts (:tool-contracts opts)]
+      (run-command! context
+        {:command/name :sheet/set-node-io
+         :command/id (random-uuid)
+         :command/timestamp (time/now)
+         :sheet-id sheet-id
+         :node-id leaf-id
+         :reads reads
+         :writes writes})
+      (run-command! context
+        (cond-> {:command/name :sheet/set-node-executor
+                 :command/id (random-uuid)
+                 :command/timestamp (time/now)
+                 :sheet-id sheet-id
+                 :node-id leaf-id
+                 :executor :code
+                 :fn fn-value}
+          recoverable-fn (assoc :recoverable-fn recoverable-fn)
+          tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+          (seq tool-contracts) (assoc :tool-contracts tool-contracts)))
+      {:node-id leaf-id
+       :ephemeral-fn-keys ephemeral-keys})
+
+    (and (seq? tree) (= 'final! (first tree)))
+    {:node-id nil
+     :ephemeral-fn-keys []}
+
+    :else
+    (throw (ex-info (str "Unknown tree node type: " (first tree))
+                    {:tree tree}))))
 
 ;; =============================================================================
-;; Output Key Normalization
+;; Tree Executor
 ;; =============================================================================
-;;
-;; Code executors may return string keys ({"output" "value"}) while the
-;; :sheet/complete-node-execution command schema expects keyword keys.
-;; This helper ensures consistent keyword keys.
 
-(defn- normalize-output-keys
-  "Convert output map keys to keywords for command schema compatibility.
-   Handles both string and keyword keys, preserving values."
-  [outputs]
-  (when outputs
-    (reduce-kv (fn [acc k v]
-                 (assoc acc (if (keyword? k) k (keyword k)) v))
-               {}
-               outputs)))
+(defn execute-tree
+  "Execute a canonical ORC DSL tree via child tick.
+
+   Arguments:
+   - tree: Canonical ORC DSL (output of rlm-dsl->orc-dsl)
+   - context: Execution context with event-store, cache, etc.
+   - options: Map with:
+     - :sandbox-vars - Variables from Phase 1 to write to blackboard
+     - :blackboard - Additional blackboard inputs
+     - :timeout-ms - Execution timeout (default 60000)
+     - :result-grace-ms - Silence tolerance for classifying an expired wait
+                          as WEDGED vs over budget (default
+                          runtime/default-result-grace-ms; see
+                          runtime/run-liveness-verdict)
+
+   Returns:
+   {:status :success/:failure/:timeout
+    :outputs {...}
+    :usage {...}
+    :duration-ms N}
+
+   U6 options:
+     :blackboard-schemas - Optional {key schema} map preserving parent
+                           schemas (e.g. [:string {:field-type :image}])
+                           so vision/audio inputs route correctly through
+                           the child sheet's leaf nodes. When absent for a
+                           given key, falls back to inferring schema from
+                           value type."
+  [tree context {:keys [sandbox-vars blackboard blackboard-schemas timeout-ms
+                        result-grace-ms generated-tree-raw
+                        generated-tree-source stable-tick-id]
+                 :or {timeout-ms 60000
+                      result-grace-ms logic/default-result-grace-ms
+                      blackboard-schemas {}}}]
+  (if-let [existing (and stable-tick-id
+                         (await-existing-tick context stable-tick-id timeout-ms))]
+    existing
+    (do
+  (println "[DEBUG Tree] execute-tree starting")
+  (println "[DEBUG Tree] sandbox-vars keys:" (keys sandbox-vars))
+  (println "[DEBUG Tree] blackboard keys:" (keys blackboard))
+  (try
+    (let [start-time (System/currentTimeMillis)
+          tree-keys (set (logic/extract-all-keys tree))
+          sandbox-vars (select-keys (or sandbox-vars {}) tree-keys)
+          output-keys (logic/extract-output-keys tree)
+          tree-schemas (logic/extract-key-schemas tree)
+          _ (logic/merge-contracts :inherited blackboard-schemas tree-schemas)
+          input-schemas (merge
+                         (select-keys blackboard-schemas tree-keys)
+                         (into {} (map (fn [[key value]]
+                                         [key (or (get blackboard-schemas key)
+                                                  (get tree-schemas key)
+                                                  (logic/infer-specific-schema value [key]))]))
+                               sandbox-vars)
+                         (into {} (map (fn [[key value]]
+                                         [key (or (get blackboard-schemas key)
+                                                  (get tree-schemas key)
+                                                  (logic/infer-specific-schema value [key]))]))
+                               blackboard))
+          undeclared-keys (remove #(or (contains? input-schemas %)
+                                       (contains? tree-schemas %))
+                                  tree-keys)
+          _ (when (seq undeclared-keys)
+              (throw (ex-info
+                      (str "Generated tree keys " (vec undeclared-keys)
+                           " have no specific schema; declare :output-schemas using the most specific schema possible for each value's intent")
+                      {:preflight-rejected? true :blackboard-keys (vec undeclared-keys)})))
+          _ (println "[DEBUG Tree] Creating ephemeral sheet...")
+          sheet-result (run-command! context
+                         (logic/rlm-tree-executor-make-create-sheet-command))
+          _ (println "[DEBUG Tree] sheet-result:" (pr-str (select-keys sheet-result [:command-result/events :cognitect.anomalies/category])))
+          sheet-id (-> sheet-result :command-result/events first :sheet-id)
+          _ (println "[DEBUG Tree] Created sheet:" sheet-id)
+
+          _ (println "[DEBUG Tree] Tree keys:" tree-keys)
+          _ (println "[DEBUG Tree] Output keys:" output-keys)
+
+          _ (doseq [[k schema] (merge tree-schemas input-schemas)]
+              (run-command! context
+                (logic/rlm-tree-executor-make-declare-key-command sheet-id k schema)))
+
+          _ (println "[DEBUG Tree] Compiling tree into ORC nodes...")
+          compile-result (try
+                           (compile-tree-node context sheet-id tree nil)
+                           (catch Exception e
+                             (println "[DEBUG Tree] COMPILE ERROR:" (.getMessage e))
+                             (.printStackTrace e)
+                             (throw e)))
+          ephemeral-fn-keys (:ephemeral-fn-keys compile-result)
+          _ (println "[DEBUG Tree] Compiled. Root node:" (:node-id compile-result))
+          _ (println "[DEBUG Tree] Ephemeral fn keys:" ephemeral-fn-keys)
+
+          tick-id (or stable-tick-id (random-uuid))
+          _ (println "[DEBUG Tree] Starting tick:" tick-id)
+          parent-tick-id (:tick-id context)
+          _ (when parent-tick-id
+              (logic/link-child! parent-tick-id tick-id)
+              (logic/emit! parent-tick-id
+                               (cond-> {:orc.stream/type :rlm-phase2-started
+                                        :child-tick-id tick-id}
+                                 (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                 (:node-id context) (assoc :node-id (:node-id context)))))
+          p (logic/register-completion! tick-id)
+          tool-context (:tool-context context)
+          correlation-id (:orc/correlation-id context)
+          llm-call-budget (get-in context [:tick-options :llm-call-budget])
+          durable-budget? (and (integer? llm-call-budget)
+                               (pos? llm-call-budget))
+          llm-budget-root-tick-id
+          (when durable-budget?
+            (or (get-in context [:tick-options :llm-budget-root-tick-id])
+                parent-tick-id))
+          llm-budget-root-sheet-id
+          (when durable-budget?
+            (or (get-in context [:tick-options :llm-budget-root-sheet-id])
+                (:sheet-id context)))
+          assessment-origin (get-in context [:tick-options :assessment-origin])
+          campaign-sheet-id
+          (or (get-in context [:tick-options :researcher-campaign-sheet-id])
+              (:sheet-id context))
+          campaign-tick-id
+          (or (get-in context [:tick-options :researcher-campaign-tick-id])
+              (:tick-id context))
+          campaign-node-id
+          (or (get-in context [:tick-options :researcher-campaign-node-id])
+              (:node-id context))
+          campaign-iteration-index
+          (or (get-in context [:tick-options :researcher-iteration-index])
+              (:researcher-iteration context))
+          campaign-ownership-epoch
+          (or (get-in context [:tick-options :researcher-ownership-epoch])
+              (:researcher-ownership-epoch context))
+          tick-cmd-result (cp/process-command
+                            (assoc context :command
+                                   (cond-> {:command/id (random-uuid)
+                                            :command/timestamp (time/now)
+                                            :command/name :sheet/tick-tree
+                                            :sheet-id sheet-id
+                                            :tick-id tick-id
+                                            :inputs (merge blackboard sandbox-vars)
+                                            :options (cond-> {:timeout-ms timeout-ms}
+                                                       assessment-origin
+                                                       (assoc :assessment-origin assessment-origin)
+                                                       durable-budget?
+                                                       (assoc :llm-call-budget llm-call-budget)
+                                                       campaign-ownership-epoch
+                                                       (assoc :researcher-campaign-sheet-id campaign-sheet-id
+                                                              :researcher-campaign-tick-id campaign-tick-id
+                                                              :researcher-campaign-node-id campaign-node-id
+                                                              :researcher-campaign-exec-context (or (:exec-context context) (logic/exec-context (get-in context [:event :inputs])) {})
+                                                              :researcher-iteration-index campaign-iteration-index
+                                                              :researcher-ownership-epoch campaign-ownership-epoch)
+                                                       (and durable-budget?
+                                                            (pos-int? campaign-ownership-epoch)
+                                                            (nat-int? campaign-iteration-index)
+                                                            (every? uuid? [campaign-sheet-id campaign-tick-id campaign-node-id]))
+                                                       (assoc :checkpointed-campaign? true)
+                                                       durable-budget?
+                                                       (assoc :llm-budget-root-tick-id
+                                                              llm-budget-root-tick-id
+                                                              :llm-budget-root-sheet-id
+                                                              llm-budget-root-sheet-id))}
+                                     parent-tick-id (assoc :parent-tick-id parent-tick-id)
+                                     correlation-id (assoc :correlation-id correlation-id)
+                                     tool-context (assoc :tool-context tool-context))))
+          tick-anomaly (:cognitect.anomalies/category tick-cmd-result)
+
+          _ (when-not tick-anomaly
+              (println "[DEBUG Tree] Waiting for tick completion (timeout:" timeout-ms "ms)..."))
+          result (if tick-anomaly
+                   (do
+                     (logic/deregister-completion! tick-id)
+                     (println "[DEBUG Tree] tick-tree command rejected:"
+                              (:cognitect.anomalies/message tick-cmd-result))
+                     {:status :failure
+                      :admission-rejected? true
+                      :error (str ":sheet/tick-tree command rejected: "
+                                  (:cognitect.anomalies/message tick-cmd-result)
+                                  (when-let [explain (:error/explain tick-cmd-result)]
+                                    (str " — explain: " (pr-str explain))))
+                      :sheet-id sheet-id
+                      :trace-id tick-id})
+                   (let [r (deref p timeout-ms :ai.obney.orc.orc-service.core.rlm-tree-executor/deref-expired)]
+                     (if-not (= :ai.obney.orc.orc-service.core.rlm-tree-executor/deref-expired r)
+                       r
+                       (let [waited-ms (- (System/currentTimeMillis) start-time)
+                             {:keys [wedged?] :as verdict}
+                             (commands/run-liveness-verdict context tick-id
+                                                           result-grace-ms
+                                                           waited-ms)]
+                         (if-not wedged?
+                           {:status :timeout
+                            :error "Tree execution timed out"
+                            :sheet-id sheet-id
+                            :trace-id tick-id}
+                           {:status :failure
+                            :wedged? true
+                            :error (str "Run wedged at "
+                                        :orc.rlm-tree-executor/execute-tree
+                                        ": engine silent past the child tick's "
+                                        timeout-ms " ms budget plus " result-grace-ms
+                                        " ms grace on tick " tick-id
+                                        "; a wedged run is terminal and must not"
+                                        " be retried")
+                            :sheet-id sheet-id
+                            :trace-id tick-id
+                            :liveness (assoc verdict
+                                             :seam :orc.rlm-tree-executor/execute-tree
+                                             :tick-id tick-id
+                                             :sheet-id sheet-id
+                                             :waited-ms waited-ms)})))))
+          duration-ms (- (System/currentTimeMillis) start-time)
+          _ (when parent-tick-id
+              (logic/emit! parent-tick-id
+                               (cond-> {:orc.stream/type :rlm-phase2-completed
+                                        :child-tick-id tick-id
+                                        :status (:status result)
+                                        :duration-ms duration-ms}
+                                 (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                 (:node-id context) (assoc :node-id (:node-id context))
+                                 (:error result) (assoc :error (:error result)))))
+          _ (println "[DEBUG Tree] Tick completed. Status:" (:status result))
+          _ (when (:error result) (println "[DEBUG Tree] Error:" (:error result)))
+          _ (println "[DEBUG Tree] Output keys:" (keys (:outputs result)))]
+
+      (when-let [recoverable-keys (clear-terminal-functions! context sheet-id tick-id)]
+        (doseq [fn-key ephemeral-fn-keys
+                :when (not (contains? recoverable-keys fn-key))]
+          (logic/clear-ephemeral-fn! fn-key)))
+
+      (let [event-store (:event-store context)
+            tenant-id (:tenant-id context)
+            by-node (when event-store
+                      (compute-by-node-from-tick-events event-store tenant-id tick-id))
+            tick-events (when event-store
+                          (into [] (es/read event-store
+                                     (cond-> {:tags #{[:tick tick-id]}}
+                                       tenant-id (assoc :tenant-id tenant-id)))))
+            trajectory (vec
+                         (for [e (sort-by :event/timestamp tick-events)]
+                           (let [body (cond-> {:event-type (:event/type e)
+                                               :timestamp (:event/timestamp e)}
+                                        (:node-id e) (assoc :node-id (:node-id e))
+                                        (:status e) (assoc :status (:status e)))]
+                             body)))
+            _ (try
+                (cp/process-command
+                  (assoc context :command
+                         (cond-> {:command/id (random-uuid)
+                                  :command/timestamp (time/now)
+                                  :command/name :sheet/record-rlm-tree-execution-completion
+                                  :sheet-id sheet-id
+                                  :tick-id tick-id
+                                  :trajectory trajectory
+                                  :total-usage (or (:usage result) {})
+                                  :duration-ms duration-ms}
+                           (some? (:status result))
+                           (assoc :status (:status result))
+                           (some? generated-tree-raw)
+                           (assoc :generated-tree generated-tree-raw)
+                           (some? generated-tree-source)
+                           (assoc :generated-tree-source generated-tree-source)
+                           (some? generated-tree-raw)
+                           (assoc :tree-fingerprint
+                                  (try (logic/fingerprint generated-tree-raw)
+                                       (catch Exception _ nil)))
+                           (some? (:sheet-id context))
+                           (assoc :source-sheet-id (:sheet-id context))
+                           (some? (:tick-id context))
+                           (assoc :source-tick-id (:tick-id context)))))
+                (catch Exception e
+                  (println "[DEBUG Tree] Bookend emission failed:" (.getMessage e))))
+            result-with-duration (assoc result :duration-ms duration-ms)]
+        (if (seq by-node)
+          (update result-with-duration :usage
+                  (fn [u] (assoc (or u {}) :by-node by-node)))
+          result-with-duration)))
+    (catch Exception e
+      (println "[DEBUG Tree] EXECUTION ERROR:" (.getMessage e))
+      (.printStackTrace e)
+      (let [diagnostic (logic/from-exception e)]
+        (cond-> {:status :failure
+                 :error (str "Tree execution failed: " (.getMessage e))
+                 :duration-ms 0}
+          diagnostic
+          (assoc :setup-diagnostic diagnostic
+                 :error (logic/render diagnostic))
+          (:preflight-rejected? (ex-data e))
+          (assoc :preflight-rejected? true)
+          (:blackboard-keys (ex-data e))
+          (assoc :preflight-rejected? true
+                 :missing-schema-keys (:blackboard-keys (ex-data e))))))))))
+
+;; --- Provider observations ---
+
+(defn- invoke-command! [ctx command-name data]
+  (let [call #(cp/process-command
+               (assoc ctx :command (merge data {:command/name command-name :command/id (random-uuid)
+                                                :command/timestamp (time/now)})))
+        result (call)]
+    (if (= :cognitect.anomalies/conflict (:cognitect.anomalies/category result)) (call) result)))
+
+(defn start-provider-attempt! [ctx attempt] (invoke-command! ctx :sheet/start-provider-attempt attempt))
+
+(defn complete-provider-attempt! [ctx attempt] (invoke-command! ctx :sheet/complete-provider-attempt attempt))
 
 ;; =============================================================================
-;; LLM Call Budget Tracking (Opt-in Only)
+;; Public API
 ;; =============================================================================
-;;
-;; Budget is opt-in only - if :llm-call-budget is not specified, NO limit is
-;; enforced. This prevents unexpected workflow cancellations.
 
-;; Tracks LLM call counts per tick-id for budget enforcement.
-(defonce ^:private tick-llm-counts (atom {}))
+(defn- latest-researcher-frontier-epoch
+  [{:keys [event-store tenant-id]} sheet-id tick-id node-id]
+  (transduce
+   (map :ownership-epoch)
+   max
+   0
+   (es/read event-store
+            {:tenant-id tenant-id
+             :types #{:rlm/researcher-frontier-claimed}
+             :tags #{(logic/campaign-tag sheet-id tick-id node-id)}})))
 
-;; A budget can be exceeded concurrently by sibling leaves. Reserve each
-;; cancellation dispatch once so those leaves cannot append duplicate terminal
-;; events before the first cancellation has reached the ticks projection.
-(def ^:private budget-cancellation-claim-ttl-ms 300000)
-(defonce ^:private budget-cancellation-claims (atom {}))
+(defn resume-frontiers!
+  "Resume abandoned map coordinators plus leaf, delegate, and researcher
+   frontiers from durable state.
 
-(defn- claim-budget-cancellation!
-  [tick-id]
-  (let [claimed? (atom false)
-        now (System/currentTimeMillis)]
-    (swap! budget-cancellation-claims
-           (fn [claims]
-             (let [claims (into {} (filter (fn [[_ claimed-at]]
-                                              (< (- now claimed-at)
-                                                 budget-cancellation-claim-ttl-ms)))
-                                claims)]
-               (if (contains? claims tick-id)
-                 claims
-                 (do (reset! claimed? true)
-                     (assoc claims tick-id now))))))
-    @claimed?))
+   Intended to be called after todo processors have been rebuilt against the
+   same event store. Completed nodes are never re-enqueued. Each recovery start
+   durably references the abandoned start event, making repeated calls
+   idempotent. Returns one result map per active executable frontier inspected."
+  [context recover-map-coordinator!]
+  (vec
+   (mapcat
+    (fn [{:keys [tick-id sheet-id nodes-in-progress]}]
+      (let [tick-ctx (rm/get-tick-execution-context context tick-id)
+            nodes-by-id (:nodes-by-id tick-ctx)
+            tick-events (into [] (es/read (:event-store context)
+                                          {:tenant-id (:tenant-id context)
+                                           :tags #{[:tick tick-id]}}))
+            {:keys [open-starts renewals-by-start]} (logic/tick-open-starts tick-events)
+            _ (doseq [node-id nodes-in-progress
+                      :when (= :map-each (:type (get nodes-by-id node-id)))
+                      :let [start (first
+                                   (filter #(and (= :sheet/node-execution-started
+                                                    (:event/type %))
+                                                 (= node-id (:node-id %))
+                                                 (nil? (:resumed-from-event-id %)))
+                                           tick-events))]
+                      :when start]
+                (recover-map-coordinator! context sheet-id tick-id node-id)
+                (cp/process-command
+                 (assoc context
+                        :command {:command/id (random-uuid)
+                                  :command/timestamp (time/now)
+                                  :command/name :sheet/resume-node-execution
+                                  :sheet-id sheet-id
+                                  :tick-id tick-id
+                                  :node-id node-id
+                                  :original-start-event-id (:event/id start)
+                                  :inputs (:inputs start)})))]
+        (keep
+         (fn [start]
+           (let [node-id (:node-id start)
+                 node (get nodes-by-id node-id)]
+             (when (logic/recoverable-start? context nodes-by-id renewals-by-start start)
+               (let [researcher-ownership-epoch
+                     (when (logic/checkpointed? node)
+                       (inc (latest-researcher-frontier-epoch
+                             context sheet-id tick-id node-id)))
+                     command
+                     (cond-> {:command/id (random-uuid)
+                              :command/timestamp (time/now)
+                              :command/name :sheet/resume-node-execution
+                              :sheet-id sheet-id
+                              :tick-id tick-id
+                              :node-id node-id
+                              :original-start-event-id (:event/id start)
+                              :inputs (:inputs start)}
+                       researcher-ownership-epoch
+                       (assoc :researcher-ownership-epoch
+                              researcher-ownership-epoch))
+                     result (cp/process-command
+                             (assoc context :command command))]
+                 (cond-> {:tick-id tick-id
+                          :sheet-id sheet-id
+                          :node-id node-id
+                          :original-start-event-id (:event/id start)
+                          :resumed? (boolean
+                                     (seq (:command-result/events result)))
+                          :command-result result}
+                   researcher-ownership-epoch
+                   (assoc :researcher-ownership-epoch
+                          researcher-ownership-epoch))))))
+         open-starts)))
+    (rm/get-all-active-executions context))))
 
-(defn clear-llm-count!
-  "Clear LLM count for a tick (called on tick completion)."
-  [tick-id]
-  (swap! tick-llm-counts dissoc tick-id))
+;; --- Streaming ---
+
+(defn- node-info
+  "Best-effort node name/type lookup from the tick execution snapshot,
+   memoized per tick on the subscription. Returns {} when unresolvable."
+  [sub tick-id node-id]
+  (try
+    (let [cache (:node-cache sub)
+          nodes (or (get @cache tick-id)
+                    (let [n (some-> (rm/get-tick-execution-context (:context sub) tick-id)
+                                    :nodes-by-id)]
+                      (swap! cache assoc tick-id (or n {}))
+                      n))]
+      (if-let [node (get nodes node-id)]
+        (cond-> {}
+          (:name node) (assoc :node-name (:name node))
+          (:type node) (assoc :node-type (if (= :leaf (:type node))
+                                           (or (:executor node) :ai)
+                                           (:type node))))
+        {}))
+    (catch Exception _ {})))
+
+(defn- tick-values
+  "Best-effort resolution of `ks` to values for a tick, for envelope fields the
+   durable event references by key only.
+
+   The tick blackboard read model holds metadata, not values, so these resolve
+   from the canonical write log. NOT memoized — unlike nodes-by-id this changes
+   as the tick runs. Narrow by construction: callers pass the exact key set the
+   event names (:write-keys, :output-keys), never the whole blackboard."
+  [sub tick-id ks]
+  (try
+    (let [{:keys [context]} sub]
+      (rm/resolve-values context (:tenant-id context) tick-id
+                                (rm/get-tick-blackboard context tick-id)
+                                ks))
+    (catch Exception _ nil)))
+
+(defn- normalize-durable
+  "Durable Grain event -> envelope (sans :seq/:ts/:root-tick-id), or nil to
+   skip. include-values? gates :writes payloads."
+  [sub event include-values?]
+  (let [t (:event/type event)
+        tick-id (:tick-id event)
+        base {:tick-id tick-id
+              :sheet-id (:sheet-id event)}]
+    (case t
+      :sheet/tree-tick-started
+      (merge base
+             {:orc.stream/type :tick-started}
+             (when-let [i (:iteration event)] {:iteration i})
+             (when-let [p (:parent-tick-id event)] {:parent-tick-id p})
+             (when-let [ks (seq (keys (:seed-sources event)))]
+               {:input-keys (vec ks)}))
+
+      :sheet/node-execution-started
+      (merge base
+             {:orc.stream/type :node-started
+              :node-id (:node-id event)}
+             (node-info sub tick-id (:node-id event))
+             (when-let [me (logic/map-each-context (:inputs event))] {:map-each me}))
+
+      :sheet/node-execution-completed
+      (merge base
+             {:orc.stream/type :node-completed
+              :node-id (:node-id event)
+              :status (:status event)}
+             (node-info sub tick-id (:node-id event))
+             (when include-values?
+               (when-let [ks (seq (:write-keys event))]
+                 (when-let [vs (not-empty (tick-values sub tick-id ks))]
+                   {:writes (logic/truncate-values vs)})))
+             (when-let [u (:usage event)] {:usage u})
+             (when-let [d (:duration-ms event)] {:duration-ms d})
+             (when-let [e (:error event)] {:error e})
+             (when-let [ck (:completion-kind event)] {:completion-kind ck})
+             (when-let [me (logic/map-each-context (:inputs event))] {:map-each me}))
+
+      :sheet/sequence-progress-updated
+      (merge base {:orc.stream/type :progress
+                   :node-id (:node-id event)
+                   :kind :sequence
+                   :index (:child-index event)
+                   :total (:total-children event)})
+
+      :sheet/map-each-progress-updated
+      (merge base {:orc.stream/type :progress
+                   :node-id (:node-id event)
+                   :kind :map-each
+                   :index (:item-index event)
+                   :total (:total-items event)})
+
+      :sheet/tree-tick-completed
+      (when (not= :running (:root-status event))
+        (merge base
+               {:orc.stream/type :tick-completed
+                :status (:root-status event)}
+               (when include-values?
+                 (when-let [ks (seq (:output-keys event))]
+                   (when-let [vs (not-empty (tick-values sub tick-id ks))]
+                     {:outputs (logic/truncate-values vs)})))
+               (when-let [e (:error event)] {:error e})))
+
+      :sheet/tick-cancelled
+      (merge base {:orc.stream/type :tick-cancelled})
+
+      :rlm/researcher-iteration-recorded
+      (merge base
+             {:orc.stream/type :rlm-iteration-recorded
+              :node-id (:node-id event)
+              :iteration-index (:iteration-index event)
+              :attempt-ordinal (:attempt-ordinal event)
+              :iteration-record (:iteration-record event)})
+
+      :rlm/tree-generated
+      {:orc.stream/type :rlm-tree-generated
+       :tick-id (:execution-id event)
+       :sheet-id (:sheet-id event)
+       :node-id (:node-id event)
+       :raw-dsl (logic/truncate-value (:raw-dsl event))}
+
+      nil)))
+
+(defn- start-router!
+  "One router per subscription: single consumer of src-chan, single :seq
+   assigner. Ordering holds because every producer (tap loops, emit!,
+   link-child!) targets the same FIFO.
+
+   Runs on a dedicated thread (async/thread), NOT a go block: envelope
+   normalization does read-model lookups (node-info) and pr-str of
+   potentially large values (truncate-values) — blocking work that would
+   starve the fixed core.async dispatch pool and could stall the shared
+   engine pubsub's distribution loops (P1)."
+  [sub-id]
+  (async/thread
+    (loop []
+      (let [sub (get @logic/subscriptions sub-id)
+            m (when sub (async/<!! (:src-chan sub)))]
+        (cond
+          (or (nil? sub) (nil? m))
+          nil
+
+          (:ai.obney.orc.orc-service.core.streaming/close m)
+          (let [n (swap! (:seq-counter sub) inc)]
+            (async/offer! (:events-ch sub)
+                          {:orc.stream/type :stream-closed
+                           :seq n
+                           :ts (time/now)
+                           :tick-id (:root-tick-id sub)
+                           :root-tick-id (:root-tick-id sub)
+                           :reason (:ai.obney.orc.orc-service.core.streaming/close m)})
+            (logic/finalize-subscription! sub-id))
+
+          :else
+          (let [include-values? (get-in sub [:opts :include-values?] true)
+                envelope (try
+                           (if (:orc.stream/type m)
+                             (logic/ephemeral-for-sub sub m)
+                             (normalize-durable sub m include-values?))
+                           (catch Exception _ nil))
+                envelope (when-not (and (= :tick-cancelled (:orc.stream/type envelope))
+                                        (not= (:tick-id envelope)
+                                              (:root-tick-id sub)))
+                           envelope)]
+            (when envelope
+              (let [n (swap! (:seq-counter sub) inc)
+                    terminal? (and (contains? #{:tick-completed :tick-cancelled}
+                                              (:orc.stream/type envelope))
+                                   (= (:tick-id envelope) (:root-tick-id sub)))]
+                (async/offer! (:events-ch sub)
+                              (assoc envelope
+                                     :seq n
+                                     :ts (time/now)
+                                     :root-tick-id (:root-tick-id sub)))
+                (when terminal?
+                  (let [close-n (swap! (:seq-counter sub) inc)
+                        reason (if (= :tick-cancelled (:orc.stream/type envelope))
+                                 :cancelled
+                                 :completed)]
+                    (async/offer! (:events-ch sub)
+                                  {:orc.stream/type :stream-closed
+                                   :seq close-n
+                                   :ts (time/now)
+                                   :tick-id (:root-tick-id sub)
+                                   :root-tick-id (:root-tick-id sub)
+                                   :reason reason})
+                    (logic/finalize-subscription! sub-id)))))
+            (when (get @logic/subscriptions sub-id)
+              (recur))))))))
+
+(defn subscribe-execution
+  "Subscribe to the live event stream for tick-id and every child tick
+   spawned under it (RLM Phase 2 trees, delegate nodes). Call BEFORE
+   dispatching :sheet/tick-tree — tick-id is caller-suppliable on
+   execute/tick-tree — so no events are missed.
+
+   Options:
+     :include-values? - include :writes/:outputs payloads (default true,
+                        values capped at ~16KB with a :orc.stream/truncated
+                        marker; raw values are in the event store)
+     :llm-deltas?     - opt into live LLM output (:llm-fields progressive
+                        field snapshots) from :ai leaves (default false;
+                        requires a ORC LLM with predict-stream-v2, otherwise
+                        leaves run blocking as always)
+     :raw-deltas?     - additionally receive :llm-raw-delta raw text chunks
+                        (debug-grade; default false)
+     :buffer          - consumer channel sliding-buffer size (default 4096).
+                        A slow consumer loses OLDEST events; detect via :seq
+                        gaps and reconcile from the event store.
+     :ttl-ms          - backstop close for ticks that never complete
+                        (default 1h)
+
+   Returns {:events-ch <chan of envelopes, closes after :stream-closed>
+            :tick-id tick-id
+            :close! (fn [] ...)}   ;; idempotent
+   or an anomaly map when no pubsub is reachable from the context."
+  [context tick-id & {:keys [include-values? llm-deltas? raw-deltas? buffer ttl-ms]
+                      :or {include-values? true
+                           buffer logic/default-buffer
+                           ttl-ms logic/default-ttl-ms}}]
+  (let [ps (logic/resolve-pubsub context)]
+    (if-not ps
+      {:cognitect.anomalies/category :cognitect.anomalies/incorrect
+       :cognitect.anomalies/message
+       "No event pubsub reachable: expected :event-pubsub in context or [:config :event-pubsub] on :event-store"}
+      (do
+        (logic/ensure-tap! ps)
+        (let [sub-id (random-uuid)
+              sub {:root-tick-id tick-id
+                   :tick-ids #{tick-id}
+                   :tenant-id (:tenant-id context)
+                   :src-chan (async/chan (async/sliding-buffer logic/default-buffer))
+                   :events-ch (async/chan (async/sliding-buffer buffer))
+                   :seq-counter (atom 0)
+                   :node-cache (atom {})
+                   :context context
+                   :opts {:include-values? include-values?
+                          :llm-deltas? (boolean llm-deltas?)
+                          :raw-deltas? (boolean raw-deltas?)}}]
+          (swap! logic/subscriptions assoc sub-id sub)
+          (start-router! sub-id)
+          (async/go
+            (async/<! (async/timeout ttl-ms))
+            (logic/close-subscription! sub-id :ttl))
+          {:events-ch (:events-ch sub)
+           :tick-id tick-id
+           :sub-id sub-id
+           :close! (fn [] (logic/close-subscription! sub-id :closed-by-consumer))})))))
+
+(defn execute-stream
+  "Non-blocking streamed execution. Subscribes, then dispatches the tick the
+   same way runtime/execute does, and returns immediately.
+
+   Accepts every runtime/execute option (:timeout-ms :result-grace-ms
+   :use-version :force-draft :trace? :langfuse-client :store-trace?
+   :max-ticks :llm-call-budget :tick-id :correlation-id) plus subscription
+   opts (:include-values? :buffer :ttl-ms). A run declared WEDGED (see
+   runtime/expire-run!) closes the stream with reason :wedged and delivers
+   the distinct non-retryable liveness failure to :result.
+
+   Returns {:tick-id uuid
+            :events-ch <chan of envelopes>
+            :close! (fn [])
+            :result <promise of the exact runtime/execute return map>}
+   or an anomaly map when subscription fails."
+  [context sheet-id inputs & {:keys [timeout-ms result-grace-ms use-version force-draft
+                                     trace? langfuse-client store-trace?
+                                     max-ticks llm-call-budget tick-id
+                                     correlation-id
+                                     include-values? llm-deltas? raw-deltas? buffer ttl-ms]
+                              :or {timeout-ms 300000
+                                   result-grace-ms logic/default-result-grace-ms
+                                   store-trace? true
+                                   include-values? true
+                                   buffer logic/default-buffer}}]
+  (let [correlation-id (or correlation-id (:orc/correlation-id context))
+        tick-id (or tick-id (random-uuid))
+        subscription (subscribe-execution context tick-id
+                                          :include-values? include-values?
+                                          :llm-deltas? llm-deltas?
+                                          :raw-deltas? raw-deltas?
+                                          :buffer buffer
+                                          :ttl-ms (or ttl-ms (+ timeout-ms logic/default-result-grace-ms)))]
+    (if (:cognitect.anomalies/category subscription)
+      subscription
+      (let [result-promise (promise)
+            p (logic/register-completion! tick-id)
+            start-time (System/currentTimeMillis)
+            cmd-result (cp/process-command
+                        (assoc context :command
+                               (cond-> {:command/id (random-uuid)
+                                        :command/timestamp (time/now)
+                                        :command/name :sheet/tick-tree
+                                        :sheet-id sheet-id
+                                        :tick-id tick-id
+                                        :inputs (or inputs {})
+                                        :options (cond-> {:timeout-ms timeout-ms
+                                                          :execution-deadline-ms (+ start-time timeout-ms)
+                                                          :store-trace? store-trace?}
+                                                   trace? (assoc :trace? true)
+                                                   langfuse-client (assoc :langfuse-client langfuse-client)
+                                                   max-ticks (assoc :max-ticks max-ticks)
+                                                   llm-call-budget (assoc :llm-call-budget llm-call-budget))}
+                                 use-version (assoc :use-version use-version)
+                                 force-draft (assoc :force-draft force-draft)
+                                 correlation-id (assoc :correlation-id correlation-id)
+                                 (:tool-context context)
+                                 (assoc :tool-context (:tool-context context)))))]
+        (if (:cognitect.anomalies/category cmd-result)
+          (do (logic/deregister-completion! tick-id)
+              (logic/emit! tick-id {:orc.stream/type :error
+                              :error (:cognitect.anomalies/message cmd-result)
+                              :source :command-dispatch})
+              ((:close! subscription))
+              (deliver result-promise
+                       {:status :failure
+                        :error (:cognitect.anomalies/message cmd-result)
+                        :duration-ms (- (System/currentTimeMillis) start-time)}))
+          (future
+            (let [result (deref p timeout-ms :ai.obney.orc.orc-service.core.streaming/timeout)
+                  duration-ms (- (System/currentTimeMillis) start-time)]
+              (logic/deregister-completion! tick-id)
+              (if (= result :ai.obney.orc.orc-service.core.streaming/timeout)
+                (let [expired (commands/expire-run!
+                               context sheet-id tick-id inputs duration-ms
+                               {:grace-ms result-grace-ms
+                                :seam :orc.streaming/execute-stream})]
+                  (logic/close-subscription! (:sub-id subscription)
+                                       (if (:wedged? expired) :wedged :timeout))
+                  (deliver result-promise expired))
+                (deliver result-promise (assoc result :duration-ms duration-ms))))))
+        {:tick-id tick-id
+         :events-ch (:events-ch subscription)
+         :close! (:close! subscription)
+         :result result-promise}))))
+
+(defn cancel!
+  "Cancel a running tick (and any known child ticks spawned under it).
+
+   Best-effort semantics: the engine stops progressing (no new nodes start;
+   the re-tick loop halts) and interrupts registered in-flight leaf work.
+   Blocking callers unblock with {:status :failure :cancelled? true}; live
+   streams receive :tick-cancelled then :stream-closed {:reason :cancelled}.
+
+   Returns {:cancelled [tick-ids...]} or an anomaly map when the tick is
+   unknown or already terminal."
+  [context tick-id]
+  (let [tick (rm/get-tick context tick-id)]
+    (cond
+      (nil? tick)
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message (str "Unknown tick: " tick-id)}
+
+      (contains? #{:completed :cancelled} (:status tick))
+      {:cognitect.anomalies/category :cognitect.anomalies/incorrect
+       :cognitect.anomalies/message (str "Tick already " (name (:status tick)))}
+
+      :else
+      (let [targets (cons tick-id (logic/descendants-of tick-id))
+            cancelled (vec
+                       (for [t targets
+                             :let [trec (if (= t tick-id) tick (rm/get-tick context t))
+                                   sheet-id (:sheet-id trec)]
+                             :when (and sheet-id
+                                        (not (contains? #{:completed :cancelled}
+                                                        (:status trec))))]
+                         (do (cp/process-command
+                              (assoc context :command
+                                     {:command/id (random-uuid)
+                                      :command/timestamp (time/now)
+                                      :command/name :sheet/cancel-tick
+                                      :sheet-id sheet-id
+                                      :tick-id t
+                                      :reason "cancelled by operator"}))
+                             t)))]
+        {:cancelled cancelled}))))
+
+;; --- Model call journal ---
+
+(defn- command! [ctx name data]
+  (loop [attempt 0]
+    (let [result (cp/process-command (assoc ctx :command
+                                          (merge data {:command/name name :command/id (random-uuid)
+                                                       :command/timestamp (time/now)})))]
+      (if (and (= :cognitect.anomalies/conflict (:cognitect.anomalies/category result)) (< attempt 3))
+        (recur (inc attempt)) result))))
+
+(defn callbacks
+  "Bind durable capabilities for one logical model call. Owner is current actual
+   node ownership plus :role and :logical-action-id. No raw context is persisted."
+  [ctx owner candidates policy]
+  (let [owner (assoc owner :configuration-id (or (:configuration-id owner) (logic/configuration-id candidates policy)))
+        xs (commands/call-events ctx owner)
+        records (filter #(= :sheet/model-candidate-recorded (:event/type %)) xs)
+        terminal (last records)
+        selected (commands/events ctx #{(logic/scope-tag (commands/scope ctx owner))} #{:sheet/model-candidate-selected})
+        floor (reduce max 0 (map :candidate-index selected))
+        claims (filter #(= :sheet/model-candidate-claimed (:event/type %)) xs)
+        cursor (cond (and terminal (get-in terminal [:entry :advanced?]))
+                     (inc (get-in terminal [:entry :candidate-index]))
+                     terminal (get-in terminal [:entry :candidate-index])
+                     (seq claims) (:candidate-index (first claims))
+                     :else floor)]
+    {:start-index cursor
+     :fresh-authority! (when (and (= :subcall (:role owner))
+                                  (rm/researcher-campaign ctx (:tick-id owner)))
+                         (fn [deadline] (ensure! ctx owner deadline)))
+     :initial-usage (when (get-in terminal [:entry :advanced?]) (get-in terminal [:entry :outcome :usage]))
+     :prior-attempts (if (get-in terminal [:entry :advanced?])
+                       (get-in terminal [:entry :outcome :model-fallback :attempts]) [])
+     :request-receipts (mapv :request (filter #(= :sheet/model-request-recorded (:event/type %)) xs))
+     :record-request! (fn [request] (command! ctx :sheet/record-model-request (assoc owner :request request)))
+     :output-exposed? (boolean (some #(= :sheet/model-candidate-output-exposed (:event/type %)) xs))
+     :mark-output-exposed! (fn [index] (command! ctx :sheet/expose-model-candidate-output (assoc owner :candidate-index index)))
+     :completed-outcome (when (and terminal (not (get-in terminal [:entry :advanced?])))
+                          (get-in terminal [:entry :outcome]))
+     :claim! (fn [index _] (command! ctx :sheet/claim-model-candidate (assoc owner :candidate-index index)))
+     :record! (fn [entry] (command! ctx :sheet/record-model-candidate (assoc owner :entry entry)))
+     :select! (fn [index _] (command! ctx :sheet/select-model-candidate (assoc owner :candidate-index index)))}))
+
+(defn prepare-ordinary-call
+  "Retain one effective ordinary model plan under current node ownership.
+   resolve-plan! is lazy: exact historical terminal replay never calls it.
+   Researcher prime/effect identities do not use this preparation yet."
+  [ctx owner authored-config resolve-plan!]
+  (let [scope-id (logic/plan-scope-id owner authored-config)
+        history (commands/events ctx #{[:tick (:tick-id owner)]} logic/model-call-journal-event-types)
+        operation (filterv #(logic/same-operation? owner %) history)
+        plans (filterv #(= :sheet/model-plan-retained (:event/type %)) operation)
+        legacy (filterv #(not= :sheet/model-plan-retained (:event/type %)) operation)
+        retained (first plans)]
+    (when (or (> (count plans) 1)
+              (and retained
+                   (or (not= scope-id (:plan-scope-id retained))
+                       (some #(not= (:configuration-id retained) (:configuration-id %)) legacy))))
+      (logic/model-call-journal-incompatible! :historical-operation-ambiguous))
+    (if (and (nil? retained) (seq legacy))
+      (let [configs (set (map :configuration-id legacy))
+            terminal (last (filter #(= :sheet/model-candidate-recorded (:event/type %)) legacy))
+            entry (:entry terminal)]
+        (when-not (= 1 (count configs)) (logic/model-call-journal-incompatible! :historical-operation-ambiguous))
+        (when-not (and terminal (false? (:advanced? entry)) (map? (:outcome entry)))
+          (logic/model-call-journal-incompatible! :legacy-effective-profile-unretained))
+        (let [candidates (logic/legacy-terminal-plan legacy)
+              policy (or (get-in entry [:outcome :model-fallback :policy]) :temporary-transport)
+              bound (callbacks ctx (assoc owner :configuration-id (first configs)) candidates policy)]
+          (when-not (:completed-outcome bound) (logic/model-call-journal-incompatible! :historical-operation-ambiguous))
+          {:candidates candidates :policy policy :callbacks bound :historical-terminal? true}))
+      (let [retained
+            (or retained
+                (let [plan (logic/checked-plan (resolve-plan!))
+                      config-id (logic/retained-configuration-id plan)
+                      result (command! ctx :sheet/retain-model-plan
+                                       (assoc owner :configuration-id config-id
+                                              :plan-scope-id scope-id :plan plan))]
+                  (when (:cognitect.anomalies/category result) (logic/model-call-journal-incompatible! :model-plan-ownership-lost))
+                  (or (first (filter #(and (= :sheet/model-plan-retained (:event/type %))
+                                          (logic/same-operation? owner %))
+                                     (commands/events ctx #{[:tick (:tick-id owner)]} logic/model-call-journal-event-types)))
+                      (logic/model-call-journal-incompatible! :model-plan-not-retained))))
+            _ (when-not (= scope-id (:plan-scope-id retained))
+                (logic/model-call-journal-incompatible! :historical-operation-ambiguous))
+            plan (:plan retained)
+            _ (when-not (m/validate logic/model-call-journal-retained-plan-schema plan)
+                (logic/model-call-journal-incompatible! :retained-profile-version-unsupported))
+            _ (when-not (= (:configuration-id retained) (logic/retained-configuration-id plan))
+                (logic/model-call-journal-incompatible! :retained-plan-identity-mismatch))
+            bound (callbacks ctx (assoc owner :configuration-id (:configuration-id retained))
+                             (:candidates plan) (:policy plan))
+            replay-only?
+            (when-not (:completed-outcome bound)
+              (try
+                (logic/checked-plan plan)
+                false
+                (catch clojure.lang.ExceptionInfo error
+                  (if (and (= :retained-profile-version-unsupported (:reason (ex-data error)))
+                           (some #(and (= (:start-index bound) (:candidate-index %))
+                                       (= :completed (:phase %)) (map? (:outcome %)))
+                                 (:request-receipts bound)))
+                    true
+                    (throw error)))))]
+        {:candidates (:candidates plan) :policy (:policy plan) :callbacks bound
+         :plan plan :configuration-id (:configuration-id retained)
+         :replay-only? (boolean replay-only?)}))))
+
+(defn prepare-prime-call
+  "Find immutable role data before registry resolution, then bind one actual
+   iteration's original logical request. Legacy IDs are never recalculated."
+  [ctx owner authored-config iteration effect-claims resolve-plan! request-id!]
+  (let [scope-id (logic/prime-plan-scope-id owner authored-config)
+        history (filterv #(logic/same-prime-role? owner %)
+                         (commands/events ctx #{[:tick (:tick-id owner)]} logic/model-call-journal-event-types))
+        plans (filterv #(and (= :sheet/model-plan-retained (:event/type %))
+                             (= scope-id (:plan-scope-id %))) history)
+        _ (when (> (count plans) 1) (logic/model-call-journal-incompatible! :historical-operation-ambiguous))
+        retained (first plans)
+        legacy (filterv #(not= :sheet/model-plan-retained (:event/type %)) history)
+        iteration-ids (set (map :logical-action-identity
+                               (filter #(and (= iteration (:iteration-index %))
+                                             (= :provider (:kind %))) effect-claims)))
+        associated (filterv #(contains? iteration-ids (:logical-action-id %)) legacy)
+        historical-ids (set (map :logical-action-id associated))]
+    (when (> (count historical-ids) 1) (logic/model-call-journal-incompatible! :historical-operation-ambiguous))
+    (cond
+      (and (= 1 (count historical-ids))
+           (some #(and (= (first historical-ids) (:logical-action-identity %))
+                       (= :completed (:status %))) effect-claims))
+      {:logical-action-id (first historical-ids) :historical-effect-only? true}
+
+      (and (:legacy-completed-action-id owner) (nil? retained)
+           (empty? historical-ids)
+           (every? #{(:legacy-completed-action-id owner)} iteration-ids))
+      {:logical-action-id (:legacy-completed-action-id owner) :historical-effect-only? true}
+
+      (and (nil? retained) (or (seq legacy) (seq iteration-ids)))
+      (let [logical-id (first historical-ids)
+            configs (set (map :configuration-id associated))
+            _ (when-not (and logical-id (= 1 (count configs)))
+                (logic/model-call-journal-incompatible! :legacy-effective-profile-unretained))
+            candidates (logic/legacy-terminal-plan associated)
+            policy (or (last (keep #(get-in % [:entry :outcome :model-fallback :policy]) associated))
+                       (:fallback-policy authored-config) :temporary-transport)
+            bound (callbacks ctx (assoc owner :logical-action-id logical-id
+                                       :configuration-id (first configs))
+                             candidates policy)
+            completed-receipt? (some #(and (= :completed (:phase %))
+                                           (= (:start-index bound) (:candidate-index %))
+                                           (map? (:outcome %))) (:request-receipts bound))]
+        (when-not (or (:completed-outcome bound) completed-receipt?)
+          (logic/model-call-journal-incompatible! :legacy-effective-profile-unretained))
+        {:logical-action-id logical-id :configuration-id (first configs)
+         :candidates candidates :policy policy :callbacks bound
+         :replay-only? true :historical-terminal? true})
+      :else
+      (let [retained
+            (or retained
+                (let [plan (logic/checked-plan (resolve-plan!))
+                      config-id (logic/retained-configuration-id plan)
+                      logical-id (request-id! plan config-id)
+                      result (command! ctx :sheet/retain-model-plan
+                                       (assoc owner :logical-action-id logical-id
+                                              :configuration-id config-id :plan-scope-id scope-id :plan plan))]
+                  (when (:cognitect.anomalies/category result) (logic/model-call-journal-incompatible! :model-plan-ownership-lost))
+                  (or (first (filter #(and (= :sheet/model-plan-retained (:event/type %))
+                                          (logic/same-prime-role? owner %) (= scope-id (:plan-scope-id %)))
+                                     (commands/events ctx #{[:tick (:tick-id owner)]} logic/model-call-journal-event-types)))
+                      (logic/model-call-journal-incompatible! :model-plan-not-retained))))
+            plan (:plan retained)
+            _ (when-not (m/validate logic/model-call-journal-retained-plan-schema plan)
+                (logic/model-call-journal-incompatible! :retained-profile-version-unsupported))
+            config-id (:configuration-id retained)
+            _ (when-not (= config-id (logic/retained-configuration-id plan))
+                (logic/model-call-journal-incompatible! :retained-plan-identity-mismatch))
+            computed-id (request-id! plan config-id)
+            historical-id (first historical-ids)
+            historical-configs (set (map :configuration-id associated))
+            _ (when (or (> (count historical-configs) 1)
+                        (and (:legacy-completed-action-id owner) (empty? historical-ids)))
+                (logic/model-call-journal-incompatible! :historical-operation-ambiguous))
+            original-config (or (first historical-configs) config-id)
+            logical-id (or historical-id computed-id)
+            mismatched? (or (not= logical-id computed-id) (not= original-config config-id))
+            candidates (if (= original-config config-id) (:candidates plan) (logic/legacy-terminal-plan associated))
+            bound (callbacks ctx (assoc owner :logical-action-id logical-id :configuration-id original-config)
+                             candidates (:policy plan))
+            completed-receipt? (some #(and (= (:start-index bound) (:candidate-index %))
+                                          (= :completed (:phase %)) (map? (:outcome %))) (:request-receipts bound))
+            _ (when (and mismatched? (not (:completed-outcome bound)) (not completed-receipt?))
+                (logic/model-call-journal-incompatible! :legacy-effective-profile-unretained))
+            replay-only?
+            (if mismatched? true
+            (when-not (:completed-outcome bound)
+              (try
+                (logic/checked-plan plan)
+                false
+                (catch clojure.lang.ExceptionInfo error
+                  (if (and (= :retained-profile-version-unsupported (:reason (ex-data error)))
+                           (some #(and (= (:start-index bound) (:candidate-index %))
+                                       (= :completed (:phase %)) (map? (:outcome %)))
+                                 (:request-receipts bound)))
+                    true
+                    (throw error))))))]
+        {:logical-action-id logical-id :configuration-id original-config :plan plan
+         :candidates candidates :policy (:policy plan) :callbacks bound
+         :replay-only? (boolean replay-only?)}))))
+
+(defn- prepare-specialist-call
+  "Bind the original inline effect request before provider resolution. The
+   parent researcher owns this role; emitted child nodes do not use this seam."
+  [ctx owner authored-config resolve-plan!]
+  (let [{:keys [topology facts]} (commands/specialist-state ctx owner logic/specialist-event-types)
+        scope-id (logic/inline-plan-scope-id (:role-owner topology) authored-config)
+        history (filterv #(logic/specialist-role-event? topology %) facts)
+        plans (filterv #(and (= :sheet/model-plan-retained (:event/type %))
+                             (= scope-id (:plan-scope-id %))) history)
+        _ (when (> (count plans) 1) (logic/model-call-journal-incompatible! :historical-operation-ambiguous))
+        retained (first plans)
+        operation (filterv #(logic/same-operation? owner %) history)
+        legacy (filterv #(not= :sheet/model-plan-retained (:event/type %)) operation)
+        configurations (set (map :configuration-id legacy))
+        _ (when (> (count configurations) 1) (logic/model-call-journal-incompatible! :historical-operation-ambiguous))
+        prior-effect? (some #(= (:logical-action-id owner) (:logical-action-identity %))
+                            (commands/events ctx #{[:tick (:tick-id owner)]}
+                                    #{logic/claim-event-type logic/completion-event-type
+                                      logic/indeterminate-event-type}))
+        retained-configurations (set (map :configuration-id
+                                          (filter #(= :sheet/model-plan-retained (:event/type %)) history)))
+        unretained-history? (some #(and (not= :sheet/model-plan-retained (:event/type %))
+                                        (not (contains? retained-configurations (:configuration-id %)))) history)
+        legacy-config (first configurations)
+        historical? (and legacy-config
+                         (or (nil? retained) (not= legacy-config (:configuration-id retained))))]
+    (if historical?
+      (let [candidates (logic/legacy-terminal-plan legacy)
+            policy (or (last (keep #(get-in % [:entry :outcome :model-fallback :policy]) legacy))
+                       (:fallback-policy authored-config) :temporary-transport)
+            bound (callbacks ctx (assoc owner :configuration-id legacy-config) candidates policy)
+            physical? (some #(and (= (:start-index bound) (:candidate-index %))
+                                  (= :completed (:phase %)) (map? (:outcome %)))
+                            (:request-receipts bound))]
+        (when-not (or (:completed-outcome bound) physical?)
+          (logic/model-call-journal-incompatible! :legacy-effective-profile-unretained))
+        {:logical-action-id (:logical-action-id owner) :configuration-id legacy-config
+         :candidates candidates :policy policy :callbacks bound
+         :replay-only? true :historical-terminal? true})
+      (let [_ (when (and (nil? retained)
+                         (or prior-effect? unretained-history?))
+                (logic/model-call-journal-incompatible! :legacy-effective-profile-unretained))
+            retained
+            (or retained
+                (let [plan (logic/checked-plan (resolve-plan!))
+                      result (command! ctx :sheet/retain-model-plan
+                                       (assoc owner :configuration-id (logic/retained-configuration-id plan)
+                                              :plan-scope-id scope-id :plan plan))]
+                  (when (:cognitect.anomalies/category result) (logic/model-call-journal-incompatible! :model-plan-ownership-lost))
+                  (or (first (filter #(and (= :sheet/model-plan-retained (:event/type %))
+                                          (= scope-id (:plan-scope-id %))
+                                          (logic/specialist-role-event? topology %))
+                                     (:facts (commands/specialist-state ctx owner logic/specialist-event-types))))
+                      (logic/model-call-journal-incompatible! :model-plan-not-retained))))
+            plan (:plan retained)
+            _ (when-not (m/validate logic/model-call-journal-retained-plan-schema plan)
+                (logic/model-call-journal-incompatible! :retained-profile-version-unsupported))
+            _ (when-not (= (:configuration-id retained) (logic/retained-configuration-id plan))
+                (logic/model-call-journal-incompatible! :retained-plan-identity-mismatch))
+            bound (callbacks ctx (assoc owner :configuration-id (:configuration-id retained))
+                             (:candidates plan) (:policy plan))
+            replay-only?
+            (when-not (:completed-outcome bound)
+              (try (logic/checked-plan plan) false
+                   (catch clojure.lang.ExceptionInfo error
+                     (if (and (= :retained-profile-version-unsupported (:reason (ex-data error)))
+                              (some #(and (= (:start-index bound) (:candidate-index %))
+                                          (= :completed (:phase %)) (map? (:outcome %)))
+                                    (:request-receipts bound)))
+                       true (throw error)))))]
+        {:logical-action-id (:logical-action-id owner) :configuration-id (:configuration-id retained)
+         :plan plan :candidates (:candidates plan) :policy (:policy plan) :callbacks bound
+         :replay-only? (boolean replay-only?)}))))
+
+(defn prepare-inline-call
+  "Bind a checkpointed inline request to its original shared specialist role plan."
+  [ctx owner authored-config resolve-plan!]
+  (prepare-specialist-call ctx owner authored-config resolve-plan!))
+
+(defn prepare-emitted-call
+  "Bind an actual generated child leaf. Known results precede fresh lineage admission."
+  [ctx owner authored-config resolve-plan!]
+  (let [{:keys [campaign emitted? role-owner]} (commands/specialist-topology ctx owner)
+        original (first (filter #(= (:tick-id owner) (:tick-id %))
+                                (commands/events ctx #{[:tick (:tick-id owner)]} #{:sheet/tree-tick-started})))
+        lineage? (loop [parent (:parent-tick-id original) seen #{}]
+                   (cond
+                     (= parent (:tick-id role-owner)) true
+                     (or (nil? parent) (contains? seen parent)) false
+                     :else (let [start (first (filter #(= parent (:tick-id %))
+                                                      (commands/events ctx #{[:tick parent]} #{:sheet/tree-tick-started})))]
+                             (recur (:parent-tick-id start) (conj seen parent)))))
+        admit-fresh! (fn []
+                       (when-not (and emitted? lineage? (pos-int? (:ownership-epoch campaign))
+                                      (nat-int? (:iteration-index campaign)))
+                         (logic/model-call-journal-incompatible! :emitted-campaign-lineage-unavailable)))
+        prepared (prepare-specialist-call ctx owner authored-config
+                                          #(do (admit-fresh!) (resolve-plan!)))
+        callbacks (:callbacks prepared)
+        known? (or (:completed-outcome callbacks)
+                   (some #(and (= (:start-index callbacks) (:candidate-index %))
+                                (= :completed (:phase %)) (map? (:outcome %)))
+                         (:request-receipts callbacks)))]
+    (when-not known? (admit-fresh!))
+    prepared))
+
+;; --- Researcher models ---
+
+(defn prepare-prime
+  "Prepare only checkpointed configured prime calls. Other researcher surfaces
+   retain their existing request identities and preparation."
+  [node provider module inputs options context]
+  (let [ctx (or (get-in context [:model-role-context :context]) context)
+        call-owner (assoc (logic/owner context :prime "unprepared")
+                          :ownership-epoch (:researcher-ownership-epoch context)
+                          :legacy-completed-action-id (:legacy-completed-prime-action-id context))
+        authored (select-keys node [:provider :model :options :fallback-models :fallback-policy])]
+    (prepare-prime-call
+     ctx call-owner authored (:researcher-iteration context) (:researcher-effect-claims context)
+     #(logic/resolve-plan node (or (:provider node) provider) module
+                                  (dissoc options :orc/idempotency-key))
+     (fn [plan configuration-id]
+       (logic/provider-logical-action-identity
+        {:tick-id (:tick-id context) :node-id (:node-id context)
+         :iteration-index (:researcher-iteration context)
+         :provider (:provider (first (:candidates plan))) :model (:model node)
+         :module module :inputs inputs
+         :options {:request-version "prime-request-v1" :role :prime :name (:name node)
+                   :role-plan-id (logic/prime-plan-scope-id call-owner authored)
+                   :configuration-id configuration-id}})))))
+
+(defn prepare-inline
+  "Retain checkpointed inline specialist policy under its unchanged effect ID."
+  [node provider module options context logical-action-id]
+  (prepare-inline-call
+   (or (get-in context [:model-role-context :context]) context)
+   (assoc (logic/owner context :subcall logical-action-id)
+          :ownership-epoch (:researcher-ownership-epoch context))
+   (select-keys node [:provider :model :options :fallback-models :fallback-policy])
+   #(logic/resolve-plan node (or (:provider node) provider) module
+                                (dissoc options :orc/idempotency-key))))
+
+(defn predict
+  "Retry a failed model request without replaying code/tools. Candidate receipts
+   and successful role selection survive checkpoint/restart."
+  [node provider module inputs options context role logical-action-id]
+  (let [provider (or (:provider node) provider)
+        configured? (contains? node :fallback-models)
+        prepared (case role
+                   :prime (:prepared-prime-model-call context)
+                   :subcall (:prepared-inline-model-call context)
+                   nil)
+        policy (or (:policy prepared) (:fallback-policy node) :temporary-transport)
+        candidates (cond
+                     prepared (:candidates prepared)
+                     configured? (:candidates (logic/resolve-plan
+                                               node provider module (dissoc options :orc/idempotency-key)))
+                     :else (logic/resolved-plan node provider module options))
+        config-candidates (when-not prepared
+                            (logic/resolved-plan node provider module (or (:model-configuration-options context) options)))
+        callbacks (or (:callbacks prepared) (when configured?
+                    (ai.obney.orc.orc-service.core.todo-processors/callbacks (or (get-in context [:model-role-context :context]) context)
+                                       (logic/owner context role logical-action-id) config-candidates policy)))
+        invoke! (fn [index candidate]
+                  (let [max-retries (or (get-in candidate [:options :max-retries]) 0)
+                        receipts (logic/distinct-completed-receipts
+                                   prepared (filterv #(and (= index (:candidate-index %)) (= :completed (:phase %)))
+                                                     (:request-receipts callbacks)))
+                        completed (into {} (map (juxt :attempt-ordinal :outcome) receipts))]
+                    (if-let [known-success (logic/exact-replay-success prepared receipts)]
+                      known-success
+                    (loop [attempt 0 usage nil]
+                      (let [known (get completed attempt)
+                            _ (when (and prepared (nil? known))
+                                (when (:replay-only? prepared)
+                                  (throw (ex-info "Historical researcher profile cannot authorize a fresh request"
+                                                  {:failure-kind :model-plan-incompatible
+                                                   :reason :legacy-effective-profile-unretained})))
+                                (let [resolved (llm/preflight-provider!
+                                                (:provider candidate) module
+                                                (cond-> (:options candidate)
+                                                  (:model candidate) (assoc :model (:model candidate))))]
+                                  (when-not (and (= (:protocol candidate) (:protocol resolved))
+                                                 (= (get-in candidate [:profile :output-mode]) (:output-mode resolved)))
+                                    (throw (ex-info "Retained researcher profile cannot be preserved"
+                                                    {:failure-kind :model-plan-incompatible
+                                                     :reason :effective-profile-cannot-be-preserved})))))
+                            now ((or (:campaign-now-ms-fn context) #(System/currentTimeMillis)))
+                            remaining (some-> (:execution-deadline-ms context) (- now))
+                            reservation (when-not (or known (and remaining (not (pos? remaining))))
+                                          (if-let [reserve! (:reserve-provider-call! context)]
+                                            (reserve! {:candidate-index index :node-attempt 1
+                                                       :iteration-index (:researcher-iteration context)
+                                                       :logical-action-identity (str logical-action-id "/candidate/" index)
+                                                       :provider-attempt-ordinal (+ (* (or (:effect-attempt-ordinal context) 0)
+                                                                                      (inc max-retries)) attempt)})
+                                            (when-let [reserve! (:reserve-llm-call! context)] (reserve!))))
+                            outcome
+                            (cond
+                              known known
+                              (and remaining (not (pos? remaining)))
+                              {:status :timeout :error "Execution deadline exhausted before provider attempt"}
+                              reservation
+                              (cond-> {:status :timeout
+                                       :error (or (:cognitect.anomalies/message reservation)
+                                                  "LLM call budget exhausted before provider attempt")}
+                                (:failure-kind reservation) (assoc :failure-kind (:failure-kind reservation)))
+                              :else
+                              (let [receipt {:request-id (random-uuid) :candidate-index index
+                                             :attempt-ordinal attempt :provider (:provider candidate)
+                                             :requested-model (:model candidate)}
+                                    _ (logic/persist! (:record-request! callbacks) (assoc receipt :phase :started))
+                                    result (try
+                                             (let [configured-timeout (get-in candidate [:options :timeout-ms])
+                                                   timeout (cond (and remaining configured-timeout) (min remaining configured-timeout)
+                                                                 remaining remaining :else configured-timeout)
+                                                   prediction (llm/predict (:provider candidate) module inputs
+                                                                (cond-> (merge (:options candidate)
+                                                                                (select-keys options [:with-metadata? :validate? :with-provider-evidence?])
+                                                                                {:max-retries 0})
+                                                                  (:model candidate) (assoc :model (:model candidate))
+                                                                  timeout (assoc :timeout-ms (max 1 timeout))))]
+                                               {:status :success :result prediction :outputs (:outputs prediction)
+                                                :usage (:usage prediction) :model (:model prediction)})
+                                             (catch Exception e
+                                               (let [timeout? (llm/transport-timeout? e)]
+                                                 (cond-> (merge {:status :failure
+                                                                 :error (if timeout?
+                                                                          "Provider call deadline exceeded"
+                                                                          (.getMessage e))
+                                                                 :usage (get-in (ex-data e) [:provider-evidence :usage])}
+                                                                (select-keys (ex-data e) [:failure-kind :provider-evidence]))
+                                                   timeout? (assoc :timeout-kind :provider)))))]
+                                (logic/persist! (:record-request! callbacks)
+                                          (assoc receipt :phase :completed
+                                                 :outcome (logic/durable-outcome result)))
+                                result))
+                            usage (when (or usage (:usage outcome)) (merge-with + (or usage {}) (or (:usage outcome) {})))
+                            replay-next? (and (:replay-only? prepared)
+                                              (contains? completed (inc attempt)))
+                            _ (when (and (:replay-only? prepared)
+                                         (= :transport-failure (:failure-kind outcome))
+                                         (some #(> % attempt) (keys completed))
+                                         (not replay-next?))
+                                (throw (ex-info "Historical model request receipts have an ambiguous attempt gap"
+                                                {:failure-kind :model-plan-incompatible
+                                                 :reason :historical-operation-ambiguous})))]
+                        (if (and (or (< attempt max-retries) replay-next?)
+                                 (= :transport-failure (:failure-kind outcome)))
+                          (do
+                            (when (pos? (long (or (get-in candidate [:options :retry-delay-ms]) 0)))
+                              (Thread/sleep (long (min (max 0 (or remaining Long/MAX_VALUE))
+                                                       (get-in candidate [:options :retry-delay-ms])))))
+                            (recur (inc attempt) usage))
+                          (assoc outcome :usage usage)))))))
+        outcome (if configured?
+                  (logic/run-candidates (merge callbacks {:candidates candidates :policy policy :invoke! invoke!}))
+                  (invoke! 0 (first candidates)))]
+    (if (= :success (:status outcome))
+      (cond-> (assoc (:result outcome) :usage (:usage outcome))
+        (:model-fallback outcome) (assoc :model-fallback (:model-fallback outcome)))
+      (throw (ex-info (or (:error outcome) "Model request is already in progress")
+                      (select-keys outcome [:status :usage :failure-kind :provider-evidence :model-fallback :model-call-in-flight? :timeout-kind]))))))
+
+(defn execute-llm-primitive
+  "Execute an LLM primitive from the RLM sandbox.
+
+   Args:
+     name - Node name for tracing
+     opts - {:instruction \"...\" :writes [:key] :model \"...\" :reads [...]}
+     context - {:provider :openrouter :parent-trace-id uuid :blackboard {...} :usage-tracker atom}
+
+   Returns {:outputs {...} :usage {:prompt_tokens N :completion_tokens N :total_tokens N}}
+
+   Sub-LLM calls receive FULL values from :reads. The generated code is responsible
+   for managing chunk sizes appropriately. Previews are only used for the code-generating
+   LLM to understand variable shapes - actual data processing uses full values.
+
+   U5: For inputs whose blackboard schema carries :field-type :image (or any
+   other field-type), the llm module's input field is given :type so that
+   llm's build-message-content routes the value as a multimodal content
+   block rather than as inline text. This is the Phase-1 mirror of
+   executor.clj's build-field behavior for Phase-2 leaf nodes."
+  [name opts context]
+  (let [opts (logic/inherit (:model-defaults context) opts)
+        {:keys [instruction writes model reads]} opts
+        {:keys [provider blackboard sandbox-vars usage-tracker reserve-llm-call!
+                reserve-provider-call!
+                durable-source-required? tick-id node-id researcher-iteration
+                generated-code-hash researcher-ownership-epoch
+                effect-attempt-ordinal claim-researcher-effect!
+                complete-researcher-effect!
+                completed-researcher-effects
+                encode-researcher-effect-value]} context
+        encode-effect-value (or encode-researcher-effect-value identity)
+        inputs (reduce (fn [acc k]
+                         (cond
+                           (contains? sandbox-vars k) (assoc acc k (get sandbox-vars k))
+                           (contains? (get blackboard k) :value)
+                           (assoc acc k (get-in blackboard [k :value]))
+                           :else acc))
+                       {}
+                       (or reads []))
+        module {:inputs (mapv (fn [[k value]]
+                                (let [schema (logic/inline-contract name k (get-in blackboard [k :schema]) value :input)
+                                      ft (logic/rlm-sandbox-schema-field-type schema)]
+                                  (cond-> {:name k
+                                           :spec schema}
+                                    ft (assoc :type ft))))
+                              inputs)
+                :outputs (mapv (fn [k]
+                                 (let [schema (logic/inline-contract name k (get-in blackboard [k :schema]) nil :output)]
+                                   {:name k
+                                    :spec schema
+                                    :description (:description (m/properties schema))}))
+                               writes)
+                :instructions instruction}
+        llm-options (cond-> (merge {:validate? false :with-metadata? true} (:options opts))
+                      model (assoc :model model))
+        logical-action-identity
+        (when durable-source-required?
+          (logic/logical-action-identity
+           {:tick-id tick-id
+            :node-id node-id
+            :iteration-index researcher-iteration
+            :generated-code-hash generated-code-hash
+            :kind :provider
+            :target (encode-effect-value
+                     {:provider (or (:provider opts) provider) :model model :name name
+                      :fallback-models (:fallback-models opts) :fallback-policy (:fallback-policy opts)})
+            :arguments (encode-effect-value
+                        {:module module
+                         :inputs inputs
+                         :options llm-options})}))
+        attempt-identity
+        (when logical-action-identity
+          (logic/attempt-identity
+           logical-action-identity
+           researcher-ownership-epoch
+           effect-attempt-ordinal))
+        completed-effect
+        (when (and logical-action-identity completed-researcher-effects)
+          (get @completed-researcher-effects logical-action-identity))]
+
+    (u/trace :ai.obney.orc.orc-service.core.rlm-sandbox/rlm-llm-primitive
+      {:name name :writes writes :model model}
+      (try
+        (let [call-context (assoc (or (:model-call-context context) context)
+                                 :researcher-ownership-epoch researcher-ownership-epoch)
+              prepared-inline-model-call
+              (when (and logical-action-identity (nil? completed-effect)
+                         (contains? opts :fallback-models))
+                (prepare-inline opts provider module llm-options
+                                                 call-context logical-action-identity))]
+        (when (and logical-action-identity (nil? completed-effect))
+          (let [claim-result
+                (claim-researcher-effect!
+                 {:iteration-index researcher-iteration
+                  :logical-action-identity logical-action-identity
+                  :attempt-identity attempt-identity
+                  :attempt-ordinal effect-attempt-ordinal
+                  :kind :provider})]
+            (when (:cognitect.anomalies/category claim-result)
+              (throw (ex-info "Researcher inline-provider claim conflicted"
+                              {:claim-result claim-result
+                               :logical-action-identity logical-action-identity
+                               :attempt-identity attempt-identity})))))
+        (let [result (if completed-effect
+                       (:result completed-effect)
+                       (let [call-context (assoc call-context :prepared-inline-model-call prepared-inline-model-call)
+                             logical-id (or logical-action-identity
+                                            (logic/logical-id call-context :subcall name module inputs opts llm-options))]
+                         (predict opts provider module inputs llm-options
+                                                    call-context :subcall logical-id)))
+              outputs (or (:outputs result) result)
+              usage (:usage result)
+              _ (when (and (nil? completed-effect) usage-tracker usage)
+                  (swap! usage-tracker
+                         (fn [u]
+                           {:prompt-tokens (+ (:prompt-tokens u 0)
+                                              (or (:prompt-tokens usage) (:prompt_tokens usage) 0))
+                            :completion-tokens (+ (:completion-tokens u 0)
+                                                  (or (:completion-tokens usage) (:completion_tokens usage) 0))
+                            :total-tokens (+ (:total-tokens u 0)
+                                             (or (:total-tokens usage) (:total_tokens usage) 0))})))]
+          (when (and logical-action-identity (nil? completed-effect))
+            (let [completion-result
+                  (complete-researcher-effect!
+                   {:logical-action-identity logical-action-identity
+                    :attempt-identity attempt-identity
+                    :result (encode-effect-value result)})]
+              (when (:cognitect.anomalies/category completion-result)
+                (throw (ex-info "Researcher inline-provider outcome lost ownership"
+                                {:completion-result completion-result
+                                 :logical-action-identity logical-action-identity
+                                 :attempt-identity attempt-identity})))))
+          (when (and logical-action-identity
+                     (nil? completed-effect)
+                     completed-researcher-effects)
+            (swap! completed-researcher-effects assoc logical-action-identity
+                   {:status :completed :result result}))
+          (reduce (fn [acc k]
+                    (assoc acc k (get outputs k)))
+                  {}
+                  writes)))
+        (catch Exception e
+          (throw (ex-info (str "LLM primitive '" name "' failed: " (.getMessage e))
+                          (merge {:name name :writes writes}
+                                 (select-keys (ex-data e) [:failure-kind :reason :provider-evidence :model-fallback :status]))
+                          e)))))))
 
 ;; =============================================================================
-;; Tick-Scoped Usage Tracking
+;; RLM Sandbox Context
 ;; =============================================================================
-;; Tracks token usage per tick-id for aggregation across sub-LLM calls.
 
-(defonce ^:private tick-usage (atom {}))
+(defn build-rlm-context
+  "Build a SCI execution context for RLM mode.
 
-(defn- add-usage!
-  "Add usage from a single LLM call to the tick's total."
-  [tick-id usage]
-  (when (and tick-id usage)
-    (swap! tick-usage update tick-id
-           (fn [u]
-             (let [current (or u {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0})]
-               {:prompt-tokens (+ (:prompt-tokens current 0)
-                                  (or (:prompt-tokens usage) (:prompt_tokens usage) 0))
-                :completion-tokens (+ (:completion-tokens current 0)
-                                      (or (:completion-tokens usage) (:completion_tokens usage) 0))
-                :total-tokens (+ (:total-tokens current 0)
-                                 (or (:total-tokens usage) (:total_tokens usage) 0))})))))
+   Extends the base sandbox with BT primitives:
+   - llm - Execute an LLM node immediately
+   - final! - Capture result with validation
+   - get-input - Load input value into variable space
+   - store! - Store computed value in sandbox-vars
+   - get-var - Retrieve value from sandbox-vars
+   - inputs - Map of input previews (metadata only)
 
-(defn get-tick-usage
-  "Get aggregated usage for a tick."
-  [tick-id]
-  (get @tick-usage tick-id {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}))
+   Options:
+   - :provider - ORC LLM provider keyword (e.g., :openrouter)
+   - :blackboard - Map of key -> {:key, :schema, :value, :version}
+   - :declared-writes - Vector of declared write keys for validation
+   - :optional-writes - Set of declared top-level write keys that may be omitted
+   - :parent-trace-id - UUID for event tracing
+   - :call-tool-fn - Optional MCP tool function
+   - :mcp-tools - Optional vector of MCP tool names
+   - :browser-tools - Optional vector of browser tool names
+   - :sandbox-vars - Optional existing sandbox-vars atom (for persistence across iterations)
+   - :usage-tracker - Optional atom for aggregating sub-LLM token usage
+   - :recursive? - When true, enables R-2 drill-down primitives (tree-detail, etc.)
+   - :event-store - Required when :recursive? true. Used by drill-down primitives.
+   - :tenant-id - Optional; passed through to the event-store read"
+  [{:keys [provider blackboard declared-writes optional-writes parent-trace-id
+           call-tool-fn mcp-tools browser-tools sandbox-vars usage-tracker
+           recursive? event-store tenant-id cache
+           sheet-id tick-id command-registry reserve-llm-call!
+           reserve-provider-call!
+           durable-source-required? node-id researcher-iteration
+           generated-code-hash researcher-ownership-epoch
+           effect-attempt-ordinal claim-researcher-effect!
+           complete-researcher-effect!
+           completed-researcher-effects
+           encode-researcher-effect-value] :as context}]
+  (let [
+        final-output (atom nil)
 
-(defn clear-tick-usage!
-  "Clear usage for a tick (called on tick completion)."
-  [tick-id]
-  (swap! tick-usage dissoc tick-id))
+        sci-ctx* (atom nil)
 
-(defn- reserve-llm-call!
-  "Atomically reserve one call against the root tick's shared LLM budget.
-   Returns nil when reserved, or an exceeded descriptor when no capacity
-   remains. With no explicit budget, records the call without imposing a cap.
+        sandbox-vars (or sandbox-vars (atom {}))
 
-   Takes the ALREADY-PROJECTED tick execution context rather than projecting
-   its own. Every projection of :sheet/tick-execution-contexts decodes the
-   tick's cached blob, and callers here already hold it."
-  [tick-ctx tick-id]
-  (let [budget (get-in tick-ctx [:options :llm-call-budget])
-        budget-tick-id (or (get-in tick-ctx [:options :llm-budget-root-tick-id])
-                           tick-id)
-        budget-sheet-id (get-in tick-ctx [:options :llm-budget-root-sheet-id])
-        outcome (atom nil)]
-    (swap! tick-llm-counts
-           (fn [counts]
-             (let [current (get counts budget-tick-id 0)]
-               (if (and budget (>= current budget))
-                 (do (reset! outcome {:exceeded true
-                                      :current current
-                                      :budget budget
-                                      :root-tick-id budget-tick-id
-                                      :root-sheet-id budget-sheet-id})
-                     counts)
-                 (assoc counts budget-tick-id (inc current))))))
-    @outcome))
+        usage-tracker (or usage-tracker (atom {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}))
+
+        exec-context {:provider provider
+                      :model-defaults (:model-defaults context)
+                      :model-call-context (:model-call-context context)
+                      :blackboard blackboard
+                      :parent-trace-id parent-trace-id
+                      :usage-tracker usage-tracker
+                      :reserve-llm-call! reserve-llm-call!
+                      :reserve-provider-call! reserve-provider-call!
+                      :durable-source-required? durable-source-required?
+                      :tick-id tick-id
+                      :node-id node-id
+                      :researcher-iteration researcher-iteration
+                      :generated-code-hash generated-code-hash
+                      :researcher-ownership-epoch researcher-ownership-epoch
+                      :effect-attempt-ordinal effect-attempt-ordinal
+                      :encode-researcher-effect-value
+                      encode-researcher-effect-value
+                      :claim-researcher-effect! claim-researcher-effect!
+                      :complete-researcher-effect! complete-researcher-effect!
+                      :completed-researcher-effects
+                      completed-researcher-effects}
+
+        inputs-preview (logic/build-inputs-preview blackboard)
+
+        llm-fn (fn [name & args]
+                 (let [opts (if (= 1 (count args))
+                              (first args)
+                              (apply hash-map args))
+                       ctx (assoc exec-context :sandbox-vars @sandbox-vars)
+                       result (execute-llm-primitive name opts ctx)]
+                   (swap! sandbox-vars merge result)
+                   result))
+
+        final!-fn (fn [output]
+                    (reset! final-output nil)
+                    (let [candidate (logic/validate-final! output declared-writes optional-writes)
+                          result (logic/validate-outputs
+                                   blackboard {:status :success :outputs candidate} false)]
+                      (when (= :failure (:status result))
+                        (throw (ex-info (:error result)
+                                        {:failure-kind :final-output-schema-invalid
+                                         :rejected-write-keys (vec (keys (:rejected-writes result)))})))
+                      (reset! final-output (:outputs result))
+                      (str "FINAL_ANSWER: " (pr-str (:outputs result)))))
+
+        get-input-fn (fn [k]
+                       (let [v (get-in blackboard [k :value])]
+                         (swap! sandbox-vars assoc k v)
+                         v))
+
+        safe-clojure-core '[+ - * / mod quot rem
+                           = not= < > <= >= compare
+                           str pr-str prn-str println print
+                           inc dec min max abs
+                           first rest next last butlast
+                           cons conj concat into
+                           map filter remove reduce
+                           take drop take-while drop-while
+                           partition partition-all partition-by
+                           sort sort-by reverse shuffle
+                           get get-in assoc assoc-in dissoc update update-in
+                           select-keys merge merge-with
+                           keys vals contains? find
+                           count empty? not-empty seq vec set list
+                           apply comp partial juxt
+                           identity constantly
+                           some every? not-any? not-every?
+                           group-by frequencies
+                           zipmap interleave interpose
+                           repeat range iterate
+                           true? false? nil? some? boolean
+                           keyword keyword? symbol symbol? string? number? integer? float? map? vector? set? list? coll? seq? fn?
+                           name namespace
+                           re-find re-matches re-seq
+                           subs format
+                           type class]
+        core-publics (ns-publics 'clojure.core)
+        safe-core (select-keys core-publics safe-clojure-core)
+
+        sequence-fn (fn [name & children]
+                      (let [results (reduce (fn [acc child]
+                                              (if (map? child)
+                                                (merge acc child)
+                                                acc))
+                                            {}
+                                            children)]
+                        (swap! sandbox-vars merge results)
+                        results))
+
+        parallel-fn (fn [name & children]
+                      (let [results (reduce (fn [acc child]
+                                              (if (map? child)
+                                                (merge acc child)
+                                                acc))
+                                            {}
+                                            children)]
+                        (swap! sandbox-vars merge results)
+                        results))
+
+        map-each-fn (fn [name & args]
+                      (cond
+                        (and (keyword? (first args))
+                             (= :as (second args))
+                             (keyword? (nth args 2))
+                             (fn? (nth args 3)))
+                        (let [coll-key (first args)
+                              item-name (nth args 2)
+                              body-fn (nth args 3)
+                              coll (get @sandbox-vars coll-key)]
+                          (vec
+                           (for [item coll]
+                             (do
+                               (swap! sandbox-vars assoc item-name item)
+                               (body-fn)))))
+
+                        (and (coll? (first args))
+                             (fn? (second args)))
+                        (let [coll (first args)
+                              f (second args)]
+                          (vec (map f coll)))
+
+                        :else
+                        (throw (ex-info (str "Invalid map-each syntax. Use: "
+                                             "(map-each \"name\" :key :as :item-name (fn [] ...)) or "
+                                             "(map-each \"name\" coll f)")
+                                        {:args args}))))
+
+        fallback-fn (fn [name & children]
+                      (loop [remaining children]
+                        (if (empty? remaining)
+                          nil
+                          (let [child (first remaining)]
+                            (if (and (some? child) (not (instance? Exception child)))
+                              (do
+                                (when (map? child)
+                                  (swap! sandbox-vars merge child))
+                                child)
+                              (recur (rest remaining)))))))
+
+        condition-fn (fn [name pred then-branch else-branch]
+                       (let [result (if pred then-branch else-branch)]
+                         (when (map? result)
+                           (swap! sandbox-vars merge result))
+                         result))
+
+        code-fn (fn [name & args]
+                  (let [opts (apply hash-map args)
+                        writes (:writes opts)
+                        body-result (:body opts)
+                        result (if (and (= 1 (count writes)) (not (map? body-result)))
+                                 {(first writes) body-result}
+                                 (if (map? body-result)
+                                   body-result
+                                   {(first writes) body-result}))]
+                    (swap! sandbox-vars merge result)
+                    result))
+
+        store!-fn (fn [k v]
+                    (swap! sandbox-vars assoc k v)
+                    v)
+
+        get-var-fn (fn [k]
+                     (get @sandbox-vars k))
+
+        list-vars-fn (fn []
+                       (reduce-kv
+                        (fn [acc k v]
+                          (assoc acc k (logic/preview-value v)))
+                        {}
+                        @sandbox-vars))
+
+        emit-tree!-fn (fn [tree]
+                        (let [live-inline-closure?
+                              (boolean
+                               (some (fn [node]
+                                       (and (map-entry? node)
+                                            (= :fn (key node))
+                                            (fn? (val node))))
+                                     (tree-seq coll? seq tree)))]
+                        (when (and durable-source-required? live-inline-closure?)
+                          (throw
+                           (ex-info
+                            logic/quoted-inline-function-source-message
+                            {:requirement :quoted-inline-function-source})))
+                        (logic/validate-emitted-tree! tree)
+                        (let [executable-tree
+                              (walk/postwalk
+                               (fn [node]
+                                 (if (and (map-entry? node)
+                                          (= :fn (key node))
+                                          (seq? (val node))
+                                          (#{'fn 'fn*} (first (val node))))
+                                   [:fn (if durable-source-required?
+                                          (logic/prepare-function (val node) @sci-ctx*)
+                                          (sci/eval-form @sci-ctx* (val node)))]
+                                   node))
+                               tree)
+                              canonical (logic/rlm-dsl->orc-dsl executable-tree)]
+                          (swap! sandbox-vars
+                                 (fn [vars]
+                                   (cond-> (assoc vars :generated-tree canonical)
+                                     (not live-inline-closure?)
+                                     (assoc :generated-tree-raw tree
+                                            :generated-tree-source (pr-str tree))
+
+                                     live-inline-closure?
+                                     (dissoc :generated-tree-raw
+                                             :generated-tree-source))))
+                          canonical)))
+
+        command-context-ready?
+        (and (some? event-store)
+             (some? command-registry)
+             (some? sheet-id)
+             (some? tick-id))
+        mint-behavior-available?
+        (or (nil? command-registry)
+            (contains? command-registry :ontology/mint-behavioral-subtree))
+        mint-behavior!-fn
+        (fn [name body & kw-args]
+          (when-not command-context-ready?
+            (throw (ex-info
+                     (str "mint-behavior! requires a command context "
+                          "(needs :event-store + :command-registry + :sheet-id + :tick-id "
+                          "in build-rlm-context opts). The sandbox was built without one — "
+                          "running in dry-run/test mode.")
+                     {:missing (cond-> []
+                                 (nil? event-store) (conj :event-store)
+                                 (nil? command-registry) (conj :command-registry)
+                                 (nil? sheet-id) (conj :sheet-id)
+                                 (nil? tick-id) (conj :tick-id))})))
+          (let [opts-map (apply hash-map kw-args)
+                parent (:parent opts-map)
+                parent-as-uuid (when parent
+                                 (cond
+                                   (uuid? parent) parent
+                                   (string? parent) (try
+                                                      (java.util.UUID/fromString parent)
+                                                      (catch Exception _ parent))
+                                   :else parent))
+                logical-action-identity
+                (when durable-source-required?
+                  (logic/logical-action-identity
+                   {:tick-id tick-id
+                    :node-id node-id
+                    :iteration-index researcher-iteration
+                    :generated-code-hash generated-code-hash
+                    :kind :behavior-mint
+                    :target name
+                    :arguments ((or encode-researcher-effect-value identity)
+                                {:name name
+                                 :body body
+                                 :parent parent-as-uuid})}))
+                attempt-identity
+                (when logical-action-identity
+                  (logic/attempt-identity
+                   logical-action-identity
+                   researcher-ownership-epoch
+                   effect-attempt-ordinal))
+                completed-effect
+                (when (and logical-action-identity completed-researcher-effects)
+                  (get @completed-researcher-effects logical-action-identity))
+                claim-result
+                (when (and logical-action-identity (nil? completed-effect))
+                  (claim-researcher-effect!
+                   {:iteration-index researcher-iteration
+                    :logical-action-identity logical-action-identity
+                    :attempt-identity attempt-identity
+                    :attempt-ordinal effect-attempt-ordinal
+                    :kind :behavior-mint}))
+                _ (when (:cognitect.anomalies/category claim-result)
+                    (throw (ex-info "Researcher behavior-mint claim conflicted"
+                                    {:claim-result claim-result
+                                     :logical-action-identity logical-action-identity
+                                     :attempt-identity attempt-identity})))
+                cmd-result (when-not completed-effect
+                             (cp/process-command
+                             (assoc
+                               (cond-> {:event-store event-store
+                                        :command-registry command-registry
+                                        :sheet-id sheet-id
+                                        :tick-id tick-id}
+                                 tenant-id (assoc :tenant-id tenant-id))
+                               :command
+                               (cond-> {:command/name :ontology/mint-behavioral-subtree
+                                        :command/id (random-uuid)
+                                        :command/timestamp (time/now)
+                                        :name name
+                                        :body body
+                                        :provenance :agent-minted
+                                        :minted-by-sheet-id sheet-id
+                                        :minted-by-tick-id tick-id}
+                                 logical-action-identity
+                                 (assoc :logical-action-identity logical-action-identity
+                                        :attempt-identity attempt-identity
+                                        :researcher-iteration researcher-iteration)
+                                 (some? effect-attempt-ordinal)
+                                 (assoc :attempt-ordinal effect-attempt-ordinal)
+                                 (some? researcher-ownership-epoch)
+                                 (assoc :ownership-epoch researcher-ownership-epoch)
+                                 parent-as-uuid (assoc :parent-behavior parent-as-uuid)))))
+                mint-conflict?
+                (= :cognitect.anomalies/conflict
+                   (:cognitect.anomalies/category cmd-result))
+                recovered-minted-event
+                (when (and logical-action-identity mint-conflict?)
+                  ((integrations/capability :ontology :get-behavior-mint-by-logical-action)
+                   {:event-store event-store
+                    :tenant-id tenant-id}
+                   logical-action-identity))
+                minted-event
+                (when-not completed-effect
+                  (or (->> (:command-result/events cmd-result)
+                           (filter #(= :ontology/behavioral-subtree-minted
+                                       (:event/type %)))
+                           first)
+                      recovered-minted-event))
+                _ (when (and (nil? completed-effect)
+                             (nil? minted-event))
+                    (throw (ex-info
+                             (str "mint-behavior! command rejected: "
+                                  (or (:cognitect.anomalies/message cmd-result)
+                                      "no events returned by command processor")
+                                  (when-let [explain (:error/explain cmd-result)]
+                                    (str " — explain: " (pr-str explain))))
+                             {:cmd-result cmd-result
+                              :mint-name name
+                              :mint-body body})))
+                target-id (if completed-effect
+                            (:result completed-effect)
+                            (:target-id minted-event))
+                completion-result
+                (when (and logical-action-identity (nil? completed-effect))
+                  (complete-researcher-effect!
+                   {:logical-action-identity logical-action-identity
+                    :attempt-identity attempt-identity
+                    :result (str target-id)}))
+                _ (when (:cognitect.anomalies/category completion-result)
+                    (throw (ex-info "Researcher behavior-mint outcome lost ownership"
+                                    {:completion-result completion-result
+                                     :logical-action-identity logical-action-identity
+                                     :attempt-identity attempt-identity})))
+                _ (when (and logical-action-identity
+                             (nil? completed-effect)
+                             completed-researcher-effects)
+                    (swap! completed-researcher-effects
+                           assoc logical-action-identity
+                           {:status :completed :result (str target-id)}))]
+            (str target-id)))
+
+        get-description-fn
+        (let [coerce-uuid (fn [v]
+                            (cond
+                              (uuid? v) v
+                              (string? v) (try (java.util.UUID/fromString v)
+                                               (catch Exception _ v))
+                              :else v))
+              ctx (cond-> {:event-store event-store}
+                    tenant-id (assoc :tenant-id tenant-id)
+                    cache     (assoc :cache cache))]
+          (fn
+            ([target-id]
+             (when event-store
+               ((integrations/capability :ontology :get-description)
+                ctx :tree-fingerprint (coerce-uuid target-id))))
+            ([granularity target-id]
+             (when event-store
+               ((integrations/capability :ontology :get-description)
+                ctx granularity (coerce-uuid target-id))))))
+
+        find-tree-result (fn [tick-id]
+                           (let [entries (or (:tree-results @sandbox-vars) [])]
+                             (if tick-id
+                               (first (filter #(= tick-id (:tick-id %)) entries))
+                               (last entries))))
+        read-tick-events (fn [tick-id]
+                           (when tick-id
+                             (into []
+                                   (map (fn [event]
+                                          (if (= :sheet/execution-value-referenced
+                                                 (:event/type event))
+                                            (assoc event
+                                                   :event/type :sheet/execution-value-written
+                                                   :value (rm/resolve-source
+                                                           context tenant-id
+                                                           (:source event)))
+                                            event)))
+                                   (rm/read-tick-events context tenant-id tick-id))))
+        tree-detail-fn (fn
+                         ([] (when-let [entry (find-tree-result nil)]
+                               (logic/tree-detail-from-events
+                                (read-tick-events (:tick-id entry))
+                                (:tree-raw entry))))
+                         ([tick-id]
+                          (when-let [entry (find-tree-result tick-id)]
+                            (logic/tree-detail-from-events
+                             (read-tick-events (:tick-id entry))
+                             (:tree-raw entry)))))
+        tree-trajectory-fn (fn
+                             ([] (when-let [entry (find-tree-result nil)]
+                                   (logic/tree-trajectory-from-events
+                                    (read-tick-events (:tick-id entry)))))
+                             ([tick-id]
+                              (when-let [entry (find-tree-result tick-id)]
+                                (logic/tree-trajectory-from-events
+                                 (read-tick-events (:tick-id entry))))))
+        tree-failures-fn (fn []
+                           (when-let [entry (find-tree-result nil)]
+                             (logic/tree-failures-from-events
+                              (read-tick-events (:tick-id entry)))))
+        node-output-fn (fn [node-id]
+                         (when-let [entry (find-tree-result nil)]
+                           (logic/node-output-from-events
+                            (read-tick-events (:tick-id entry))
+                            node-id)))
+        node-input-profile-fn (fn [node-id]
+                                (when-let [entry (find-tree-result nil)]
+                                  (logic/node-input-profile-from-events
+                                   (read-tick-events (:tick-id entry))
+                                   node-id)))
+        drill-bindings (when recursive?
+                         {'tree-detail tree-detail-fn
+                          'tree-trajectory tree-trajectory-fn
+                          'tree-failures tree-failures-fn
+                          'node-output node-output-fn
+                          'node-input-profile node-input-profile-fn})
+
+        rlm-bindings (merge (cond-> {'llm llm-fn
+                                     'final! final!-fn
+                                     'get-input get-input-fn
+                                     'store! store!-fn
+                                     'get-var get-var-fn
+                                     'list-vars list-vars-fn
+                                     'inputs inputs-preview
+                                     'sequence sequence-fn
+                                     'parallel parallel-fn
+                                     'map-each map-each-fn
+                                     'fallback fallback-fn
+                                     'condition condition-fn
+                                     'code code-fn
+                                     'emit-tree! emit-tree!-fn
+                                     'get-description get-description-fn}
+                              mint-behavior-available?
+                              (assoc 'mint-behavior! mint-behavior!-fn))
+                            drill-bindings)
+
+        {tool-flat :flat tool-namespaces :namespaces}
+        (logic/build-tool-bindings call-tool-fn mcp-tools)
+
+        all-bindings (merge rlm-bindings tool-flat)
+
+        sci-ctx (sci/init
+                 {:namespaces (merge {'clojure.core safe-core
+                                      'user (merge rlm-bindings tool-flat)}
+                                     tool-namespaces)
+                  :bindings all-bindings})
+        _ (reset! sci-ctx* sci-ctx)]
+
+    {:sci-ctx sci-ctx
+     :final-output final-output
+     :sandbox-vars sandbox-vars
+     :usage-tracker usage-tracker}))
+
+;; --- Executor ---
+
+(defn- completed-child-values [context tick-id nodes events]
+  (reduce (fn [result completion]
+            (let [writes (rm/resolve-writes context (:tenant-id context) tick-id completion)
+                  owner (assoc (select-keys completion [:event/id :node-id :tick-id :status])
+                               :exec-context (second (logic/execution-key completion)))
+                  protected (select-keys writes logic/researcher-control-keys)
+                  writes (apply dissoc writes logic/researcher-control-keys)]
+              (cond->
+                (if (logic/scoped-child-node? nodes (:node-id completion))
+                  (update result :scoped-outputs into
+                          (map (fn [[k v]] {:key k :owner owner :preview (logic/compute-output-preview v)}) writes))
+                  (-> result
+                      (update :values merge writes)
+                      (update :owners merge (zipmap (keys writes) (repeat owner)))))
+                (seq protected) (update :protected-writes into (keys protected)))))
+          {:values {} :owners {} :scoped-outputs [] :protected-writes []}
+          (filter #(and (= :sheet/node-execution-completed (:event/type %))
+                        (contains? #{:success :partial} (:status %))) events)))
+
+(defn- execute-ai-candidate
+  "Execute a leaf node using ORC LLM AI.
+
+   Args:
+     node - The leaf node map
+     blackboard - Map of key -> {:key, :type, :value, :version}
+     provider - ORC LLM provider keyword (e.g., :openrouter, :anthropic)
+     options - Optional ORC LLM options map (can include :model, :max-retries, :retry-delay-ms)
+
+   Returns:
+     {:status :success/:failure
+      :outputs {string-key value} - outputs to write to blackboard
+      :error string?             - error message if failed
+      :duration-ms int           - execution time
+      :usage {:prompt-tokens N :completion-tokens N :total-tokens N} - token usage (when available)
+      :model string?}            - model used (when available)
+
+   OUTPUT FLATTENING:
+   This function flattens nested :map schemas into separate output fields
+   (matching Python DSPy's approach), then reassembles them back into
+   nested structure for the blackboard."
+  [node blackboard provider & {:keys [options stream] :or {options {}}}]
+  (let [start-time (System/currentTimeMillis)
+        optional-writes (set (:optional-writes options))
+        options (dissoc options :optional-writes)
+        module (logic/build-module node blackboard)
+        inputs (logic/gather-inputs node blackboard)
+        output-mapping (:output-mapping module)
+        llm-module (dissoc module :output-mapping)
+        internal-option-keys #{:execution-deadline-ms :reserve-llm-call! :fresh-model-authority!
+                               :reserve-provider-attempt! :provider-reservation-context
+                               :tick-id :node-attempt :max-node-attempts
+                               :exec-context :start-provider-attempt! :complete-provider-attempt!
+                               :max-retries :retry-delay-ms :validate? :unparseable-is-schema-error?
+                               :model-fallback-callbacks :model-role-context :model-candidate-index :mark-output-exposed!
+                               :model-request-callbacks :orc/retained-model-profile :orc/model-replay-only?}
+        llm-options (merge {:validate? false
+                               :with-metadata? true
+                               :with-provider-evidence? true
+                               :use-function-calling? false}
+                              (apply dissoc options internal-option-keys)
+                              (when (:model node) {:model (:model node)}))
+        max-retries (get options :max-retries 1)
+        retry-delay-ms (get options :retry-delay-ms 500)
+        unparseable-is-schema-error? (boolean (:unparseable-is-schema-error? options))
+
+        stream-profile (when (and stream
+                                  (or (:fields? stream) (:raw? stream))
+                                  (not (:use-function-calling? llm-options)))
+                         (if-let [retained (:orc/retained-model-profile options)]
+                           {:output-mode (get-in retained [:profile :output-mode])}
+                           (try
+                             (llm/preflight-provider! provider llm-module llm-options)
+                             (catch Exception error {:error error}))))
+        predict-stream-v2 (when (and stream-profile
+                                     (not (:error stream-profile))
+                                     (not (contains? #{:json-schema :function-calling}
+                                                     (:output-mode stream-profile))))
+                            llm/predict-stream-v2)
+        output-exposed? (atom false)
+        mark-output-exposed! (:mark-output-exposed! options)
+        expose! (fn []
+                  (when (compare-and-set! output-exposed? false true)
+                    (when mark-output-exposed!
+                      (let [r (mark-output-exposed!)]
+                        (when (:cognitect.anomalies/category r)
+                          (throw (ex-info "Stream exposure could not be persisted"
+                                          {:failure-kind :observation-persistence-failed})))))))
+        emit-delta! (when predict-stream-v2
+                      (let [base (cond-> (select-keys stream [:sheet-id :node-id])
+                                   (:map-each stream) (assoc :map-each (:map-each stream)))]
+                        (fn [attempt m]
+                          (expose!)
+                          (logic/emit! (:tick-id stream)
+                                           (merge base {:attempt attempt} m)))))
+
+        try-once-streaming
+        (fn [attempt attempt-options]
+          (let [ch (predict-stream-v2 provider llm-module inputs attempt-options)]
+            (loop [terminal nil]
+              (if-let [ev (async/<!! ch)]
+                (case (:orc/event ev)
+                  :delta (do (when (:raw? stream)
+                               (emit-delta! attempt
+                                            {:orc.stream/type :llm-raw-delta
+                                             :text (:text ev)}))
+                             (recur terminal))
+                  :fields (do (when (:fields? stream)
+                                (emit-delta! attempt
+                                             {:orc.stream/type :llm-fields
+                                              :fields (logic/reassemble-flattened-outputs
+                                                       (:fields ev) output-mapping)}))
+                              (recur terminal))
+                  :error (recur (let [{:keys [failure-kind provider-evidence]} (:error ev)]
+                                  (cond-> {:error (str "LLM stream error: " (pr-str (:error ev)))}
+                                    failure-kind (assoc :failure-kind failure-kind)
+                                    provider-evidence
+                                    (assoc :provider-evidence
+                                           (update provider-evidence :usage logic/normalize-usage)))))
+                  :final (let [outputs (logic/reassemble-flattened-outputs (:outputs ev) output-mapping true)]
+                           (when (:fields? stream)
+                             (emit-delta! attempt
+                                          {:orc.stream/type :llm-fields
+                                           :fields outputs
+                                           :final? true}))
+                           (recur {:outputs outputs
+                                   :usage (logic/normalize-usage (:usage ev))
+                                   :model (or (:model ev) (:model node))
+                                   :resolved-model (:model ev)
+                                   :raw-response (:raw-response ev)}))
+                  (recur terminal))
+                (assoc (or terminal {:error "LLM stream ended without a final result"})
+                       :output-exposed? @output-exposed?)))))
+
+        try-once (fn [attempt attempt-options]
+                   (when-let [error (:error stream-profile)] (throw error))
+                   (if predict-stream-v2
+                     (try-once-streaming attempt attempt-options)
+                     (let [result (llm/predict provider llm-module inputs attempt-options)
+                           raw-outputs (if (logic/prediction-envelope? result)
+                                         (:outputs result)
+                                         result)
+                           outputs (logic/reassemble-flattened-outputs raw-outputs output-mapping true)]
+                       {:outputs outputs
+                        :usage (logic/normalize-usage (:usage result))
+                        :model (or (:model result) (:model node))
+                        :resolved-model (when (logic/prediction-envelope? result) (:model result))
+                        :provider-evidence
+                        (some-> (:provider-evidence result)
+                                (update :usage logic/normalize-usage))
+                        :raw-response (:raw-response result)
+                        :decisions (:decisions result)
+                        :provider-observations (:provider-observations result)})))
+
+        backoff-for (fn [attempt]
+                      (if (sequential? retry-delay-ms)
+                        (nth retry-delay-ms (min attempt (dec (count retry-delay-ms))))
+                        retry-delay-ms))
+        candidate-index (:model-candidate-index options)
+        request-callbacks (:model-request-callbacks options)
+        retained-profile (:orc/retained-model-profile options)
+        observation-context (get-in options [:model-role-context :context])
+        observation-owner (select-keys (get-in options [:model-role-context :owner])
+                                       [:sheet-id :tick-id :node-id :node-start-id :exec-context])
+        receipts (filter #(= candidate-index (:candidate-index %)) (:request-receipts request-callbacks))
+        completed-receipts (into {} (for [receipt receipts :when (= :completed (:phase receipt))]
+                                      [(:attempt-ordinal receipt) receipt]))
+        completed-requests (into {} (for [receipt receipts :when (= :completed (:phase receipt))]
+                                      [(:attempt-ordinal receipt) (:outcome receipt)]))
+        replay (when (seq receipts)
+                 (logic/select-response receipts
+                   #(logic/validate-ai-prediction node blackboard optional-writes unparseable-is-schema-error? %)))
+        record-request! (fn [receipt]
+                          (when-let [record! (:record-request! request-callbacks)]
+                            (when (:cognitect.anomalies/category (record! receipt))
+                              :request-receipt-not-retained)))
+        start-provider-attempt! (:start-provider-attempt! options)
+        complete-provider-attempt! (:complete-provider-attempt! options)
+        deadline-ms (:execution-deadline-ms options)
+        reserve-call! (:reserve-llm-call! options)
+        tick-id (:tick-id options)
+        node-attempt (or (:node-attempt options) 1)
+        max-node-attempts (or (:max-node-attempts options) 1)
+        reserve-provider-attempt! (:reserve-provider-attempt! options)
+        provider-reservation-context (:provider-reservation-context options)
+        provider-action-id
+        (when reserve-provider-attempt!
+          (logic/provider-logical-action-identity
+           {:tick-id (:tick-id provider-reservation-context)
+            :node-id (:node-id provider-reservation-context)
+            :iteration-index (:iteration-index provider-reservation-context)
+            :provider provider
+            :model (:model node)
+            :module llm-module
+            :inputs inputs
+            :options llm-options}))
+        prepare-attempt
+        (fn [attempt]
+          (let [initial-remaining (logic/remaining-ms deadline-ms)
+                physical-ordinal (+ (* (dec node-attempt) (inc max-retries)) attempt)
+                authority (when (or (nil? initial-remaining) (pos? initial-remaining))
+                            (when-let [ensure! (or (:fresh-authority! request-callbacks) (:fresh-model-authority! options))]
+                              (ensure! deadline-ms)))
+                remaining (logic/remaining-ms deadline-ms)
+                admission (when (and reserve-provider-attempt!
+                                     (or (nil? remaining) (pos? remaining)))
+                            (reserve-provider-attempt!
+                              (cond-> {:logical-action-identity provider-action-id
+                                       :provider-attempt-ordinal physical-ordinal
+                                       :candidate-index (or (:model-candidate-index options) 0)
+                                       :node-attempt node-attempt}
+                                authority (assoc :emitted-model-authority authority))))]
+            (cond
+              (and remaining (not (pos? remaining)))
+              {:timeout-error "Execution deadline exhausted before provider attempt"}
+
+              admission
+              {:timeout-error (or (:cognitect.anomalies/message admission)
+                                  "Durable provider-call reservation rejected before provider attempt")
+               :admission-failure-kind (:failure-kind admission)}
+
+              (and (nil? reserve-provider-attempt!)
+                   reserve-call! (reserve-call!))
+              {:timeout-error "LLM call budget exhausted before provider attempt"}
+
+              :else
+              (let [configured-timeout (:timeout-ms llm-options)
+                    bounded-timeout (cond
+                                      (and configured-timeout remaining)
+                                      (max 1 (min (long configured-timeout) remaining))
+                                      remaining (max 1 remaining)
+                                      :else configured-timeout)
+                    attempt-options (cond-> llm-options
+                                      bounded-timeout (assoc :timeout-ms bounded-timeout))
+                    state {:provider-attempt (inc attempt)
+                           :max-provider-attempts (inc max-retries)
+                           :node-attempt node-attempt
+                           :max-node-attempts max-node-attempts
+                           :execution-deadline-ms deadline-ms
+                           :execution-budget-remaining-ms remaining
+                           :provider-timeout-ms bounded-timeout
+                           :exec-context (or (:exec-context options) {})}]
+                (logic/record-attempt! tick-id (:id node) state)
+                {:options attempt-options}))))]
+
+    (cond
+      (:failure replay) (:failure replay)
+
+      (:receipt replay)
+      (let [receipt (:receipt replay)
+            prediction (:outcome receipt)
+            result (:schema-result (logic/validate-ai-prediction node blackboard optional-writes
+                                     unparseable-is-schema-error? prediction))
+            observation-error
+            (some (fn [completed]
+                    (when (and observation-context (:observation-owner completed) (:provider-outcome completed))
+                      (logic/persist-provider-attempt
+                        #(ai.obney.orc.orc-service.core.todo-processors/complete-provider-attempt! observation-context %)
+                        (assoc (:observation-owner completed) :outcome (:provider-outcome completed)))))
+                  (:completed replay))]
+        (if observation-error
+          {:status :failure :retryable? false :failure-kind :model-plan-incompatible
+           :error "Provider attempt outcome could not be persisted; dispatch will not be repeated"
+           :usage (:usage replay)}
+          (merge (select-keys prediction [:model :resolved-model :raw-response :decisions :provider-evidence])
+                 result
+                 {:duration-ms (- (System/currentTimeMillis) start-time) :usage (:usage replay)
+                  :model-fallback {:recovery-accounting (:accounting replay)}})))
+
+      :else
+    (loop [attempt 0
+           accumulated-usage nil]
+      (let [known (get completed-requests attempt)
+            known-receipt (get completed-receipts attempt)
+            profile-error
+            (when (and retained-profile (not known))
+              (try
+                (when (:orc/model-replay-only? options)
+                  (throw (ex-info "Model plan cannot be resumed [retained-profile-version-unsupported]"
+                                  {:failure-kind :model-plan-incompatible
+                                   :reason :retained-profile-version-unsupported})))
+                (let [resolved (llm/preflight-provider! provider llm-module
+                                                       (assoc llm-options :orc/explicit-provider? true))]
+                  (when-not (and (= (:provider retained-profile) (:provider resolved))
+                                 (= (:model retained-profile) (:model resolved))
+                                 (= (:protocol retained-profile) (:protocol resolved))
+                                 (or (= :decision (:protocol resolved))
+                                     (= (get-in retained-profile [:profile :output-mode]) (:output-mode resolved))))
+                    (throw (ex-info "Model plan cannot be resumed [retained-profile-cannot-be-preserved]"
+                                    {:failure-kind :model-plan-incompatible
+                                     :reason :retained-profile-cannot-be-preserved}))))
+                nil
+                (catch Exception error
+                  (if (:failure-kind (ex-data error)) error (throw error)))))
+            replayed-observation-error
+            (when (and known observation-context (:observation-owner known-receipt)
+                       (:provider-outcome known-receipt))
+              (logic/persist-provider-attempt
+               #(ai.obney.orc.orc-service.core.todo-processors/complete-provider-attempt! observation-context %)
+               (assoc (:observation-owner known-receipt) :outcome (:provider-outcome known-receipt))))
+            {:keys [options timeout-error admission-failure-kind]}
+            (when-not (or known profile-error) (prepare-attempt attempt))
+            invocation (when-not (or known profile-error timeout-error)
+                         (cond-> {:invocation-id (random-uuid)
+                                   :node-attempt node-attempt :provider-attempt (inc attempt)}
+                           (some? candidate-index)
+                           (assoc :candidate-index candidate-index
+                                  :requested-provider provider :requested-model (:model node))))
+            request (when invocation
+                      (cond-> {:request-id (random-uuid) :candidate-index (or candidate-index 0)
+                               :attempt-ordinal attempt :provider provider :requested-model (:model node)}
+                        (seq observation-owner) (assoc :observation-owner (merge observation-owner invocation))))
+            request-start-error (when request (record-request! (assoc request :phase :started)))
+            start-error (when (and invocation (not request-start-error))
+                          (logic/persist-provider-attempt start-provider-attempt! invocation))
+            prediction
+            (cond
+              known (if (and (:provider-outcome known-receipt)
+                             (not= :success (get-in known-receipt [:provider-outcome :status])))
+                      (merge known {:error (or (:error known) "Recorded provider response was rejected")}
+                             (select-keys (:provider-outcome known-receipt) [:failure-kind :provider-evidence]))
+                      known)
+              profile-error (merge {:error (.getMessage ^Exception profile-error)}
+                                   (select-keys (ex-data profile-error) [:failure-kind :provider-evidence]))
+              timeout-error {:error timeout-error :budget-timeout? true}
+              request-start-error {:error "Model request start could not be retained"
+                                   :failure-kind :model-plan-incompatible}
+              start-error {:error "Provider attempt start could not be persisted"}
+              :else
+              (try
+                (try-once attempt options)
+                (catch Exception e
+                  (let [{:keys [failure-kind provider-evidence provider-observations]} (ex-data e)
+                        provider-evidence (some-> provider-evidence (update :usage logic/normalize-usage))]
+                    (cond-> {:error (.getMessage e)}
+                      provider-observations (assoc :provider-observations provider-observations)
+                      failure-kind (assoc :failure-kind failure-kind)
+                      provider-evidence
+                      (assoc :provider-evidence provider-evidence
+                             :usage (logic/normalize-usage (:usage provider-evidence))
+                             :model (or (:model provider-evidence) (:model node))
+                             :resolved-model (:model provider-evidence)))))))
+            {:keys [outputs usage model resolved-model error raw-response failure-kind provider-evidence
+                    decisions provider-observations]}
+            prediction
+            budget-timeout? (boolean timeout-error)
+            {:keys [outputs missing-output-keys unparseable-keys schema-result schema-error]}
+            (logic/validate-ai-prediction node blackboard optional-writes unparseable-is-schema-error? prediction)
+            total-usage (logic/merge-usage accumulated-usage usage)
+            provider-outcome
+            (cond-> {:status (if (or error (seq unparseable-keys) schema-error) :failure :success)}
+              failure-kind (assoc :failure-kind failure-kind)
+              provider-evidence (assoc :provider-evidence provider-evidence)
+              (and (nil? failure-kind) (or (seq unparseable-keys) schema-error))
+              (assoc :failure-kind :schema-validation-failed)
+              provider-observations (assoc :provider-observations provider-observations))
+            request-complete-error
+            (when (and request (not request-start-error) (not start-error))
+              (record-request! (assoc request :phase :completed :provider-outcome provider-outcome
+                                      :outcome (logic/durable-outcome
+                                                (assoc prediction :status (if (:error prediction) :failure :success))))))
+            completion-error
+            (or request-complete-error replayed-observation-error
+            (when (and invocation (not start-error) (not request-start-error))
+              (logic/persist-provider-attempt
+               complete-provider-attempt!
+               (assoc invocation :outcome provider-outcome))))]
+        (cond
+          (or request-start-error start-error completion-error)
+          (cond-> {:status :failure :retryable? false
+                   :error (if (or request-start-error start-error)
+                            "Provider attempt start could not be persisted; provider was not dispatched"
+                            "Provider attempt outcome could not be persisted; dispatch will not be repeated")
+                   :duration-ms (- (System/currentTimeMillis) start-time)
+                   :usage total-usage}
+            (or request-start-error request-complete-error replayed-observation-error)
+            (assoc :failure-kind :model-plan-incompatible))
+
+          budget-timeout?
+          (cond-> {:status :timeout :error error
+                   :duration-ms (- (System/currentTimeMillis) start-time) :usage total-usage}
+            admission-failure-kind (assoc :failure-kind admission-failure-kind))
+
+          (and error (not @output-exposed?) (not (contains? logic/non-retryable-failure-kinds failure-kind)) (< attempt max-retries))
+          (let [backoff (backoff-for attempt)
+                remaining (logic/remaining-ms deadline-ms)]
+            (if (and remaining (<= remaining backoff))
+              {:status :timeout
+               :error "Execution deadline exhausted before provider retry backoff"
+               :duration-ms (- (System/currentTimeMillis) start-time)
+               :usage total-usage}
+              (do (logic/log-retry!
+                {:node-id (:id node) :node-name (:name node)
+                 :attempt (inc attempt) :max-attempts (inc max-retries)
+                 :reason error :trace-id nil})
+                  (Thread/sleep backoff)
+                  (recur (inc attempt) total-usage))))
+
+          error
+          (let [result (cond-> {:status :failure :error error
+                                :output-exposed? @output-exposed?
+                                :duration-ms (- (System/currentTimeMillis) start-time)}
+                         total-usage (assoc :usage total-usage)
+                         model (assoc :model model)
+                         resolved-model (assoc :resolved-model resolved-model)
+                         failure-kind (assoc :failure-kind failure-kind)
+                         provider-evidence (assoc :provider-evidence provider-evidence))]
+            (logic/log-ai-execution!
+              {:node-id (:id node) :node-name (:name node) :model model
+               :executor :ai :duration-ms (:duration-ms result)
+               :status :failure :usage total-usage :trace-id nil :error error})
+            result)
+
+          (and (seq unparseable-keys) (not unparseable-is-schema-error?))
+          (let [nil-keys unparseable-keys
+                raw-len (count (str raw-response))
+                preview (when raw-response
+                          (subs raw-response 0 (min 1000 (count raw-response))))
+                error-msg (str "LLM output unparseable for keys " nil-keys
+                               " — no value could be extracted for these declared writes."
+                               (if raw-response
+                                 (str " Raw response captured (" raw-len " chars; full text"
+                                      " retrievable via (node-output <node-id>) using this"
+                                      " node's id from :failed-leaves)."
+                                      "\n--- raw response preview (first "
+                                      (min 1000 raw-len) " of " raw-len " chars) ---\n"
+                                      preview)
+                                 " No raw response text was returned by the provider."))
+                result (cond-> {:status :failure :error error-msg
+                        :raw-response raw-response
+                        :outputs outputs
+                        :duration-ms (- (System/currentTimeMillis) start-time)
+                        :usage total-usage :model model
+                        :resolved-model resolved-model
+                        :provider-evidence provider-evidence}
+                         (seq missing-output-keys)
+                         (assoc :missing-write-keys missing-output-keys))]
+            (logic/log-unparseable-output!
+              {:node-id (:id node) :node-name (:name node) :model model
+               :nil-keys nil-keys :raw-length raw-len
+               :raw-response raw-response :trace-id nil})
+            (logic/log-ai-execution!
+              {:node-id (:id node) :node-name (:name node) :model model
+               :executor :ai :duration-ms (:duration-ms result)
+               :status :failure :usage total-usage :trace-id nil :error error-msg})
+            result)
+
+          (and schema-error (not @output-exposed?) (< attempt max-retries))
+          (let [backoff (backoff-for attempt)
+                remaining (logic/remaining-ms deadline-ms)]
+            (if (and remaining (<= remaining backoff))
+              {:status :timeout
+               :error "Execution deadline exhausted before provider retry backoff"
+               :duration-ms (- (System/currentTimeMillis) start-time)
+               :usage total-usage}
+              (do (logic/log-retry!
+                {:node-id (:id node) :node-name (:name node)
+                 :attempt (inc attempt) :max-attempts (inc max-retries)
+                 :reason schema-error :trace-id nil})
+                  (Thread/sleep backoff)
+                  (recur (inc attempt) total-usage))))
+
+          schema-error
+          (let [result (assoc schema-result
+                              :duration-ms (- (System/currentTimeMillis) start-time)
+                              :usage total-usage
+                              :model model
+                              :resolved-model resolved-model
+                              :failure-kind :schema-validation-failed
+                              :provider-evidence provider-evidence)]
+            (logic/log-ai-execution!
+              {:node-id (:id node) :node-name (:name node) :model model
+               :executor :ai :duration-ms (:duration-ms result)
+               :status :failure :usage total-usage :trace-id nil :error schema-error})
+            result)
+
+          :else
+          (let [result (cond-> {:status :success :outputs (:outputs schema-result)
+                                :duration-ms (- (System/currentTimeMillis) start-time)
+                                :usage total-usage :model model
+                                :resolved-model resolved-model}
+                         raw-response (assoc :raw-response raw-response)
+                         (seq decisions) (assoc :decisions decisions))]
+            (logic/log-ai-execution!
+              {:node-id (:id node) :node-name (:name node) :model model
+               :executor :ai :duration-ms (:duration-ms result)
+               :status :success :usage total-usage :trace-id nil})
+            result)))))))
+
+(defn execute-ai
+  "Execute a model task under its ordinary or generated-specialist owner,
+   retaining effective configured candidates and exact physical responses."
+  [node blackboard provider & {:keys [options stream] :or {options {}}}]
+  (if-not (seq (:fallback-models node))
+    (do
+      (when (:provider node)
+        (llm/preflight-provider! (:provider node)
+          (dissoc (logic/build-module node blackboard) :output-mapping)
+          (assoc (dissoc options :fresh-model-authority!)
+                 :model (:model node) :orc/explicit-provider? true)))
+      (execute-ai-candidate node blackboard (or (:provider node) provider)
+                            :options options :stream stream))
+    (try
+      (let [_ (logic/validate-config! node)
+            host-keys #{:execution-deadline-ms :reserve-llm-call! :fresh-model-authority! :reserve-provider-attempt!
+                        :provider-reservation-context :tick-id :node-attempt :max-node-attempts
+                        :exec-context :start-provider-attempt! :complete-provider-attempt!
+                        :model-fallback-callbacks :model-role-context :model-request-callbacks}
+            task-options (apply dissoc options host-keys)
+            module (dissoc (logic/build-module node blackboard) :output-mapping)
+            policy (or (:fallback-policy node) :temporary-transport)
+            role-context (:model-role-context options)
+            ordinary? (= :node (get-in role-context [:owner :role]))
+            emitted? (= :subcall (get-in role-context [:owner :role]))
+            resolve-plan! #(logic/resolve-plan node provider module task-options)
+            prepared (cond
+                       ordinary?
+                       (prepare-ordinary-call
+                        (:context role-context) (:owner role-context)
+                        (select-keys node [:provider :model :options :fallback-models :fallback-policy])
+                        resolve-plan!)
+                       emitted?
+                       (prepare-emitted-call
+                        (:context role-context) (:owner role-context)
+                        (select-keys node [:provider :model :options :fallback-models :fallback-policy])
+                        resolve-plan!))
+            legacy-candidates
+            (when (and role-context (not ordinary?) (not emitted?))
+              (mapv (fn [index candidate]
+                      (let [explicit? (or (contains? node :provider)
+                                          (and (pos? index)
+                                               (contains? (nth (:fallback-models node) (dec index)) :provider)))
+                            resolved (llm/preflight-provider!
+                                      (:provider candidate) module
+                                      (cond-> (:options candidate)
+                                        explicit? (assoc :orc/explicit-provider? true)
+                                        (:model candidate) (assoc :model (:model candidate))))]
+                        (assoc candidate :provider (:provider resolved) :model (:model resolved))))
+                    (range) (logic/candidate-plan node provider task-options)))
+            candidates (or (:candidates prepared) (:candidates (resolve-plan!)))
+            policy (or (:policy prepared) policy)
+            callbacks (or (:callbacks prepared) (:model-fallback-callbacks options)
+                          (when role-context
+                            (ai.obney.orc.orc-service.core.todo-processors/callbacks
+                             (:context role-context) (:owner role-context)
+                             (or legacy-candidates candidates) policy)))]
+        (when-not (fn? (:record! callbacks))
+          (throw (ex-info "Durable model fallback callbacks are required"
+                          {:failure-kind :configuration-error})))
+        (logic/run-candidates
+         (merge callbacks
+                {:candidates candidates :policy policy
+                 :invoke!
+                 (fn [index candidate]
+                   (execute-ai-candidate
+                    (assoc node :model (:model candidate)) blackboard (:provider candidate)
+                    :options (-> (merge (:options candidate) (select-keys options host-keys))
+                                 (dissoc :model-fallback-callbacks)
+                                 (assoc :model-candidate-index index
+                                        :model-request-callbacks (when prepared callbacks)
+                                        :orc/retained-model-profile (when prepared
+                                                                      (select-keys candidate [:provider :model :protocol :profile]))
+                                        :orc/model-replay-only? (boolean (:replay-only? prepared))
+                                        :mark-output-exposed!
+                                        (when-let [mark! (:mark-output-exposed! callbacks)]
+                                          #(mark! index))))
+                    :stream stream))})))
+      (catch clojure.lang.ExceptionInfo error
+        (if (= :model-plan-incompatible (:failure-kind (ex-data error)))
+          {:status :failure :retryable? false :failure-kind :model-plan-incompatible
+           :error (.getMessage error)}
+          (throw error))))))
+
+(defn execute-llm-condition
+  "Execute an LLM condition node - a provider invocation that answers a yes/no
+   question, under the SAME execution policy as a model leaf.
+
+   The condition is expressed as a leaf with one declared boolean write
+   (`:result`) and delegated to `execute-ai`, so provider retry, backoff,
+   deadline, LLM-call budget reservation, per-node model choice and
+   structured failure capture are shared rather than re-implemented.
+
+   Args:
+     node - The llm-condition node map with :instruction, :reads, :model
+     blackboard - Map of key -> {:key, :schema, :value, :version}
+     provider - ORC LLM provider keyword (e.g., :openrouter)
+     options - Optional ORC LLM options map (same policy options as execute-ai)
+
+   Returns:
+     {:status :success/:failure/:timeout
+      :result boolean?          - the model's answer; present ONLY when a
+                                  valid boolean answer was obtained
+      :error string?            - error message if no valid answer
+      :failure-kind keyword?    - structured failure kind (never set for a
+                                  valid semantic negative)
+      :provider-evidence map?
+      :duration-ms int
+      :usage map?  :model string?}
+
+   A valid `true` is :status :success; a valid `false` is :status :failure with
+   :result false and no :failure-kind. A missing, nil or non-boolean answer is
+   a :failure with :failure-kind :schema-validation-failed and no :result."
+  [node blackboard provider & {:keys [options] :or {options {}}}]
+  (let [answer-key :result
+        condition-bb (reduce (fn [bb k]
+                               (if (get-in bb [k :schema])
+                                 bb
+                                 (assoc-in bb [k :schema] :string)))
+                             (assoc blackboard answer-key
+                                    {:key answer-key
+                                     :schema [:boolean
+                                              {:description "True if the condition is met, false otherwise"}]})
+                             (:reads node))
+        leaf (-> node
+                 (select-keys [:id :name :instruction :reads :model :options :provider :fallback-models :fallback-policy])
+                 (assoc :writes [answer-key]))
+        result (execute-ai leaf condition-bb provider
+                           :options (merge {:use-function-calling? true}
+                                           (:options node) options))
+        answer (get-in result [:outputs answer-key])
+        valid? (and (= :success (:status result)) (boolean? answer))
+        base (dissoc result :outputs :rejected-writes)]
+    (cond
+      valid?
+      (if answer
+        (assoc base :status :success :result true)
+        (assoc base :status :failure :result false
+               :error "Condition evaluated to false"))
+
+      (= :success (:status result))
+      (assoc base :status :failure
+             :failure-kind :schema-validation-failed
+             :error "Model-backed condition returned no valid boolean answer")
+
+      :else
+      (cond-> base
+        (and (= :failure (:status result)) (nil? (:failure-kind result)) (contains? result :outputs))
+        (assoc :failure-kind :schema-validation-failed)))))
+
+(defn execute-decision
+  "Execute a model decision: a leaf whose single declared write is a finite
+   answer (boolean, or one of an offered set of identified options), under the
+   SAME execution policy as a model leaf.
+
+   The decision is expressed as a synthetic leaf whose one write is the answer
+   key with a finite schema built from the options actually offered, then
+   delegated to `execute-ai`, so provider retry, backoff, deadline, LLM-call
+   budget reservation, per-node model choice and failure capture are shared.
+
+   Offered options: the answer key's static schema (`:boolean`, or an enum with
+   `:descriptions`), or, with :options-from, the run-time value of that read key
+   (`[{:id :description}]`). Every option id and description is rendered into
+   the provider-facing instruction.
+
+   Banded (:bands-from): the run-time rubric on that read key is validated
+   (an invalid rubric fails the node, writes nothing), rendered into the
+   instruction, and offered as an ORDERED string enum of band numbers; the
+   chosen band is written as an integer. A native decision model reports its
+   distribution, kept in :decision :band-distribution; an exact tie for most
+   probable band fails with :failure-kind :undecided.
+
+   Returns the `execute-ai` result shape plus :decision
+   `{:offered [...] :answer v :abstained? bool [:set-aside v]}`.
+   A valid answer is :status :success with :outputs {answer-key value}. A
+   missing, nil or out-of-set answer is :status :failure with
+   :failure-kind :schema-validation-failed and NO :outputs. No confidence is
+   synthesised: the floor is judged against a provider-reported :confidence
+   only (none is reported in this runtime yet), so a configured floor abstains."
+  [node blackboard provider & {:keys [options] :or {options {}}}]
+  (let [answer-key (first (:writes node))
+        fail (fn [error offered]
+               {:status :failure
+                :failure-kind :schema-validation-failed
+                :error error
+                :duration-ms 0
+                :decision {:offered (vec offered) :abstained? false}})
+        banded? (some? (:bands-from node))
+        banded (when banded?
+                 (logic/rubric (get-in blackboard [(:bands-from node) :value])))
+        band-levels (mapv (comp str first) (get-in banded [:rubric :bands]))
+        runtime? (some? (:options-from node))
+        runtime-opts (when runtime?
+                       (logic/runtime-options
+                        (get-in blackboard [(:options-from node) :value])))
+        static (when-not (or runtime? banded?)
+                 (logic/schema-options (get-in blackboard [answer-key :schema])))
+        kind (cond banded? :band runtime? :enum :else (:kind static))
+        option-list (cond
+                      banded? (mapv (fn [[level description]] {:id (str level) :description description})
+                                    (get-in banded [:rubric :bands]))
+                      runtime? runtime-opts
+                      (= :enum kind) (mapv (fn [id] {:id id
+                                                     :description (get (:descriptions static) id)})
+                                           (:ids static))
+                      :else nil)
+        offered (if (= :boolean kind) [true false] (mapv :id option-list))]
+    (cond
+      (and banded? (:error banded))
+      (fail (str "Decision '" (:name node) "' read key " (pr-str (:bands-from node))
+                 " holds an invalid rubric: " (:error banded))
+            [])
+
+      (nil? kind)
+      (fail (str "Decision '" (:name node) "' offers no valid options: answer key "
+                 (pr-str answer-key) " is not boolean or a finite enum"
+                 (when runtime? (str " and read key " (pr-str (:options-from node))
+                                     " holds no identified options")))
+            [])
+
+      (and runtime? (nil? runtime-opts))
+      (fail (str "Decision '" (:name node) "' read key " (pr-str (:options-from node))
+                 " holds no non-empty vector of {:id :description} options")
+            [])
+
+      (and (some? (:abstain node)) (not (some #(= (:abstain node) %) offered)))
+      (fail (str "Decision '" (:name node) "' abstention option " (pr-str (:abstain node))
+                 " is not one of the offered options " (pr-str offered))
+            offered)
+
+      :else
+      (let [offer-text (if banded?
+                         (logic/render-bands (:rubric banded))
+                         (logic/render-options kind option-list))
+            answer-schema (cond
+                            (= :boolean kind)
+                            [:boolean {:description (str "The decision's answer. " offer-text)}]
+
+                            banded?
+                            (into [:enum {:ordered-bands true
+                                          :description (str "The chosen band number. " offer-text)
+                                          :descriptions (into {}
+                                                              (map (fn [{:keys [id description]}]
+                                                                     [id description]))
+                                                              option-list)}]
+                                  offered)
+
+                            :else
+                            (into [:enum {:description (str "The chosen option id. " offer-text)
+                                          :descriptions (into {}
+                                                              (keep (fn [{:keys [id description]}]
+                                                                      (when description [id description])))
+                                                              option-list)}]
+                                  offered))
+            decision-bb (reduce (fn [bb k]
+                                  (if (get-in bb [k :schema])
+                                    bb
+                                    (assoc-in bb [k :schema] :string)))
+                                (assoc blackboard answer-key
+                                       {:key answer-key :schema answer-schema})
+                                (:reads node))
+            leaf (-> node
+                     (select-keys [:id :name :reads :model :options :provider :fallback-models :fallback-policy])
+                     (update :reads #(if banded? (vec (remove #{(:bands-from node)} %)) %))
+                     (assoc :instruction (str (:instruction node) "\n\n" offer-text)
+                            :writes [answer-key]))
+            result (execute-ai leaf decision-bb provider
+                               :options (merge {:use-function-calling? true} options))
+            answer (get-in result [:outputs answer-key])
+            reported (some-> (:decisions result) vals first)
+            reported-record (if banded?
+                              {}
+                              (select-keys reported [:probabilities :confidence :probability]))
+            band-record (fn [{:keys [probabilities expected-position confidence]}]
+                          (when (and probabilities (some? expected-position))
+                            {:band-distribution
+                             (cond-> {:probabilities probabilities
+                                      :expected-position expected-position}
+                               (some? confidence) (assoc :confidence confidence))}))
+            ->level (fn [x] (if (and banded? (string? x)) (Long/parseLong x) x))
+            base (dissoc result :outputs :rejected-writes :decisions)]
+        (if (= :success (:status result))
+          (let [{:keys [valid? value record]}
+                (logic/judge {:offered offered
+                                 :abstain (:abstain node)
+                                 :min-confidence (:min-confidence node)}
+                                answer
+                                (:confidence reported))
+                record (merge record reported-record
+                              (when banded? (band-record reported)))
+                record (if banded?
+                         (cond-> (update record :offered #(mapv ->level %))
+                           (contains? record :answer) (update :answer ->level))
+                         record)]
+            (if valid?
+              (assoc base :outputs {answer-key (->level value)} :decision record)
+              (assoc base :status :failure
+                     :failure-kind :schema-validation-failed
+                     :error (str "Model decision '" (:name node)
+                                 "' returned no answer among the offered options "
+                                 (pr-str offered))
+                     :decision record)))
+          (cond-> (assoc base :decision
+                         (merge {:offered (mapv ->level offered) :abstained? false}
+                                (when banded?
+                                  (band-record (get-in result [:provider-evidence :band-distribution])))))
+            (and (= :failure (:status result)) (nil? (:failure-kind result))
+                 (contains? result :outputs))
+            (assoc :failure-kind :schema-validation-failed)))))))
+
+(defn execute-repl-researcher-rlm
+  "Execute a repl-researcher node in RLM mode.
+
+   On resume, the researcher uses its journal key to recognise an already-dispatched call (ADR 0004).
+
+   RLM mode provides BT primitives in the sandbox:
+   - (llm ...) executes sub-LLM calls
+   - (final! ...) validates and captures output
+   - (get-input ...) loads input values
+
+   This separates variable space (sandbox memory) from token space (LLM context).
+
+  Options:
+   - :debug? - Enable verbose debug output for troubleshooting (default: false)"
+  [node blackboard provider context & {:keys [options] :or {options {}}}]
+  (let [campaign-now-ms-fn (or (:campaign-now-ms-fn context)
+                               #(System/currentTimeMillis))
+        start-time (long (campaign-now-ms-fn))
+        max-iterations (or (:max-iterations node) 10)
+        mcp-tools (or (:mcp-tools node) [])
+        browser-tools (or (:browser-tools node) [])
+        declared-writes (:writes node)
+        optional-writes (set (get-in node [:options :optional-writes]))
+        rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
+        debug? (or (get rlm-config :debug? false) (get options :debug? false))
+
+        dbg (fn [& args] (when debug? (apply println "[DEBUG RLM]" args)))
+
+        inputs-preview (logic/build-inputs-preview blackboard)
+
+        checkpoint-codecs (vec (or (:researcher-checkpoint-codecs context) []))
+        encode-effect-value
+        (fn [value]
+          (logic/encode-checkpoint-value checkpoint-codecs value))
+        legacy-checkpoint (some->> (:researcher-checkpoint context)
+                                   (logic/decode-checkpoint-value checkpoint-codecs))
+        resume-state (some->> (:researcher-resume-state context)
+                              (logic/decode-checkpoint-value checkpoint-codecs))
+        iteration-records (some->> (:researcher-iteration-records context)
+                                   (logic/decode-checkpoint-value checkpoint-codecs))
+        checkpoint (if resume-state
+                     (assoc resume-state :history (vec iteration-records))
+                     legacy-checkpoint)
+        researcher-now-ms-fn (or (:researcher-now-ms-fn context)
+                                 #(System/currentTimeMillis))
+        checkpointed? (boolean (logic/checkpointed? node))
+        ownership-epoch (or (:researcher-ownership-epoch context)
+                            (:ownership-epoch checkpoint)
+                            0)
+        missing-effect-claim-capabilities?
+        (and checkpointed?
+             (or (not (ifn? (:claim-researcher-effect! context)))
+                 (not (ifn? (:complete-researcher-effect! context)))))
+        missing-ownership-epoch?
+        (and checkpointed?
+             (not (and (integer? ownership-epoch) (pos? ownership-epoch))))
+        quantum-max-iterations (max 1 (or (get-in rlm-config [:quantum :max-iterations]) 1))
+        initial-iteration (or (:next-iteration checkpoint) 0)
+        checkpoint-revision (atom (or (:revision checkpoint) 0))
+        iteration-attempts (or (:iteration-attempts checkpoint) {})
+        max-iteration-attempts (max 1 (or (get-in rlm-config [:iteration-retry :max-attempts]) 3))
+        researcher-monotonic-ms-fn
+        (when checkpointed?
+          (or (:researcher-monotonic-ms-fn context)
+              #(quot (System/nanoTime) 1000000)))
+        researcher-quantum-started-monotonic-ms
+        (when checkpointed?
+          (long (or (:researcher-quantum-started-monotonic-ms context)
+                    (researcher-monotonic-ms-fn))))
+        max-observed-quantum-duration-ms
+        (long (or (:max-observed-quantum-duration-ms checkpoint) 0))
+        with-completed-quantum-observation
+        (fn [checkpoint]
+          (let [observed-ms
+                (max 0 (- (long (researcher-monotonic-ms-fn))
+                          researcher-quantum-started-monotonic-ms))]
+            (assoc checkpoint
+                   :observed-quantum-duration-ms observed-ms
+                   :max-observed-quantum-duration-ms
+                   (max max-observed-quantum-duration-ms observed-ms))))
+        current-iteration (atom initial-iteration)
+        action-ordinal (atom 0)
+        current-iteration-deadline-ms (atom nil)
+        current-generated-code-hash (atom nil)
+        legacy-completed-actions
+        (reduce-kv (fn [acc action-id action]
+                     (assoc acc action-id
+                            (update action :result
+                                    #(logic/decode-checkpoint-value checkpoint-codecs %))))
+                   {}
+                   (or (:researcher-actions context) {}))
+        effect-claim-completions
+        (reduce (fn [acc claim]
+                  (if (= :completed (:status claim))
+                    (assoc acc (:logical-action-identity claim)
+                           (update claim :result
+                                   #(logic/decode-checkpoint-value checkpoint-codecs %)))
+                    acc))
+                {}
+                (or (:researcher-effect-claims context) []))
+        completed-actions (atom (merge legacy-completed-actions
+                                       effect-claim-completions))
+        persist-action! (:persist-researcher-action! context)
+        checkpoint-tool-violation (atom nil)
+        checkpoint-tool-timeout (atom nil)
+        unsafe-checkpoint-tool
+        (when checkpointed?
+          (some (fn [tool-name]
+                  (when-not (true? (get-in node [:tool-contracts tool-name
+                                                 :checkpoint-safe?]))
+                    tool-name))
+                mcp-tools))
+        raw-call-tool-fn (logic/node-call-tool-fn node blackboard context)
+        checkpoint-call-tool-fn
+        (when checkpointed? (logic/tool-caller-target raw-call-tool-fn))
+        checkpoint-tool-caller-arity
+        (when checkpointed? (logic/tool-caller-arity checkpoint-call-tool-fn))
+        incompatible-checkpoint-tool-caller?
+        (and checkpointed?
+             (seq mcp-tools)
+             (not= 3 checkpoint-tool-caller-arity))
+        call-tool-fn
+        (if checkpointed?
+          (fn [tool-name args]
+            (let [contract (get (:tool-contracts node) tool-name)]
+              (when-not (true? (:checkpoint-safe? contract))
+                (reset! checkpoint-tool-violation tool-name)
+                (throw (ex-info
+                        (str "Tool " tool-name
+                             " is not declared :checkpoint-safe? for resumable execution")
+                        {:tool tool-name :checkpoint-safe? false})))
+              (logic/validate-arguments! (:tool-contracts node) tool-name args)
+              (let [ordinal (swap! action-ordinal inc)
+                    attempt-ordinal (get iteration-attempts @current-iteration 0)
+                    action-id
+                    (logic/logical-action-identity
+                     {:tick-id (:tick-id context)
+                      :node-id (:node-id context)
+                      :iteration-index @current-iteration
+                      :generated-code-hash @current-generated-code-hash
+                      :kind :tool
+                      :target tool-name
+                      :arguments (encode-effect-value args)})
+                    legacy-action-id
+                    (str (:tick-id context) "/" (:node-id context) "/"
+                         @current-iteration "/tool/" ordinal)
+                    attempt-id (logic/attempt-identity
+                                action-id ownership-epoch attempt-ordinal)
+                    tool-timeout-ms
+                    (when-let [deadline-ms @current-iteration-deadline-ms]
+                      (max 0 (- (long deadline-ms)
+                                (long (campaign-now-ms-fn)))))
+                    tool-context (assoc (or (:tool-context context) {})
+                                        :orc/idempotency-key action-id
+                                        :orc/researcher-iteration @current-iteration
+                                        :orc/action-ordinal ordinal
+                                        :orc/timeout-ms tool-timeout-ms)]
+                (if-let [completed (or (get @completed-actions action-id)
+                                       (get @completed-actions legacy-action-id))]
+                  (:result completed)
+                  (let [_ (when-not (and (integer? tool-timeout-ms)
+                                         (pos? tool-timeout-ms))
+                            (reset! checkpoint-tool-timeout
+                                    {:tool tool-name
+                                     :timeout-ms tool-timeout-ms})
+                            (throw
+                             (ex-info
+                              "Researcher tool deadline exceeded before dispatch"
+                              {:timeout-kind :iteration
+                               :tool tool-name
+                               :timeout-ms tool-timeout-ms})))
+                        {:keys [result durable-result]}
+                        (logic/dispatch-claimed-tool-effect!
+                         {:claim! (:claim-researcher-effect! context)
+                          :complete! (:complete-researcher-effect! context)
+                          :codecs checkpoint-codecs
+                          :contracts (:tool-contracts node)
+                          :tool-name tool-name
+                          :args args
+                          :action-id action-id
+                          :attempt-id attempt-id
+                          :attempt-ordinal attempt-ordinal
+                          :iteration-index @current-iteration
+                          :caller checkpoint-call-tool-fn
+                          :caller-arity checkpoint-tool-caller-arity
+                          :tool-context tool-context
+                          :wrap-errors? true})]
+                    (swap! completed-actions assoc action-id
+                           {:status :completed :result result})
+                    (when persist-action!
+                      (persist-action! {:action-id action-id
+                                        :action-kind :tool
+                                        :iteration @current-iteration
+                                        :result durable-result}))
+                    result)))))
+          (-> (logic/phase1-call-tool-fn (assoc context :call-tool-fn raw-call-tool-fn))
+              (logic/guarded-call-tool-fn (:tool-contracts node))))
+        timeout-config (or (:timeouts rlm-config) {})
+        pre-classification-timing (:researcher-campaign-timing context)
+        campaign-timing
+        (logic/resolve-researcher-campaign-timing
+         {:node node
+          :checkpoint (merge pre-classification-timing checkpoint)
+          :started-at-ms (or (:campaign-started-at-ms
+                              pre-classification-timing)
+                             start-time)
+          :parent-timeout-ms (:parent-timeout-ms context)})
+        campaign-started-at-ms (:campaign-started-at-ms campaign-timing)
+        campaign-timeout-ms (:campaign-timeout-ms campaign-timing)
+        campaign-deadline-ms (:campaign-deadline-ms campaign-timing)
+        classification-context
+        (or (:classification-context checkpoint)
+            (:researcher-classification-context context))
+        workflow-deadline-ms (:workflow-deadline-ms context)
+        phase-budget-deadline-ms
+        (+ campaign-started-at-ms
+           (:total-budget-ms
+            (logic/resolve-phase2-budget
+             {:node node
+              :parent-timeout-ms (:parent-timeout-ms context)
+              :phase1-elapsed-ms 0})))
+        campaign-deadline-source
+        (cond
+          (some? (:campaign-ms timeout-config)) :campaign
+          (= campaign-deadline-ms phase-budget-deadline-ms) :phase-budget
+          :else :campaign)
+
+        total-usage (atom (or (:usage checkpoint)
+                              {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}))
+
+        descendant-usage (atom (or (:descendant-usage checkpoint)
+                                   {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}))
+        add-descendant-usage!
+        (fn [u]
+          (swap! descendant-usage
+                 (fn [acc]
+                   (-> acc
+                       (update :prompt-tokens (fnil + 0) (or (:prompt-tokens u) 0))
+                       (update :completion-tokens (fnil + 0) (or (:completion-tokens u) 0))
+                       (update :total-tokens (fnil + 0) (or (:total-tokens u) 0))
+                       (logic/add-cost u)))))
+
+        sandbox-vars (atom (or (:sandbox-vars checkpoint) {}))
+
+        var-creation-times (atom (or (:var-creation-times checkpoint) {}))
+
+        cumulative-tree-ms (atom (or (:cumulative-tree-ms checkpoint) 0))
+        recursive-mode? (not= false (get-in node [:rlm :recursive?]))
+        iteration-record
+        (fn [iteration status history-entry attempt-start-ms terminal-result]
+          (let [history-entry (or history-entry {})
+                raw-attempt-completed-ms (long (researcher-now-ms-fn))
+                attempt-completed-ms (max attempt-start-ms
+                                          raw-attempt-completed-ms)
+                emitted-tree-source (:generated-tree-source history-entry)
+                emitted-tree (or (:generated-tree-raw history-entry)
+                                 (:generated-tree history-entry))
+                tree-fingerprint (when emitted-tree
+                                   (logic/fingerprint emitted-tree))
+                error-excerpt (logic/bound-iteration-evidence-text
+                               (:error history-entry)
+                               logic/iteration-error-excerpt-max-chars)
+                bounded-reasoning (logic/bound-iteration-evidence-text
+                                   (:reasoning history-entry)
+                                   logic/iteration-reasoning-max-chars)
+                error-class (or (:error-class history-entry)
+                                (some-> (:timeout-kind history-entry)
+                                        name
+                                        (str "-timeout"))
+                                (when error-excerpt "researcher-error"))
+                created-keys (vec (sort-by str (or (:vars-created history-entry) [])))
+                updated-keys (vec (sort-by str (or (:vars-updated history-entry) [])))
+                removed-keys (vec (sort-by str (or (:vars-removed history-entry) [])))
+                result-profile (or (:result-profile history-entry)
+                                   (when (some? (:result history-entry))
+                                     (logic/profile-value
+                                      (:result history-entry))))
+                stdout-profile (or (:stdout-profile history-entry)
+                                   (when (some? (:stdout history-entry))
+                                     (logic/profile-value
+                                      (:stdout history-entry))))]
+            (cond-> {:iteration-index iteration
+                     :attempt-ordinal (get iteration-attempts iteration 0)
+                     :status status
+                     :started-at (str (java.time.Instant/ofEpochMilli
+                                       attempt-start-ms))
+                     :completed-at (str (java.time.Instant/ofEpochMilli
+                                         attempt-completed-ms))
+                     :duration-ms (max 0 (- attempt-completed-ms
+                                            attempt-start-ms))
+                     :generated-code-recorded?
+                     (boolean (seq (:code history-entry)))
+                     :emitted-tree-recorded?
+                     (boolean (and emitted-tree tree-fingerprint))
+                     :variable-delta {:created-keys created-keys
+                                      :updated-keys updated-keys
+                                      :removed-keys removed-keys}}
+              (= :blocked status)
+              (assoc :block-reason (:block-payload terminal-result))
+
+              (contains? history-entry :code)
+              (assoc :code (:code history-entry))
+
+              emitted-tree
+              (assoc :emitted-tree emitted-tree
+                     :tree-fingerprint tree-fingerprint)
+
+              emitted-tree-source
+              (assoc :emitted-tree-source emitted-tree-source)
+
+              (some? bounded-reasoning)
+              (assoc :reasoning bounded-reasoning)
+
+              error-excerpt
+              (assoc :error-class error-class
+                     :error-excerpt error-excerpt)
+
+              (some? result-profile)
+              (assoc :result-profile result-profile)
+
+              (some? stdout-profile)
+              (assoc :stdout-profile stdout-profile))))
+        checkpoint-result
+        (fn [next-iteration history attempt-start-ms]
+          (when checkpointed?
+            (let [completed-iteration (dec next-iteration)
+                  history-entry (last history)
+                  record-status (if (:error history-entry) :failure :success)
+                  quantum-complete?
+                  (>= (- next-iteration initial-iteration)
+                      quantum-max-iterations)
+                  checkpoint (cond-> {:version 1
+                              :revision (swap! checkpoint-revision inc)
+                              :ownership-epoch ownership-epoch
+                              :next-iteration next-iteration
+                              :history history
+                              :sandbox-vars @sandbox-vars
+                              :var-creation-times @var-creation-times
+                              :usage @total-usage
+                              :descendant-usage @descendant-usage
+                              :cumulative-tree-ms @cumulative-tree-ms
+                              :iteration-attempts (dissoc iteration-attempts (dec next-iteration))
+                              :campaign-started-at-ms campaign-started-at-ms
+                              :campaign-deadline-ms campaign-deadline-ms
+                              :iteration-record
+                              (iteration-record completed-iteration
+                                                record-status
+                                                history-entry
+                                                attempt-start-ms
+                                                nil)}
+                               classification-context
+                               (assoc :classification-context
+                                      classification-context)
+                               quantum-complete?
+                               with-completed-quantum-observation)
+                  encoded (try
+                            {:checkpoint (logic/encode-checkpoint-value checkpoint-codecs checkpoint)}
+                            (catch Exception e
+                              {:encode-error (ex-message e)}))]
+              (if-let [encode-error (:encode-error encoded)]
+                {:status :failure
+                 :iterations history
+                 :duration-ms (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                 :usage @total-usage
+                 :error (str "Researcher checkpoint contains a non-durable sandbox value; "
+                             "use EDN data or a registered durable codec (" encode-error ")")}
+              (let [durable-checkpoint (:checkpoint encoded)]
+              (if (logic/checkpoint-durable-value? durable-checkpoint)
+                (if quantum-complete?
+                  {:status :running
+                   :iterations history
+                   :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                   :usage @total-usage
+                   :checkpoint durable-checkpoint}
+                  (do
+                    (when-let [persist! (:persist-researcher-checkpoint! context)]
+                      (persist! durable-checkpoint))
+                    nil))
+                {:status :failure
+                 :iterations history
+                 :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                 :usage @total-usage
+                 :error "Researcher checkpoint contains a non-durable sandbox value; use EDN data or a registered durable codec"}))))))
+        persist-terminal-result
+        (fn [iteration history terminal-result attempt-start-ms]
+          (if-not checkpointed?
+            terminal-result
+            (let [checkpoint (cond-> {:version 1
+                              :revision (swap! checkpoint-revision inc)
+                              :ownership-epoch ownership-epoch
+                              :next-iteration (inc iteration)
+                              :history history
+                              :sandbox-vars (dissoc @sandbox-vars :generated-tree)
+                              :var-creation-times @var-creation-times
+                              :usage @total-usage
+                              :descendant-usage @descendant-usage
+                              :cumulative-tree-ms @cumulative-tree-ms
+                              :iteration-attempts (dissoc iteration-attempts iteration)
+                              :campaign-started-at-ms campaign-started-at-ms
+                              :campaign-deadline-ms campaign-deadline-ms
+                              :terminal-result terminal-result
+                              :iteration-record
+                              (iteration-record iteration
+                                                (:status terminal-result)
+                                                (last history)
+                                                attempt-start-ms
+                                                terminal-result)}
+                               classification-context
+                               (assoc :classification-context
+                                      classification-context))
+                  durable-checkpoint (logic/encode-checkpoint-value checkpoint-codecs checkpoint)]
+              (when-let [persist! (:persist-researcher-checkpoint! context)]
+                (persist! durable-checkpoint))
+              (assoc terminal-result :checkpoint durable-checkpoint))))
+        retry-result
+        (fn [iteration history timeout-kind error attempt-start-ms]
+          (let [attempt (inc (get iteration-attempts iteration 0))
+                retrying? (and checkpointed?
+                               (< attempt max-iteration-attempts))
+                durable-checkpoint
+                (when checkpointed?
+                  (logic/encode-checkpoint-value
+                   checkpoint-codecs
+                   (cond-> {:version 1
+                    :revision (swap! checkpoint-revision inc)
+                    :ownership-epoch ownership-epoch
+                    :next-iteration iteration
+                    :history history
+                    :sandbox-vars @sandbox-vars
+                    :var-creation-times @var-creation-times
+                    :usage @total-usage
+                    :cumulative-tree-ms @cumulative-tree-ms
+                    :iteration-attempts (assoc iteration-attempts iteration attempt)
+                    :campaign-started-at-ms campaign-started-at-ms
+                    :campaign-deadline-ms campaign-deadline-ms
+                    :iteration-record
+                    (iteration-record iteration :timeout
+                                      {:error error
+                                       :timeout-kind timeout-kind}
+                                      attempt-start-ms
+                                      nil)}
+                     classification-context
+                     (assoc :classification-context
+                            classification-context)
+                     retrying? with-completed-quantum-observation)))]
+            (if retrying?
+              {:status :running
+               :iterations history
+               :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+               :usage @total-usage
+               :checkpoint durable-checkpoint
+               :retry {:iteration (inc iteration)
+                       :attempt attempt
+                       :max-attempts max-iteration-attempts
+                       :timeout-kind timeout-kind}}
+              (do
+                (when (and checkpointed? durable-checkpoint)
+                  (when-let [persist! (:persist-researcher-checkpoint! context)]
+                    (persist! durable-checkpoint)))
+                (cond-> {:status :timeout
+                         :timeout-kind timeout-kind
+                         :error error
+                         :iterations history
+                         :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                         :usage @total-usage
+                         :iteration-attempt attempt
+                         :max-iteration-attempts max-iteration-attempts}
+                  durable-checkpoint (assoc :checkpoint durable-checkpoint))))))]
+
+    (as-> (try
+      (loop [iteration initial-iteration
+             history (or (:history checkpoint) [])]
+        (cond
+          (:terminal-result checkpoint)
+          (:terminal-result checkpoint)
+
+          missing-effect-claim-capabilities?
+          {:status :failure
+           :error (str "Checkpointed researcher requires effect-claim and "
+                       "effect-complete capabilities before execution")
+           :iterations history
+           :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+           :usage @total-usage}
+
+          missing-ownership-epoch?
+          {:status :failure
+           :error "Checkpointed researcher requires a winning ownership epoch before execution"
+           :iterations history
+           :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+           :usage @total-usage}
+
+          unsafe-checkpoint-tool
+          {:status :failure
+           :error (str "Tool " unsafe-checkpoint-tool
+                       " is not declared :checkpoint-safe? for resumable execution")
+           :iterations history
+           :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+           :usage @total-usage}
+
+          incompatible-checkpoint-tool-caller?
+          {:status :failure
+           :error logic/tool-caller-arity-error
+           :iterations history
+           :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+           :usage @total-usage}
+
+          (>= iteration max-iterations)
+          (let [total-elapsed (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                final-sandbox @sandbox-vars
+                surviving-vars (dissoc final-sandbox
+                                       :generated-tree :generated-tree-raw
+                                       :generated-tree-source
+                                       :iteration-reasonings :tree-results)
+                generated-tree-raw (:generated-tree-raw final-sandbox)
+                generated-tree-source (:generated-tree-source final-sandbox)
+                iteration-reasonings (:iteration-reasonings final-sandbox)]
+            (cond-> {:status :failure
+                     :error "Max iterations reached without final!"
+                     :outputs surviving-vars
+                     :iterations history
+                     :duration-ms total-elapsed
+                     :usage @total-usage
+                     :cumulative-tree-ms @cumulative-tree-ms
+                     :cumulative-thinking-ms (max 0 (- total-elapsed @cumulative-tree-ms))}
+              generated-tree-raw (assoc :generated-tree-raw generated-tree-raw)
+              generated-tree-source
+              (assoc :generated-tree-source generated-tree-source)
+              (seq iteration-reasonings) (assoc :iteration-reasonings
+                                                (vec iteration-reasonings))))
+
+          (and (>= (long (campaign-now-ms-fn)) campaign-deadline-ms)
+               (not= :phase-budget campaign-deadline-source))
+          {:status :timeout
+           :timeout-kind :campaign
+           :error "Researcher campaign deadline exceeded"
+           :iterations history
+           :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+           :usage @total-usage}
+
+          (let [phase1-elapsed (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                budget (logic/resolve-phase2-budget
+                        {:node node
+                         :parent-timeout-ms (:parent-timeout-ms context)
+                         :phase1-elapsed-ms phase1-elapsed})]
+            (:exhausted? budget))
+          (let [phase1-elapsed (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                budget (logic/resolve-phase2-budget
+                        {:node node
+                         :parent-timeout-ms (:parent-timeout-ms context)
+                         :phase1-elapsed-ms phase1-elapsed})]
+            {:status :failure
+             :error (str "Budget exhausted in Phase 1 ("
+                         phase1-elapsed "ms elapsed of "
+                         (:total-budget-ms budget) "ms "
+                         "[source=" (name (:source budget)) "]; "
+                         "no time left for next iteration)")
+             :iterations history
+             :duration-ms phase1-elapsed
+             :phase1-elapsed-ms phase1-elapsed
+             :usage @total-usage
+             :budget budget
+             :cumulative-tree-ms @cumulative-tree-ms
+             :cumulative-thinking-ms (max 0 (- phase1-elapsed @cumulative-tree-ms))})
+
+          :else
+          (let [_ (reset! current-iteration iteration)
+                _ (reset! action-ordinal 0)
+                iteration-start-ms (long (campaign-now-ms-fn))
+                attempt-start-ms (when checkpointed?
+                                   (long (researcher-now-ms-fn)))
+                sandbox-before-iteration @sandbox-vars
+                creation-times-before-iteration @var-creation-times
+                iteration-deadline-ms (apply min
+                                             (remove nil?
+                                                     [campaign-deadline-ms
+                                                      workflow-deadline-ms
+                                                      (+ iteration-start-ms
+                                                         (or (:iteration-ms timeout-config)
+                                                             campaign-timeout-ms))]))
+                _ (reset! current-iteration-deadline-ms iteration-deadline-ms)
+                mint-behavior-contract
+                (logic/registered-mint-behavior-contract (:command-registry context))
+                module (logic/build-rlm-code-generation-module node inputs-preview history
+                                                          blackboard @sandbox-vars @var-creation-times
+                                                          mcp-tools
+                                                          {:mint-behavior-contract mint-behavior-contract})
+                available-code-nodes (let [rlm (:rlm node)]
+                                       (when (map? rlm) (:available-code-nodes rlm)))
+                latest-tree-summary (peek (:tree-results @sandbox-vars))
+                setup-feedback (when latest-tree-summary
+                                 (logic/render-tree-outcome latest-tree-summary))
+                inputs (cond-> {:task (:instruction node)
+                                :inputs-info (str "Original blackboard input previews (not current local bindings): " (pr-str inputs-preview))
+                                :history (str (or (logic/build-iteration-history history) "None")
+                                              (when setup-feedback
+                                                (str "\n\nLatest completed child outcome (previews):\n"
+                                                     setup-feedback)))}
+                         available-code-nodes (assoc :available-code-nodes available-code-nodes)
+                         mint-behavior-contract
+                         (assoc :mint-behavior-contract mint-behavior-contract)
+                         (seq mcp-tools) (assoc :tools (str/join ", " mcp-tools)
+                                                :tool-contracts (logic/bound-tool-contracts node mcp-tools)))
+                llm-options (merge {:validate? false
+                                       :use-function-calling? false
+                                       :with-metadata? true}
+                                      options
+                                      (when (:model node) {:model (:model node)}))
+
+                _ (logic/emit! (:tick-id context)
+                                   (cond-> {:orc.stream/type :rlm-iteration-started
+                                            :iteration (inc iteration)
+                                            :max-iterations max-iterations}
+                                     (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                     (:node-id context) (assoc :node-id (:node-id context))))
+
+                _ (dbg "\n========== ITERATION" (inc (count history)) "==========")
+                _ (dbg "node :model =" (:model node))
+                _ (dbg "provider =" provider)
+                _ (dbg "llm-options =" llm-options)
+                _ (dbg "module :outputs =" (:outputs module))
+                _ (dbg "module :instructions length =" (count (:instructions module)))
+                _ (dbg "inputs :task =" (:task inputs))
+                _ (dbg "inputs :inputs-info =" (:inputs-info inputs))
+                _ (dbg "calling llm/predict...")
+                provider-timeout-ms (max 0
+                                         (min (or (:provider-ms timeout-config)
+                                              campaign-timeout-ms)
+                                              (- iteration-deadline-ms
+                                                 (long (campaign-now-ms-fn)))))
+                provider-start-ms (long (campaign-now-ms-fn))
+                provider-request-options
+                (assoc llm-options :timeout-ms provider-timeout-ms)
+                legacy-provider-action-id
+                (str (:tick-id context) "/" (:node-id context) "/"
+                     iteration "/provider/1")
+                prepared-prime-model-call
+                (when (and checkpointed? (contains? node :fallback-models))
+                  (prepare-prime
+                   node provider module inputs llm-options
+                   (assoc context :researcher-iteration iteration
+                                  :legacy-completed-prime-action-id
+                                  (when (get @completed-actions legacy-provider-action-id)
+                                    legacy-provider-action-id))))
+                provider-action-id
+                (or (:logical-action-id prepared-prime-model-call)
+                    (when (get @completed-actions legacy-provider-action-id) legacy-provider-action-id)
+                (if (contains? node :fallback-models)
+                  (logic/logical-id (assoc context :researcher-iteration iteration
+                                                             :llm-provider provider)
+                                               :prime (:name node) module inputs node llm-options)
+                  (logic/provider-logical-action-identity
+                 {:tick-id (:tick-id context)
+                  :node-id (:node-id context)
+                  :iteration-index iteration
+                  :provider (encode-effect-value provider)
+                  :model (encode-effect-value (:model node))
+                  :module (encode-effect-value module)
+                  :inputs (encode-effect-value inputs)
+                  :options (encode-effect-value provider-request-options)})))
+                provider-attempt-ordinal (get iteration-attempts iteration 0)
+                provider-attempt-id
+                (logic/attempt-identity
+                 provider-action-id ownership-epoch provider-attempt-ordinal)
+                completed-provider-action
+                (get @completed-actions provider-action-id)
+                completed-provider-envelope (:result completed-provider-action)
+                completed-provider-result
+                (if (and (map? completed-provider-envelope)
+                         (contains? completed-provider-envelope :provider-result))
+                  (:provider-result completed-provider-envelope)
+                  completed-provider-envelope)
+                invoke-provider
+                #(predict
+                   node provider module inputs
+                   (cond-> provider-request-options checkpointed?
+                     (assoc :orc/idempotency-key provider-action-id))
+                   (assoc context :researcher-iteration iteration
+                                  :effect-attempt-ordinal provider-attempt-ordinal
+                                  :model-configuration-options llm-options
+                                  :prepared-prime-model-call prepared-prime-model-call
+                                  :execution-deadline-ms iteration-deadline-ms)
+                   :prime provider-action-id)
+                provider-claim-result
+                (when (and checkpointed?
+                           (nil? completed-provider-action)
+                           (pos? provider-timeout-ms)
+                           (:claim-researcher-effect! context))
+                  ((:claim-researcher-effect! context)
+                   {:iteration-index iteration
+                    :logical-action-identity provider-action-id
+                    :attempt-identity provider-attempt-id
+                    :attempt-ordinal provider-attempt-ordinal
+                    :kind :provider}))
+                provider-call (if completed-provider-action
+                                {:value completed-provider-result
+                                 :replayed? true}
+                                (cond
+                                  (not (pos? provider-timeout-ms))
+                                  {:timeout? true}
+
+                                  (:cognitect.anomalies/category
+                                   provider-claim-result)
+                                  {:claim-conflict? true
+                                   :claim-result provider-claim-result}
+
+                                  (or checkpointed? (seq timeout-config))
+                                  (logic/bounded-call
+                                   (logic/provider-classification-deadline-ms
+                                    provider-timeout-ms)
+                                   invoke-provider)
+
+                                  :else
+                                  (try {:value (invoke-provider)}
+                                       (catch Throwable t {:throwable t}))))
+                provider-latency-ms
+                (or (when (and (map? completed-provider-envelope)
+                               (contains? completed-provider-envelope
+                                          :provider-latency-ms))
+                      (:provider-latency-ms completed-provider-envelope))
+                    (- (long (campaign-now-ms-fn)) provider-start-ms))
+                llm-result (cond
+                             (:claim-conflict? provider-call)
+                             {:code nil
+                              :error "Researcher provider claim conflicted"
+                              :ownership-conflict? true}
+
+                             (:timeout? provider-call)
+                             {:code nil
+                              :error "Provider call deadline exceeded"
+                              :timeout-kind :provider}
+
+                             (:throwable provider-call)
+                             (let [e (:throwable provider-call)]
+                               (dbg "llm/predict EXCEPTION:" (.getMessage e))
+                               (cond-> (merge {:code nil :error (.getMessage e)}
+                                              (select-keys (ex-data e) [:usage :failure-kind :provider-evidence :model-fallback
+                                                                        :model-call-in-flight?]))
+                                 (and (not (:model-fallback (ex-data e))) (logic/transport-timeout? e))
+                                 (assoc :timeout-kind :provider)))
+
+                             :else (:value provider-call))
+                durable-provider-envelope
+                (logic/encode-checkpoint-value
+                 checkpoint-codecs
+                 {:provider-result llm-result
+                  :provider-latency-ms provider-latency-ms})
+                provider-completion-result
+                (when (and checkpointed?
+                           (not (:replayed? provider-call))
+                           (not (:claim-conflict? provider-call))
+                           (not (:timeout? provider-call))
+                           (not (:throwable provider-call))
+                           (:complete-researcher-effect! context))
+                  ((:complete-researcher-effect! context)
+                   {:logical-action-identity provider-action-id
+                    :attempt-identity provider-attempt-id
+                    :result durable-provider-envelope}))
+                _ (when (:cognitect.anomalies/category provider-completion-result)
+                    (throw (ex-info "Researcher provider outcome lost ownership"
+                                    {:completion-result provider-completion-result
+                                     :logical-action-identity provider-action-id
+                                     :attempt-identity provider-attempt-id})))
+                _ (when (and checkpointed?
+                             (not (:replayed? provider-call))
+                             (not (:claim-conflict? provider-call))
+                             (not (:timeout? provider-call))
+                             (not (:throwable provider-call)))
+                    (swap! completed-actions assoc provider-action-id
+                           {:status :completed
+                            :result {:provider-result llm-result
+                                     :provider-latency-ms provider-latency-ms}}))
+                _ (when (and checkpointed?
+                             (not (:replayed? provider-call))
+                             (not (:claim-conflict? provider-call))
+                             (not (:timeout? provider-call))
+                             (not (:throwable provider-call))
+                             persist-action!)
+                    (persist-action! {:action-id provider-action-id
+                                      :action-kind :provider
+                                      :iteration iteration
+                                      :result durable-provider-envelope}))
+                _ (dbg "llm/predict returned")
+                _ (dbg "llm-result keys:" (keys llm-result))
+                _ (when (and debug? (:usage llm-result))
+                    (dbg "usage:" (:usage llm-result)))
+                _ (dbg ":code type:" (type (:code llm-result)))
+                _ (dbg ":code nil?:" (nil? (:code llm-result)))
+                _ (dbg "[:outputs :code] nil?:" (nil? (get-in llm-result [:outputs :code])))
+                _ (dbg "[:outputs] keys:" (keys (:outputs llm-result)))
+                _ (when debug?
+                    (dbg "FULL llm-result:" (pr-str llm-result)))
+                _ (when (and debug? (get-in llm-result [:outputs :code]))
+                    (dbg "GENERATED CODE (full):" (get-in llm-result [:outputs :code])))
+                _ (dbg ":code blank?:" (if (string? (:code llm-result))
+                                         (str/blank? (:code llm-result))
+                                         "N/A"))
+                _ (when (and debug? (string? (:code llm-result)))
+                    (dbg ":code length:" (count (:code llm-result)))
+                    (dbg ":code (full):" (:code llm-result)))
+                _ (dbg "========================================\n")
+                code (let [raw (or (:code llm-result) (get-in llm-result [:outputs :code]))]
+                       (cond
+                         (string? raw)
+                         (-> raw
+                             (str/replace #"^```(?:clojure|clj|edn)?\s*\n?" "")
+                             (str/replace #"\n?```\s*$" "")
+                             str/trim)
+
+                         (some? raw)
+                         (pr-str raw)
+
+                         :else nil))
+                _ (reset! current-generated-code-hash
+                          (when (and (string? code) (not (str/blank? code)))
+                            (logic/generated-code-hash code)))
+
+                reasoning (or (:reasoning llm-result)
+                              (get-in llm-result [:outputs :reasoning]))
+                _ (when (string? reasoning)
+                    (swap! sandbox-vars update :iteration-reasonings
+                           (fnil conj []) reasoning))
+
+                _ (when (and (string? code) (not (str/blank? code)))
+                    (logic/emit! (:tick-id context)
+                                     (cond-> {:orc.stream/type :rlm-code-generated
+                                              :iteration (inc iteration)
+                                              :code (logic/truncate-value code)}
+                                       (string? reasoning) (assoc :reasoning (logic/truncate-value reasoning))
+                                       (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                       (:node-id context) (assoc :node-id (:node-id context)))))
+
+                _ (when-let [u (logic/normalize-usage (:usage llm-result))]
+                    (swap! total-usage
+                           (fn [acc]
+                             (-> {:prompt-tokens (+ (:prompt-tokens acc 0) (:prompt-tokens u))
+                                  :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens u))
+                                  :total-tokens (+ (:total-tokens acc 0) (:total-tokens u))}
+                                 (cond-> (:cost acc) (assoc :cost (:cost acc)))
+                                 (logic/add-cost (:usage llm-result))))))]
+
+            (cond
+                (:model-call-in-flight? llm-result)
+                {:status :running :researcher-frontier-conflict? true}
+
+                (str/blank? code)
+                (if-let [terminal-error (or (:error llm-result)
+                                            (when checkpointed?
+                                              (some-> (:throwable provider-call)
+                                                      str))
+                                            (when-not recursive-mode?
+                                              "LLM did not generate code"))]
+                  (if-let [timeout-kind (:timeout-kind llm-result)]
+                    (retry-result iteration history timeout-kind terminal-error
+                                  attempt-start-ms)
+                    (if checkpointed?
+                      (let [failure-history
+                            (conj history
+                                  (cond-> {:error terminal-error
+                                           :error-class "provider-failure"}
+                                    (string? reasoning)
+                                    (assoc :reasoning reasoning)))
+                            terminal-result
+                            (merge {:status :failure
+                                    :error terminal-error
+                                    :iterations history
+                                    :duration-ms (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                                    :usage @total-usage}
+                                   (select-keys llm-result [:failure-kind :provider-evidence :model-fallback]))]
+                        (persist-terminal-result iteration failure-history
+                                                 terminal-result
+                                                 attempt-start-ms))
+                      (merge {:status :failure
+                              :error terminal-error
+                              :iterations history
+                              :duration-ms (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                              :usage @total-usage}
+                             (select-keys llm-result [:failure-kind :provider-evidence :model-fallback]))))
+                  (let [next-history (conj history
+                                           {:code code
+                                            :reasoning reasoning
+                                            :provider-latency-ms provider-latency-ms
+                                            :provider-usage (logic/normalize-usage (:usage llm-result))
+                                            :result nil
+                                            :stdout nil
+                                            :error "LLM did not generate code"
+                                            :vars-created []})]
+                    (or (checkpoint-result (inc iteration) next-history
+                                           attempt-start-ms)
+                        (recur (inc iteration) next-history))))
+
+                :else
+                (let [vars-before (set (keys @sandbox-vars))
+                    bounded-iteration? (or checkpointed? (contains? timeout-config :iteration-ms))
+                    iteration-sandbox-vars (if bounded-iteration?
+                                             (atom @sandbox-vars)
+                                             sandbox-vars)
+                    rlm-ctx (build-rlm-context
+                            {:provider provider
+                             :model-call-context (assoc context :researcher-iteration iteration
+                                                              :effect-attempt-ordinal (get iteration-attempts iteration 0)
+                                                              :execution-deadline-ms iteration-deadline-ms)
+                             :model-defaults (logic/subcall-defaults node)
+                             :blackboard blackboard
+                             :declared-writes declared-writes
+                             :optional-writes optional-writes
+                             :call-tool-fn call-tool-fn
+                             :mcp-tools mcp-tools
+                             :browser-tools browser-tools
+                             :sandbox-vars iteration-sandbox-vars
+                             :recursive? recursive-mode?
+                             :event-store (:event-store context)
+                             :tenant-id (:tenant-id context)
+                             :command-registry (:command-registry context)
+                             :cache (:cache context)
+                             :sheet-id (:sheet-id context)
+                             :tick-id (:tick-id context)
+                             :node-id (:node-id context)
+                             :researcher-iteration @current-iteration
+                             :generated-code-hash @current-generated-code-hash
+                             :researcher-ownership-epoch ownership-epoch
+                             :effect-attempt-ordinal
+                             (get iteration-attempts @current-iteration 0)
+                             :encode-researcher-effect-value
+                             encode-effect-value
+                             :claim-researcher-effect!
+                             (:claim-researcher-effect! context)
+                             :complete-researcher-effect!
+                             (:complete-researcher-effect! context)
+                             :completed-researcher-effects completed-actions
+                             :reserve-llm-call! (:reserve-llm-call! context)
+                             :reserve-provider-call!
+                             (:reserve-provider-call! context)
+                             :durable-source-required? checkpointed?})
+                    sandbox-call (if bounded-iteration?
+                                   (logic/bounded-call
+                                    (max 0 (- iteration-deadline-ms
+                                              (long (campaign-now-ms-fn))))
+                                    #(logic/execute-rlm-code rlm-ctx code))
+                                   {:value (logic/execute-rlm-code rlm-ctx code)})
+                    exec-result (cond
+                                  @checkpoint-tool-timeout
+                                  {:error "Researcher tool deadline exceeded before dispatch"
+                                   :timeout-kind :iteration}
+                                  @checkpoint-tool-violation
+                                  {:error (str "Tool " @checkpoint-tool-violation
+                                               " is not declared :checkpoint-safe? for resumable execution")}
+                                  (:timeout? sandbox-call)
+                                  {:error "Researcher iteration deadline exceeded"
+                                   :timeout-kind :iteration}
+                                  (:throwable sandbox-call)
+                                  {:error (.getMessage ^Throwable (:throwable sandbox-call))}
+                                  :else (:value sandbox-call))
+                    _ (when (and bounded-iteration? (not (:timeout? sandbox-call)))
+                        (reset! sandbox-vars @iteration-sandbox-vars))
+                    vars-after (set (keys @sandbox-vars))
+                    new-vars (clojure.set/difference vars-after vars-before)
+                    updated-vars (into []
+                                       (filter #(not= (get sandbox-before-iteration %)
+                                                      (get @sandbox-vars %)))
+                                       (clojure.set/intersection
+                                        (set (keys sandbox-before-iteration))
+                                        vars-after))
+                    _ (doseq [k new-vars]
+                        (swap! var-creation-times assoc k (inc iteration)))
+                    final-output (:final-output exec-result)
+                    profile-result (if (some? final-output)
+                                     final-output
+                                     (:raw-result exec-result))
+                    history-entry
+                    (cond-> {:code code
+                             :reasoning reasoning
+                             :provider-latency-ms provider-latency-ms
+                             :provider-usage (logic/normalize-usage (:usage llm-result))
+                             :result (:result exec-result)
+                             :stdout (:stdout exec-result)
+                             :error-class (:error-class exec-result)
+                             :error (:error exec-result)
+                             :vars-created (vec new-vars)
+                             :vars-updated (vec updated-vars)}
+                      (some? profile-result)
+                      (assoc :result-profile (logic/profile-value profile-result))
+
+                      (some? (:stdout exec-result))
+                      (assoc :stdout-profile
+                             (logic/profile-value (:stdout exec-result))))
+                    new-history (conj history history-entry)
+                    _ (logic/emit! (:tick-id context)
+                                       (cond-> {:orc.stream/type :rlm-sandbox-completed
+                                                :iteration (inc iteration)
+                                                :final? (some? final-output)}
+                                         (some? (:result exec-result))
+                                         (assoc :result (logic/truncate-value (:result exec-result)))
+                                         (:stdout exec-result)
+                                         (assoc :stdout (logic/truncate-value (:stdout exec-result)))
+                                         (:error exec-result)
+                                         (assoc :error (str (:error exec-result)))
+                                         (seq new-vars)
+                                         (assoc :vars-created (vec new-vars))
+                                         (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                         (:node-id context) (assoc :node-id (:node-id context))))
+                    sub-llm-usage (:sub-llm-usage exec-result)
+                    _ (when (and sub-llm-usage (pos? (:total-tokens sub-llm-usage 0)))
+                        (swap! total-usage
+                               (fn [acc]
+                                 {:prompt-tokens (+ (:prompt-tokens acc 0) (:prompt-tokens sub-llm-usage 0))
+                                  :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens sub-llm-usage 0))
+                                  :total-tokens (+ (:total-tokens acc 0) (:total-tokens sub-llm-usage 0))})))
+                    _ (when debug?
+                        (dbg "exec-result :error:" (:error exec-result))
+                        (dbg "exec-result :final-output:" final-output)
+                        (when (pos? (:total-tokens sub-llm-usage 0))
+                          (dbg "sub-llm-usage:" sub-llm-usage)))]
+
+                (cond
+                  (= :iteration (:timeout-kind exec-result))
+                  (retry-result iteration history :iteration
+                                "Researcher iteration deadline exceeded"
+                                attempt-start-ms)
+
+                  (and bounded-iteration?
+                       (>= (long (campaign-now-ms-fn)) iteration-deadline-ms))
+                  (retry-result iteration history :iteration
+                                "Researcher iteration deadline exceeded"
+                                attempt-start-ms)
+
+                  (and (:error exec-result)
+                       (or (str/includes? (str (:error exec-result)) "Security")
+                           (str/includes? (str (:error exec-result))
+                                         "not declared :checkpoint-safe?")))
+                  {:status :failure
+                   :error (:error exec-result)
+                   :iterations new-history
+                   :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                   :usage @total-usage}
+
+                  (and (:error exec-result)
+                       (= :model-plan-incompatible (get-in exec-result [:error-data :failure-kind])))
+                  {:status :failure
+                   :failure-kind :model-plan-incompatible
+                   :reason (get-in exec-result [:error-data :reason])
+                   :error (:error exec-result)
+                   :iterations new-history
+                   :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                   :usage @total-usage}
+
+                  (:error exec-result)
+                  (let [
+                        _ (when (and recursive-mode? checkpointed?)
+                            (swap! sandbox-vars
+                                   (fn [vars]
+                                     (merge (dissoc vars :generated-tree
+                                                    :generated-tree-raw
+                                                    :generated-tree-source)
+                                            (select-keys sandbox-before-iteration
+                                                         [:generated-tree
+                                                          :generated-tree-raw
+                                                          :generated-tree-source])))))
+                        error-msg (:error exec-result)
+                        available-vars (concat (keys blackboard) (keys @sandbox-vars))
+                        enhanced-error (logic/format-error-with-suggestions error-msg available-vars)
+                        error-history (conj history
+                                           {:code code
+                                            :reasoning reasoning
+                                            :provider-latency-ms provider-latency-ms
+                                            :provider-usage (logic/normalize-usage (:usage llm-result))
+                                            :result nil
+                                            :stdout (:stdout exec-result)
+                                            :error-class (:error-class exec-result)
+                                            :error enhanced-error
+                                            :error-data (:error-data exec-result)
+                                            :vars-created []})]
+                    (or (checkpoint-result (inc iteration) error-history
+                                           attempt-start-ms)
+                        (recur (inc iteration) error-history)))
+
+                  (and recursive-mode?
+                       final-output
+                       (contains? @sandbox-vars :generated-tree))
+                  (let [guard-error (str "You called (final! ...) in the same iteration as "
+                                         "(emit-tree! ...). The tree executes AFTER your code "
+                                         "returns, so its outputs were not available to your "
+                                         "final!. Neither was applied: the tree was not executed "
+                                         "and the final! was discarded. Either call "
+                                         "(emit-tree! ...) alone this iteration and inspect "
+                                         ":tree-results next iteration, or call (final! ...) alone.")
+                        _ (swap! sandbox-vars dissoc
+                                 :generated-tree
+                                 :generated-tree-raw
+                                 :generated-tree-source)
+                        guard-history (conj history
+                                            {:code code
+                                             :reasoning reasoning
+                                             :provider-latency-ms provider-latency-ms
+                                             :provider-usage (logic/normalize-usage (:usage llm-result))
+                                             :result nil
+                                             :stdout (:stdout exec-result)
+                                             :error guard-error
+                                             :vars-created (vec (remove #{:generated-tree
+                                                                          :generated-tree-raw
+                                                                          :generated-tree-source}
+                                                                        new-vars))})]
+                    (or (checkpoint-result (inc iteration) guard-history
+                                           attempt-start-ms)
+                        (recur (inc iteration) guard-history)))
+
+                  final-output
+                  (let [total-elapsed (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                        generated-tree-raw (:generated-tree-raw @sandbox-vars)
+                        generated-tree-source (:generated-tree-source @sandbox-vars)
+                        iteration-reasonings (:iteration-reasonings @sandbox-vars)
+                        _ (when debug?
+                            (dbg "RETURN PATH: final! branch; sandbox-vars keys:" (keys @sandbox-vars))
+                            (dbg "RETURN PATH: :iteration-reasonings count:"
+                                 (count (or iteration-reasonings []))))]
+                    (persist-terminal-result
+                     iteration
+                     new-history
+                     (cond-> {:status :success
+                              :outputs final-output
+                              :final-answer final-output
+                              :iterations new-history
+                              :duration-ms total-elapsed
+                              :usage @total-usage
+                              :iteration-reasonings (vec (or iteration-reasonings []))
+                              :cumulative-tree-ms @cumulative-tree-ms
+                              :cumulative-thinking-ms (max 0 (- total-elapsed @cumulative-tree-ms))}
+                       generated-tree-raw
+                       (assoc :generated-tree-raw generated-tree-raw)
+
+                       generated-tree-source
+                       (assoc :generated-tree-source generated-tree-source))
+                     attempt-start-ms))
+
+                  (contains? @sandbox-vars :generated-tree)
+                  (let [
+                        sub-model (or (get rlm-config :sub-model)
+                                      (:sub-model node))
+                        generated-tree (-> (:generated-tree @sandbox-vars)
+                                           (logic/inject-sub-model sub-model)
+                                           (logic/inject-subcall-config (logic/subcall-defaults node))
+                                           (logic/inject-tool-caller-fn (:tool-caller-fn node)
+                                                                 (:tool-contracts node)))
+                        generated-tree-raw (:generated-tree-raw @sandbox-vars)
+                        generated-tree-source (:generated-tree-source @sandbox-vars)
+                        _ (when debug?
+                            (when sub-model
+                              (println "\n[DEBUG RLM] Sub-model injected into :llm nodes lacking :model:" sub-model))
+                            (println "\n[DEBUG RLM] Phase 2 triggered - emit-tree! was called")
+                            (println "[DEBUG RLM] Generated tree (raw S-expr):")
+                            (pprint/pprint generated-tree-raw)
+                            (println "\n[DEBUG RLM] Generated tree (canonical ORC DSL):")
+                            (pprint/pprint generated-tree))
+                        phase1-elapsed-ms (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                        base-budget (logic/resolve-phase2-budget
+                                     {:node node
+                                      :parent-timeout-ms (:parent-timeout-ms context)
+                                      :phase1-elapsed-ms phase1-elapsed-ms})
+                        phase2-remaining-ms
+                        (max 0 (min (:remaining-ms base-budget)
+                                    (or (:phase2-ms timeout-config) Long/MAX_VALUE)
+                                    (- iteration-deadline-ms (long (campaign-now-ms-fn)))
+                                    (- campaign-deadline-ms (long (campaign-now-ms-fn)))))
+                        budget (assoc base-budget
+                                      :remaining-ms phase2-remaining-ms
+                                      :exhausted? (zero? phase2-remaining-ms)
+                                      :deadline-sources
+                                      {:phase2-ms (:phase2-ms timeout-config)
+                                       :iteration-deadline-ms iteration-deadline-ms
+                                       :campaign-deadline-ms campaign-deadline-ms})
+                        _ (when debug?
+                            (println "\n[DEBUG RLM] Phase 2 budget:" budget))]
+                    (if (:exhausted? budget)
+                      {:status :failure
+                       :error (str "Budget exhausted in Phase 1 ("
+                                   phase1-elapsed-ms "ms elapsed of "
+                                   (:total-budget-ms budget) "ms "
+                                   "[source=" (name (:source budget)) "]; "
+                                   "no time left for Phase 2)")
+                       :iterations new-history
+                       :duration-ms phase1-elapsed-ms
+                       :phase1-elapsed-ms phase1-elapsed-ms
+                       :usage @total-usage
+                       :budget budget}
+                      (let [
+                            phase2-vars (dissoc @sandbox-vars
+                                                :generated-tree
+                                                :generated-tree-raw
+                                                :generated-tree-source
+                                                :iteration-reasonings
+                                                :tree-results)
+                            _ (when debug?
+                                (println "\n[DEBUG RLM] Phase 2 sandbox vars:" (keys phase2-vars)))
+                            phase2-action-id
+                            (logic/logical-action-identity
+                             {:tick-id (:tick-id context)
+                              :node-id (:node-id context)
+                              :iteration-index iteration
+                              :generated-code-hash @current-generated-code-hash
+                              :kind :generated-child
+                              :target :generated-tree
+                              :arguments
+                              (encode-effect-value
+                               {:generated-tree-source generated-tree-source
+                                :inputs phase2-vars})})
+                            legacy-phase2-action-id
+                            (str (:tick-id context) "/" (:node-id context) "/"
+                                 iteration "/phase2/1")
+                            phase2-attempt-ordinal (get iteration-attempts iteration 0)
+                            phase2-attempt-id
+                            (logic/attempt-identity
+                             phase2-action-id ownership-epoch phase2-attempt-ordinal)
+                            completed-phase2-action
+                            (or (get @completed-actions phase2-action-id)
+                                (get @completed-actions legacy-phase2-action-id))
+                            phase2-claim-result
+                            (when (and checkpointed?
+                                       (nil? completed-phase2-action)
+                                       (:claim-researcher-effect! context))
+                              ((:claim-researcher-effect! context)
+                               {:iteration-index iteration
+                                :logical-action-identity phase2-action-id
+                                :attempt-identity phase2-attempt-id
+                                :attempt-ordinal phase2-attempt-ordinal
+                                :kind :generated-child}))
+                            _ (when (:cognitect.anomalies/category phase2-claim-result)
+                                (throw (ex-info "Researcher generated-child claim conflicted"
+                                                {:claim-result phase2-claim-result
+                                                 :logical-action-identity phase2-action-id
+                                                 :attempt-identity phase2-attempt-id})))
+                            phase2-result (if completed-phase2-action
+                                            (let [result (:result completed-phase2-action)]
+                                              (when-let [parent-tick-id (:tick-id context)]
+                                                (when-let [child-tick-id (:trace-id result)]
+                                                  (logic/link-child! parent-tick-id
+                                                                         child-tick-id)))
+                                              result)
+                                            (try
+                                            (when-let [required-keys
+                                                       (seq (:preflight-required-schema-keys
+                                                             @sandbox-vars))]
+                                              (let [declared (set (keys
+                                                                   (logic/extract-key-schemas
+                                                                    generated-tree)))
+                                                    used (set (logic/extract-all-keys
+                                                               generated-tree))
+                                                    corrected (clojure.set/intersection declared used)
+                                                    still-missing (vec (remove corrected required-keys))]
+                                                (when (seq still-missing)
+                                                  (throw (ex-info
+                                                          (str "The prior generated tree was rejected before execution. "
+                                                               "Re-emit its intended work with explicit schemas for "
+                                                               still-missing)
+                                                          {:blackboard-keys still-missing})))))
+                                            (execute-tree
+                                              generated-tree
+                                              (assoc context
+                                                     :researcher-iteration iteration)
+                                              {:sandbox-vars phase2-vars
+                                               :generated-tree-raw generated-tree-raw
+                                               :generated-tree-source generated-tree-source
+                                               :blackboard (reduce-kv
+                                                             (fn [acc k entry]
+                                                               (if (contains? entry :value)
+                                                                 (assoc acc k (:value entry))
+                                                                 acc))
+                                                             {}
+                                                             blackboard)
+                                               :blackboard-schemas (reduce-kv
+                                                                     (fn [acc k entry]
+                                                                       (if-let [s (:schema entry)]
+                                                                         (assoc acc k s)
+                                                                         acc))
+                                                                     {}
+                                                                     blackboard)
+                                               :stable-tick-id
+                                               (when checkpointed?
+                                                 (java.util.UUID/nameUUIDFromBytes
+                                                  (.getBytes
+                                                   phase2-action-id
+                                                   "UTF-8")))
+                                               :timeout-ms (:remaining-ms budget)})
+                                            (catch Exception e
+                                              (println "[DEBUG RLM] Phase 2 execution ERROR:" (.getMessage e))
+                                              (.printStackTrace e)
+                                              (let [diagnostic (logic/from-exception e)]
+                                                (cond-> {:status :failure
+                                                         :preflight-rejected? true
+                                                         :missing-schema-keys (:blackboard-keys (ex-data e))
+                                                         :error (str "Phase 2 execution failed: " (.getMessage e))}
+                                                  diagnostic
+                                                  (assoc :setup-diagnostic diagnostic
+                                                         :error (logic/render diagnostic)))))))
+                            durable-phase2-result
+                            (select-keys phase2-result
+                                         [:status :outputs :usage :duration-ms :error :trace-id
+                                          :sheet-id :breakdown :phase1-elapsed-ms
+                                          :phase2-elapsed-ms :block-payload :preflight-rejected?
+                                          :missing-schema-keys :setup-diagnostic])
+                            phase2-completion-result
+                            (when (and checkpointed?
+                                       (nil? completed-phase2-action)
+                                       (contains? #{:success :partial :failure :blocked}
+                                                  (:status phase2-result))
+                                       (:complete-researcher-effect! context))
+                              ((:complete-researcher-effect! context)
+                               {:logical-action-identity phase2-action-id
+                                :attempt-identity phase2-attempt-id
+                                :result (logic/encode-checkpoint-value
+                                         checkpoint-codecs
+                                         durable-phase2-result)}))
+                            _ (when (:cognitect.anomalies/category
+                                     phase2-completion-result)
+                                (throw (ex-info "Researcher generated-child outcome lost ownership"
+                                                {:completion-result
+                                                 phase2-completion-result
+                                                 :logical-action-identity phase2-action-id
+                                                 :attempt-identity phase2-attempt-id})))
+                            _ (when (and checkpointed?
+                                         (nil? completed-phase2-action)
+                                         (contains? #{:success :partial :failure :blocked}
+                                                    (:status phase2-result)))
+                                (swap! completed-actions assoc phase2-action-id
+                                       {:status :completed
+                                        :result durable-phase2-result}))
+                            _ (when (and checkpointed?
+                                         (nil? completed-phase2-action)
+                                         (contains? #{:success :partial :failure :blocked}
+                                                    (:status phase2-result))
+                                         persist-action!)
+                                (persist-action! {:action-id phase2-action-id
+                                                  :action-kind :phase2
+                                                  :iteration iteration
+                                                  :result (logic/encode-checkpoint-value
+                                                           checkpoint-codecs
+                                                           durable-phase2-result)}))
+                            _ (if (:preflight-rejected? phase2-result)
+                                (swap! sandbox-vars update
+                                       :preflight-required-schema-keys
+                                       (fnil into #{})
+                                       (:missing-schema-keys phase2-result))
+                                (swap! sandbox-vars dissoc
+                                       :preflight-required-schema-keys))
+                            _ (when (or (= :timeout (:status phase2-result))
+                                        (:wedged? phase2-result))
+                                (let [child-tick-id (:trace-id phase2-result)
+                                      child-sheet-id (:sheet-id phase2-result)]
+                                  (when (and child-tick-id child-sheet-id)
+                                    (cp/process-command
+                                      (assoc context :command
+                                             {:command/id (random-uuid)
+                                              :command/timestamp (time/now)
+                                              :command/name :sheet/cancel-tick
+                                              :sheet-id child-sheet-id
+                                              :tick-id child-tick-id}))
+                                    (Thread/sleep 500))))
+                            phase1-duration phase1-elapsed-ms
+                        _ (when debug?
+                            (println "\n[DEBUG RLM] Phase 2 result:")
+                            (println "  status:" (:status phase2-result))
+                            (println "  error:" (:error phase2-result))
+                            (println "  outputs keys:" (keys (:outputs phase2-result)))
+                            (println "  duration-ms:" (:duration-ms phase2-result)))]
+                    (cond
+                      (and (= :timeout (:status phase2-result))
+                           (or checkpointed? (not recursive-mode?)))
+                      (if checkpointed?
+                        (do
+                          (reset! sandbox-vars sandbox-before-iteration)
+                          (reset! var-creation-times creation-times-before-iteration)
+                          (retry-result iteration history :phase2
+                                        (or (:error phase2-result)
+                                            "Phase-2 child deadline exceeded")
+                                        attempt-start-ms))
+                        (assoc phase2-result
+                               :generated-tree-raw generated-tree-raw
+                               :generated-tree-source generated-tree-source
+                               :iterations new-history
+                               :usage @total-usage
+                               :duration-ms (+ phase1-elapsed-ms
+                                               (or (:duration-ms phase2-result) 0))
+                               :phase1-elapsed-ms phase1-elapsed-ms
+                               :phase2-elapsed-ms (or (:duration-ms phase2-result)
+                                                      (:remaining-ms budget))
+                               :phase2-tick-id (:trace-id phase2-result)))
+
+                      (= :blocked (:status phase2-result))
+                      (persist-terminal-result
+                       iteration
+                       new-history
+                       {:status :blocked
+                        :block-payload (:block-payload phase2-result)
+                        :outputs (:outputs phase2-result)
+                        :generated-tree-raw generated-tree-raw
+                        :generated-tree-source generated-tree-source
+                        :iterations new-history
+                        :duration-ms (+ phase1-elapsed-ms
+                                        (or (:duration-ms phase2-result) 0))
+                        :usage @total-usage
+                        :phase2-tick-id (:trace-id phase2-result)}
+                       attempt-start-ms)
+                      recursive-mode?
+                      (let [child-tick-id (:trace-id phase2-result)
+                            tenant-id (:tenant-id context)
+                            event-store (:event-store context)
+                            tick-events (when (and event-store child-tick-id)
+                                          (into [] (es/read event-store
+                                                     (cond-> {:tags #{[:tick child-tick-id]}}
+                                                       tenant-id (assoc :tenant-id tenant-id)))))
+                            phase2-result+budget
+                            (cond-> phase2-result
+                              (= :timeout (:status phase2-result))
+                              (assoc :phase2-elapsed-ms (or (:duration-ms phase2-result)
+                                                            (:remaining-ms budget))
+                                     :budget-remaining-ms 0))
+                            child-nodes (when child-tick-id
+                                          (rm/get-tick-nodes-by-id
+                                           context child-tick-id))
+                            child-writes (vec (remove logic/researcher-control-keys (logic/child-declared-writes child-nodes)))
+                            produced (completed-child-values context child-tick-id child-nodes tick-events)
+                            produced-values (:values produced)
+                            feedback-result (assoc phase2-result+budget :outputs produced-values)
+                            base-summary (assoc (logic/compute-tree-result-summary
+                                                  {:phase2-result feedback-result
+                                                   :tick-events tick-events
+                                                   :tree-raw generated-tree-raw
+                                                   :writes (vec (distinct (concat child-writes (keys produced-values))))})
+                                                :source-iteration (inc iteration)
+                                                :action-id phase2-action-id
+                                                :output-owners (:owners produced)
+                                                :scoped-outputs (:scoped-outputs produced)
+                                                :protected-writes (vec (distinct (:protected-writes produced))))
+                            surviving (apply dissoc produced-values child-writes)
+                            summary (cond-> base-summary
+                                      (seq surviving)
+                                      (assoc :surviving-vars (vec (sort-by pr-str (keys surviving)))))
+                            _ (swap! sandbox-vars
+                                     (fn [vars]
+                                       (-> vars
+                                           (dissoc :generated-tree)
+                                           (merge produced-values)
+                                           (update :tree-results (fnil conj []) summary))))
+                            _ (swap! var-creation-times
+                                     (fn [times]
+                                       (reduce (fn [m k] (if (contains? m k) m (assoc m k (inc iteration))))
+                                               times (keys produced-values))))
+                            _ (swap! cumulative-tree-ms + (or (:duration-ms phase2-result) 0))
+                            p2-usage (:usage phase2-result)
+                            _ (when (and p2-usage (pos? (:total-tokens p2-usage 0)))
+                                (add-descendant-usage! p2-usage)
+                                (swap! total-usage
+                                       (fn [acc]
+                                         (-> acc
+                                             (update :prompt-tokens
+                                                     (fnil + 0 0)
+                                                     (or (:prompt-tokens p2-usage) 0))
+                                             (update :completion-tokens
+                                                     (fnil + 0 0)
+                                                     (or (:completion-tokens p2-usage) 0))
+                                             (update :total-tokens
+                                                     (fnil + 0 0)
+                                                     (or (:total-tokens p2-usage) 0))
+                                             (logic/add-cost p2-usage)))))
+                            _ (dbg "\n[DEBUG RLM] Recursive recur — :tree-results entries:"
+                                   (count (:tree-results @sandbox-vars))
+                                   "summary status:" (:status summary))
+                            tree-output-keys (vec (:outputs-keys summary))
+                            prior-sandbox-keys (set (keys sandbox-before-iteration))
+                            tree-created-keys (remove prior-sandbox-keys tree-output-keys)
+                            tree-updated-keys (filter prior-sandbox-keys tree-output-keys)
+                            outcome (logic/render-tree-outcome summary)
+                            new-history (update new-history
+                                                (dec (count new-history))
+                                                (fn [entry]
+                                                  (let [prior-vars (or (:vars-created entry) [])
+                                                        prior-updated (or (:vars-updated entry) [])
+                                                        marker-syms #{:generated-tree
+                                                                      :generated-tree-raw
+                                                                      :generated-tree-source}
+                                                        kept (remove marker-syms prior-vars)]
+                                                    (-> entry
+                                                        (assoc :vars-created
+                                                               (vec (distinct (concat kept tree-created-keys))))
+                                                        (assoc :vars-updated
+                                                               (vec (distinct
+                                                                     (concat prior-updated
+                                                                             tree-updated-keys))))
+                                                        (cond-> (:preflight-rejected? phase2-result)
+                                                          (assoc :error (:error phase2-result)))
+                                                        (assoc :generated-tree
+                                                               generated-tree-raw
+                                                               :generated-tree-source
+                                                               generated-tree-source
+                                                               :child-trace-id child-tick-id
+                                                               :child-outcome (select-keys summary
+                                                                                           [:status :elapsed-ms
+                                                                                            :nodes-succeeded
+                                                                                            :nodes-failed
+                                                                                            :nodes-timed-out
+                                                                                            :error
+                                                                                            :setup-diagnostic])
+                                                               :tree-outcome outcome)))))]
+                        (or (checkpoint-result (inc iteration) new-history
+                                               attempt-start-ms)
+                            (recur (inc iteration) new-history)))
+                      :else
+                      (let [p1-usage @total-usage
+                            p2-usage (:usage phase2-result)
+                            p2-by-node (:by-node p2-usage)
+                            _ (when p2-usage (add-descendant-usage! p2-usage))
+                            combined-usage (cond-> {:prompt-tokens (+ (:prompt-tokens p1-usage 0)
+                                                                     (:prompt-tokens p2-usage 0))
+                                                    :completion-tokens (+ (:completion-tokens p1-usage 0)
+                                                                          (:completion-tokens p2-usage 0))
+                                                    :total-tokens (+ (:total-tokens p1-usage 0)
+                                                                     (:total-tokens p2-usage 0))}
+                                             (or (logic/usage-cost p1-usage) (logic/usage-cost p2-usage))
+                                             (assoc :cost (+ (or (logic/usage-cost p1-usage) 0)
+                                                             (or (logic/usage-cost p2-usage) 0)))
+                                             (seq p2-by-node) (assoc :by-node p2-by-node))]
+                        {:status (:status phase2-result)
+                         :outputs (:outputs phase2-result)
+                         :generated-tree-raw generated-tree-raw
+                         :generated-tree-source generated-tree-source
+                         :iteration-reasonings (:iteration-reasonings @sandbox-vars)
+                         :iterations new-history
+                         :duration-ms (+ phase1-duration (or (:duration-ms phase2-result) 0))
+                         :usage combined-usage
+                         :breakdown {:phase1 p1-usage :phase2 p2-usage}
+                         :phase2-duration-ms (:duration-ms phase2-result)
+                         :phase2-error (:error phase2-result)
+                         :phase1-elapsed-ms phase1-duration
+                         :phase2-elapsed-ms (cond
+                                              (number? (:duration-ms phase2-result))
+                                              (:duration-ms phase2-result)
+                                              (= :timeout (:status phase2-result))
+                                              (:remaining-ms budget)
+                                              :else nil)
+                         :phase2-tick-id (:trace-id phase2-result)
+                         :budget budget})))))
+
+                  (or (logic/contains-final-answer? (:result exec-result))
+                      (logic/contains-final-answer? (:stdout exec-result)))
+                  (let [final-answer (or (logic/extract-final-answer (:result exec-result))
+                                         (logic/extract-final-answer (:stdout exec-result)))
+                        outputs (if (map? final-answer)
+                                  final-answer
+                                  {(first declared-writes) final-answer})]
+                    {:status :success
+                     :outputs outputs
+                     :final-answer final-answer
+                     :iterations new-history
+                     :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                     :usage @total-usage})
+
+                  :else
+                  (or (checkpoint-result (inc iteration) new-history
+                                         attempt-start-ms)
+                      (recur (inc iteration) new-history))))))))
+
+      (catch Exception e
+        (merge {:status :failure
+                :error (.getMessage e)
+                :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                :usage @total-usage}
+               (select-keys (ex-data e) [:failure-kind :provider-evidence :model-fallback])))) result
+      (if (:usage result)
+        (assoc result :own-usage
+               (let [d @descendant-usage
+                     tokens (into {}
+                                  (map (fn [k]
+                                         [k (max 0 (- (or (get (:usage result) k) 0)
+                                                      (or (get d k) 0)))]))
+                                  [:prompt-tokens :completion-tokens :total-tokens])]
+                 (if-let [total-cost (logic/usage-cost (:usage result))]
+                   (assoc tokens :cost (max 0 (- total-cost (or (logic/usage-cost d) 0))))
+                   tokens)))
+        result))))
+
+;; =============================================================================
+;; Retry Logic
+;; =============================================================================
+
+(defn execute-repl-researcher
+  "Execute a repl-researcher node using iterative LLM+SCI code execution.
+
+   This implements the RLM (Recursive Language Model) pattern where:
+   1. LLM generates Clojure code to call MCP tools
+   2. Code executes in a safe SCI sandbox
+   3. Results feed back to LLM for next iteration
+   4. Converges when FINAL_ANSWER is detected
+
+   When :rlm is true on the node, uses RLM mode with BT primitives:
+   - (llm ...) for sub-LLM calls
+   - (final! ...) for validated output capture
+   - (get-input ...) for loading input values
+
+   Args:
+     node - The repl-researcher node map with :instruction, :reads, :writes, :mcp-tools
+     blackboard - Map of key -> {:key, :schema, :value, :version}
+     provider - ORC LLM provider keyword
+     context - Context map with :call-tool-fn (fn [tool-name args-map] -> result) for MCP tool calls
+     options - Optional ORC LLM options map
+
+   Returns:
+     {:status :success/:failure
+      :outputs {string-key value}
+      :iterations [{:code ... :result ... :stdout ...}]
+      :final-answer string?
+      :error string?
+      :duration-ms int
+      :usage {:prompt-tokens N :completion-tokens N :total-tokens N}}"
+  [node blackboard provider context & {:keys [options] :or {options {}}}]
+  (let [execution-options (merge options (:options node))]
+    (if (:rlm node)
+      (execute-repl-researcher-rlm node blackboard provider context :options execution-options)
+    (let [start-time (System/currentTimeMillis)
+          max-iterations (or (:max-iterations node) 10)
+        mcp-tools (or (:mcp-tools node) [])
+        browser-tools (or (:browser-tools node) [])
+        call-tool-fn (-> (logic/phase1-call-tool-fn
+                          (assoc context :call-tool-fn
+                                 (logic/node-call-tool-fn node blackboard context)))
+                         (logic/guarded-call-tool-fn (:tool-contracts node)))
+
+        sci-ctx (logic/build-sci-context
+                 {:call-tool-fn call-tool-fn
+                  :mcp-tools mcp-tools
+                  :browser-tools browser-tools})
+
+        bb-metadata (logic/build-blackboard-metadata node blackboard)
+
+        total-usage (atom {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0})]
+
+    (try
+      (loop [iteration 0
+             history []]
+        (if (>= iteration max-iterations)
+          {:status :failure
+           :error "Max iterations reached without FINAL_ANSWER"
+           :iterations history
+           :duration-ms (- (System/currentTimeMillis) start-time)
+           :usage @total-usage}
+
+          (let [
+                bb-values (reduce (fn [acc k]
+                                    (if-let [entry (get blackboard k)]
+                                      (assoc acc (name k) (logic/serialize-for-llm (:value entry)))
+                                      acc))
+                                  {}
+                                  (:reads node))
+                processed-instruction (reduce (fn [instr [k v]]
+                                                (str/replace instr
+                                                             (str "{" k "}")
+                                                             (if (string? v) v (pr-str v))))
+                                              (:instruction node)
+                                              bb-values)
+                module (logic/build-code-generation-module
+                         (assoc node :instruction processed-instruction)
+                         bb-metadata history mcp-tools browser-tools)
+                all-tools (concat mcp-tools browser-tools)
+                inputs {:task (logic/serialize-for-llm processed-instruction)
+                        :context bb-metadata
+                        :history (or (logic/build-iteration-history history) "None")
+                        :tools (str/join ", " all-tools)}
+                llm-options (cond-> (assoc execution-options :validate? false :with-metadata? true)
+                                 (:model node) (assoc :model (:model node)))
+
+                llm-result (predict node provider module inputs llm-options
+                             (assoc context :researcher-iteration iteration
+                                            :execution-deadline-ms (:workflow-deadline-ms context))
+                             :prime (logic/logical-id (assoc context :researcher-iteration iteration)
+                                                                 :prime (:name node) module inputs node llm-options))
+                code (let [raw (or (:code llm-result) (get-in llm-result [:outputs :code]))]
+                       (cond
+                         (string? raw)
+                         (-> raw
+                             (str/replace #"^```(?:clojure|clj|edn)?\s*\n?" "")
+                             (str/replace #"\n?```\s*$" "")
+                             str/trim)
+
+                         (some? raw)
+                         (pr-str raw)
+
+                         :else nil))
+
+                _ (when-let [u (logic/normalize-usage (:usage llm-result))]
+                    (swap! total-usage
+                           (fn [acc]
+                             {:prompt-tokens (+ (:prompt-tokens acc 0) (:prompt-tokens u))
+                              :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens u))
+                              :total-tokens (+ (:total-tokens acc 0) (:total-tokens u))})))]
+
+            (cond
+              (str/blank? code)
+              {:status :failure
+               :error "LLM did not generate code"
+               :iterations history
+               :duration-ms (- (System/currentTimeMillis) start-time)
+               :usage @total-usage}
+
+              (logic/contains-final-answer? code)
+              (let [final-answer (logic/extract-final-answer code)
+                    write-keys (:writes node)
+                    outputs (if (map? final-answer)
+                              (let [extracted
+                                    (reduce (fn [acc k]
+                                              (let [kw (if (keyword? k) k (keyword k))
+                                                    v (or (get final-answer kw)
+                                                          (get final-answer (name kw)))]
+                                                (cond-> acc (some? v) (assoc kw v))))
+                                            {}
+                                            write-keys)]
+                                (if (seq extracted)
+                                  extracted
+                                  {(first write-keys) final-answer}))
+                              {(first write-keys) final-answer})]
+                {:status :success
+                 :outputs outputs
+                 :final-answer final-answer
+                 :iterations (conj history {:code code
+                                            :result code
+                                            :stdout ""
+                                            :error nil})
+                 :duration-ms (- (System/currentTimeMillis) start-time)
+                 :usage @total-usage})
+
+              :else
+              (let [exec-result (logic/sci-sandbox-execute-code sci-ctx code)
+                    new-history (conj history
+                                      {:code code
+                                       :result (:result exec-result)
+                                       :stdout (:stdout exec-result)
+                                       :error (:error exec-result)})
+                    raw-result (when (string? (:raw-result exec-result))
+                                 (:raw-result exec-result))
+                    result-for-extraction (or raw-result (:result exec-result))]
+                (cond
+                  (or (logic/contains-final-answer? result-for-extraction)
+                      (logic/contains-final-answer? (:stdout exec-result)))
+                  (let [final-answer (or (logic/extract-final-answer result-for-extraction)
+                                         (logic/extract-final-answer (:stdout exec-result)))
+                        write-keys (:writes node)
+                        outputs (if (map? final-answer)
+                                  (let [extracted (reduce (fn [acc k]
+                                                            (let [kw (if (keyword? k) k (keyword k))
+                                                                  str-k (name kw)
+                                                                  v (or (get final-answer kw)
+                                                                        (get final-answer str-k))]
+                                                              (if (some? v)
+                                                                (assoc acc kw v)
+                                                                acc)))
+                                                          {}
+                                                          write-keys)]
+                                    (if (seq extracted)
+                                      extracted
+                                      {(first write-keys) final-answer}))
+                                  {(first write-keys) final-answer})]
+                    {:status :success
+                     :outputs outputs
+                     :final-answer final-answer
+                     :iterations new-history
+                     :duration-ms (- (System/currentTimeMillis) start-time)
+                     :usage @total-usage})
+
+                  (logic/repeated-output? history exec-result)
+                  {:status :failure
+                   :error "Output repeated - possible infinite loop"
+                   :iterations new-history
+                   :duration-ms (- (System/currentTimeMillis) start-time)
+                   :usage @total-usage}
+
+                  :else
+                  (recur (inc iteration) new-history)))))))
+
+      (catch Exception e
+        (if (:model-call-in-flight? (ex-data e))
+          {:status :running :researcher-frontier-conflict? true}
+          (merge {:status :failure
+                  :error (.getMessage e)
+                  :duration-ms (- (System/currentTimeMillis) start-time)
+                  :usage (merge-with + @total-usage (or (logic/normalize-usage (:usage (ex-data e))) {}))}
+                 (select-keys (ex-data e) [:failure-kind :provider-evidence :model-fallback])))))))))
+
+;; =============================================================================
+;; Main Execution Entry Point
+;; =============================================================================
+
+(defn execute-leaf
+  "Execute a leaf node based on its executor type.
+
+   Executor types:
+   - :ai (default) - ORC LLM AI execution
+   - :code - Clojure function execution
+   - :tool - Authored-tool invocation (one named tool, reads as arguments)
+
+   Args:
+     node - The leaf node map
+     blackboard - Map of key -> {:key, :type, :value, :version}
+     provider - ORC LLM provider keyword (for :ai executor)
+     context - Additional context map (event-store, etc.)
+
+   Returns:
+     {:status :success/:failure
+      :outputs {string-key value}
+      :error string?
+      :duration-ms int}"
+  [node blackboard provider & {:keys [context options stream] :or {context {} options {}}}]
+  (let [executor-type (or (:executor node) :ai)
+        retry-config (:retry node)
+        execution-options (merge options (:options node)
+                                 (select-keys options [:start-provider-attempt!
+                                                       :complete-provider-attempt! :model-role-context :model-fallback-callbacks]))
+        max-node-attempts (or (get-in retry-config [:max-attempts]) 1)
+        node-attempt (atom 0)
+        execute-fn (fn []
+                     (let [current-node-attempt (swap! node-attempt inc)]
+                     (case executor-type
+                       :ai (execute-ai node blackboard provider
+                                       :options (assoc execution-options
+                                                       :node-attempt current-node-attempt
+                                                       :max-node-attempts max-node-attempts)
+                                       :stream stream)
+                       :decision (execute-decision node blackboard provider
+                                                   :options (assoc execution-options
+                                                                   :node-attempt current-node-attempt
+                                                                   :max-node-attempts max-node-attempts))
+                       :code (logic/executor-execute-code node blackboard context)
+                       :tool (logic/execute-tool node blackboard context)
+                       (execute-ai node blackboard provider
+                                   :options (assoc execution-options
+                                                   :node-attempt current-node-attempt
+                                                   :max-node-attempts max-node-attempts)
+                                   :stream stream))))]
+    (try
+      (if retry-config
+        (logic/execute-with-retry execute-fn retry-config node)
+        (execute-fn))
+      (finally
+        (logic/clear-node! (:tick-id execution-options) (:id node))))))
 
 (defn- cancel-llm-budget!
   "Commit and publish active/root native cancellation off the model work that
@@ -154,14 +4934,14 @@
                  (and (:root-sheet-id exceeded) (:root-tick-id exceeded)
                       (not= tick-id (:root-tick-id exceeded)))
                  (conj {:sheet-id (:root-sheet-id exceeded) :tick-id (:root-tick-id exceeded)}))
-        claimed (filterv #(claim-budget-cancellation! (:tick-id %)) owners)]
+        claimed (filterv #(logic/claim-budget-cancellation! (:tick-id %)) owners)]
     (if (seq claimed)
-      (or (execution-budget/run-owned-cancellation!
+      (or (logic/run-owned-cancellation!
             (fn []
               (let [anomalies
                     (into [] (keep (fn [{:keys [sheet-id tick-id]}]
                              (if (rm/is-tick-or-ancestor-cancelled? context tick-id)
-                               (do (swap! budget-cancellation-claims dissoc tick-id) nil)
+                               (do (swap! logic/budget-cancellation-claims dissoc tick-id) nil)
                                (let [result (cp/process-command
                                               (assoc context :command
                                                      {:command/id (random-uuid) :command/timestamp (time/now)
@@ -179,7 +4959,7 @@
   "Reserve one call and durably cancel both the active and root ticks when the
    shared root budget is exhausted. Returns the exceeded descriptor, or nil."
   [context tick-ctx sheet-id tick-id]
-  (when-let [exceeded (reserve-llm-call! tick-ctx tick-id)]
+  (when-let [exceeded (logic/reserve-llm-call! tick-ctx tick-id)]
     (cancel-llm-budget! context sheet-id tick-id exceeded)))
 
 (defn- reserve-durable-provider-call!
@@ -189,7 +4969,7 @@
                 (assoc context :command
                        (merge {:command/id (random-uuid) :command/timestamp (time/now)
                                :command/name :sheet/reserve-provider-call
-                               :invocation-identity (provider-call-reservations/reservation-identity reservation)
+                               :invocation-identity (logic/reservation-identity reservation)
                                :reserved-at (str (java.time.Instant/now))}
                               (dissoc reservation :budget))))]
     (when (:cognitect.anomalies/category result) result)))
@@ -206,10 +4986,10 @@
                           (fn [query] (es/read (:event-store context) query)))
               events (read-fn {:tenant-id (:tenant-id context)
                                :tags #{[:llm-budget-root (:budget-tick-id reservation)]}
-                               :types provider-call-reservations/fact-types})
-              decision (provider-call-reservations/reservation-decision
+                               :types logic/provider-call-reservations-fact-types})
+              decision (logic/reservation-decision
                          (assoc reservation :invocation-identity
-                                (provider-call-reservations/reservation-identity reservation)) events)]
+                                (logic/reservation-identity reservation)) events)]
           (case (:decision decision)
             :exhausted (let [cancellation (cancel-llm-budget! context sheet-id tick-id decision)]
                          (if (:cognitect.anomalies/category cancellation) cancellation anomaly))
@@ -225,7 +5005,7 @@
   "A bounded option never falls back to process-local/no-cap admission when
    canonical ownership cannot be established. CAS still validates that owner."
   [context _sheet-id tick-id tick-ctx]
-  (let [owner (budget-facts/root context tick-id)
+  (let [owner (rm/root context tick-id)
         budget (get-in tick-ctx [:options :llm-call-budget])]
     (when (and (integer? budget) (pos? budget) (nil? owner))
       (throw (ex-info "Durable LLM budget history is incomplete; bounded execution cannot resume"
@@ -263,35 +5043,13 @@
         options (:options tick-ctx)
         node (get (:nodes-by-id tick-ctx) node-id)
         checkpointed? (or (true? (:checkpointed-campaign? options))
-                          (researcher-mode/checkpointed? node))
+                          (logic/checkpointed? node))
         budget-root (durable-budget-root context sheet-id tick-id tick-ctx)
         root-tick-id (when checkpointed? (:tick-id budget-root))]
     (cond-> #{[:sheet sheet-id] [:node node-id] [:tick tick-id]}
       budget-root (conj [:llm-budget-root (:tick-id budget-root)])
       (and root-tick-id (not= root-tick-id tick-id))
       (conj [:tick root-tick-id]))))
-
-;; =============================================================================
-;; Tick-Scoped Resolution Helpers
-;; =============================================================================
-;;
-(defn- ephemeral-routing-tree?
-  "True when a tick's tree may run on the ephemeral fast path: only
-   sequence/fallback/condition/leaf nodes, and no composite carrying judges.
-   Ephemeral routing records no per-composite completion, so a judge on a
-   composite (or the root) could never fire; a judged composite is a durable
-   boundary and makes the run durable. A tree with no judged composite keeps
-   the fast path unchanged. `:judges` is on every run node: draft nodes carry
-   their own, a published run's nodes are stamped with their source draft
-   node's at the start of the run (see `build-execution-snapshot`), so the
-   answer is fixed for the life of the tick."
-  [nodes-by-id]
-  (and (seq nodes-by-id)
-       (every? #(contains? #{:sequence :fallback :condition :leaf} (:type %))
-               (vals nodes-by-id))
-       (not-any? #(or (:model-fallback-policy %)
-                       (and (not= :leaf (:type %)) (seq (:judges %))))
-                 (vals nodes-by-id))))
 
 (defn- resolve-nodes-by-id
   "Get nodes-by-id for a tick from tick-scoped execution context."
@@ -319,7 +5077,7 @@
    []) rather than (:reads node) — a node that declares no reads would
    otherwise silently hydrate the whole blackboard."
   [{:keys [tenant-id] :as context} tick-id metadata-bb ks]
-  (value-log/hydrate-blackboard context tenant-id tick-id metadata-bb ks))
+  (rm/hydrate-blackboard context tenant-id tick-id metadata-bb ks))
 
 (defn- resolve-blackboard-values
   "Project a tick's blackboard metadata and hydrate `ks` in one step, for
@@ -331,42 +5089,6 @@
   "Get GEPA instruction overrides for a tick, if any."
   [ctx tick-id]
   (:instruction-overrides (rm/get-tick-execution-context ctx tick-id)))
-
-(defn- apply-instruction-override
-  "If instruction overrides exist for this node's name, apply them."
-  [node overrides]
-  (if-let [override (and overrides (:name node) (get overrides (:name node)))]
-    (assoc node :instruction override)
-    node))
-
-(defn- maybe-lookup-parent-summary
-  "Best-effort lookup of the parent sheet's consolidated :summary from
-   the ontology corpus. Returns the summary string when available, nil
-   otherwise. Graceful when the ontology component isn't loaded.
-
-   The parent sheet's description lives in the :tree-fingerprint
-   granularity, keyed by the sheet's canonical-tree-raw hash. C-2c-2's
-   first cut uses sheet-id as a proxy — the corpus may have the
-   description tagged under either form. We try sheet-id first; later
-   slices can add fingerprint translation."
-  [context sheet-id]
-  (try
-    (let [get-description (requiring-resolve
-                            'ai.obney.orc.ontology.interface/get-description)]
-      (when get-description
-        (let [body (get-description context :tree-fingerprint sheet-id)]
-          (:summary body))))
-    (catch Exception _ nil)))
-
-(defn- run-or-defer-classification-effect!
-  "Run a classification preparation effect immediately on the legacy path, or
-   stage it for the checkpointed campaign's bounded commit.  Staging keeps a
-   classifier timeout from exposing a durable decision before all of the work
-   needed to prepare that decision has settled."
-  [context kind command run!]
-  (if-let [effects (:classification-effects context)]
-    (swap! effects conj {:kind kind :command command})
-    (run!)))
 
 (defn- researcher-classification-committed?
   [context tick-id node-id ownership-epoch]
@@ -426,8 +5148,7 @@
    stops working while every classification still looks fine — the failure
    shape hardest to notice and the one this whole arc is about."
   [context class-id signature]
-  (let [claim-set-version (requiring-resolve
-                            'ai.obney.orc.ontology.interface/get-claim-set-version)
+  (let [claim-set-version (integrations/capability :ontology :get-claim-set-version)
         command {:command/name :ontology/record-claim-deltas
                  :command/id (random-uuid)
                  :command/timestamp (time/now)
@@ -444,27 +5165,9 @@
                  :evidence-event-count 0
                  :claim-set-version
                  (claim-set-version context :tree-class class-id)}]
-    (run-or-defer-classification-effect!
+    (logic/run-or-defer-classification-effect!
      context :convergence-capture command
      #(cp/process-command (assoc context :command command)))))
-
-(declare fetch-tree-body)
-
-(defn- domain-family-birth-description
-  "CV-A item 5, as corrected in inspection: the rich, self-contained text
-   minted onto the family's OWN concept :description and embedded at birth
-   (`DomainFamilyDescribesItselfFromBirth`). Carries substance only: the
-   family's label, its purpose (the verdict's domain-reasoning), the birth
-   shape's OWN summary (the role it plays), and the birth task signature. No
-   ids: the embedding and the merge judge read this text, and an id means
-   nothing to either. Pure — no I/O."
-  [domain-label parent-summary domain-reasoning signature]
-  (str "Domain family \"" domain-label "\". "
-       "Purpose (subject matter, material, output kind): "
-       (or domain-reasoning "(no domain reasoning recorded at birth)") " "
-       "It specialises the shape: "
-       (or parent-summary "(the birth shape's summary was unavailable)") " "
-       "Birth task: " signature))
 
 (defn- birth-description-claims!
   "CV-A item 5 (`DomainFamilyDescribesItselfFromBirth`): on a family birth
@@ -478,8 +5181,7 @@
    note there is not an avoid-when condition. The birth shape lives in the
    concept's own description instead."
   [context class-id domain-reasoning signature]
-  (let [claim-set-version (requiring-resolve
-                            'ai.obney.orc.ontology.interface/get-claim-set-version)
+  (let [claim-set-version (integrations/capability :ontology :get-claim-set-version)
         capability-content
         (str "Domain family born for a task whose subject matter, material "
              "and output kind are: "
@@ -508,7 +5210,7 @@
                  :evidence-event-count 0
                  :claim-set-version
                  (claim-set-version context :tree-class class-id)}]
-    (run-or-defer-classification-effect!
+    (logic/run-or-defer-classification-effect!
      context :convergence-capture command
      #(cp/process-command (assoc context :command command)))))
 
@@ -538,22 +5240,11 @@
     (if (or already-set? (not auto?))
       node
       (let [threshold (or (:auto-classify-threshold rlm-config) 0.7)
-            ;; Behavioral side surfaces few-shot examples to the model.
-            ;; Set lower than the structural match threshold (0.7) so we
-            ;; can show UP TO top-N behaviors when there are adjacent
-            ;; matches, but high enough that low-signal candidates
-            ;; (random pattern matches at <0.6) don't take up prompt
-            ;; tokens. Matches the min-display-confidence floor used
-            ;; for the structural side downstream. Override per-task
-            ;; via :rlm {:auto-classify-behavioral-threshold X}.
             behavioral-threshold (or (:auto-classify-behavioral-threshold rlm-config)
                                      0.6)
-            classify-task (requiring-resolve
-                            'ai.obney.orc.ontology.interface/classify-task)
-            classify-behaviors (requiring-resolve
-                                 'ai.obney.orc.ontology.interface/classify-behaviors)
-            build-sig (requiring-resolve
-                        'ai.obney.orc.ontology.core.task-classifier/build-task-signature)
+            classify-task (integrations/capability :ontology :classify-task)
+            classify-behaviors (integrations/capability :ontology :classify-behaviors)
+            build-sig (integrations/capability :ontology :build-task-signature)
             signature (build-sig node)
             classification-active? (or (:classification-active? context)
                                        (constantly true))
@@ -566,61 +5257,25 @@
                            :sheet-id (:sheet-id context)
                            :tick-id (:tick-id context)
                            :node-id (:id node)}))))
-            parent-summary (maybe-lookup-parent-summary context (:sheet-id context))
+            parent-summary (logic/maybe-lookup-parent-summary context (:sheet-id context))
             result (classify-task context
                      (cond-> {:task-signature signature
                               :threshold threshold}
                        parent-summary (assoc :parent-summary parent-summary)))
             _ (ensure-classification-active!)
-            ;; R05b: after the structural classification, query the
-            ;; behavioral corpus with the structural :assigned-tree-id
-            ;; as :structural-context so behaviors that compose into
-            ;; this shell are surfaced. composes-into edges are
-            ;; retrieval hints — empty filtered set falls back to the
-            ;; unfiltered candidate set in classify-behaviors itself.
             behavioral-result (classify-behaviors context
                                 {:task-signature signature
                                  :threshold behavioral-threshold
                                  :structural-context (:assigned-tree-id result)
-                                 ;; Bump top-n past classify-behaviors's
-                                 ;; default of 3 so the prepend's behavioral
-                                 ;; section can surface up to 5 candidates
-                                 ;; (matches behavioral-cap downstream).
                                  :top-n 5})
             _ (ensure-classification-active!)
             behaviors (:behaviors behavioral-result)
-            ;; EL-3 (ADR 0015): detect-and-defer. When the structural OR
-            ;; behavioral classification :outcome is :uncertain (a reranker
-            ;; fallback — we do NOT know the class), SKIP the
-            ;; :ontology/assign-task-class dispatch entirely: no fresh-mint
-            ;; event, no class creation/accrual. We still set the node
-            ;; :context below so the R-Inject reranker-fallback caution
-            ;; surfaces to the model. :matched / :novel dispatch as today.
-            ;; The defeat condition (ADR 0015) is an :uncertain outcome that
-            ;; still mints/assigns — so the dispatch is gated here, not via a
-            ;; schema throw on a nil :assigned-tree-id.
             uncertain? (or (= :uncertain (:outcome result))
                            (= :uncertain (:outcome behavioral-result)))]
         (if uncertain?
-          ;; CC-23 (contract TaskClassification, DeferralIsVisible): the
-          ;; deferral is a POSITIVE durable fact, not a silent skip. This
-          ;; call site is where the :uncertain result used to vanish (CC-19:
-          ;; 22 of 178 ticks — 12.4% — left no event and could only be
-          ;; INFERRED). ONE deferral event per deferred classification, via
-          ;; its own command — :ontology/assign-task-class REQUIRES an
-          ;; :assigned-tree-id, so a deferral structurally cannot ride it.
-          ;; The classify fns stay pure decision fns; the dispatch lives here.
-          (let [fallback-sources @(requiring-resolve
-                                    'ai.obney.orc.ontology.core.task-classifier/rerank-fallback-sources)
+          (let [fallback-sources @(integrations/capability :ontology :rerank-fallback-sources)
                 fallback-of (fn [entries]
                               (some (comp fallback-sources :rerank-source) entries))
-                ;; Read the fallback source from the candidates' own
-                ;; :rerank-source — the structural snapshot when classify-task
-                ;; deferred, else the behavioral candidates when only
-                ;; classify-behaviors deferred. Both :uncertain branches
-                ;; guarantee at least one fallback-stamped entry; the terminal
-                ;; :colbert-fallback default is unreachable belt-and-suspenders
-                ;; (a deferral must never fail to record for want of a source).
                 fallback-source (or (when (= :uncertain (:outcome result))
                                       (fallback-of (:ranked-candidates result)))
                                     (when (= :uncertain (:outcome behavioral-result))
@@ -636,10 +5291,6 @@
                   :source-node-id (:id node)
                   :fallback-source fallback-source
                   :ranked-candidates (vec (:ranked-candidates result))
-                  ;; The recorded reason must name the axis that actually
-                  ;; deferred: when only the BEHAVIORAL classification was
-                  ;; :uncertain, the structural :reasoning describes a
-                  ;; successful match and would misattribute the deferral.
                   :reasoning (if (= :uncertain (:outcome result))
                                (or (:reasoning result)
                                    "Structural classification deferred: reranker fell back (uncertain).")
@@ -648,7 +5299,7 @@
                   (assoc :researcher-ownership-epoch
                          (:researcher-ownership-epoch context)))]
             (ensure-classification-active!)
-            (run-or-defer-classification-effect!
+            (logic/run-or-defer-classification-effect!
              context :classification-outcome deferral-command
              #(cp/process-command
                (assoc context :command deferral-command)))
@@ -672,12 +5323,8 @@
                   (some? (:researcher-ownership-epoch context))
                   (assoc :researcher-ownership-epoch
                          (:researcher-ownership-epoch context))
-                  ;; C-2d-2: forward :parent-tree-id when walk-down returned
-                  ;; one. Nil means top-level match or walk-down disabled.
                   (some? (:parent-tree-id result))
                   (assoc :parent-tree-id (:parent-tree-id result))
-                  ;; R01: forward :rerank-fallback? as :rerank-failed?
-                  ;; when classify-task observed a reranker fallback.
                   (true? (:rerank-fallback? result))
                   (assoc :rerank-failed? true)
                   (seq behaviors)
@@ -686,13 +5333,8 @@
                   (assoc :ranked-candidates (:ranked-candidates result))
                   (some? (:assigned-via result))
                   (assoc :assigned-via (:assigned-via result))
-                  ;; RS-6: the three-state outcome the classifier decided.
                   (some? (:outcome result))
                   (assoc :outcome (:outcome result))
-                  ;; RS-3: the domain-child facts RS-2's assign-domain-child
-                  ;; produced — all optional (omit-not-nil), so a plain
-                  ;; :match/:bundle/:mint result (no domain-child logic ran)
-                  ;; leaves the event byte-shaped exactly as before.
                   (some? (:domain-verdict result))
                   (assoc :domain-verdict (:domain-verdict result))
                   (some? (:domain-label result))
@@ -701,26 +5343,12 @@
                   (assoc :domain-children-considered (:domain-children-considered result))
                   (some? (:domain-deferral result))
                   (assoc :domain-deferral (:domain-deferral result))
-                  ;; CV-A: covered-seed protection's selection and the merge
-                  ;; judge's raw verdict, both optional (omit-not-nil).
                   (some? (:domain-selection result))
                   (assoc :domain-selection (:domain-selection result))
                   (some? (:merge-verdict result))
                   (assoc :merge-verdict (:merge-verdict result)))
-                ;; RS-3: on a domain-child MINT (first child or sibling), the
-                ;; child's tree-class concept and its skos:broader edge must
-                ;; exist BEFORE anything references the child — the CV-1
-                ;; claim capture below AND the classified event RS-2 already
-                ;; targets at the child's identity. :land-on-domain-child is
-                ;; NOT a mint (no concept work; the child already exists from
-                ;; an earlier occurrence).
                 domain-mint? (contains? #{:mint-domain-child :mint-sibling-domain-child}
                                         (:assigned-via result))
-                ;; CV-A item 5: a genuine tenant-wide family birth carries a
-                ;; :merge-verdict (the merge judge ran); the LEGACY
-                ;; per-parent sibling mint never calls the merge judge, so it
-                ;; never carries one and keeps today's generic concept
-                ;; description (no embedding).
                 birth-family-mint? (and domain-mint? (some? (:merge-verdict result)))]
             (ensure-classification-active!)
             (when domain-mint?
@@ -735,12 +5363,12 @@
                                           :source-node-id (:id node)}
                                     birth-family-mint?
                                     (assoc :birth-description
-                                           (domain-family-birth-description
+                                           (logic/domain-family-birth-description
                                             (:domain-label result)
-                                            (:summary (fetch-tree-body context (:parent-tree-id result)))
+                                            (:summary (logic/fetch-tree-body context (:parent-tree-id result)))
                                             (get-in result [:domain-verdict :domain-reasoning])
                                             signature)))]
-                (run-or-defer-classification-effect!
+                (logic/run-or-defer-classification-effect!
                  context :domain-child-mint mint-command
                  #(cp/process-command (assoc context :command mint-command)))
                 (ensure-classification-active!)
@@ -748,51 +5376,8 @@
                                  (or (:name node) (str (:id node)))
                                  (:parent-tree-id result)
                                  (:domain-label result)))))
-            ;; CV-1 (ADR 0017) Part 1 — CONVERGENCE CAPTURE. On a fresh-mint
-            ;; (and only then — we are already past the :uncertain guard), ALSO
-            ;; capture the task `signature` (the same instruction-aware text
-            ;; classify-task searched by) against the just-minted class. This
-            ;; puts it into the corpus immediately, so the NEXT identical/similar
-            ;; signature retrieves + matches it (accrues) instead of scattering a
-            ;; new random-uuid — the capture EL-1b specified but never built.
-            ;; ONLY on fresh-mint: a MATCH or BUNDLE (:was-fresh-mint? false)
-            ;; captures NOTHING, so a recurrence does not re-emit and thrash the
-            ;; ColBERT reindex (see orc-sheet-content-hash-thrash). Robust to
-            ;; turn timeouts — it does not depend on the RLM completing.
-            ;;
-            ;; CC-6 (ADR 0021): it is a CLAIM OPERATION, not a body. Writing a
-            ;; body here made this the SECOND writer of a slot the claim path
-            ;; owns — CC-3 re-derives `:current` from the claim set on every
-            ;; claim event, so the first consolidation to land would silently
-            ;; erase the signature this wrote. As an `:add` of kind
-            ;; `:representative-use` the signature reaches `:summary` through
-            ;; the same assembly as every other insight, and survives.
-            ;;
-            ;; It clears CC-4's evidence guard on a DECLARED EVIDENCE BASIS
-            ;; (`:classification-signature`) and NOT on judge evidence, because
-            ;; at classify time no judge has run — the forward conflict the
-            ;; orchestrator recorded when CC-4 landed. It names NO occurrence,
-            ;; deliberately: the turn is real but unjudged, and an unjudged
-            ;; occurrence must not count as post-guard evidence (CC-7). So this
-            ;; claim is VISIBLE and can never enforce until the reflection
-            ;; corroborates it from occurrences a judge actually scored.
-            ;;
-            ;; RS-3: on a domain-child mint, the capture happens HERE — BEFORE
-            ;; :ontology/assign-task-class dispatches below — so the concept
-            ;; and edge RS-3's mint just created exist first. Every other
-            ;; fresh-mint (top-level :novel, walk-down's own :mint) keeps the
-            ;; ORIGINAL order (assign, then capture) unchanged.
             (when (and domain-mint? (:was-fresh-mint? result))
               (ensure-classification-active!)
-              ;; CV-A item 5: a genuine tenant-wide family birth (the merge
-              ;; judge ran — :merge-verdict is on `result`) gets the rich
-              ;; three-claim self-description (the concept itself was
-              ;; already embedded AT BIRTH, in the SAME mint-domain-child
-              ;; event batch above — see its docstring for why a separate
-              ;; embed dispatch cannot work on the checkpointed path); the
-              ;; LEGACY per-parent sibling mint (no :merge-verdict — the
-              ;; merge judge never runs there) keeps its original single
-              ;; :representative-use capture, byte-identical to before.
               (if (:merge-verdict result)
                 (do
                   (birth-description-claims! context (:assigned-tree-id result)
@@ -806,7 +5391,7 @@
               (println (format "[DEBUG RLM] node '%s' CONVERGENCE-CAPTURE recorded signature claim for :tree-class %s"
                                (or (:name node) (str (:id node)))
                                (:assigned-tree-id result))))
-            (run-or-defer-classification-effect!
+            (logic/run-or-defer-classification-effect!
              context :classification-outcome assignment-command
              #(cp/process-command (assoc context :command assignment-command)))
             (println (format "[DEBUG RLM] node '%s' auto-classified → %s (confidence %.2f, was-fresh-mint? %s, behavioral-count %d)"
@@ -815,12 +5400,6 @@
                              (double (or (:confidence result) 0.0))
                              (:was-fresh-mint? result)
                              (count (:behaviors behavioral-result))))
-            ;; RS-3 (DeferralIsVisible): the domain axis deferred while the
-            ;; structural axis matched — the structural assignment above
-            ;; stands; ALSO record the domain-axis deferral through the
-            ;; existing deferral command, naming the domain axis and the
-            ;; reason. Never mutually exclusive with the assign-task-class
-            ;; dispatch above — both facts are true and both are recorded.
             (when-let [deferral (:domain-deferral result)]
               (ensure-classification-active!)
               (let [domain-deferral-command
@@ -838,15 +5417,13 @@
                       (some? (:researcher-ownership-epoch context))
                       (assoc :researcher-ownership-epoch
                              (:researcher-ownership-epoch context)))]
-                (run-or-defer-classification-effect!
+                (logic/run-or-defer-classification-effect!
                  context :domain-classification-deferral domain-deferral-command
                  #(cp/process-command (assoc context :command domain-deferral-command)))
                 (ensure-classification-active!)
                 (println (format "[DEBUG RLM] node '%s' RS-3 domain-axis DEFERRED (reason=%s) — deferral event recorded alongside the structural assignment"
                                  (or (:name node) (str (:id node)))
                                  (:reason deferral)))))
-            ;; Every non-domain-mint fresh-mint (top-level :novel, walk-down's
-            ;; own :mint) keeps the ORIGINAL order: assign, then capture.
             (when (and (not domain-mint?) (:was-fresh-mint? result))
               (ensure-classification-active!)
               (capture-classification-signature! context (:assigned-tree-id result) signature)
@@ -854,12 +5431,6 @@
               (println (format "[DEBUG RLM] node '%s' CONVERGENCE-CAPTURE recorded signature claim for :tree-class %s"
                                (or (:name node) (str (:id node)))
                                (:assigned-tree-id result))))))
-        ;; R-Inject: stash the full classifier payload on :context so
-        ;; apply-r05-classifier-context can prepend it to the model's
-        ;; Phase 1 prompt. :tree-id stays at the top level for downstream
-        ;; consumers (event tagging, telemetry); :self-learning? is
-        ;; dropped (it only existed for the legacy apply-ontology-context
-        ;; path which R-Inject replaces in the pipeline).
         (assoc node :context
                {:tree-id (:assigned-tree-id result)
                 :r05-classifier
@@ -870,15 +5441,6 @@
                           :reasoning (:reasoning result)
                           :top-candidates (vec (:top-candidates result))
                           :rerank-fallback? (boolean (:rerank-fallback? result))}
-                   ;; RS-4: the domain facts RS-2/RS-3's assign-domain-child
-                   ;; produced, omit-when-absent — a plain :match/:bundle/
-                   ;; :mint/:walk-down result carries none of the three
-                   ;; :assigned-via values below, so this payload stays
-                   ;; byte-identical to pre-RS-4 for every non-domain
-                   ;; outcome (the bounded-campaign literals prove it). The
-                   ;; renderer (format-structural-section) reads :domain to
-                   ;; render the waterfall top down instead of discarding
-                   ;; the parent's shape on :was-fresh-mint? true.
                    (contains? #{:mint-domain-child :land-on-domain-child
                                 :mint-sibling-domain-child}
                               (:assigned-via result))
@@ -890,1047 +5452,6 @@
                  :behavioral {:behaviors (vec (:behaviors behavioral-result))
                               :rerank-fallback? (boolean
                                                   (:rerank-fallback? behavioral-result))}}})))))
-
-;; =============================================================================
-;; R-Inject — R05 classifier output reaches the model's Phase 1 prompt
-;; =============================================================================
-;;
-;; The wedge classifies the task (structural + behavioral) and stashes the
-;; full envelope on the node's :context.:r05-classifier payload. This
-;; helper reads the payload and prepends a principle-shaped block to
-;; :instruction so the model sees the corpus's actual examples (with
-;; reranker reasoning + seed :summary guidance) when designing its tree.
-;;
-;; Edge cases:
-;;   - structural :was-fresh-mint? true   → "no high-confidence" branch
-;;   - top-1 behavioral fresh-mint marker → "consider minting" branch
-;;   - :rerank-fallback? on either axis   → caution annotation
-;;
-;; Each branch is principle-shaped — no hardcoded phrase matches against
-;; instruction text.
-;; =============================================================================
-
-(def ^:private behavioral-cap
-  "Maximum behavioral suggestions surfaced to the model. We aim for up
-   to 5 strong matches; weaker ones below min-display-confidence are
-   filtered out before this cap takes effect. The wedge calls
-   classify-behaviors with `:top-n 5` so the candidate set is sized
-   to feed this cap. Adjust both in tandem if changing."
-  5)
-
-(def ^:private structural-cap
-  "Maximum structural candidates surfaced to the model. classify-task
-   retrieves :k 5 from the corpus; the reranker scores all of them.
-   We aim for up to 5 strong matches; the min-display-confidence floor
-   below prunes weak ones. So you see breadth WHEN the corpus has
-   strong adjacent shapes, and a tight focused set when it doesn't."
-  5)
-
-(def ^:private min-display-confidence
-  "Floor for surfacing a candidate in the prepend. Candidates that
-   score below this on the reranker are dropped before the cap is
-   applied — keeps weak/noisy matches out of the model's prompt
-   regardless of how many slots we'd otherwise have. Tuned to the
-   reranker's typical 'cliff' between strong matches (>=0.85) and
-   noise (<=0.4): 0.6 catches the middle ground where a candidate
-   is plausibly related but not a clear fit."
-  0.6)
-
-(def ^:private traits-per-seed-cap
-  "Per matched seed, the max number of strengths AND max number of
-   weaknesses included in the prepend. Strengths/weaknesses are sorted
-   by :confidence descending; the top-N from each list are surfaced.
-   Caps prompt bloat — production seeds may have 3-5 strengths each."
-  2)
-
-(defn- format-key-list
-  "`[:doc :glossary]` -> \":doc, :glossary\" — keyword `str` already carries
-   the leading colon, so the rendered text is the exact key a model would
-   write in a blackboard map."
-  [ks]
-  (str/join ", " (map str ks)))
-
-(defn- format-pattern-bindings
-  "RR-22 (`OfferedPatternsAreUsable`): one line naming a pattern's declared
-   key bindings, offered as ADVICE for rebinding — never as an instruction
-   to run the pattern. Only called when at least one of reads/writes/outputs
-   is present (`format-principle-entry`'s caller-side gate)."
-  [pattern-reads pattern-writes pattern-outputs]
-  (str "    - Reads: " (if (seq pattern-reads) (format-key-list pattern-reads) "(none declared)")
-       " · Writes: " (if (seq pattern-writes) (format-key-list pattern-writes) "(none declared)")
-       (when (seq pattern-outputs) (str " · Outputs: " (format-key-list pattern-outputs)))
-       " — rebind these keys to your task's blackboard; the logic stays as written.\n"))
-
-(defn- format-principle-entry
-  "Render one entry from :strengths or :weaknesses as a prose block the
-   model can read. `kind` is :strength or :weakness; selects which
-   fields to include and how to label them.
-
-   RR-22 (`OfferedPatternsAreUsable`, ratified no-truncation decision):
-   `:recommended-pattern` is rendered WHOLE — no character cap, no emergency
-   bound. A pattern offered as proven that elides its own code cannot be
-   adopted; the cap that used to clip it here is gone, not raised."
-  [kind entry]
-  (let [{:keys [trait good-when avoid-when recommended-pattern
-                recommended-alternative confidence evidence-count
-                pattern-reads pattern-writes pattern-outputs]} entry
-        ev-suffix (cond
-                    (and confidence evidence-count)
-                    (format " (confidence %.2f, evidence-count %d)"
-                            (double confidence) (int evidence-count))
-                    confidence
-                    (format " (confidence %.2f)" (double confidence))
-                    :else "")]
-    (case kind
-      :strength
-      (str "  - **Trait:** " (or trait "(no trait recorded)") ev-suffix "\n"
-           (when good-when
-             (str "    - Good when: " good-when "\n"))
-           (when recommended-pattern
-             (str "    - Worked example DSL (corpus reference — adapt to your task):\n"
-                  "      ```clojure\n"
-                  "      " recommended-pattern "\n"
-                  "      ```\n"
-                  (when (or (seq pattern-reads) (seq pattern-writes) (seq pattern-outputs))
-                    (format-pattern-bindings pattern-reads pattern-writes pattern-outputs)))))
-      :weakness
-      (str "  - **Failure mode:** " (or trait "(no trait recorded)") ev-suffix "\n"
-           (when avoid-when
-             (str "    - Avoid when: " avoid-when "\n"))
-           (when recommended-alternative
-             (str "    - Recommended fix: " recommended-alternative "\n"))))))
-
-(defn- format-seed-body
-  "Render the rich seed body (capabilities + strengths + weaknesses +
-   representative-uses) as prose the model can read. Each section is
-   optional — missing fields are skipped silently. Returns nil if the
-   body is nil (caller-side gate).
-
-   `traits-cap` is the per-list maximum count for strengths and
-   weaknesses (sorted by :confidence desc before truncation).
-
-   `suppress-claims?` is the CLAIM-ONLY holdout arm (see *claim-holdout*).
-   When true the weakness list renders as if it were empty, so the whole
-   `Weaknesses (…)` section — header included, since the header exists only
-   because claims do — drops out and every other section is byte-identical.
-   Nothing else on this path is arm-dependent."
-  [body traits-cap suppress-claims?]
-  (when body
-    (let [{:keys [capabilities strengths weaknesses representative-uses]} body
-          rank-by-conf (fn [coll] (sort-by (fn [e] (- (double (or (:confidence e) 0.0))))
-                                           (or coll [])))
-          top-strengths (take traits-cap (rank-by-conf strengths))
-          top-weaknesses (when-not suppress-claims?
-                           (take traits-cap (rank-by-conf weaknesses)))]
-      (str
-        (when (seq capabilities)
-          (str "Capabilities:\n"
-               (->> capabilities (map (fn [c] (str "  - " c))) (str/join "\n"))
-               "\n\n"))
-        (when (seq top-strengths)
-          (str "Strengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n"
-               (->> top-strengths
-                    (map (partial format-principle-entry :strength))
-                    (str/join "\n"))
-               "\n"))
-        (when (seq top-weaknesses)
-          (str "Weaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n"
-               (->> top-weaknesses
-                    (map (partial format-principle-entry :weakness))
-                    (str/join "\n"))
-               "\n"))
-        (when (seq representative-uses)
-          (str "Representative uses (concrete tasks this pattern has shipped on):\n"
-               (->> representative-uses (map (fn [u] (str "  - " u))) (str/join "\n"))
-               "\n"))))))
-
-;; -----------------------------------------------------------------------------
-;; The SECOND rendering of a claim — inside the quoted `:summary`
-;; -----------------------------------------------------------------------------
-;;
-;; The render quotes a body's assembled `:summary` verbatim as
-;; "Pattern guidance (seed `:summary`)". That summary is not prose someone
-;; wrote: ontology read_models/assemble-summary MECHANICALLY joins one sentence
-;; per claim kind, in a fixed order —
-;;
-;;   Capabilities: … . Representative uses: … . Strengths: … .
-;;   Known weaknesses: <trait>; <trait>. Avoid when: … .
-;;
-;; so the same weakness claims reach the model a second time. A claim-only
-;; holdout that removed only the `format-seed-body` rendering would leave the
-;; claim in the prompt and measure nothing.
-
-(def ^:private known-weaknesses-label
-  "The `assemble-summary` section label that carries weakness CLAIM content
-   into an assembled `:summary`."
-  "Known weaknesses: ")
-
-(def ^:private section-after-known-weaknesses
-  "The label `assemble-summary` emits immediately AFTER `Known weaknesses`.
-   Used only as the fallback terminator, below."
-  " Avoid when: ")
-
-(defn- claim-summary-span
-  "`[start end)` of the `Known weaknesses: …` sentence inside `summary`, or nil
-   when there is none.
-
-   Preferred path: reconstruct the sentence EXACTLY as assemble-summary built
-   it from the body's own `:weaknesses` and locate that literal — nothing
-   adjacent can then be clipped, however the claim text is punctuated.
-
-   Fallback, for a `:summary` that cannot be reconstructed (no body was
-   readable, or the classifier surfaced an indexed summary the body has since
-   moved past): cut from the label to the next section assemble-summary emits,
-   or to the end. Weaker, because a claim containing the literal text
-   ` Avoid when: ` would terminate it early — hence it is the fallback."
-  [summary weaknesses]
-  (when-let [label-at (and (string? summary) (str/index-of summary known-weaknesses-label))]
-    (let [literal (when (seq weaknesses)
-                    (str known-weaknesses-label
-                         (str/join "; " (map :trait weaknesses))
-                         "."))
-          literal-at (when literal (str/index-of summary literal))]
-      (if literal-at
-        [literal-at (+ literal-at (count literal))]
-        [label-at (or (str/index-of summary section-after-known-weaknesses label-at)
-                      (count summary))]))))
-
-(defn- strip-claim-summary-section
-  "`summary` with its `Known weaknesses: …` sentence removed — including the
-   single space assemble-summary joined it with, so the surviving sentences
-   stay spaced exactly as they were. The joining space sits BEFORE the sentence
-   unless the sentence leads the summary (a body whose only claims are
-   weaknesses), in which case it sits after. Returns `summary` unchanged when
-   it carries no weakness sentence."
-  [summary weaknesses]
-  (if-let [[start end] (claim-summary-span summary weaknesses)]
-    (let [before-space? (and (pos? start) (= \space (.charAt ^String summary (dec start))))
-          after-space? (and (not before-space?)
-                            (< end (count summary))
-                            (= \space (.charAt ^String summary end)))
-          start (if before-space? (dec start) start)
-          end (if after-space? (inc end) end)]
-      (str (subs summary 0 start) (subs summary end)))
-    summary))
-
-(defn- guidance-summary
-  "The `:summary` text the render quotes, on the arm it is rendering.
-
-   On the claim-only holdout the weakness sentence is removed; everything else
-   — including the seed-name derivation, which reads the ORIGINAL string — is
-   untouched, so the two arms differ by the claim sentence and nothing else."
-  [summary body suppress-claims?]
-  (if suppress-claims?
-    (strip-claim-summary-section summary (:weaknesses body))
-    summary))
-
-(defn- ->uuid
-  "Normalize a target-id to a java.util.UUID before the read-model lookup.
-
-   The classifier's :top-candidates carry :document-metadata.:target-id as
-   a STRING (ColBERT bridges metadata through JSON, so a UUID seed comes
-   back as \"5a08300e-10e3-305a-80c1-17eafea15ff7\"). The descriptions
-   read-model keys bodies under the literal java.util.UUID. Without this
-   coercion the lookup misses silently and the prepend degrades to
-   summary-only.
-
-   Pass-through for already-UUID input keeps the function idempotent.
-   String input that does not parse as a UUID returns nil — that's a
-   genuine miss and the prepend renders without the rich body (rather
-   than crashing the request)."
-  [v]
-  (cond
-    (uuid? v) v
-    (string? v) (try (java.util.UUID/fromString v)
-                     (catch IllegalArgumentException _ nil))
-    :else nil))
-
-(defn- fetch-tree-body
-  "Pull a tree-class description body via ontology/get-description.
-
-   C-Loop-1: reads from :tree-class scope so the Living Description
-   loop's consolidator-updated bodies surface in the next R-Inject
-   run's prepend. Seeds are also recorded under :tree-class (via
-   seed-all!), so first-time runs see seed content via the same read
-   path. The classifier search index continues to partition by
-   :tree-fingerprint — that's the index lookup, not the body read.
-
-   T2-Hardening-B: coerce target-id to UUID before the lookup. The
-   classifier's candidate metadata round-trips target-id through JSON
-   so it arrives as a stringified UUID; the read-model keys by UUID.
-
-   Returns nil on any failure (helper is best-effort — the prepend
-   degrades to summary-only when the full body is unavailable)."
-  [ctx target-id]
-  (when-let [uuid-target (->uuid target-id)]
-    (let [get-description (requiring-resolve
-                            'ai.obney.orc.ontology.interface/get-description)]
-      (try
-        (when get-description
-          (get-description ctx :tree-class uuid-target))
-        (catch Exception _ nil)))))
-
-(defn- fetch-behavioral-body
-  "Pull a behavioral-subtree description body via ontology/get-description.
-
-   E3 Part-1 (scope fix): behavioral seed bodies — and minted children —
-   land in the Living-Description read-model under the :tree-fingerprint
-   granularity, NOT :tree-class. Both emission paths stamp
-   :target-type :tree-fingerprint on the description-updated event:
-     - seed-baseline-corpus! emits behavioral seeds via
-       :ontology/record-tree-description (commands.clj record-tree-
-       description → :target-type :tree-fingerprint)
-     - :ontology/mint-behavioral-subtree emits the same event with
-       :target-type :tree-fingerprint, keyed by the derived stable id.
-   (Structural tree-class seeds are DUAL-emitted under :tree-class for the
-   structural read path — behavioral ones are not, so a behavioral id read
-   against :tree-class misses → rich body nil → no strengths rendered.)
-
-   This is the behavioral counterpart of fetch-tree-body: same UUID
-   coercion + best-effort nil-on-failure semantics, but reads the
-   :tree-fingerprint scope where behavioral bodies actually live. The
-   structural fetch-tree-body path is deliberately left reading
-   :tree-class (C-Loop-1) and is NOT changed."
-  [ctx target-id]
-  (when-let [uuid-target (->uuid target-id)]
-    (let [get-description (requiring-resolve
-                            'ai.obney.orc.ontology.interface/get-description)]
-      (try
-        (when get-description
-          (get-description ctx :tree-fingerprint uuid-target))
-        (catch Exception _ nil)))))
-
-(defn- derive-seed-name
-  "Extract a human-readable seed name from the start of a `:summary`
-   string. Most seeds begin with their own name followed by a stative
-   verb or 'trees' / 'is' / 'evaluates' / etc.:
-     'Legal-issue-detection trees flag...' → 'Legal-issue-detection'
-     'Risk-analysis trees identify...'     → 'Risk-analysis'
-     'Critique evaluates...'                → 'Critique'
-     'Comparative summary is the...'        → 'Comparative summary'
-     'ResearchThenSynthesize is a...'       → 'ResearchThenSynthesize'
-
-   Falls back to nil when no clear name can be extracted (caller can
-   then use a generic header). Best-effort — corpus authors should keep
-   summaries written with the name first to make this work."
-  [summary]
-  (when (and (string? summary) (not (str/blank? summary)))
-    (let [name-tail-re #"(?i)^(.+?)\s+(trees?|is|are|evaluates?|reasons?|integrates?|turns?|checks?|flag|identif(?:y|ies)|compare|extract|generates?|produces?|synthes(?:ize|izes)|investigates?|handles?|composes?|consists?|builds?|classifies?|validates?|gather|gathers|analyzes?)\b"
-          m (re-find name-tail-re summary)]
-      (when m
-        (let [candidate (str/trim (nth m 1))]
-          ;; Sanity-bound: anything longer than ~50 chars is probably
-          ;; the whole first sentence, not a name. Return nil so the
-          ;; caller falls back to the generic header.
-          (when (<= (count candidate) 50)
-            candidate))))))
-
-(defn- rerank-source-caution
-  "Per-candidate annotation naming WHY the reranker's score is missing.
-
-   RR-1 (ADR 0020): the reranker's fallback is now stamped with WHICH
-   failure it was — :colbert-fallback (it could not rank) vs
-   :timeout-fallback (it ran out of budget, twice). Both mean the same
-   thing for the reader — the score below is raw ColBERT similarity, not a
-   grounded fitness — so both are cautioned; naming the reason keeps the
-   distinction the signal now carries visible to the model and to anyone
-   auditing the rendered prompt. Returns nil for a successful rerank."
-  [rerank-source]
-  (case rerank-source
-    :colbert-fallback " [reranker fell back to ColBERT — treat with caution]"
-    :timeout-fallback " [reranker timed out (retry included) and fell back to ColBERT — treat with caution]"
-    nil))
-
-(defn- format-structural-candidate
-  "Render one structural candidate with its full seed body.
-   `idx` is the 1-based position in the top-N list (used to label
-   primary vs alternative)."
-  [ctx suppress-claims? idx candidate]
-  (let [{:keys [content fitness-score reasoning rerank-source
-                document-metadata]} candidate
-        target-id (:target-id document-metadata)
-        body (fetch-tree-body ctx target-id)
-        rich (format-seed-body body traits-per-seed-cap suppress-claims?)
-        ;; The seed name is derived from the UNSTRIPPED summary on both arms.
-        ;; derive-seed-name scans for a stative verb, and a verb can sit inside
-        ;; a claim — deriving from the stripped text would let the holdout move
-        ;; the candidate's HEADER, which is not claim content.
-        seed-name (derive-seed-name content)
-        rank-label (cond
-                     (= 1 idx) "Top match"
-                     :else (str "Alternative #" (dec idx)))
-        ;; If the seed name was extractable, the header reads
-        ;;   #### Top match — Legal-issue-detection (confidence: 1.00)
-        ;; Falling back to just the rank label when extraction fails.
-        header-label (if seed-name
-                       (str rank-label " — " seed-name)
-                       rank-label)]
-    (str "#### " header-label " (confidence: "
-         (format "%.2f" (double (or fitness-score 0.0))) ")"
-         (rerank-source-caution rerank-source)
-         "\n"
-         "Why this fits: " (or reasoning "(no reasoning recorded)") "\n\n"
-         "Pattern guidance (seed `:summary`):\n"
-         (or (guidance-summary content body suppress-claims?)
-             "(no guidance content recorded)") "\n\n"
-         (or rich ""))))
-
-(defn- plain-match-candidates
-  "The gated, capped top-candidates list a plain match renders: the display-
-   confidence floor applied BEFORE the cap so a weak candidate doesn't push
-   out the slot for a stronger one. Shared by the plain-match branch and,
-   from RS-4, by a newborn domain assignment (whose display is the parent's
-   plain-match view plus one child-assignment line)."
-  [top-candidates]
-  (->> (or top-candidates [])
-       (filter (fn [c] (>= (double (or (:fitness-score c) 0.0))
-                           min-display-confidence)))
-       ;; One entry per class: a tree class is indexed on both tree axes, and the
-       ;; ranking carries both rows with the same judgement. Showing both rendered
-       ;; the same guidance twice (RS-7 e2e: "Top match" and "Alternative #1" were
-       ;; one class). The first row (the higher-ranked) is kept.
-       (reduce (fn [[seen out] c]
-                 (let [k (str (get-in c [:document-metadata :target-id]))]
-                   (if (seen k) [seen out] [(conj seen k) (conj out c)])))
-               [#{} []])
-       second
-       (take structural-cap)
-       vec))
-
-(defn- domain-child-consolidated?
-  "RS-4's discriminator between a newborn domain child (render the parent's
-   full entry, the shape the task matched) and a consolidated one (render
-   the child as the primary entry): the child's tree-class body is present
-   AND its :consolidated-from-event-count is >= 1 — the LAST claim event's
-   :evidence-event-count. The birth claim RS-3's wedge records carries 0 (one
-   representative-use, unconsolidated); a harvest or reflection claim carries
-   >= 1. Nil-ness is NOT the discriminator: the birth claim already
-   assembles a body with one representative use, so a nil body only means
-   the read genuinely missed (best-effort, like every other fetch-tree-body
-   caller here) — treated as NOT consolidated, never as a reason to crash."
-  [ctx child-tree-id]
-  (let [body (fetch-tree-body ctx child-tree-id)]
-    (and (some? body)
-         (>= (long (or (:consolidated-from-event-count body) 0)) 1))))
-
-(defn- format-domain-child-line
-  "RS-4 newborn branch: ONE line, built only from the payload's :domain
-   values, naming the child this task was assigned to and its label —
-   follows the parent's full entry (rendered exactly as a plain match)
-   rather than replacing it."
-  [{:keys [child-tree-id domain-label]}]
-  (str "Assigned to domain child " child-tree-id
-       " (label: " domain-label ") under the top match — "
-       "this campaign's outcome is that child's first evidence.\n"))
-
-(defn- format-domain-shape-context-line
-  "RS-4 consolidated branch: the parent drops from a full entry to this one
-   line — its identity and its own :summary, whole (the summary is the
-   mechanical one-line join the descriptions read-model assembles; it is
-   never parsed or truncated here) — since the child is now the primary
-   entry and the parent's full body (strengths, representative uses, etc.)
-   is not repeated."
-  [ctx suppress-claims? parent-tree-id]
-  (let [parent-body (fetch-tree-body ctx parent-tree-id)
-        summary (guidance-summary (:summary parent-body) parent-body suppress-claims?)]
-    (str "Shape context — parent " parent-tree-id
-         (when (seq summary) (str ": " summary))
-         "\n")))
-
-(defn- consolidated-domain-child-candidate
-  "RS-4: the ONE candidate a consolidated domain child renders as — built
-   from the payload, not from top-candidates: the child is the target (a
-   :tree-class candidate, so the injection record names the child at its
-   own body version — CC-13's single source of truth), the :content quoted
-   as 'Pattern guidance' is the child's own body :summary, and the top
-   match's :fitness-score/:reasoning/:rerank-source stay attached (that
-   score and reasoning are WHY this class was reached)."
-  [ctx {:keys [domain top-candidates]}]
-  (let [{:keys [child-tree-id]} domain
-        top-1 (first top-candidates)
-        child-body (fetch-tree-body ctx child-tree-id)]
-    {:content (:summary child-body)
-     :fitness-score (:fitness-score top-1)
-     :reasoning (:reasoning top-1)
-     :rerank-source (:rerank-source top-1)
-     :document-metadata {:granularity :tree-class :target-id child-tree-id}}))
-
-(defn- format-consolidated-domain-child
-  "RS-4: the child HAS a consolidated body — it renders as the PRIMARY
-   entry (its own :summary + strengths via format-structural-candidate)
-   from the candidate structural-display-candidates produced, then the
-   parent as one shape-context line."
-  [ctx suppress-claims? candidates {:keys [domain]}]
-  (str "### Structural patterns (top " (count candidates) " from corpus retrieval)\n"
-       (->> candidates
-            (map-indexed (fn [i c] (format-structural-candidate ctx suppress-claims? (inc i) c)))
-            (str/join "\n"))
-       "\n"
-       (format-domain-shape-context-line ctx suppress-claims? (:parent-tree-id domain))))
-
-(defn- family-substance-candidate
-  "CV-B (C7): the family's OWN candidate for the NEWBORN branch — added
-   ALONGSIDE the parent's plain-match candidates (never in place of them),
-   so the injection record (CC-13, via structural-display-candidates ->
-   injected-candidates) names both the parent shape the task matched AND
-   the family's own accrued substance rendered beneath the child line.
-
-   Fetches the family's body ONCE (fetch-tree-body) here; the returned
-   candidate stashes the fetched body under :family-body so format-
-   structural-section's newborn branch can render the same substance
-   without a second fetch. :document-metadata carries :granularity
-   :tree-class (a tree-class read, like the consolidated candidate) and
-   :target-id the child — the id CC-13 records a version for.
-
-   Returns nil (no candidate, nothing rendered beneath the child line) when
-   the family has no substance beyond its birth line — format-seed-body
-   returns nil/blank for a body with no capabilities, strengths, weaknesses,
-   or representative uses, and D5 says the parent stays primary either way."
-  [ctx suppress-claims? {:keys [domain top-candidates]}]
-  (let [{:keys [child-tree-id]} domain
-        top-1 (first top-candidates)
-        family-body (fetch-tree-body ctx child-tree-id)]
-    (when (seq (format-seed-body family-body traits-per-seed-cap suppress-claims?))
-      {:content (:summary family-body)
-       :fitness-score (:fitness-score top-1)
-       :reasoning (:reasoning top-1)
-       :rerank-source (:rerank-source top-1)
-       :document-metadata {:granularity :tree-class :target-id child-tree-id}
-       :family-body family-body})))
-
-(defn- structural-display-candidates
-  "The structural candidates the render actually puts in front of the model.
-
-   Apply the display-confidence floor BEFORE the cap so a weak candidate
-   doesn't push out the slot for a stronger one. In practice classify-task
-   returns 5; the reranker scores spread from 1.00 down to 0.0 — only the
-   >= floor entries reach the model. The fresh-mint branch shows NO
-   candidates at all (it renders guidance instead), so it yields none.
-
-   RS-4: a domain assignment (:domain present) overrides :was-fresh-mint? —
-   a newborn domain child (not yet consolidated) renders the PARENT's
-   top-candidates entry exactly like a plain match (the top one IS the
-   parent), regardless of RS-2 stamping :was-fresh-mint? true on the mint.
-   A CONSOLIDATED domain child renders ONE candidate: the child itself,
-   built from the payload rather than from top-candidates
-   (consolidated-domain-child-candidate) — so the injection record names
-   the child it showed, at the child's own body version.
-
-   CV-B (C7): the newborn branch APPENDS the family's own candidate
-   (family-substance-candidate) after the parent's plain-match candidates,
-   when the family has substance beyond its birth line. Byte-identical to
-   RS-4 when it does not.
-
-   `suppress-claims?` (default false via the 2-arity form) is the claim-only
-   holdout arm — threaded through so a candidate is only ever counted as
-   'shown' under the SAME arm the render actually used (CC-13's single
-   source of truth).
-
-   CC-13: single source of truth for the render AND for the injection record.
-   A record of 'what was injected' computed from a different filter than the
-   render's would be a measurement of something that never happened."
-  ([ctx structural] (structural-display-candidates ctx false structural))
-  ([ctx suppress-claims? {:keys [was-fresh-mint? top-candidates domain] :as structural}]
-   (cond
-     (and domain (not (domain-child-consolidated? ctx (:child-tree-id domain))))
-     ;; The family itself can be among top-candidates (a later task that
-     ;; reached the family by match lands on it, C5). The child line stands
-     ;; for it in the render, so it is never ALSO a numbered entry, and it is
-     ;; recorded at most once, as the substance candidate, exactly when its
-     ;; substance was rendered (CC-13: record = render).
-     ;; A family reached through the index (C5) has no parent among the
-     ;; candidates: the parent was proven by its graph edge, never retrieved.
-     ;; The parent's full entry still renders first (D5, the parent stays
-     ;; primary for a newborn), built like the consolidated child's entry: the
-     ;; parent's own body, with the top match's score and reasoning attached,
-     ;; because they are why the task arrived here.
-     (let [child-id (str (:child-tree-id domain))
-           parent-id (:parent-tree-id domain)
-           shown (into [] (remove #(= child-id (str (get-in % [:document-metadata :target-id]))))
-                       (plain-match-candidates top-candidates))
-           parent-shown? (some #(= (str parent-id) (str (get-in % [:document-metadata :target-id]))) shown)
-           parent-candidate (when (and parent-id (not parent-shown?))
-                              (when-let [parent-body (fetch-tree-body ctx parent-id)]
-                                (let [top-1 (first top-candidates)]
-                                  {:content (:summary parent-body)
-                                   :fitness-score (:fitness-score top-1)
-                                   :reasoning (:reasoning top-1)
-                                   :rerank-source (:rerank-source top-1)
-                                   :document-metadata {:granularity :tree-class :target-id parent-id}})))
-           base (if parent-candidate (into [parent-candidate] shown) shown)
-           family-candidate (family-substance-candidate ctx suppress-claims? structural)]
-       (cond-> base
-         family-candidate (conj family-candidate)))
-
-     domain
-     [(consolidated-domain-child-candidate ctx structural)]
-
-     was-fresh-mint?
-     []
-
-     :else
-     (plain-match-candidates top-candidates))))
-
-(defn- format-structural-section [ctx suppress-claims? structural]
-  (let [{:keys [was-fresh-mint? rerank-fallback? domain]} structural
-        candidates (structural-display-candidates ctx suppress-claims? structural)]
-    (cond
-      ;; RS-4: branch on a domain assignment BEFORE the fresh-mint check.
-      ;; RS-2 stamps :was-fresh-mint? true on a domain mint, and until this
-      ;; slice the fresh-mint branch below fired on that flag alone,
-      ;; discarding the parent's shape — the D5 failure this slice fixes.
-      (and domain (domain-child-consolidated? ctx (:child-tree-id domain)))
-      (format-consolidated-domain-child ctx suppress-claims? candidates structural)
-
-      ;; Newborn domain child: the parent's plain-match entry (every
-      ;; candidate that clears the display floor) then the child line — the
-      ;; child line is the assignment and renders regardless. CV-B (C7):
-      ;; `candidates` may carry a trailing family-substance candidate
-      ;; (structural-display-candidates); it renders separately, beneath the
-      ;; child line, via format-seed-body — NOT through the numbered
-      ;; Top-match/Alternative# loop below, so it is filtered out of both
-      ;; the count and the loop by target-id.
-      domain
-      (let [child-tree-id (:child-tree-id domain)
-            parent-candidates (remove #(= (str child-tree-id)
-                                          (str (get-in % [:document-metadata :target-id])))
-                                      candidates)
-            family-candidate (some #(when (= (str child-tree-id)
-                                             (str (get-in % [:document-metadata :target-id])))
-                                       %)
-                                    candidates)
-            family-substance (:family-body family-candidate)]
-        (str "### Structural patterns (top "
-             (count parent-candidates)
-             " from corpus retrieval)\n"
-             (when rerank-fallback?
-               "Classifier reranker fell back to similarity scoring; treat suggestions with caution and prioritize your own reading of the task.\n\n")
-             (->> parent-candidates
-                  (map-indexed (fn [i c] (format-structural-candidate ctx suppress-claims? (inc i) c)))
-                  (str/join "\n"))
-             "\n"
-             (format-domain-child-line domain)
-             (when family-substance
-               (or (format-seed-body family-substance traits-per-seed-cap suppress-claims?) ""))))
-
-      ;; No high-confidence match — caller fresh-minted at root.
-      was-fresh-mint?
-      (str "### Structural patterns\n"
-           "No high-confidence structural match was returned by the classifier. "
-           "Design at the abstract pattern level — the structural shape is the "
-           "primary signal you have. The behavioral suggestions below reflect "
-           "what the task ACCOMPLISHES.\n")
-
-      ;; Real match with content.
-      (seq candidates)
-      (str "### Structural patterns (top "
-           (count candidates)
-           " from corpus retrieval)\n"
-           (when rerank-fallback?
-             "Classifier reranker fell back to similarity scoring; treat suggestions with caution and prioritize your own reading of the task.\n\n")
-           (->> candidates
-                (map-indexed (fn [i c] (format-structural-candidate ctx suppress-claims? (inc i) c)))
-                (str/join "\n"))))))
-
-(defn- format-behavioral-entry [ctx suppress-claims? idx behavior]
-  (let [{:keys [behavior-id confidence was-fresh-mint? reasoning
-                rerank-source]} behavior]
-    (if was-fresh-mint?
-      ;; C-Loop-3: strengthened from C-Loop-2 P2 after observing the
-      ;; agent ignore the affordance on a behaviorally-OOD task. The
-      ;; original phrasing ("Consider whether...") was too soft —
-      ;; competed with the model's strong "design the simplest tree
-      ;; that works" prior and lost. The new phrasing:
-      ;;   1. Frames the fresh-mint marker as a CONCRETE SIGNAL the
-      ;;      task may be novel — not just a possibility.
-      ;;   2. Names the 12 existing behavioral categories so the model
-      ;;      can explicitly check the task against them.
-      ;;   3. Demands explicit :reasoning text stating WHICH category
-      ;;      fits OR WHY the task is novel — forces the consideration
-      ;;      rather than letting it get pattern-matched away.
-      ;;   4. Makes the cost of NOT minting concrete: novel patterns
-      ;;      are LOST without contribution.
-      ;;   5. Acknowledges that mint is not mandatory — preserves the
-      ;;      model's judgement when an existing category genuinely
-      ;;      fits.
-      (str (inc idx) ". Behavioral suggestion (no candidate above threshold)\n"
-           "   BEHAVIORALLY-NOVEL TASK SIGNAL: classify-behaviors returned no candidate "
-           "above threshold for this task — none of the existing corpus behaviors "
-           "matched the task semantics by retrieval+rerank score. This is a SIGNAL the "
-           "task may exercise a behavioral pattern the corpus does not yet capture.\n\n"
-           "   The existing behavioral categories in the corpus are: research, "
-           "extraction, analysis, synthesis, ideation, design, critique, validation, "
-           "code-building, transformation, classification, investigation.\n\n"
-           "   Before designing your tree, in your :reasoning output, state EITHER:\n"
-           "     (a) which existing category fits this task (e.g., \"this is a "
-           "design task — produces a single committed plan from constraints\"), OR\n"
-           "     (b) why the task is genuinely novel relative to all 12 (name the "
-           "behavioral pattern your tree will exercise that isn't captured above).\n\n"
-           "   If (b) — the task IS behaviorally novel AND your tree exercises a "
-           "generalizable pattern future tasks could reuse — contribute it via:\n\n"
-           "       (mint-behavior! \"<short-kebab-name>\"\n"
-           "                       {:capabilities [\"<concrete action verb + object — 1 per capability>\"\n"
-           "                                       \"<another concrete capability>\"]\n"
-           "                        :strengths [{:trait \"<what works AND why\"\n"
-           "                                     :good-when \"<context guard — when this trait fires>\"\n"
-           "                                     :recommended-pattern \"<concrete DSL snippet showing the shape>\"\n"
-           "                                     :confidence 0.7\n"
-           "                                     :evidence-count 1}]\n"
-           "                        :weaknesses [{:trait \"<what fails AND why>\"\n"
-           "                                      :avoid-when \"<context guard — when this trait fires>\"\n"
-           "                                      :recommended-alternative \"<concrete fix or alternative\"\n"
-           "                                      :confidence 0.7\n"
-           "                                      :evidence-count 1}]\n"
-           "                        :representative-uses [\"<concrete task this pattern shipped on>\"\n"
-           "                                              \"<another concrete task>\"]\n"
-           "                        :avoid-when [\"<concrete anti-context>\"]\n"
-           "                        :summary \"<2-3 sentences naming the domain + the load-bearing trait + when to prefer this over existing categories>\"\n"
-           "                        :version 1\n"
-           "                        :consolidated-from-event-count 0}\n"
-           "                       :parent nil)\n\n"
-           "   SPECIALIZE vs ROOT-MINT: `:parent nil` mints a NEW root behavior. If, instead, one "
-           "of the nearest references listed above is a broad-but-related parent (it shares the "
-           "task's shape even though it fell below threshold), prefer specializing a CHILD of it — "
-           "pass that reference's behavior-id as `:parent <id>` so the new behavior accrues evidence "
-           "under the proven parent rather than scattering as an unrelated root.\n\n"
-           "   CRITICAL: :strengths and :weaknesses are VECTORS OF MAPS, not vectors of "
-           "strings. Each entry is principle-shaped — :trait + context-guard + concrete "
-           "recommended action + confidence + evidence-count. A vector of bare strings "
-           "fails schema validation; the rejection is returned in iteration history for correction. Look at any "
-           "existing seed body in the corpus retrieval above to see the expected shape.\n\n"
-           "   The minted behavior will be retrievable on subsequent classify-behaviors "
-           "calls — your contribution persists in the corpus for future tasks. Without "
-           "minting, a genuinely novel pattern is LOST when this task completes.\n\n"
-           "   If (a) — the task fits an existing category by your judgement — no mint "
-           "is needed; designing the tree using known patterns is the right call.\n")
-      (let [body (fetch-behavioral-body ctx behavior-id)
-            summary (:summary body)
-            rich (format-seed-body body traits-per-seed-cap suppress-claims?)
-            ;; Seed name from the UNSTRIPPED summary on both arms — see the
-            ;; matching note in format-structural-candidate.
-            seed-name (derive-seed-name summary)
-            header-label (if seed-name
-                           (str (inc idx) ". Behavioral: " seed-name)
-                           (str (inc idx) ". Behavioral suggestion"))]
-        (str header-label " (confidence: "
-             (format "%.2f" (double (or confidence 0.0))) ")"
-             (rerank-source-caution rerank-source)
-             "\n"
-             "   Why this fits: " (or reasoning "(no reasoning recorded)") "\n\n"
-             "   Guidance (seed `:summary`):\n"
-             "   " (or (guidance-summary summary body suppress-claims?)
-                       reasoning "(no guidance recorded)") "\n\n"
-             (or rich "")
-             ;; E2 (ADR 0014, RG-3): references INFORM, they do not GATE. A
-             ;; match clearing threshold is NOT a reason to suppress the
-             ;; specialize/mint invitation — that gate is exactly why the
-             ;; corpus stays shape-broad (mint fired 1/21: a "good enough"
-             ;; parent is almost always found, so the not-found mint branch
-             ;; never fired and no coding CHILD was ever born). The strengths/
-             ;; weaknesses above are the EVIDENCE that informs the four-way
-             ;; choice; :avoid-when in particular lets the model self-detect a
-             ;; shape-over-match (a broad parent matching on shape, not domain).
-             "\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n"
-             "   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n"
-             "   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n"
-             "   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths"
-             " describe a more general shape than your task, or its `:avoid-when` flags your context),"
-             " mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape"
-             " but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent"
-             " (it is retrievable on subsequent classify-behaviors calls):\n\n"
-             "       (mint-behavior! \"<short-kebab-name>\"\n"
-             "                       {:capabilities [\"<concrete action verb + object>\"]\n"
-             "                        :strengths [{:trait \"<what works AND why>\"\n"
-             "                                     :good-when \"<context guard>\"\n"
-             "                                     :recommended-pattern \"<concrete DSL snippet>\"\n"
-             "                                     :confidence 0.7\n"
-             "                                     :evidence-count 1}]\n"
-             "                        :weaknesses [{:trait \"<what fails AND why>\"\n"
-             "                                      :avoid-when \"<context guard>\"\n"
-             "                                      :recommended-alternative \"<concrete fix>\"\n"
-             "                                      :confidence 0.7\n"
-             "                                      :evidence-count 1}]\n"
-             "                        :representative-uses [\"<concrete task this child shipped on>\"]\n"
-             "                        :avoid-when [\"<concrete anti-context>\"]\n"
-             "                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n"
-             "                        :version 1\n"
-             "                        :consolidated-from-event-count 0}\n"
-             "                       :parent " behavior-id ")\n\n"
-             "   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior),"
-             " mint an adjacent behavior the same way with `:parent nil` (or under whichever listed"
-             " reference is the true nearest parent).\n"
-             "   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard +"
-             " concrete recommended action + :confidence + :evidence-count) — a vector of bare strings"
-             " fails schema validation; the rejection is returned in iteration history for correction.\n")))))
-
-(defn- behavioral-display-entries
-  "The behavioral entries the render puts in front of the model. Companion to
-   structural-display-candidates — shared by the render and the CC-13 record."
-  [{:keys [behaviors]}]
-  (vec (take behavioral-cap (or behaviors []))))
-
-(defn- format-behavioral-section [ctx suppress-claims? behavioral]
-  (let [{:keys [rerank-fallback?]} behavioral
-        entries (behavioral-display-entries behavioral)]
-    (when (seq entries)
-      (str "### Behavioral competencies (top " (count entries)
-           " from corpus retrieval)\n"
-           (when rerank-fallback?
-             "Classifier reranker fell back on the behavioral axis; treat the suggestions below with caution.\n\n")
-           (->> entries
-                (map-indexed (partial format-behavioral-entry ctx suppress-claims?))
-                (str/join "\n"))))))
-
-(defn- current-node-type-guidance
-  "Read the current Living Description for this node type when the ontology
-   component is present. R-Inject already marks the execution as opted into
-   adaptive guidance; this adds the complementary node-type learning to the
-   retrieved tree/behavior guidance without introducing a production
-   dependency from orc-service to ontology."
-  [ctx node]
-  (when-let [node-type (:type node)]
-    (try
-      (when-let [get-description
-                 (requiring-resolve
-                  'ai.obney.orc.ontology.interface/get-description)]
-        (when-let [body (get-description ctx :node-type node-type)]
-          {:target-id node-type
-           :version (:version body)
-           :body body}))
-      (catch Throwable _ nil))))
-
-(defn- format-node-type-guidance [guidance]
-  (when guidance
-    (str "### Current learned guidance for node type `"
-         (:target-id guidance) "` (version " (:version guidance) ")\n"
-         "This is the current persisted Living Description for the executor "
-         "you are using. Apply it alongside the retrieved corpus examples.\n"
-         (pr-str (:body guidance)) "\n")))
-
-;; =============================================================================
-;; CC-13 — The injection record
-;; =============================================================================
-;;
-;; Every render leaves ONE durable row saying what was put in front of the
-;; model. This replaces the unbounded `/tmp/r-inject-trace-<sheet>.edn` sidecar
-;; the render used to spit on every call: a file per sheet, never cleaned,
-;; outside the store, joinable to nothing.
-;;
-;; The row is a strict SUBSET of the deferred `:intervention/*` ledger
-;; (research-lessons-integration §6) — see the event schema for the
-;; field-by-field correspondence.
-
-(defn- sha256-hex
-  "SHA-256 of a string, lowercase hex. Lets the record IDENTIFY the rendered
-   block — two turns that saw the same thing collapse to the same hash —
-   without storing the block twice."
-  [^String s]
-  (let [digest (.digest (java.security.MessageDigest/getInstance "SHA-256")
-                        (.getBytes s "UTF-8"))]
-    (apply str (map #(format "%02x" %) digest))))
-
-(def default-baseline-policy-id
-  "Name of the control condition when a holdout config does not supply one.
-
-   A CONSTANT, not a lookup into *injection-holdout*: an experiment binds that
-   var to a partial map, and a row whose baseline is nil is a row that cannot
-   be analysed — the record must stay valid whatever the caller left out."
-  "r-inject/no-injection")
-
-(def ^:dynamic *injection-holdout*
-  "The randomized-holdout policy for R-Inject renders. **OFF BY DEFAULT.**
-
-   A holdout is what makes attribution CAUSAL rather than observational: a
-   recorded fraction of turns render under the control condition, so a change
-   to the render can be compared against turns that ran without it in the SAME
-   codebase state. The earlier pattern-injection study had no such arm — its
-   baseline came from a different build — which is why its cost table carries
-   no defensible quality attribution.
-
-   It is default-off because a standing holdout is a standing tax on output
-   quality. Turning it on is a deliberate, per-experiment choice:
-
-     - process-wide:  (binding [*injection-holdout* {:enabled? true
-                                                     :fraction 0.2}] …)
-     - per-run:       (assoc ctx :injection-holdout {:enabled? true
-                                                     :fraction 0.2})
-
-   Keys:
-     :enabled?           master switch; nothing is held out while false
-     :fraction           P(holdout) in [0.0, 1.0]
-     :baseline-policy-id names the control condition on BOTH arms, so treated
-                         rows say what they were compared against"
-  {:enabled? false
-   :fraction 0.0
-   :baseline-policy-id default-baseline-policy-id})
-
-(def default-claim-baseline-policy-id
-  "Name of the CLAIM-ONLY control condition. A constant, for the same reason
-   default-baseline-policy-id is one."
-  "r-inject/no-claim-injection")
-
-(def ^:dynamic *claim-holdout*
-  "The CLAIM-ONLY holdout policy for R-Inject renders. **OFF BY DEFAULT.**
-   EXPERIMENT-ONLY, exactly like *injection-holdout*, and it is a second,
-   independent arm rather than a mode of that one.
-
-   Why it exists. *injection-holdout* is all-or-nothing: it suppresses the
-   whole `## Suggested patterns from corpus` block. An A/B against it therefore
-   compares tens of thousands of characters of corpus content against none, so
-   (a) a positive result cannot be attributed to any single claim, and (b) the
-   ~30x prompt-size gap is itself a confound running against the treated arm.
-   This holdout keeps the block and suppresses CLAIM-DERIVED content only —
-   both places a weakness claim reaches the prompt:
-
-     1. the `Weaknesses (…)` section format-seed-body renders from a body's
-        `:weaknesses` (header included: it exists only because claims do), and
-     2. the `Known weaknesses: …` sentence the SAME claims put inside the
-        assembled `:summary` the render quotes as `Pattern guidance`.
-
-   Everything else in the block is byte-identical between the arms — that is
-   the property the W2P-1 acceptance test asserts by reconstruction, and it is
-   the only thing that makes the contrast attributable to the claim.
-
-   NOT suppressed, deliberately: a node-type Living Description
-   (format-node-type-guidance) is rendered whole and untouched. It is not a
-   corpus candidate's claim, and it is IDENTICAL on both arms, so it cannot
-   confound the contrast.
-
-   HOW TO SET IT — and why `binding` is usually wrong. The render runs on the
-   app's poller thread, not on the caller's, so a thread-local `binding` in a
-   REPL or a harness NEVER REACHES IT and produces a silent no-op: both arms
-   render treated and the experiment reports a confident false null with no
-   symptom. W2 learned this the hard way. Use one of:
-
-     - process-wide (what an experiment harness wants):
-         (alter-var-root #'*claim-holdout*
-                         (constantly {:enabled? true :fraction 1.0}))
-     - per-run, no global at all (preferred where the caller owns the context):
-         (assoc ctx :claim-holdout {:enabled? true :fraction 1.0})
-
-   `binding` is correct ONLY when the render demonstrably runs on the binding
-   thread — i.e. in unit tests that call apply-r05-classifier-context directly.
-
-   Keys mirror *injection-holdout*: :enabled?, :fraction, :baseline-policy-id.
-   Arm assignment goes through the same *holdout-assignment* seam, salted with
-   :claim so the two holdouts do not co-assign the same occurrences. Running
-   BOTH at once is not a supported configuration; if it happens,
-   *injection-holdout* wins, because it is the stronger suppression."
-  {:enabled? false
-   :fraction 0.0
-   :baseline-policy-id default-claim-baseline-policy-id})
-
-(def ^:dynamic *capture-rendered-block?*
-  "Whether the injection record carries the VERBATIM rendered block.
-
-   Off by default: the block runs to tens of thousands of characters and the
-   record already carries its hash, its size and the ids+versions it was built
-   from. A bench or experiment run that wants to quote what the model literally
-   saw turns it on — process-wide via binding, or per-run via
-   `(assoc ctx :injection-capture-rendered-block? true)`."
-  false)
-
-(defn- occurrence-bucket
-  "A deterministic, uniform value in [0.0, 1.0) for one render occurrence.
-
-   Hash-bucketing rather than a call to `rand`: the assignment must be STABLE
-   for a given turn, so a retry of the same occurrence cannot switch arms
-   halfway through and produce a row whose arm does not describe the prompt
-   that was actually sent. Uniform across occurrences, reproducible, stateless."
-  [occurrence]
-  (let [bits (Long/parseLong (subs (sha256-hex (str/join "|" (map str occurrence))) 0 15) 16)]
-    (/ (double bits) (double (bit-shift-left 1 60)))))
-
-(defn- default-holdout-assignment
-  "True when this occurrence falls in the holdout arm."
-  [occurrence fraction]
-  (< (occurrence-bucket occurrence) (double fraction)))
-
-(def ^:dynamic *holdout-assignment*
-  "Capability seam for arm assignment: (fn [occurrence fraction] -> holdout?).
-
-   Defaults to the real deterministic bucketing and is faked in tests, so no
-   test has to depend on real randomness to prove the two arms behave."
-  default-holdout-assignment)
-
-(defn- holdout-config
-  "The effective holdout policy: the process default, overridden per-run by
-   `:injection-holdout` on the context."
-  [ctx]
-  (merge *injection-holdout* (:injection-holdout ctx)))
-
-(defn- claim-holdout-config
-  "The effective CLAIM-ONLY holdout policy: the process default, overridden
-   per-run by `:claim-holdout` on the context."
-  [ctx]
-  (merge *claim-holdout* (:claim-holdout ctx)))
-
-(defn- holds-out?
-  "True when this occurrence falls into `config`'s holdout. `salt` distinguishes
-   the two holdouts' assignments, so enabling both would not hand the same
-   occurrences to both arms."
-  [ctx {:keys [enabled? fraction]} node-id salt]
-  (let [f (double (or fraction 0.0))]
-    (boolean (and enabled?
-                  (pos? f)
-                  (*holdout-assignment*
-                    (cond-> [(:sheet-id ctx) (:tick-id ctx) node-id]
-                      salt (conj salt))
-                    f)))))
-
-(defn- assign-arm
-  "Which arm this render occurrence is in.
-
-   :holdout       — the whole block is suppressed (*injection-holdout*)
-   :claim-holdout — the block renders WITHOUT claim-derived content
-                    (*claim-holdout*)
-   :treatment     — the full render
-
-   The all-or-nothing holdout is decided first and wins: it already suppresses
-   every claim, so a row cannot honestly be both."
-  [ctx holdout claim-holdout node-id]
-  (cond
-    (holds-out? ctx holdout node-id nil) :holdout
-    (holds-out? ctx claim-holdout node-id :claim) :claim-holdout
-    :else :treatment))
-
-(defn- injected-candidates
-  "The candidate set the render actually showed, each with the VERSION of the
-   description body its content came from.
-
-   Version is per-candidate, not per-turn: the corpus bodies move
-   independently, and 'this turn saw behaviour X at v4' is the granularity an
-   attribution needs. Reads the same bodies the render reads (best-effort —
-   an unavailable body records a nil version rather than dropping the
-   candidate, because the candidate WAS shown).
-
-   `suppress-claims?` (default false via the 2-arity form) threads the same
-   holdout arm the render used into structural-display-candidates, so a
-   CV-B family candidate is recorded exactly when its substance was actually
-   shown under THIS arm — cc13's single-source rule."
-  ([ctx payload] (injected-candidates ctx false payload))
-  ([ctx suppress-claims? {:keys [structural behavioral]}]
-  (vec
-    (concat
-      (for [c (structural-display-candidates ctx suppress-claims? structural)
-            :let [tid (get-in c [:document-metadata :target-id])]
-            :when (some? tid)]
-        {:axis :structural
-         :candidate-id (str tid)
-         :version (:version (fetch-tree-body ctx tid))
-         :score (some-> (:fitness-score c) double)})
-      ;; A fresh-mint behavioral entry is a MARKER ("no candidate cleared
-      ;; threshold"), not corpus content: the render shows mint guidance for
-      ;; it and reads no body, so nothing was injected and there is no version
-      ;; to record. Recording it would both misstate what the model saw and
-      ;; fire a read against a concept that does not exist yet.
-      (for [b (behavioral-display-entries behavioral)
-            :let [bid (:behavior-id b)]
-            :when (and (some? bid) (not (:was-fresh-mint? b)))]
-        {:axis :behavioral
-         :candidate-id (str bid)
-         :version (:version (fetch-behavioral-body ctx bid))
-         :score (some-> (:confidence b) double)})))))
 
 (defn- tick-parent-id
   "The tick that spawned `tick-id`, or nil at the root.
@@ -1985,44 +5506,14 @@
                   :tick-id (:tick-id ctx)
                   :root-trace-id (resolve-root-trace-id ctx (:tick-id ctx))
                   :correlation-id (:correlation-id ctx)}
-                 ;; W2P-1: the host's turn identity, when the host has
-                 ;; one. Without it, a turn is joined to its injection by
-                 ;; WALL-CLOCK WINDOW — which is what W2 had to do, and a
-                 ;; window join is a source of doubt no analysis can
-                 ;; remove after the fact. Optional and ABSENT rather than
-                 ;; nil when there is no turn (a bench probe, a non-
-                 ;; conversational tick): a nil turn-id would join to
-                 ;; every other nil.
                  (when-let [turn-id (:turn-id ctx)]
                    {:turn-id turn-id})
                  row)]
-      (run-or-defer-classification-effect!
+      (logic/run-or-defer-classification-effect!
        ctx :injection-record command
        #(try
           (cp/process-command (assoc ctx :command command))
           (catch Exception _ nil))))))
-
-(defn- format-specialize-bullet
-  "The four-move menu's SPECIALIZE bullet, as a function of the payload's
-   structural axis.
-
-   RS-4: when `:domain` is present the runtime has ALREADY assigned this
-   task to a domain child (RS-2/RS-3's assign-domain-child, dispatched
-   before the model ever sees this prompt) — inviting the model to
-   `mint-behavior!` a structural specialization here would invite a SECOND,
-   redundant structural mint on top of the one the runtime already made.
-   The bullet points at that assignment instead.
-
-   Without `:domain` the bullet is BYTE-IDENTICAL to the pre-RS-4 text —
-   every other render (plain match, walk-down's own mint, top-level fresh
-   mint, uncertain) is unaffected."
-  [structural]
-  (if-let [domain (:domain structural)]
-    (str "  - SPECIALIZE — the runtime has already assigned this task to a "
-         "domain child of the top match (label: " (:domain-label domain)
-         "); design for that domain under the parent's shape, do NOT mint a "
-         "structural child yourself.\n")
-    (str "  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n")))
 
 (defn apply-r05-classifier-context
   "R-Inject: prepend R05's classifier output to the node's :instruction
@@ -2046,22 +5537,13 @@
       node
       (let [structural (:structural payload)
             behavioral (:behavioral payload)
-            ;; CC-13: which experimental arm this turn is in. Decided BEFORE
-            ;; the block is built, so the control condition genuinely does not
-            ;; run the treatment (no prepend, and none of the render's corpus
-            ;; body reads) rather than rendering and discarding.
-            holdout (holdout-config ctx)
-            claim-holdout (claim-holdout-config ctx)
-            arm (assign-arm ctx holdout claim-holdout (:id node))
-            ;; W2P-1: the claim-only arm renders the block, minus claim-derived
-            ;; content. Distinct from :holdout, which renders nothing at all.
+            holdout (logic/holdout-config ctx)
+            claim-holdout (logic/claim-holdout-config ctx)
+            arm (logic/assign-arm ctx holdout claim-holdout (:id node))
             suppress-claims? (= :claim-holdout arm)
             rendering? (not= :holdout arm)
-            ;; sio-era main: node-type Living Description guidance joins the
-            ;; rendered block. Read only when a block is being built — the
-            ;; all-or-nothing control performs none of the render's body reads.
             node-type-guidance (when rendering?
-                                 (current-node-type-guidance ctx node))
+                                 (logic/current-node-type-guidance ctx node))
             block (when rendering?
                     (str "## Suggested patterns from corpus\n\n"
                        "These are concrete EXAMPLES retrieved from the seed corpus based on "
@@ -2072,48 +5554,30 @@
                        "  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n"
                        "  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n"
                        "  - Representative uses where this pattern has shipped\n\n"
-                       ;; E2 (ADR 0014, RG-3): the four moves are ALWAYS available —
-                       ;; finding a match never removes specialize/mint. References
-                       ;; inform the choice with evidence; they do not gate it.
                        "You always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n"
                        "  - ADOPT — use a reference as-is when it is an EXACT fit.\n"
                        "  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n"
-                       (format-specialize-bullet structural)
+                       (logic/format-specialize-bullet structural)
                        "  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\n"
                        "A match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n"
-                       (format-structural-section ctx suppress-claims? structural)
+                       (logic/format-structural-section ctx suppress-claims? structural)
                        "\n"
-                       (format-behavioral-section ctx suppress-claims? behavioral)
+                       (logic/format-behavioral-section ctx suppress-claims? behavioral)
                        "\n"
-                       (format-node-type-guidance node-type-guidance)
+                       (logic/format-node-type-guidance node-type-guidance)
                        "\n---\n"))
             result (if block
                      (update node :instruction (fn [inst] (str block inst)))
-                     ;; Control condition: the UNTREATED prompt.
                      node)
-            ;; CC-13: the render's durable record, replacing the /tmp sidecar.
-            ;; The candidate set is recorded on BOTH arms — a holdout row that
-            ;; did not say what it was denied could not be compared against a
-            ;; treated row that got it.
-            candidates (injected-candidates ctx suppress-claims? payload)]
+            candidates (logic/injected-candidates ctx suppress-claims? payload)]
         (record-injection! ctx
           (cond-> {:node-id (:id node)
                    :arm arm
-                   ;; Which control this row was compared against. The claim-only
-                   ;; experiment has a DIFFERENT control from the all-or-nothing
-                   ;; one, and BOTH arms of one experiment must name the same
-                   ;; control — so when the claim holdout is running it names it,
-                   ;; on treated rows too. Default-off ⇒ unchanged from CC-13.
                    :baseline-policy-id (if (:enabled? claim-holdout)
                                          (or (:baseline-policy-id claim-holdout)
-                                             default-claim-baseline-policy-id)
+                                             logic/default-claim-baseline-policy-id)
                                          (or (:baseline-policy-id holdout)
-                                             default-baseline-policy-id))
-                   ;; P(treatment) for this turn: 1.0 when nothing is held out,
-                   ;; which is the honest propensity for "everyone treated".
-                   ;; Two independent holdouts ⇒ the product of their
-                   ;; complements; with either disabled its factor is 1.0, so a
-                   ;; default-off claim holdout leaves this exactly as CC-13.
+                                             logic/default-baseline-policy-id))
                    :selection-propensity (* (if (:enabled? holdout)
                                               (- 1.0 (double (or (:fraction holdout) 0.0)))
                                               1.0)
@@ -2121,278 +5585,20 @@
                                               (- 1.0 (double (or (:fraction claim-holdout) 0.0)))
                                               1.0))
                    :candidates candidates
-                   ;; The ledger's PRIMARY candidate is the top-ranked
-                   ;; STRUCTURAL one: the structural pattern is what shapes the
-                   ;; tree, so it is the artifact an intervention is testing.
-                   ;; nil when the structural axis showed nothing (fresh-mint
-                   ;; branch) — honestly saying "no structural candidate was
-                   ;; under test this turn" rather than promoting a behavioral
-                   ;; entry into a slot that isn't its own.
                    :candidate-id (:candidate-id (first (filter #(= :structural (:axis %))
                                                                candidates)))
-                   :task-class (->uuid (get-in payload [:structural :assigned-tree-id]))
+                   :task-class (logic/->uuid (get-in payload [:structural :assigned-tree-id]))
                    :model (:model node)
                    :rendered-chars (count block)}
-            block (assoc :prompt-content-hash (sha256-hex block))
+            block (assoc :prompt-content-hash (logic/sha256-hex block))
             (and block (or (:injection-capture-rendered-block? ctx)
-                           *capture-rendered-block?*))
+                           logic/*capture-rendered-block?*))
             (assoc :rendered-block block)))
         (println (format "[DEBUG R-Inject] arm %s — prepended %d chars (instruction now %d chars)"
                          (name arm)
                          (count block)
                          (count (:instruction result))))
         result))))
-
-(defn- apply-ontology-context
-  "If node has :context parameter, inject ontology context into instruction.
-
-   The :context parameter can include:
-   - :problem-type - Problem URI for context lookup
-   - :include-patterns - Include success patterns
-   - :include-failures - Include failure patterns
-   - :tree-id - Enable self-learning mode
-   - :self-learning? - Enable self-learning context
-
-   This requires the ontology component to be available in the context."
-  [node context]
-  (let [ctx-config (:context node)]
-    (if (and ctx-config (:instruction node))
-      ;; Try to build ontology context - gracefully handle missing ontology component
-      (try
-        (let [ontology-ns (requiring-resolve 'ai.obney.orc.ontology.interface/build-ontology-context)
-              format-fn (requiring-resolve 'ai.obney.orc.ontology.interface/format-context-for-llm)]
-          (if (and ontology-ns format-fn)
-            (let [;; Resolve tree-id: explicit > sheet-id (auto for self-learning)
-                  tree-id (or (:tree-id ctx-config)
-                              (when (:self-learning? ctx-config) (:sheet-id context)))
-                  ;; Build ontology context - pass full context (needs :event-store and :cache)
-                  ontology-ctx (ontology-ns context
-                                            (cond-> {:problem-type (:problem-type ctx-config)}
-                                              tree-id (assoc :tree-id tree-id)
-                                              (:self-learning? ctx-config) (assoc :self-learning? true)))
-                  ;; Format for LLM injection
-                  formatted (format-fn ontology-ctx
-                                       {:include (cond-> #{}
-                                                   (:include-patterns ctx-config) (conj :patterns)
-                                                   (:include-failures ctx-config) (conj :failures))
-                                        :max-items 5})]
-              (if (and formatted (not (str/blank? formatted)))
-                ;; Prepend ontology context to instruction
-                (update node :instruction
-                        (fn [inst]
-                          (str "## Ontology Context\n\n"
-                               formatted
-                               "\n\n---\n\n"
-                               inst)))
-                node))
-            node))
-        (catch Exception _e
-          ;; Ontology component not available or error - proceed without context
-          node))
-      node)))
-
-(defn- make-bb-write-event
-  "Create a tick-scoped blackboard write event (isolated per execution).
-
-   `attribution` is an optional {:node-id _ :exec-context _} naming the node
-   EXECUTION this write belongs to. It matters most for map-each item writes:
-   the parent emits them before starting each child, and all iterations share
-   one blackboard key, so without attribution a consumer cannot tell which
-   iteration a given item write was for — and the blackboard slot itself only
-   ever holds the most recent one. With it, each item write is addressable by
-   the same [node-id exec-context] identity every other write uses."
-  ([context sheet-id tick-id key value]
-   (make-bb-write-event context sheet-id tick-id key value nil))
-  ([context sheet-id tick-id key value attribution]
-   (->event
-    {:type :sheet/execution-value-written
-     :tags #{[:sheet sheet-id]
-             [:tick tick-id]}
-     :body (value-storage/prepare-write
-            context
-            (cond-> {:tick-id tick-id
-                     :sheet-id sheet-id
-                     :key key
-                     :value value}
-              (:node-id attribution) (assoc :node-id (:node-id attribution))
-              (seq (:exec-context attribution))
-              (assoc :exec-context (:exec-context attribution))
-              ;; Direction matters. A map-each child often reads AND writes the
-              ;; same item key, so "attributed to execution E" is ambiguous
-              ;; without it: is this the value E was given, or the value E
-              ;; produced? :input-seed? marks the former.
-              (:input-seed? attribution) (assoc :input-seed? true)))})))
-
-;; =============================================================================
-;; Tick Execution Processor
-;; =============================================================================
-
-(defn execute-tree-tick
-  "When a tree tick starts, begin executing from the root node.
-   Reads from tick-scoped execution context (snapshot-based execution)."
-  [{:keys [event event-store] :as context}]
-  (let [sheet-id (:sheet-id event)
-        tick-id (:tick-id event)
-        tick-ctx (rm/get-tick-execution-context context tick-id)
-        root-id (:root-node-id tick-ctx)
-        nodes-by-id (:nodes-by-id tick-ctx)
-        root-node (when root-id (get nodes-by-id root-id))]
-    (when root-node
-      (if (and (not= :legacy (get-in tick-ctx [:options :durability-mode]))
-               (ephemeral-routing-tree? nodes-by-id))
-        (advance-ephemeral-frontier context)
-      ;; :inputs carries only what cannot be resolved from the tick
-      ;; blackboard — execution context and map-each item overrides. The
-      ;; root's declared reads are already in the blackboard and
-      ;; execute-leaf-node resolves them there.
-      {:result/events
-       [(->event
-         {:type :sheet/node-execution-started
-          :tags (node-execution-tags context sheet-id tick-id root-id)
-          :body (execution-lease/stamp
-                 context root-node
-                 {:sheet-id sheet-id
-                 :tick-id tick-id
-                 :node-id root-id
-                 ;; A re-tick reuses the durable tick identity, so iteration
-                 ;; must participate in node-execution identity. Without it,
-                 ;; duplicate-completion defense mistakes iteration N's
-                 ;; parent completion for iteration N+1 and suppresses the
-                 ;; newly started tree.
-                 :inputs (cond-> {}
-                           (> (or (:iteration event) 1) 1)
-                           (assoc ::tick-iteration (:iteration event)))})})]}))))
-
-;; =============================================================================
-;; Node Execution Processor
-;; =============================================================================
-
-;; Default provider - set to nil to use mock, or :openrouter etc for real execution
-(def ^:dynamic *default-llm-provider* :openrouter)
-
-(defn- extract-execution-context
-  "Extract map-each execution context from inputs.
-   Returns a map with only the context keys needed for correlation."
-  [inputs]
-  (select-keys inputs [::map-each-index ::map-each-parent ::tick-iteration]))
-
-(defn delegate-child-tick-id
-  "Return the durable identity of one logical delegate invocation.
-
-   The parent tick iteration is the durable invocation ordinal: duplicate
-   delivery and recovery within an iteration resolve to the same child, while
-   reaching the same delegate after a Running frontier starts a new child.
-   Map-each identity remains included so concurrent invocations stay isolated."
-  [parent-tick-id node-id execution-context]
-  (let [work-context (select-keys execution-context
-                                  [::map-each-index ::map-each-parent
-                                   ::tick-iteration])]
-    (java.util.UUID/nameUUIDFromBytes
-     (.getBytes (pr-str [parent-tick-id node-id (into (sorted-map) work-context)])
-                "UTF-8"))))
-
-(defonce ^:private delegate-claims (atom #{}))
-
-(defn claim-delegate!
-  "Claim process-local responsibility for observing one durable child tick.
-   The tick id remains the cross-process claim; this set closes the interval
-   before its originating event lands and bounds duplicate-delivery futures."
-  [child-tick-id]
-  (let [claimed? (volatile! false)]
-    (swap! delegate-claims
-           (fn [claims]
-             (if (contains? claims child-tick-id)
-               claims
-               (do (vreset! claimed? true)
-                   (conj claims child-tick-id)))))
-    @claimed?))
-
-(defn release-delegate! [child-tick-id]
-  (swap! delegate-claims disj child-tick-id))
-
-;; =============================================================================
-;; Input Profile Computation (deep module — pure function, testable in isolation)
-;; =============================================================================
-
-(def profile-value
-  "See core.profile — extracted so the command side can profile too."
-  profile/profile-value)
-
-(def profile-values profile/profile-values)
-
-(def compute-input-profile profile/compute-input-profile)
-
-;; Per-read-value cap for trace :inputs capture. A grounding judge needs enough
-;; of each read value to verify the answer was built from it — not megabytes.
-;; Large string reads (e.g. full-file contents) are truncated to this many chars.
-(def ^:private max-trace-input-chars 20000)
-
-(defn- truncate-trace-value
-  "Truncate a single read value for inclusion in a trace's :inputs.
-   Strings longer than max-trace-input-chars are cut with a marker; other
-   values pass through unchanged (vectors/maps are bounded structurally by
-   the reads themselves and stay small in practice)."
-  [v]
-  (if (and (string? v) (> (count v) max-trace-input-chars))
-    (str (subs v 0 max-trace-input-chars)
-         "\n…[truncated " (- (count v) max-trace-input-chars) " chars]")
-    v))
-
-(defn read-sources
-  "For each of a node's declared :reads, the id of the write event that
-   produced the value the node is about to see: {read-key event-id}.
-
-   Returns {} inside a map-each iteration. A root tick iteration is sequential
-   and therefore retains an exact blackboard source; it must not be treated as
-   map-each merely because it also carries execution-disambiguating context.
-   Inside map-each the blackboard holds ONE :source per key, and
-   concurrent iterations sharing the item key clobber it, so any id captured
-   here would name an arbitrary iteration's write. The iteration's own
-   exec-context is the reliable identity and travels on both the completion
-   and the item write; recording a plausible-but-wrong id alongside it is
-   worse than recording nothing, because a consumer would trust it.
-
-   Recorded on the completion event so a consumer can rehydrate the node's
-   inputs EXACTLY. Resolving a read by key name alone yields the last write
-   to that key in the tick, which — when a key is written more than once —
-   can be a value produced after this node had already finished.
-
-   Keys with no entry are ones seeded into the tick rather than written
-   during it (they have no write event); consumers fall back to the tick's
-   seeded inputs for those. Pure function — testable in isolation."
-  ([reads blackboard] (read-sources reads blackboard nil))
-  ([reads blackboard exec-context]
-   (if (or (contains? exec-context ::map-each-index)
-           (contains? exec-context ::map-each-parent))
-     {}
-     (reduce (fn [acc k]
-               (if-let [src (get-in blackboard [k :source])]
-                 (assoc acc k src)
-                 acc))
-             {}
-             (or reads [])))))
-
-(defn extract-read-inputs
-  "Build the {read-key -> value} map a node actually read from the blackboard,
-   restricted to the node's declared :reads. Large string values are truncated
-   (see max-trace-input-chars) so the eval trace carries real grounding context
-   without bloating events. Returns {} when reads is empty or no values present.
-
-   This is the honest-grounding capture: control nodes (sequence/fallback)
-   emit a non-leaf child's node-execution-started with only the map-each
-   context, so the synthesis/answer node's real inputs were dropped from the
-   trace. Capturing them at execution time — when the blackboard is fully
-   resolved (prior siblings' writes already merged) — gives judges the
-   evidence the answer was grounded on. Pure function — testable in isolation."
-  [reads blackboard]
-  (reduce
-    (fn [acc k]
-      (let [entry (get blackboard k)]
-        (if (contains? entry :value)
-          (assoc acc k (truncate-trace-value (:value entry)))
-          acc)))
-    {}
-    (or reads [])))
 
 (defn- provider-policy-options
   "The execution-policy options handed to a provider invocation (model leaf or
@@ -2446,20 +5652,20 @@
       :exec-context exec-context
       :start-provider-attempt!
       (fn [attempt]
-        (provider-observations/start-provider-attempt!
+        (start-provider-attempt!
          context (merge attempt {:sheet-id sheet-id :tick-id tick-id :node-id node-id
                                  :node-start-id (get-in context [:event :event/id])
                                  :exec-context exec-context})))
       :complete-provider-attempt!
       (fn [attempt]
-        (provider-observations/complete-provider-attempt!
+        (complete-provider-attempt!
          context (merge attempt {:sheet-id sheet-id :tick-id tick-id :node-id node-id
                                  :node-start-id (get-in context [:event :event/id])
                                  :exec-context exec-context})))}
       (:researcher-campaign-node-id tick-options)
       (assoc :fresh-model-authority!
              (fn [deadline]
-               (emitted-authority/ensure!
+               (ensure!
                  context {:sheet-id sheet-id :tick-id tick-id :node-id node-id
                           :node-start-id (get-in context [:event :event/id]) :exec-context exec-context
                           :logical-action-id (pr-str [tick-id node-id exec-context])}
@@ -2518,21 +5724,13 @@
                      :result result
                      :resolved-at (str (java.time.Instant/now))}))}))))
 
-(defn- command-rejection
-  "The anomaly a command returned when it was rejected, else nil.
-   cp/process-command reports a rejected command (schema failure, failed
-   authorization, append conflict) by RETURNING an anomaly, not by throwing."
-  [result]
-  (when (and (map? result) (:cognitect.anomalies/category result))
-    result))
-
 (defn- process-lifecycle-command!
   "Run a command whose rejection would strand a node execution. A rejection is
    logged loudly with the command name and the result is returned, so the
    caller can turn it into a visible failure rather than a silent stall."
   [context command]
   (let [result (cp/process-command (assoc context :command command))]
-    (when-let [anomaly (command-rejection result)]
+    (when-let [anomaly (logic/command-rejection result)]
       (u/log ::lifecycle-command-rejected
              :level :error
              :command-name (:command/name command)
@@ -2552,8 +5750,11 @@
    already holds a terminal fact for the node, so it is logged but not failed
    again."
   [context completion-command]
-  (let [result (process-lifecycle-command! context completion-command)
-        anomaly (command-rejection result)]
+  (let [completion-command (cond-> completion-command
+                             (contains? completion-command :rejected-writes)
+                             (update :rejected-writes logic/rejection-evidence))
+        result (process-lifecycle-command! context completion-command)
+        anomaly (logic/command-rejection result)]
     (if (and anomaly
              (not= :cognitect.anomalies/conflict
                    (:cognitect.anomalies/category anomaly)))
@@ -2590,58 +5791,29 @@
         tick-id (:tick-id event)
         node-id (:node-id event)
         event-inputs (:inputs event)
-        ;; ONE projection for the whole handler. Every
-        ;; :sheet/tick-execution-contexts projection decodes the tick's cached
-        ;; blob, and this fn used to take five of them (nodes-by-id, overrides,
-        ;; blackboard, tool-context, budget) for a single leaf.
         tick-ctx (tick-ctx-of context tick-id)
         nodes-by-id (:nodes-by-id tick-ctx)
         overrides (:instruction-overrides tick-ctx)
         node (-> (get nodes-by-id node-id)
-                 (apply-instruction-override overrides)
-                 ;; R-Inject: leaves don't carry :r05-classifier (only the
-                 ;; repl-researcher path runs the wedge), so this is a
-                 ;; no-op for leaves. Calling the same helper everywhere
-                 ;; gives the pipeline a single context-prepend contract.
+                 (logic/apply-instruction-override overrides)
                  (apply-r05-classifier-context context))]
     (when (= :leaf (:type node))
-      ;; OwnedWorkIsNotAbandoned: the worker accepts the start, and so is
-      ;; running it for recovery's purposes, from the first moment of the
-      ;; handler. The lease ends in the work's own `finally`, or here if the
-      ;; work never launches.
-      (let [lease (execution-lease/begin!
+      (let [lease (begin!
                    context {:sheet-id sheet-id :tick-id tick-id :node-id node-id
-                            :exec-context (extract-execution-context event-inputs)
+                            :exec-context (logic/extract-execution-context event-inputs)
                             :start-event-id (:event/id event)})]
       (try
-      ;; Hydrate only what this leaf declared it reads. gather-inputs,
-      ;; extract-read-inputs and compute-input-profile all restrict themselves
-      ;; to (:reads node); read-sources needs only :source, which is
-      ;; metadata. Order matters: hydrate FIRST, then overlay event-inputs —
-      ;; a map-each item value arrives on the started event and must win over
-      ;; whatever the shared item key resolves to.
       (let [raw-blackboard (hydrate-values context tick-id (:blackboard tick-ctx)
                                            (or (:reads node) []))
-            ;; Merge event inputs into blackboard (e.g., map-each item values)
             blackboard (reduce (fn [bb [k v]]
                                  (if (and (keyword? k) (not (= (namespace k) (namespace ::_))))
                                    (assoc-in bb [k :value] v)
                                    bb))
                                raw-blackboard
                                event-inputs)
-            ;; G1 (ADR 0018): read the opaque :tool-context that rode the
-            ;; tick-execution-context across the async boundary and assoc it
-            ;; onto the context handed to execute-leaf -> execute-code, so the
-            ;; leaf fn sees (:tool-context ctx). Absent -> leaf-context is the
-            ;; unchanged context (no behavior change for non-coding leaves).
-            ;; Works at any depth: composites resolve leaves through the same
-            ;; per-tick context.
             tool-context (:tool-context tick-ctx)
-            ;; ToolGateSeesInvocationIdentity: a code leaf's consumer tool gate
-            ;; is built with the invocation's tick, node and effective deadline
-            ;; (the same deadline source provider-policy-options uses).
             leaf-context (cond-> (assoc (merge context
-                                                (runtime/ephemeral-context-for tick-id))
+                                                (logic/ephemeral-context-for tick-id))
                                         :tick-options (:options tick-ctx)
                                         :tick-id tick-id
                                         :node-id node-id
@@ -2651,19 +5823,12 @@
                            (#{:code :tool} (:executor node))
                            (merge (campaign-effect-capabilities
                                    context (:options tick-ctx))))
-            ;; Use provider from context, fall back to default, or use mock if nil
-            provider (or (:provider node) llm-provider *default-llm-provider*)
+            provider (or (:provider node) llm-provider logic/*default-llm-provider*)
             executor-type (or (:executor node) :ai)
-            ;; Extract execution context for correlation
-            exec-context (extract-execution-context event-inputs)
-            ;; Check LLM budget ONLY for AI executor types (not code)
+            exec-context (logic/extract-execution-context event-inputs)
             is-llm-call? (and (#{:ai :decision :repl-researcher} executor-type) provider)
-            ;; Stage 2 token streaming: only built when a live subscriber
-            ;; opted into deltas for this tick. execute-ai falls back to
-            ;; blocking predict when nil (or when ORC LLM lacks
-            ;; predict-stream-v2).
             stream-cfg (when is-llm-call?
-                         (when-let [cfg (streaming/delta-config tick-id)]
+                         (when-let [cfg (logic/delta-config tick-id)]
                            (cond-> (assoc cfg
                                           :tick-id tick-id
                                           :sheet-id sheet-id
@@ -2672,23 +5837,16 @@
                                   (::map-each-parent exec-context))
                              (assoc :map-each {:parent (::map-each-parent exec-context)
                                                :index (::map-each-index exec-context)}))))]
-        ;; AI leaves reserve at each actual provider-call boundary inside the
-        ;; executor, so internal provider retries and node retries consume the
-        ;; same shared budget. Researchers retain their own per-call hook.
-        ;; Run execution in a future to avoid blocking.
         (do
             (when is-llm-call?
               (let [map-idx (::map-each-index exec-context)]
                 (u/log ::leaf-llm-event-received
                        :map-idx map-idx
                        :thread (.getName (Thread/currentThread)))))
-            (execution-budget/register-work! tick-id node-id (future
+            (logic/register-work! tick-id node-id (future
             (try
               (try
               (if (rm/is-tick-or-ancestor-cancelled? context tick-id)
-                ;; Cancellation guard: the tick was cancelled between event
-                ;; emission and this future starting (or while queued). Fail
-                ;; fast instead of spending an LLM call on a dead tick.
                 (process-lifecycle-command! context
                   {:command/id (random-uuid)
                           :command/timestamp (time/now)
@@ -2709,27 +5867,23 @@
                                  :thread (.getName (Thread/currentThread))
                                  :instruction-preview instr-preview)))
                     raw-result (cond
-                             ;; Code executor doesn't need provider
                              (#{:code :tool} executor-type)
-                             (executor/execute-leaf node blackboard nil
+                             (execute-leaf node blackboard nil
                                                     :context leaf-context)
-                             ;; AI executor with provider
                              provider
-                             (executor/execute-leaf
+                             (execute-leaf
                               node blackboard provider
                               :context leaf-context
                               :options (provider-policy-options
                                         context tick-ctx sheet-id tick-id node-id
                                         exec-context)
                               :stream stream-cfg)
-                             ;; A decision has no meaningful mock answer
                              (= :decision executor-type)
                              {:status :failure
                               :error "No llm-provider configured for model decision"}
-                             ;; No provider - use mock
                              :else
-                             (executor/execute-leaf-mock node blackboard))
-                    result (executor/validate-leaf-outputs blackboard raw-result is-llm-call?)
+                             (logic/execute-leaf-mock node blackboard))
+                    result (logic/validate-leaf-outputs blackboard raw-result is-llm-call?)
                   {:keys [status outputs rejected-writes missing-write-keys error duration-ms usage raw-response
                           failure-kind provider-evidence block-payload decision]
                    result-model :model
@@ -2740,10 +5894,7 @@
                              :status status
                              :duration-ms (or duration-ms (- (System/currentTimeMillis) start-ms))
                              :total-tokens (:total-tokens usage)))]
-              ;; Track usage for this tick (aggregates across all LLM calls)
-              (when usage (add-usage! tick-id usage))
-              ;; Use process-command to emit completion event. A REJECTED
-              ;; completion fails the node visibly (S7w) instead of wedging.
+              (when usage (logic/add-usage! tick-id usage))
               (when-not (:model-call-in-flight? result)
               (complete-node-or-fail!
                 context
@@ -2753,68 +5904,38 @@
                                 :sheet-id sheet-id
                                 :tick-id tick-id
                                 :node-id node-id
-                                ;; C-2a-2: the per-node-type rolling-metrics
-                                ;; aggregator is (if-let [nt (:node-type event)] ...),
-                                ;; so omitting this silently drops the execution
-                                ;; from the metric rather than failing.
                                 :node-type (:type node)
                                 :status status
-                                :writes (normalize-output-keys (or outputs {}))}
+                                :writes (logic/normalize-output-keys (or outputs {}))}
                          (seq missing-write-keys) (assoc :missing-write-keys missing-write-keys)
                          (seq rejected-writes)
-                         (assoc :rejected-writes (normalize-output-keys rejected-writes))
+                         (assoc :rejected-writes (logic/normalize-output-keys rejected-writes))
                          duration-ms (assoc :duration-ms duration-ms)
                          error (assoc :error error)
-                         ;; WS-2a: carry the OPAQUE block payload through on a
-                         ;; :blocked completion so it propagates up the tree to
-                         ;; the caller's result. orc never interprets it.
                          (= :blocked status) (assoc :block-payload block-payload)
-                         ;; Verbatim raw LLM response on parse failures —
-                         ;; persisted on the completion event so (node-output
-                         ;; <node-id>) can retrieve the full text for diagnosis.
                          (and (= :failure status) raw-response)
                          (assoc :raw-response raw-response)
                          (and (= :failure status) failure-kind)
                          (assoc :failure-kind failure-kind)
                          (and (= :failure status) provider-evidence)
                          (assoc :provider-evidence provider-evidence)
-                         ;; The only place a leaf's reads are observed —
-                         ;; node-execution-started does not inline them. Omitting
-                         ;; this leaves the trace with no :read-keys and grounding
-                         ;; judges scoring against {}. complete-node-execution
-                         ;; reduces these to :read-keys + :input-profile before
-                         ;; they reach the event, so it costs no storage.
                          :always
                          (as-> cmd
-                               (let [reads (extract-read-inputs (:reads node) blackboard)]
+                               (let [reads (logic/extract-read-inputs (:reads node) blackboard)]
                                  (cond-> cmd
                                    (or (seq exec-context) (seq reads))
                                    (assoc :inputs (merge exec-context reads))
-                                   ;; Which write each read resolved to, so
-                                   ;; rehydration is an exact lookup rather than
-                                   ;; a last-write-wins guess on the key name.
                                    (seq reads)
-                                   (assoc :read-sources (read-sources (:reads node) blackboard exec-context)))))
+                                   (assoc :read-sources (logic/read-sources (:reads node) blackboard exec-context)))))
                          (seq usage) (assoc :usage usage)
                          decision (assoc :decision decision)
                          (:model-fallback result) (assoc :model-fallback (:model-fallback result))
-                         ;; ModelLeafRecordsResolvedModel: every model call
-                         ;; records the model the provider reported when it
-                         ;; reported one, else the configured one, in :model.
-                         ;; The two are also kept apart so neither stands in
-                         ;; for the other: :requested-model is only what the
-                         ;; node configured, :resolved-model only what the
-                         ;; provider reported (never invented on a failure).
                          (and is-llm-call? (or result-model (:model node)))
                          (assoc :model (or result-model (:model node)))
                          (and is-llm-call? (:model node))
                          (assoc :requested-model (:model node))
                          (and is-llm-call? resolved-model)
                          (assoc :resolved-model resolved-model))))
-              ;; ALSO emit the RLM-specific learning-signal event when an LLM
-              ;; call has usage. Carries a precomputed structured node-path
-              ;; and an :input-profile derived from the node's :reads so
-              ;; downstream judges/aggregators don't need to recompute.
               (when (and is-llm-call? (seq usage))
                 (let [node-path (cond-> [{:type :leaf :node-id node-id}]
                                   (::map-each-parent exec-context)
@@ -2822,7 +5943,7 @@
                                             :parent (::map-each-parent exec-context)
                                             :index (::map-each-index exec-context)}]
                                           %)))
-                      input-profile (compute-input-profile (:reads node) blackboard)]
+                      input-profile (logic/todo-processors-compute-input-profile (:reads node) blackboard)]
                   (cp/process-command
                     (assoc context :command
                            (cond-> {:command/id (random-uuid)
@@ -2835,16 +5956,9 @@
                                     :usage usage}
                              (seq input-profile)
                              (assoc :input-profile input-profile)))))))))
-            ;; WS-2a: catch Throwable (not just Exception) so a block signal
-            ;; that escapes execute-code's own catch (e.g. thrown from an :ai
-            ;; leaf or fn resolution) still COMPLETES the node :blocked rather
-            ;; than dying in the future and hanging the tick. Preserves today's
-            ;; behavior for everything else: an ordinary Exception -> :failure;
-            ;; a non-blocking Error/Throwable -> re-thrown exactly as before
-            ;; (it escaped the future previously too — no new swallowing).
             (catch Throwable t
               (cond
-                (block/blocking-condition? t)
+                (logic/blocking-condition? t)
                 (complete-node-or-fail!
                   context
                   {:command/id (random-uuid)
@@ -2856,7 +5970,7 @@
                    :node-type (:type node)
                    :status :blocked
                    :writes {}
-                   :block-payload (block/block-payload t)})
+                   :block-payload (logic/block-payload t)})
 
                 (instance? Exception t)
                 (process-lifecycle-command!
@@ -2870,99 +5984,27 @@
                    :error (or (.getMessage t) (str (class t)))})
 
                 :else (throw t))))
-              (finally (execution-lease/end! lease))))))
-        ;; Return nil - completion will be handled by the future via process-command
+              (finally (logic/end! lease))))))
         nil)
       (catch Throwable t
-        (execution-lease/end! lease)
+        (logic/end! lease)
         (throw t)))))))
-
-;; =============================================================================
-;; REPL Researcher Node Execution Processor
-;; =============================================================================
-
-(defn- strip-nil-researcher-optional-writes
-  "Treat only a literal nil top-level researcher write as optional absence.
-   Present structured values must cross their declared Malli schema boundary,
-   even when every nested value is nil."
-  [outputs optional-writes]
-  (if (and (map? outputs) (seq optional-writes))
-    (into {} (remove (fn [[k v]]
-                       (and (contains? optional-writes k) (nil? v)))
-                     outputs))
-    outputs))
-
-(defn- checkpoint->v2-researcher-facts
-  "Split the executor's compatibility checkpoint shape at the durable boundary.
-   The executor may still return a history-bearing map to direct callers, but
-  public execution persists the latest completed attempt once and keeps only
-  continuation data in the supersedable resume state."
-  [checkpoint]
-  (let [history (vec (:history checkpoint))
-        history-entry (last history)
-        explicit-record (:iteration-record checkpoint)
-        iteration-index (or (:iteration-index explicit-record)
-                            (:iteration-index history-entry)
-                            (dec (:next-iteration checkpoint)))
-        attempt-ordinal (or (:attempt-ordinal explicit-record)
-                            (:attempt-ordinal history-entry)
-                            0)
-        terminal-status (get-in checkpoint [:terminal-result :status])
-        status (or (:status explicit-record)
-                   terminal-status
-                   (:status history-entry)
-                   (if (:error history-entry) :failure :success))]
-    {:resume-state (-> checkpoint
-                       (dissoc :history :terminal-result :iteration-record)
-                       (assoc :version 2))
-     :iteration-record
-     (cond-> (assoc (or explicit-record history-entry {})
-                    :iteration-index iteration-index
-                    :attempt-ordinal attempt-ordinal
-                    :status status)
-       ;; Explicit records are formed at the attempt's own terminal boundary.
-       ;; Deriving their evidence flags from `history-entry` would read the
-       ;; previous completed iteration when the current attempt timed out.
-       (nil? explicit-record)
-       (assoc :generated-code-recorded?
-              (boolean (seq (:code history-entry)))
-              :emitted-tree-recorded?
-              (boolean (or (:generated-tree-raw history-entry)
-                           (:tree-outcome history-entry)))))}))
 
 (defn execute-repl-researcher-node
   "Execute a repl-researcher node when node-execution-started is emitted.
-   Runs in a future like leaf/llm-condition nodes to avoid blocking pubsub."
+   Runs in a future like leaf/llm-condition nodes to avoid blocking pubsub.
+   The :rlm/tree-generated event records the last emitted tree once per campaign."
   [{:keys [event event-store llm-provider] :as context}]
   (let [sheet-id (:sheet-id event)
         tick-id (:tick-id event)
         node-id (:node-id event)
         event-inputs (:inputs event)
-        ;; ONE projection for the whole handler — see execute-leaf-node.
         tick-ctx (tick-ctx-of context tick-id)
         nodes-by-id (:nodes-by-id tick-ctx)
         overrides (:instruction-overrides tick-ctx)
-        ;; RR-1 (ADR 0020): the node as it comes off the tick snapshot. The
-        ;; auto-classify wedge + R-Inject used to run HERE, synchronously, on
-        ;; the dispatch thread — contradicting this function's own docstring
-        ;; and letting one slow classify->rerank call (measured live at 302s)
-        ;; hold the thread the todo-processor delivers other node executions
-        ;; on. They now run INSIDE the future below, still ahead of Phase-1
-        ;; prompt assembly. Verified safe: nothing between here and the future
-        ;; reads the wedge's output — the two consumers of `base-node` out
-        ;; here are (:type …) and (:reads …), neither of which the wedge or
-        ;; R-Inject touch (they set :context and prepend to :instruction),
-        ;; and the only other reader of a node's :context,
-        ;; apply-ontology-context, is the legacy path R-Inject replaced (it
-        ;; has no call sites left anywhere in the workspace).
         base-node (-> (get nodes-by-id node-id)
-                      (apply-instruction-override overrides))]
+                      (logic/apply-instruction-override overrides))]
     (when (= :repl-researcher (:type base-node))
-      ;; The ONLY site that hydrates everything, and it has to: the RLM
-      ;; sandbox's get-input takes an arbitrary key chosen at runtime by
-      ;; model-authored code, and build-available-variables-section previews
-      ;; every [k v] in the blackboard. There is no declared read set to
-      ;; narrow to. One bulk resolve, on the heaviest node type in the system.
       (let [raw-blackboard (hydrate-values context tick-id (:blackboard tick-ctx) nil)
             blackboard (reduce (fn [bb [k v]]
                                  (if (and (keyword? k) (not (= (namespace k) (namespace ::_))))
@@ -2970,18 +6012,10 @@
                                    bb))
                                raw-blackboard
                                event-inputs)
-            provider (or llm-provider *default-llm-provider*)
-            exec-context (extract-execution-context event-inputs)
-            ;; Honest-grounding capture: the values this node actually read
-            ;; from the (fully-resolved) blackboard, restricted to its declared
-            ;; :reads and truncated for size. Control-node started events drop a
-            ;; non-leaf child's reads, so trace assembly would otherwise default
-            ;; the synthesis node's :inputs to {} and judges score grounded
-            ;; answers as hallucinations. We carry these into the completion
-            ;; event; assemble-execution-trace prefers them over the (empty)
-            ;; started inputs.
-            read-inputs (extract-read-inputs (:reads base-node) blackboard)
-            checkpointed? (boolean (researcher-mode/checkpointed? base-node))
+            provider (or llm-provider logic/*default-llm-provider*)
+            exec-context (logic/extract-execution-context event-inputs)
+            read-inputs (logic/extract-read-inputs (:reads base-node) blackboard)
+            checkpointed? (boolean (logic/checkpointed? base-node))
             budget-root (durable-budget-root context sheet-id tick-id tick-ctx)
             durable-tick-options
             (cond-> (:options tick-ctx)
@@ -2990,12 +6024,12 @@
                      :llm-call-budget (:budget budget-root)
                      :llm-budget-root-sheet-id (:sheet-id budget-root)
                      :llm-budget-root-tick-id (:tick-id budget-root)))]
-        (let [lease (execution-lease/begin!
+        (let [lease (begin!
                      context {:sheet-id sheet-id :tick-id tick-id :node-id node-id
                               :exec-context exec-context
                               :start-event-id (:event/id event)})]
         (try
-        (execution-budget/registered-future
+        (logic/registered-future
          checkpointed? tick-id node-id
          (let [researcher-monotonic-ms-fn
                (when checkpointed?
@@ -3011,60 +6045,30 @@
                  (:lease-owned? context))
                researcher-registered-work
                (when researcher-lease-owned?
-                 (or (execution-budget/current-work)
+                 (or (logic/current-work)
                      (throw
                       (ex-info
                        "Checkpointed researcher started outside its registered work slot"
                        {:tick-id tick-id :node-id node-id}))))
                researcher-lease-monitor-ref (atom nil)]
            (try
-            ;; Cooperative drain narrows the overlap window; it is not an
-            ;; exclusivity guarantee. A paused/non-cooperative worker can
-            ;; still run, so every durable result remains epoch-fenced.
             (let [researcher-lease-monitor
                   (when researcher-registered-work
-                    (execution-budget/cancel-work-when!
+                    (logic/cancel-work-when!
                      researcher-registered-work
                      researcher-lease-owned?
                      (or (:researcher-lease-monitor-wait-fn context)
                          #(Thread/sleep 100))
                      #(reset! researcher-lease-lost? true)))]
               (reset! researcher-lease-monitor-ref researcher-lease-monitor)
-              ;; Interruption is cooperative cleanup, never the ownership
-              ;; gate. Only the monitor's authoritative initial live check can
-              ;; permit this quantum to claim its durable frontier.
               (when (or (nil? researcher-lease-monitor)
                         (= :owned (:initial-state researcher-lease-monitor)))
-            ;; C-Loop-3: thread sheet-id / tick-id / cache through to
-            ;; execute-repl-researcher so the recursive RLM sandbox's
-            ;; mint-behavior! + get-description SCI bindings have the
-            ;; command context they need to dispatch + read the
-            ;; descriptions read-model. Without these, mint-behavior!
-            ;; throws "requires a command context" and the agent's
-            ;; mint call is lost.
-            (let [;; This is the ownership-quantum boundary, ahead of frontier
-                  ;; claim and classification. It is deliberately separate
-                  ;; from the wall/epoch clock used for durable deadlines.
+            (let [
                   researcher-quantum-started-monotonic-ms
                   (when checkpointed?
                     (long (researcher-monotonic-ms-fn)))
                   _ (reset! researcher-quantum-started-monotonic-ms-ref
                             researcher-quantum-started-monotonic-ms)
-                  ;; RR-1 (ADR 0020): auto-classify + R-Inject, moved OFF the
-                  ;; dispatch thread into this future — still ahead of Phase-1
-                  ;; prompt assembly, which is the only thing that consumes
-                  ;; them. A slow classify->rerank now costs THIS turn's
-                  ;; latency and nothing else.
-                  ;; CC-13: :correlation-id rides along so the injection record
-                  ;; carries the correlated-trace key that joins it to this
-                  ;; run's outcomes. Taken from the handler's single
-                  ;; projection — it is written once, on tree-tick-started.
-                  ;; W2P-1: the host's turn id rides along too, so the injection
-                  ;; record joins to the turn DIRECTLY instead of by wall-clock
-                  ;; window. :tool-context stays OPAQUE for threading — orc
-                  ;; neither mints nor requires a turn id — and this reads the
-                  ;; single optional key a measurement needs, degrading to
-                  ;; absent when the host supplies none.
                   wedge-ctx (cond-> (assoc context :sheet-id sheet-id :tick-id tick-id
                                            :correlation-id (:correlation-id tick-ctx))
                               (:turn-id (:tool-context tick-ctx))
@@ -3078,11 +6082,8 @@
                                          #(System/currentTimeMillis))
                   campaign-timing
                   (when checkpointed?
-                    (executor/resolve-researcher-campaign-timing
+                    (logic/resolve-researcher-campaign-timing
                      {:node base-node
-                      ;; The frontier claim is the first durable campaign fact,
-                      ;; before classification can finish.  A later V2 resume
-                      ;; state is more specific and therefore wins on merge.
                       :checkpoint
                       (merge (select-keys durable-campaign
                                           [:campaign-started-at-ms
@@ -3181,9 +6182,6 @@
                     (or (:classification-context durable-resume-state)
                         (durable-classification-context
                          context sheet-id tick-id node-id)))
-                  ;; A losing worker stops before classification, provider, or
-                  ;; any other campaign effect.  The winner alone prepares the
-                  ;; prompt and enters the executor.
                   auto-classification-required?
                   (and (map? (:rlm base-node))
                        (true? (get-in base-node [:rlm :auto-classify?]))
@@ -3194,8 +6192,7 @@
                     (long
                      (or (get-in base-node
                                  [:rlm :timeouts :classification-ms])
-                         @(requiring-resolve
-                           'ai.obney.orc.ontology.core.reranker/default-rerank-timeout-ms))))
+                         @(integrations/capability :ontology :default-rerank-timeout-ms))))
                   classification-started-at-ms
                   (when classification-timeout-ms
                     (long (campaign-now-ms-fn)))
@@ -3227,9 +6224,6 @@
                     classification-deadline-ms
                     (assoc :classification-deadline-ms
                            classification-deadline-ms
-                           ;; The ontology reranker already owns its real
-                           ;; transport-bound execution path. Clamp that path
-                           ;; to the exact same remaining operation deadline.
                            :rerank-timeout-ms
                            (max 0 classification-remaining-ms))
                     classification-active
@@ -3249,17 +6243,12 @@
                            (apply-r05-classifier-context wedge-ctx))}
 
                       (and checkpointed? auto-classification-required?)
-                      (executor/bounded-call
+                      (logic/bounded-call
                        classification-remaining-ms
                        #(let [prepared-node
                               (-> base-node
                                   (maybe-auto-classify-and-set-context
                                    classification-ctx)
-                                  ;; Prompt rendering and its corpus reads are
-                                  ;; campaign preparation too.  Keeping them in
-                                  ;; this worker prevents a slow description
-                                  ;; projection from escaping the classification
-                                  ;; and campaign deadlines.
                                   (apply-r05-classifier-context
                                    classification-ctx))
                               ensure-active!
@@ -3273,23 +6262,11 @@
                                      :tick-id tick-id
                                      :node-id node-id}))))
                               effect-priority
-                              {;; RS-3: the domain child's concept + skos:broader
-                               ;; edge must exist before anything references it —
-                               ;; earliest of the prep effects.
+                              {
                                :domain-child-mint 5
                                :convergence-capture 10
                                :injection-record 20
-                               ;; The externally visible classification fact
-                               ;; commits after every preparation effect.  A
-                               ;; timeout anywhere in prompt or convergence
-                               ;; preparation therefore cannot leave a
-                               ;; partially prepared assignment behind.
                                :classification-outcome 100
-                               ;; RS-3 / RS-6 weed: the domain-axis deferral is
-                               ;; the same occurrence's second axis, recorded
-                               ;; AFTER the assignment it rides — the order the
-                               ;; non-checkpointed wedge dispatches (spec
-                               ;; ClassificationEffectsCommitAsOneBoundedSet).
                                :domain-classification-deferral 110}]
                           (reset! classification-prepared-node prepared-node)
                           (ensure-active!)
@@ -3375,17 +6352,6 @@
                              (not classification-timeout?))
                     (or (:value classification-result)
                         @classification-prepared-node))
-                  ;; CE-5b FIX B (ADR 0018): read the OPAQUE :tool-context that
-                  ;; FIX A stored on THIS tick's execution-context read model
-                  ;; (the same tick this repl-researcher node runs in) and
-                  ;; thread it into the context handed to
-                  ;; execute-repl-researcher -> execute-tree, whose Phase-2
-                  ;; child tick re-threads it to the emitted leaf. Mirrors
-                  ;; execute-leaf-node's read (rm/get-tick-execution-context).
-                  ;; Absent -> enriched-context unchanged (backward-compatible).
-                  ;; Taken from the handler's single projection: :tool-context
-                  ;; is written once, on tree-tick-started, so it cannot change
-                  ;; between dispatch and this future running.
                   tool-context (:tool-context tick-ctx)
                   correlation-id (:correlation-id tick-ctx)
                   durable-iteration-records
@@ -3399,7 +6365,7 @@
                   persist-v2-checkpoint!
                   (fn [checkpoint resume?]
                     (let [{:keys [resume-state iteration-record]}
-                          (checkpoint->v2-researcher-facts checkpoint)]
+                          (logic/checkpoint->v2-researcher-facts checkpoint)]
                       (cp/process-command
                        (assoc context :command
                               {:command/id (random-uuid)
@@ -3432,11 +6398,6 @@
                                                   researcher-monotonic-ms-fn
                                                   :researcher-quantum-started-monotonic-ms
                                                   researcher-quantum-started-monotonic-ms
-                                                  ;; Recursive researchers make several
-                                                  ;; provider calls inside one durable
-                                                  ;; node execution. Charge each at its
-                                                  ;; actual call boundary against the
-                                                  ;; same root-tick budget.
                                                   :reserve-llm-call!
                                                   #(reserve-llm-call-or-cancel!
                                                     context tick-ctx sheet-id tick-id)
@@ -3526,9 +6487,6 @@
                                                              :iteration iteration
                                                              :result result
                                                              :completed-at (str (java.time.Instant/now))})))
-                                                  ;; node-id rides along so RLM stream
-                                                  ;; events (iteration/phase2) carry the
-                                                  ;; hosting repl-researcher node.
                                                   :node-id node-id)
                                      tool-context (assoc :tool-context tool-context)
                                      correlation-id (assoc :orc/correlation-id correlation-id)
@@ -3555,7 +6513,7 @@
                                (:campaign-started-at-ms campaign-timing)))}
 
                     provider
-                    (executor/execute-repl-researcher
+                    (execute-repl-researcher
                      node blackboard provider enriched-context)
 
                     :else
@@ -3581,15 +6539,10 @@
                                   (zipmap missing-or-nil-required-writes (repeat nil))))
                     raw-result)
                   declared-outputs (when (= :success (:status contract-result))
-                                     (strip-nil-researcher-optional-writes
+                                     (logic/strip-nil-researcher-optional-writes
                                       (select-keys (:outputs contract-result) (:writes node))
                                       optional-writes))
-                  ;; A Phase-2 child returns a delivered blackboard snapshot,
-                  ;; including placeholders and generated-tree internals. The
-                  ;; researcher's output contract is only its declared writes;
-                  ;; validate those values, then retain the full successful
-                  ;; result for the existing observability path.
-                  validated-result (executor/validate-leaf-outputs
+                  validated-result (logic/validate-leaf-outputs
                                      blackboard
                                      (if (= :success (:status contract-result))
                                        (assoc contract-result :outputs declared-outputs)
@@ -3604,16 +6557,9 @@
                           failure-kind provider-evidence model-fallback
                           generated-tree-raw generated-tree-source
                           iteration-reasonings usage own-usage iterations block-payload]} result
-                  ;; Handle :tree-generated status - only propagate raw tree (canonical contains fns)
-                  ;; The raw S-expr DSL is pure data and can be serialized to event store
                   effective-status (if (= :tree-generated status) :tree-generated status)
-                  ;; Checkpointed results carry cumulative campaign usage on
-                  ;; every yielded quantum. Charge that cumulative value only
-                  ;; at the terminal boundary; otherwise N yields re-add every
-                  ;; prior prefix. Non-checkpointed execution remains a single
-                  ;; terminal call and therefore keeps its historical behavior.
                   _ (when (and usage (not= :running effective-status))
-                      (add-usage! tick-id usage))
+                      (logic/add-usage! tick-id usage))
                   terminal-quantum-observation
                   (when (and checkpointed?
                              (not ownership-conflict?)
@@ -3632,28 +6578,12 @@
                       {:observed-quantum-duration-ms observed-ms
                        :max-observed-quantum-duration-ms
                        (max prior-max observed-ms)}))
-                  ;; Include authored generated-tree-raw in outputs when present
-                  ;; (for Phase 2 auto-execution observability)
                   effective-outputs (cond-> (or outputs {})
                                       generated-tree-raw (assoc :generated-tree-raw generated-tree-raw)
                                       generated-tree-source
                                       (assoc :generated-tree-source generated-tree-source)
                                       (seq iteration-reasonings) (assoc :iteration-reasonings (vec iteration-reasonings))
-                                      ;; Iteration history — code + result + stdout + error + vars-created
-                                      ;; per iteration. Surfaced so bench reports can show the model's
-                                      ;; full Phase 1 work (including syntax-error retries) alongside
-                                      ;; its reasoning + the final tree.
                                       (seq iterations) (assoc :iterations (vec iterations))
-                                      ;; CJ-5b: carry the OPAQUE :tool-context onto the terminal
-                                      ;; completion's :writes so a downstream per-event judge (e.g.
-                                      ;; the coding-outcome judge) recovers the turn-id via
-                                      ;; build-trace-data and grounds on the turn's captured effect.
-                                      ;; On a :success terminal the completion otherwise carried only
-                                      ;; the declared writes (+ RLM internals) — never the reads — so
-                                      ;; the turn-id was unreachable and the judge grounded empty. The
-                                      ;; :tool-context is the SAME one FIX B (above) reads from this
-                                      ;; tick's execution-context read model; orc does not interpret
-                                      ;; it. Absent -> not carried (backward-compatible).
                                       tool-context (assoc :tool-context tool-context))]
               (cond
                 (and checkpointed? @researcher-lease-lost?)
@@ -3667,10 +6597,6 @@
 
                 :else
                 (do
-              ;; Emit :rlm/tree-generated once per campaign, at the campaign's
-              ;; terminal (non-:running) effective status — never per Phase-2
-              ;; emit — carrying the last tree the model produced.
-              ;; Check for generated-tree-raw presence (Phase 2 auto-execution returns :success with this field)
               (when (some? generated-tree-raw)
                 (es/append event-store
                            {:tenant-id (:tenant-id context)
@@ -3684,17 +6610,11 @@
                                                :execution-id tick-id
                                                :raw-dsl generated-tree-raw
                                                :generated-at (str (java.time.Instant/now))
-                                               ;; Gap-7b: identify the host
-                                               ;; repl-researcher explicitly so
-                                               ;; downstream judges don't have to
-                                               ;; scan started events.
                                                :sheet-id sheet-id
                                                :node-id node-id}
                                                generated-tree-source
                                                (assoc :source-edn
                                                       generated-tree-source))})]}))
-              ;; Non-checkpointed compatibility has no immutable per-attempt
-              ;; records, so retain its terminal aggregate as trace evidence.
               (when (and (not checkpointed?) (seq iterations))
                 (es/append event-store
                            {:tenant-id (:tenant-id context)
@@ -3715,21 +6635,7 @@
                                 :node-id node-id
                                 :node-type :repl-researcher
                                 :status effective-status
-                                ;; WS-2a × CC-21b (O7): on a :blocked completion the
-                                ;; child tick's delivered :outputs is a blackboard
-                                ;; SNAPSHOT — tick delivery pads every declared-but-
-                                ;; unwritten key with nil ("reported as nil rather
-                                ;; than going missing"). Passing that padding on as
-                                ;; :writes would let O7's externalization fabricate
-                                ;; :sheet/execution-value-written events for keys
-                                ;; nothing ever wrote (ws2a: no leaf runs after a
-                                ;; block). nil means "not produced" engine-wide (the
-                                ;; child-input seeding, the nil-output retry, the
-                                ;; delegate output mapper all treat it so), so a
-                                ;; blocked completion's writes are the snapshot's
-                                ;; non-nil entries — the values genuinely written
-                                ;; before the block, which stay durable per O7.
-                                :writes (normalize-output-keys
+                                :writes (logic/normalize-output-keys
                                           (if (= :blocked effective-status)
                                             (into {} (remove (comp nil? val))
                                                   (or effective-outputs {}))
@@ -3745,30 +6651,13 @@
                          model-fallback (assoc :model-fallback model-fallback)
                          (seq missing-write-keys) (assoc :missing-write-keys missing-write-keys)
                          (seq rejected-writes)
-                         (assoc :rejected-writes (normalize-output-keys rejected-writes))
-                         ;; Carry the node's real read inputs (plus any map-each
-                         ;; context) so the eval trace has honest grounding
-                         ;; context. exec-context keys win on conflict to keep
-                         ;; map-each correlation intact.
+                         (assoc :rejected-writes (logic/normalize-output-keys rejected-writes))
                          (or (seq read-inputs) (seq exec-context))
                          (assoc :inputs (merge read-inputs exec-context))
-                         ;; Which write each read resolved to, so a consumer
-                         ;; rehydrates what this node saw rather than the last
-                         ;; write to that key.
                          (seq read-inputs)
-                         (assoc :read-sources (read-sources (:reads base-node) blackboard exec-context))
-                         ;; WS-2a: a Phase-2 leaf blocked -> the RLM loop
-                         ;; short-circuited with :status :blocked + the opaque
-                         ;; payload. Carry the payload onto the repl-researcher
-                         ;; node completion so it reaches the parent tick result.
+                         (assoc :read-sources (logic/read-sources (:reads base-node) blackboard exec-context))
                          (= :blocked effective-status) (assoc :block-payload block-payload)
-                         ;; Propagate :usage (including :by-node from Phase 2)
-                         ;; so per-node detail bubbles up to the parent tick.
                          (seq usage) (assoc :usage usage)
-                         ;; :usage folds in generated child ticks, which record
-                         ;; the same tokens on their own completions; carry this
-                         ;; node's own share so the family total counts each
-                         ;; provider call once.
                          (and (seq usage) (seq own-usage)) (assoc :own-usage own-usage)
                          (:model node) (assoc :model (:model node)))))))))
             (catch Exception e
@@ -3781,10 +6670,6 @@
                          @researcher-frontier-claim-attempted?
                          (not @researcher-frontier-claimed?)
                          (some? @researcher-ownership-epoch-ref))
-                    ;; Instrumentation failure must not bypass the ownership
-                    ;; fence. If the monotonic capability itself fails there is
-                    ;; no honest duration to record, so keep the epoch-fenced
-                    ;; terminal fact and omit only the unknowable measurement.
                     terminal-observation
                     (when (and researcher-terminal?
                                (some? @researcher-quantum-started-monotonic-ms-ref))
@@ -3831,12 +6716,6 @@
                                :error (.getMessage e)}
                         terminal-observation (merge terminal-observation))
 
-                      ;; A failed frontier command is an observable engine
-                      ;; failure, but the worker never acquired the requested
-                      ;; epoch. Publish it only if the append boundary still
-                      ;; sees the exact predecessor epoch. If the claim became
-                      ;; ambiguous or another owner advanced, the CAS rejects
-                      ;; this terminal instead of letting a stale worker win.
                       researcher-frontier-command-failed?
                       {:command/id (random-uuid)
                        :command/timestamp (time/now)
@@ -3848,10 +6727,6 @@
                        (dec (long @researcher-ownership-epoch-ref))
                        :error (.getMessage e)}
 
-                      ;; A checkpointed worker that never acquired its own
-                      ;; frontier has no authority to terminalize this node.
-                      ;; Leaving the start incomplete lets recovery retry; a
-                      ;; generic failure here could overwrite a newer owner.
                       checkpointed?
                       nil
 
@@ -3869,31 +6744,20 @@
               (try
                 (when-let [researcher-lease-monitor
                            @researcher-lease-monitor-ref]
-                  (execution-budget/stop-ownership-monitor!
+                  (logic/stop-ownership-monitor!
                    researcher-lease-monitor))
                 (finally
-                  (execution-lease/end! lease)
+                  (logic/end! lease)
                   (when-let [worker-finished!
                              (:researcher-worker-finished-fn context)]
-                    ;; Lifecycle instrumentation must never change the worker's
-                    ;; durable outcome. Tests use this injected capability as an
-                    ;; exact post-terminal-suppression barrier.
                     (try
                       (worker-finished!)
                       (catch Throwable _
                         nil)))))))))
         (catch Throwable t
-          (execution-lease/end! lease)
+          (logic/end! lease)
           (throw t)))))
         nil)))
-
-;; =============================================================================
-;; Delegate Node Execution Processor
-;; =============================================================================
-
-(def ^:dynamic *max-tick-iterations*
-  "Default maximum number of tree ticks before a Running execution fails."
-  10)
 
 (defn complete-delegate-parent!
   "Consume a terminal child tick into its durably linked parent delegate.
@@ -3944,10 +6808,8 @@
                          :completion-id child-tick-id
                          :node-type :delegate
                          :status (:status result)
-                         ;; Referenced child values stay canonical in the child
-                         ;; tick. Copy only outputs that have no durable source.
                          :writes copied-outputs
-                         :write-sources (normalize-output-keys output-sources)
+                         :write-sources (logic/normalize-output-keys output-sources)
                          :write-references? true
                          :inputs (merge read-inputs exec-context)}
                   (seq read-sources) (assoc :read-sources read-sources)
@@ -3957,7 +6819,7 @@
   "Wake a parent delegate from the child's durable terminal event."
   [{:keys [event] :as context}]
   (when (not= :running (:root-status event))
-    (when-let [result (runtime/durable-terminal-result context (:tick-id event))]
+    (when-let [result (commands/durable-terminal-result context (:tick-id event))]
       (complete-delegate-parent! context (:tick-id event) result))))
 
 (defn execute-delegate-node
@@ -3978,11 +6840,8 @@
         nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
         node (get nodes-by-id node-id)]
     (when (= :delegate (:type node))
-      ;; A delegate forwards exactly its declared :reads to the target sheet,
-      ;; and extract-read-inputs captures the same set for the trace.
       (let [raw-blackboard (resolve-blackboard-values context sheet-id tick-id
                                                       (or (:reads node) []))
-            ;; Merge event inputs into blackboard (ORC pattern)
             blackboard (reduce (fn [bb [k v]]
                                  (if (and (keyword? k)
                                           (not (= (namespace k) (namespace ::_))))
@@ -3990,7 +6849,7 @@
                                    bb))
                                raw-blackboard
                                event-inputs)
-            exec-context (extract-execution-context event-inputs)
+            exec-context (logic/extract-execution-context event-inputs)
             correlation-id (:correlation-id
                             (tick-ctx-of context tick-id))
 
@@ -3998,15 +6857,10 @@
             read-keys (:reads node)
             write-keys (:writes node)
             parent-tick-ctx (tick-ctx-of context tick-id)
-            ;; FamilyBudgetIsShared: every delegate child, whatever its target,
-            ;; draws on the family's durable budget root. Only checkpointed
-            ;; targets additionally take the durable-reservation path.
             inherited-budget-root
             (durable-budget-root context sheet-id tick-id parent-tick-ctx)
-            ;; DelegateToolContextCrosses: the child executes with the
-            ;; parent's durable :tool-context and ephemeral tool capabilities.
             child-exec-context
-            (cond-> (merge context (runtime/ephemeral-context-for tick-id))
+            (cond-> (merge context (logic/ephemeral-context-for tick-id))
               (:tool-context parent-tick-ctx)
               (assoc :tool-context (:tool-context parent-tick-ctx)))
             parent-deadline-ms (get-in parent-tick-ctx [:options :execution-deadline-ms])
@@ -4016,13 +6870,12 @@
                                      (- parent-deadline-ms (System/currentTimeMillis))))
                          local-timeout-ms)
             parent-max-ticks (or (get-in parent-tick-ctx [:options :max-ticks])
-                                 *max-tick-iterations*)
+                                 logic/*max-tick-iterations*)
             parent-iteration (or (:iteration (rm/get-tick context tick-id)) 1)
             parent-remaining-ticks (max 1 (- parent-max-ticks (dec parent-iteration)))
-            max-ticks (min (or (:delegate-max-ticks node) *max-tick-iterations*)
+            max-ticks (min (or (:delegate-max-ticks node) logic/*max-tick-iterations*)
                            parent-remaining-ticks)
 
-            ;; Map parent blackboard to target inputs (string keys for execute)
             target-inputs (reduce
                            (fn [acc k]
                              (if-let [entry (get blackboard k)]
@@ -4030,18 +6883,10 @@
                                acc))
                            {}
                            read-keys)
-            target-input-sources (read-sources read-keys blackboard exec-context)
-            ;; Honest-grounding capture (same rationale as repl-researcher):
-            ;; the control node that started this delegate dropped its reads
-            ;; (delegate is non-leaf), so the eval trace would default the
-            ;; synthesis node's :inputs to {}. Capture the real keyword-keyed
-            ;; read values (truncated) for the completion event.
-            read-inputs (extract-read-inputs read-keys blackboard)]
+            target-input-sources (logic/read-sources read-keys blackboard exec-context)
+            read-inputs (logic/extract-read-inputs read-keys blackboard)]
 
-        ;; A stable child id is the durable idempotency claim. The child tick's
-        ;; originating event persists it with parent lineage; duplicate delivery
-        ;; observes that event and does not allocate another future or execution.
-        (let [child-tick-id (delegate-child-tick-id tick-id node-id exec-context)
+        (let [child-tick-id (logic/delegate-child-tick-id tick-id node-id exec-context)
               child-started? (fn []
                                (seq (into [] (es/read event-store
                                                      {:tenant-id (:tenant-id context)
@@ -4049,35 +6894,28 @@
                                                       :tags #{[:tick child-tick-id]}}))))
               child-started-before-claim? (child-started?)
               recovering? (some? (:resumed-from-event-id event))]
-          ;; A normal parent re-tick or recovery may arrive after the durable
-          ;; child terminal event. Consume that same child immediately instead
-          ;; of depending on a historical event being delivered again.
           (when-let [terminal-result (and child-started-before-claim?
-                                          (runtime/durable-terminal-result context child-tick-id))]
+                                          (commands/durable-terminal-result context child-tick-id))]
             (complete-delegate-parent! context child-tick-id terminal-result exec-context))
           (when (and (or (not child-started-before-claim?) recovering?)
-                     (not (runtime/durable-terminal-result context child-tick-id))
-                     (claim-delegate! child-tick-id))
-            ;; A contender can read "not started", wait behind the current
-            ;; observer, and acquire this claim only after that observer exits.
-            ;; Re-read after winning so the stale observation cannot redispatch
-            ;; a child whose durable start landed in the meantime.
+                     (not (commands/durable-terminal-result context child-tick-id))
+                     (logic/claim-delegate! child-tick-id))
             (let [child-started-after-claim? (child-started?)
                   terminal-after-claim (when child-started-after-claim?
-                                         (runtime/durable-terminal-result
+                                         (commands/durable-terminal-result
                                           context child-tick-id))]
               (cond
                 terminal-after-claim
                 (do
                   (complete-delegate-parent! context child-tick-id
                                              terminal-after-claim exec-context)
-                  (release-delegate! child-tick-id))
+                  (logic/release-delegate! child-tick-id))
 
                 (and child-started-after-claim? (not recovering?))
-                (release-delegate! child-tick-id)
+                (logic/release-delegate! child-tick-id)
 
                 :else
-                (let [lease (execution-lease/begin!
+                (let [lease (begin!
                              context {:sheet-id sheet-id :tick-id tick-id
                                       :node-id node-id :exec-context exec-context
                                       :start-event-id (:event/id event)})]
@@ -4085,11 +6923,8 @@
                 (future
           (try
             (let [start-time (System/currentTimeMillis)
-                  ;; Lineage: delegate sub-workflows run as child ticks. Link
-                  ;; BEFORE dispatch so stream subscribers on the parent tick
-                  ;; see the whole cascade.
-                  _ (streaming/link-child! tick-id child-tick-id)
-                  child-result (runtime/execute child-exec-context target-sheet-id
+                  _ (logic/link-child! tick-id child-tick-id)
+                  child-result (commands/execute child-exec-context target-sheet-id
                                            target-inputs
                                            :timeout-ms timeout-ms
                                            :execution-deadline-ms parent-deadline-ms
@@ -4101,22 +6936,15 @@
                                            :delegate-parent-exec-context exec-context
                                            :delegate-parent-read-inputs read-inputs
                                            :delegate-parent-read-sources
-                                           (normalize-output-keys target-input-sources)
+                                           (logic/normalize-output-keys target-input-sources)
                                            :correlation-id correlation-id
                                            :input-sources target-input-sources
-                                           ;; Target contents do not make ordinary siblings
-                                           ;; members of a researcher campaign. The actual
-                                           ;; researcher handler owns prime/inline admission;
-                                           ;; generated children carry their real campaign IDs.
                                            :llm-call-budget
                                            (:budget inherited-budget-root)
                                            :llm-budget-root-sheet-id
                                            (:sheet-id inherited-budget-root)
                                            :llm-budget-root-tick-id
                                            (:tick-id inherited-budget-root)
-                                           ;; AssessmentWorkIsMarked: a delegate
-                                           ;; child of assessment work is itself
-                                           ;; assessment work.
                                            :assessment-origin
                                            (get-in parent-tick-ctx
                                                    [:options :assessment-origin])
@@ -4126,9 +6954,6 @@
                                                               :types #{:sheet/tree-tick-started}
                                                               :tags #{[:tick child-tick-id]}})))
                   _duration-ms (- (System/currentTimeMillis) start-time)]
-              ;; Parent delivery is owned exclusively by the durable terminal
-              ;; event processor. Recovery and ordinary re-ticks consume an
-              ;; already-terminal child before starting this observer.
               (when (and (= :failure (:status child-result))
                          (not child-started-after?))
                 (process-lifecycle-command! context
@@ -4142,7 +6967,6 @@
               nil)
 
             (catch Exception e
-              ;; Fail node execution (ORC pattern)
               (process-lifecycle-command! context
                 {:command/id (random-uuid)
                         :command/timestamp (time/now)
@@ -4152,55 +6976,12 @@
                         :node-id node-id
                         :error (or (.getMessage e) (str (class e)))}))
             (finally
-              (release-delegate! child-tick-id)
-              (execution-lease/end! lease)))
-            ;; Return nil - completion handled async via process-command
+              (logic/release-delegate! child-tick-id)
+              (logic/end! lease)))
             nil)
                 (catch Throwable t
-                  (execution-lease/end! lease)
+                  (logic/end! lease)
                   (throw t))))))))))))
-
-;; =============================================================================
-;; Condition Node Execution Processor
-;; =============================================================================
-
-(defn- normalize-for-comparison
-  "Normalize values for comparison, handling yesno/boolean cases.
-   Converts 'yes'/'true'/true to true, 'no'/'false'/false to false."
-  [v]
-  (cond
-    (boolean? v) v
-    (string? v) (let [lower (clojure.string/lower-case v)]
-                  (cond
-                    (#{"yes" "true" "1"} lower) true
-                    (#{"no" "false" "0"} lower) false
-                    ;; Try parsing as number
-                    :else (try (Double/parseDouble v) (catch Exception _ v))))
-    :else v))
-
-(defn evaluate-condition-check
-  "Evaluate a condition check against a blackboard value.
-   Returns true if check passes, false otherwise.
-   Handles yesno fields by normalizing 'yes'/'no' strings to booleans."
-  [check blackboard]
-  (let [{:keys [key op value]} check
-        entry (get blackboard key)
-        bb-value (:value entry)
-        ;; Normalize both values for comparison
-        norm-bb (normalize-for-comparison bb-value)
-        norm-val (normalize-for-comparison value)]
-    (case op
-      :equals (= norm-bb norm-val)
-      :not-equals (not= norm-bb norm-val)
-      :gt (and (number? norm-bb) (number? norm-val) (> norm-bb norm-val))
-      :lt (and (number? norm-bb) (number? norm-val) (< norm-bb norm-val))
-      :gte (and (number? norm-bb) (number? norm-val) (>= norm-bb norm-val))
-      :lte (and (number? norm-bb) (number? norm-val) (<= norm-bb norm-val))
-      :contains (and (string? bb-value) (string? value) (.contains bb-value value))
-      :exists (some? bb-value)
-      :truthy (boolean norm-bb)  ;; Use normalized value so "no"/"false" → false
-      ;; Default to false for unknown ops
-      false)))
 
 (defn execute-condition-node
   "Execute a condition node when node-execution-started is emitted.
@@ -4211,20 +6992,18 @@
         tick-id (:tick-id event)
         node-id (:node-id event)
         event-inputs (:inputs event)
-        exec-context (extract-execution-context event-inputs)
+        exec-context (logic/extract-execution-context event-inputs)
         nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
         node (get nodes-by-id node-id)
         node-type (:type node)]
     (cond
-      ;; Static condition - immediate evaluation
       (= :condition node-type)
-      ;; A static check reads exactly one key — see evaluate-condition-check.
       (let [check (:check node)
             blackboard (resolve-blackboard-values context sheet-id tick-id
                                                   (if-let [k (:key check)] [k] []))
             on-fail (get check :on-fail :failure)
             passed? (if check
-                      (evaluate-condition-check check blackboard)
+                      (logic/evaluate-condition-check check blackboard)
                       false)
             status (if passed?
                      :success
@@ -4241,15 +7020,9 @@
                            :status status}
                     (seq exec-context) (assoc :inputs exec-context))})]})
 
-      ;; LLM condition - a provider invocation under the same execution policy
-      ;; as a model leaf: registered work, cancelled-tick guard, deadline,
-      ;; shared LLM-call budget, usage accounting, durable evidence.
       (= :llm-condition node-type)
-      ;; execute-llm-condition assembles its prompt from (:reads node) only.
-      ;; A GEPA candidate's instruction for this node (the tick's instruction
-      ;; overrides) replaces the authored one, exactly as on the leaf path.
       (let [tick-ctx (tick-ctx-of context tick-id)
-            node (apply-instruction-override node (:instruction-overrides tick-ctx))
+            node (logic/apply-instruction-override node (:instruction-overrides tick-ctx))
             blackboard (resolve-blackboard-values context sheet-id tick-id
                                                   (or (:reads node) []))
             provider (:llm-provider context)
@@ -4262,7 +7035,7 @@
                :tick-id tick-id
                :node-id node-id
                :error message})]
-        (execution-budget/register-work!
+        (logic/register-work!
          tick-id node-id
          (future
            (try
@@ -4270,7 +7043,7 @@
                (process-lifecycle-command! context
                  (fail-command "tick cancelled"))
                (let [result (if provider
-                              (executor/execute-llm-condition
+                              (execute-llm-condition
                                node blackboard provider
                                :options (provider-policy-options
                                          context tick-ctx sheet-id tick-id node-id
@@ -4280,14 +7053,12 @@
                      {:keys [status error duration-ms usage model failure-kind
                              provider-evidence resolved-model]} result
                      answer (:result result)
-                     ;; true = success; valid false = failure; anything else
-                     ;; is a provider outcome carried by the executor status.
                      final-status (if (= :success status) :success status)
                      final-status (if (#{:success :failure :timeout} final-status)
                                     final-status
                                     :failure)
-                     reads (extract-read-inputs (:reads node) blackboard)]
-                 (when usage (add-usage! tick-id usage))
+                     reads (logic/extract-read-inputs (:reads node) blackboard)]
+                 (when usage (logic/add-usage! tick-id usage))
                  (complete-node-or-fail! context
                    (cond-> {:command/id (random-uuid)
                                   :command/timestamp (time/now)
@@ -4308,7 +7079,7 @@
                            (or (seq exec-context) (seq reads))
                            (assoc :inputs (merge exec-context reads))
                            (seq reads)
-                           (assoc :read-sources (read-sources (:reads node) blackboard exec-context))
+                           (assoc :read-sources (logic/read-sources (:reads node) blackboard exec-context))
                            (seq usage) (assoc :usage usage)
                            model (assoc :model model)
                            (:model node) (assoc :requested-model (:model node))
@@ -4318,163 +7089,14 @@
                  (process-lifecycle-command! context
                    (fail-command (or (.getMessage t) (str (class t)))))
                  (throw t))))))
-        ;; Return nil - completion handled by the future
         nil)
 
-      ;; Not a condition node
       :else nil)))
 
 (defn- ephemeral-routing-active? [context tick-id nodes-by-id]
   (and (not= :legacy (get-in (tick-ctx-of context tick-id)
                              [:options :durability-mode]))
-       (ephemeral-routing-tree? nodes-by-id)))
-
-(defn- ephemeral-summary-event [sheet-id tick-id iteration steps]
-  (when (seq steps)
-    (->event {:type :sheet/ephemeral-evaluations-recorded
-              :tags #{[:sheet sheet-id] [:tick tick-id]}
-              :body {:sheet-id sheet-id
-                     :tick-id tick-id
-                     :iteration iteration
-                     :steps (mapv #(assoc % :trace-instance-id (random-uuid)) steps)}})))
-
-(defn- completed-statuses [events]
-  (reduce (fn [statuses event]
-            (if (= :sheet/node-execution-completed (:event/type event))
-              (assoc statuses (:node-id event)
-                     (select-keys event [:status :error :block-payload]))
-              statuses))
-          {} events))
-
-(defn- evaluate-ephemeral-node [node-id nodes-by-id blackboard completed decisions]
-  (let [node (get nodes-by-id node-id)]
-    (case (:type node)
-      :leaf
-      (if-let [completion (get completed node-id)]
-        (assoc completion :steps [])
-        {:boundary node-id :steps []})
-
-      :condition
-      (let [check (:check node)
-            passed? (and check (evaluate-condition-check check blackboard))
-            recorded? (contains? decisions node-id)
-            status (or (get decisions node-id)
-                       (if passed? :success (get check :on-fail :failure)))]
-        {:status status
-         :steps (if recorded?
-                  []
-                  [{:node-id node-id :status status :node-type :condition}])})
-
-      :sequence
-      (loop [children (:children-ids node) steps []]
-        (if-let [child-id (first children)]
-          (let [result (evaluate-ephemeral-node child-id nodes-by-id blackboard completed decisions)
-                next-steps (into steps (:steps result))]
-            (cond
-              (:boundary result) (assoc result :steps next-steps)
-              (contains? #{:success :tree-generated :partial} (:status result))
-              (recur (rest children) next-steps)
-              :else (assoc (select-keys result [:status :error :block-payload])
-                           :steps (conj next-steps {:node-id node-id
-                                                   :status (:status result)
-                                                   :node-type :sequence}))))
-          {:status :success
-           :steps (conj steps {:node-id node-id :status :success :node-type :sequence})}))
-
-      :fallback
-      (loop [children (:children-ids node) steps [] last-failure nil]
-        (if-let [child-id (first children)]
-          (let [result (evaluate-ephemeral-node child-id nodes-by-id blackboard completed decisions)
-                next-steps (into steps (:steps result))]
-            (cond
-              (:boundary result) (assoc result :steps next-steps)
-              (= :failure (:status result)) (recur (rest children) next-steps result)
-              :else (assoc (select-keys result [:status :error :block-payload])
-                           :steps (conj next-steps {:node-id node-id
-                                                   :status (:status result)
-                                                   :node-type :fallback}))))
-          (assoc (select-keys last-failure [:error :block-payload])
-                 :status :failure
-                 :steps (conj steps {:node-id node-id :status :failure :node-type :fallback})))))))
-
-(defn advance-ephemeral-frontier
-  "Evaluate deterministic ordered control flow to its next durable leaf or
-   terminal outcome. Repeated delivery cannot start the same frontier twice."
-  [{:keys [event event-store tenant-id] :as context}]
-  (let [sheet-id (:sheet-id event)
-        tick-id (:tick-id event)
-        tick-ctx (tick-ctx-of context tick-id)
-        nodes-by-id (:nodes-by-id tick-ctx)
-        root-id (:root-node-id tick-ctx)
-        iteration (or (:iteration event) (get-in event [:inputs ::tick-iteration]) 1)
-        iteration-context (when (> iteration 1) {::tick-iteration iteration})
-        events (into [] (es/read event-store {:tenant-id tenant-id
-                                             :tags #{[:tick tick-id]}}))
-        terminal? (some #(and (= :sheet/tree-tick-completed (:event/type %))
-                              (not= :running (:root-status %))) events)
-        current-iteration? (fn [lifecycle-event]
-                             (= iteration-context
-                                (not-empty (select-keys (:inputs lifecycle-event)
-                                                        [::tick-iteration]))))
-        started (into #{} (comp (filter #(and (= :sheet/node-execution-started
-                                                    (:event/type %))
-                                                 (current-iteration? %)))
-                                (map :node-id)) events)
-        completed (completed-statuses (filter current-iteration? events))
-        decisions (reduce (fn [result summary]
-                            (if (and (= :sheet/ephemeral-evaluations-recorded
-                                        (:event/type summary))
-                                     (= iteration (:iteration summary)))
-                              (reduce (fn [m step]
-                                        (if (= :condition (:node-type step))
-                                          (assoc m (:node-id step) (:status step))
-                                          m))
-                                      result (:steps summary))
-                              result))
-                          {} events)
-        recorded-step-signatures
-        (into #{}
-              (comp
-               (filter #(and (= :sheet/ephemeral-evaluations-recorded
-                                  (:event/type %))
-                              (= iteration (:iteration %))))
-               (mapcat :steps)
-               (map (juxt :node-id :node-type :status)))
-              events)
-        blackboard (resolve-blackboard-values context sheet-id tick-id nil)]
-    (when (and (not terminal?) (ephemeral-routing-active? context tick-id nodes-by-id))
-      (let [{:keys [boundary status steps error block-payload]}
-            (evaluate-ephemeral-node root-id nodes-by-id blackboard completed decisions)
-            new-steps (remove #(contains? recorded-step-signatures
-                                          [(:node-id %) (:node-type %) (:status %)])
-                              steps)
-            summary (ephemeral-summary-event sheet-id tick-id iteration new-steps)]
-        (cond
-          (and boundary (not (contains? started boundary)))
-          {:result/events
-           (cond-> []
-             summary (conj summary)
-             true (conj (->event {:type :sheet/node-execution-started
-                                  :tags (node-execution-tags context sheet-id tick-id boundary)
-                                  :body (execution-lease/stamp
-                                         context (get nodes-by-id boundary)
-                                         {:sheet-id sheet-id :tick-id tick-id
-                                          :node-id boundary
-                                          :inputs (or iteration-context {})})})))}
-
-          boundary nil
-
-          :else
-          (let [completion (complete-tree-tick
-                            (assoc context :event {:sheet-id sheet-id
-                                                   :tick-id tick-id
-                                                   :node-id root-id
-                                                   :status status
-                                                   :error error
-                                                   :block-payload block-payload}))]
-            (update completion :result/events
-                    #(cond-> (vec %)
-                       summary (into [summary])))))))))
+       (logic/ephemeral-routing-tree? nodes-by-id)))
 
 ;; =============================================================================
 ;; Composite Node Execution Processor
@@ -4489,13 +7111,11 @@
         tick-id (:tick-id event)
         node-id (:node-id event)
         event-inputs (:inputs event)
-        exec-context (extract-execution-context event-inputs)
+        exec-context (logic/extract-execution-context event-inputs)
         nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
         node (get nodes-by-id node-id)]
     (when (#{:sequence :fallback} (:type node))
       (let [children-ids (:children-ids node)
-            ;; Historical snapshots remain readable, but must not execute a
-            ;; removed admission policy as unrestricted generic fallback.
             invalid? (contains? node :model-fallback-policy)]
         (if invalid?
           {:result/events
@@ -4505,7 +7125,6 @@
                                      :status :failure :error "Composite model fallback is obsolete; configure fallback-models on model nodes"}
                               (seq exec-context) (assoc :inputs exec-context))})]}
           (if (empty? children-ids)
-          ;; No children - sequence succeeds, fallback fails
           {:result/events
            [(->event
              {:type :sheet/node-execution-completed
@@ -4517,19 +7136,13 @@
                              :node-id node-id
                              :status (if (= :sequence (:type node)) :success :failure)}
                       (seq exec-context) (assoc :inputs exec-context))})]}
-          ;; Start first child
           (let [first-child-id (first children-ids)
-                ;; Declared reads are not inlined; the child resolves them
-                ;; from the tick blackboard. event-inputs IS forwarded — it
-                ;; carries the map-each item override, which lives on a shared
-                ;; blackboard key and cannot be safely re-resolved under
-                ;; concurrency.
                 inputs (merge exec-context event-inputs)]
             {:result/events
              [(->event
                {:type :sheet/node-execution-started
                 :tags (node-execution-tags context sheet-id tick-id first-child-id)
-                :body (execution-lease/stamp
+                :body (commands/stamp
                        context (get nodes-by-id first-child-id)
                        {:sheet-id sheet-id
                         :tick-id tick-id
@@ -4549,13 +7162,12 @@
         tick-id (:tick-id event)
         node-id (:node-id event)
         event-inputs (:inputs event)
-        exec-context (extract-execution-context event-inputs)
+        exec-context (logic/extract-execution-context event-inputs)
         nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
         node (get nodes-by-id node-id)]
     (when (= :parallel (:type node))
       (let [children-ids (:children-ids node)]
         (if (empty? children-ids)
-          ;; No children - parallel succeeds
           {:result/events
            [(->event
              {:type :sheet/node-execution-completed
@@ -4567,36 +7179,18 @@
                              :node-id node-id
                              :status :success}
                       (seq exec-context) (assoc :inputs exec-context))})]}
-          ;; Start ALL children concurrently. Declared reads are not inlined
-          ;; (see execute-tree-tick); with N children that would store N copies
-          ;; of every value they share.
           {:result/events
            (vec
             (for [child-id children-ids]
               (->event
                {:type :sheet/node-execution-started
                 :tags (node-execution-tags context sheet-id tick-id child-id)
-                :body (execution-lease/stamp
+                :body (commands/stamp
                        context (get nodes-by-id child-id)
                        {:sheet-id sheet-id
                         :tick-id tick-id
                         :node-id child-id
                         :inputs exec-context})})))})))))
-
-;; =============================================================================
-;; Child Completion Handler
-;; =============================================================================
-
-(defn- matches-execution-context?
-  "Check if an event's inputs match the given execution context.
-   Empty context matches everything (for non-map-each executions)."
-  [event exec-context]
-  (if (empty? exec-context)
-    true  ;; No context = match all (normal execution, not inside map-each)
-    (let [event-inputs (or (:inputs event) {})]
-      (every? (fn [[k v]]
-                (= (get event-inputs k) v))
-              exec-context))))
 
 (defn- count-child-statuses
   "Count how many children of a node have completed with each status.
@@ -4605,484 +7199,21 @@
   [{:keys [event-store tenant-id] :as ctx} sheet-id tick-id parent-node exec-context]
   (let [children-ids (:children-ids parent-node)
         total (count children-ids)
-        ;; Read all execution completed events for this tick and these children
         events (vec (es/read event-store
                                       {:types #{:sheet/node-execution-completed}
                                        :tags #{[:tick tick-id]}
                                        :tenant-id tenant-id}))
-        ;; Filter to only children of this parent AND matching execution context
         child-set (set children-ids)
         child-completions (filter (fn [e]
                                     (and (child-set (:node-id e))
-                                         (matches-execution-context? e exec-context)))
+                                         (logic/matches-execution-context? e exec-context)))
                                   events)
-        ;; Count by status
         success-count (count (filter #(= :success (:status %)) child-completions))
         failure-count (count (filter #(= :failure (:status %)) child-completions))]
     {:success success-count
      :failure failure-count
      :total-children total
      :completed (count child-completions)}))
-
-(defmulti next-child-strategy
-  "Select the next sibling for an ordered control node.
-
-   Custom strategies dispatch on :strategy-id. Missing and unknown ids retain
-   the engine's linear behavior."
-  (fn [{:keys [strategy-id]}] (or strategy-id :linear)))
-
-(defmethod next-child-strategy :linear
-  [{:keys [siblings child-index]}]
-  (get (vec siblings) (inc child-index)))
-
-(defmethod next-child-strategy :default
-  [opts]
-  (next-child-strategy (assoc opts :strategy-id :linear)))
-
-(defn- evaluate-parallel-completion
-  "Evaluate if a parallel node should complete based on its policies.
-   Returns nil if not ready, or {:status :success/:failure} if ready."
-  [child-counts success-policy failure-policy]
-  (let [{:keys [success failure total-children completed]} child-counts
-        ;; Default policies
-        success-policy (or success-policy :all)
-        failure-policy (or failure-policy :any)]
-    (cond
-      ;; Check failure policy first
-      (and (= failure-policy :any) (> failure 0))
-      {:status :failure}
-
-      (and (= failure-policy :all) (= failure total-children))
-      {:status :failure}
-
-      ;; Check success policy
-      (and (= success-policy :all) (= success total-children))
-      {:status :success}
-
-      (and (= success-policy :any) (> success 0))
-      {:status :success}
-
-      (and (= success-policy :majority) (> success (/ total-children 2)))
-      {:status :success}
-
-      ;; All children completed but didn't meet success criteria
-      (= completed total-children)
-      {:status :failure}
-
-      ;; Not all children completed yet
-      :else nil)))
-
-(defmulti parallel-completion-strategy
-  "Evaluate parallel completion through an extensible strategy id."
-  (fn [{:keys [strategy-id]}] (or strategy-id :boolean)))
-
-(defmethod parallel-completion-strategy :boolean
-  [{:keys [child-counts success-policy failure-policy]}]
-  (evaluate-parallel-completion child-counts success-policy failure-policy))
-
-(defmethod parallel-completion-strategy :default
-  [opts]
-  (parallel-completion-strategy (assoc opts :strategy-id :boolean)))
-
-
-
-(defn handle-child-completion
-  "When a child node completes, handle the parent's logic.
-   For sequences: continue on success, fail on failure.
-   For fallbacks: succeed on success, continue on failure.
-   For parallel: check policies to determine completion.
-   Propagates execution context from child to parent/siblings."
-  [{:keys [event event-store tenant-id] :as context}]
-  (let [sheet-id (:sheet-id event)
-        tick-id (:tick-id event)
-        child-id (:node-id event)
-        child-status (:status event)
-        ;; Resolved from the write log: the completion event carries only
-        ;; :write-keys. Needed to keep a map-each iteration's sequence chained
-        ;; to its own values — see the :inputs note in the :sequence branch.
-        child-writes (value-log/resolve-writes context (:tenant-id context) tick-id event)
-        event-inputs (:inputs event)
-        exec-context (extract-execution-context event-inputs)
-        nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
-        child (get nodes-by-id child-id)
-        parent-id (:parent-id child)]
-    (if (ephemeral-routing-active? context tick-id nodes-by-id)
-      (advance-ephemeral-frontier context)
-      (when (and parent-id
-               ;; Parent completion is a canonical fact for one execution
-               ;; context. At-least-once delivery of a child completion must
-               ;; not propagate another terminal parent completion.
-               (not (some #(and (= parent-id (:node-id %))
-                                (matches-execution-context? % exec-context))
-                          (into [] (es/read event-store
-                                           {:types #{:sheet/node-execution-completed}
-                                            :tags #{[:tick tick-id]}
-                                            :tenant-id tenant-id})))))
-      (let [parent (get nodes-by-id parent-id)
-            siblings (:children-ids parent)
-            child-index (.indexOf (vec siblings) child-id)
-            next-child-id (next-child-strategy
-                           {:strategy-id (:strategy-id parent)
-                            :siblings siblings
-                            :child-index child-index
-                            :event event
-                            :parent parent})]
-        (case (:type parent)
-          :sequence
-          (cond
-            ;; :success and :tree-generated both mean the child completed successfully.
-            ;; :tree-generated is from RLM two-phase execution (tree was generated).
-            ;; D-008: :partial from map-each is treated as continuation — downstream
-            ;; synthesis nodes still run against the successes-only output.
-            (#{:success :tree-generated :partial} child-status)
-            (if next-child-id
-              ;; Continue to next child
-              (let [next-index (inc child-index)
-                    total-children (count siblings)
-                    ;; Recovery can redeliver the same durable child
-                    ;; completion after this continuation was appended. Grain
-                    ;; is strongly consistent/read-your-own-write, so the
-                    ;; progress fact is the durable idempotency boundary.
-                    already-continued?
-                    (some #(and (= :sheet/sequence-progress-updated
-                                    (:event/type %))
-                                (= parent-id (:node-id %))
-                                (= next-index (:child-index %))
-                                (= exec-context (or (:exec-context %) {})))
-                          (into [] (es/read event-store
-                                           {:types #{:sheet/sequence-progress-updated}
-                                            :tags #{[:tick tick-id]}
-                                            :tenant-id tenant-id})))
-                    ;; Declared reads are not inlined — the next child resolves
-                    ;; them from the tick blackboard, which is
-                    ;; read-your-own-write.
-                    ;;
-                    ;; The completing child's writes ARE inlined inside a
-                    ;; map-each iteration. Concurrent iterations share one
-                    ;; blackboard slot per key, so by the time the next step in
-                    ;; this iteration runs another iteration may have
-                    ;; overwritten it; read-your-own-write does not help when
-                    ;; the value belongs to a different iteration. Bounded to
-                    ;; one node's outputs, and only inside map-each.
-                    inputs (if (seq exec-context)
-                             (merge exec-context child-writes)
-                             exec-context)]
-                (when-not already-continued?
-                  {:result/events
-                   [;; Emit sequence progress event
-                    (->event
-                     {:type :sheet/sequence-progress-updated
-                      :tags #{[:sheet sheet-id]
-                              [:node parent-id]
-                              [:tick tick-id]}
-                      :body (cond-> {:sheet-id sheet-id
-                                     :tick-id tick-id
-                                     :node-id parent-id
-                                     :child-index next-index
-                                     :total-children total-children}
-                              (seq exec-context)
-                              (assoc :exec-context exec-context))})
-                    (->event
-                     {:type :sheet/node-execution-started
-                      :tags (node-execution-tags context sheet-id tick-id next-child-id)
-                      :body (execution-lease/stamp
-                             context (get nodes-by-id next-child-id)
-                             {:sheet-id sheet-id
-                              :tick-id tick-id
-                              :node-id next-child-id
-                              :inputs inputs})})]}))
-              ;; All children succeeded — sequence completes.
-              ;; D-008 sticky :partial: if ANY prior sibling completed with :partial,
-              ;; propagate :partial up so the at-a-glance status truthfully reflects
-              ;; that partial behavior occurred somewhere in the tree. Otherwise use
-              ;; the last child's status (preserves :tree-generated for RLM Phase 1).
-              (let [sibling-set (set siblings)
-                    child-completions (->> (es/read event-store
-                                             {:types #{:sheet/node-execution-completed}
-                                              :tags #{[:tick tick-id]}
-                                              :tenant-id tenant-id})
-                                           (into [])
-                                           (filter (fn [e]
-                                                     (and (sibling-set (:node-id e))
-                                                          (matches-execution-context? e exec-context)))))
-                    any-partial? (some #(= :partial (:status %)) child-completions)
-                    final-status (if any-partial? :partial child-status)]
-                (complete-node-or-fail! context
-                  (cond-> {:command/id (random-uuid)
-                                  :command/timestamp (time/now)
-                                  :command/name :sheet/complete-node-execution
-                                  :sheet-id sheet-id
-                                  :tick-id tick-id
-                                  :node-id parent-id
-                                  :node-type (:type parent)
-                                  :status final-status
-                                  ;; Propagate the child's writes so the parent's
-                                  ;; completion reports them. Resolved from the
-                                  ;; write log; the event carries only keys now.
-                                  :write-sources (value-log/resolve-write-sources
-                                                  event-store (:tenant-id context)
-                                                  tick-id event)}
-                           (seq exec-context) (assoc :inputs exec-context)))
-                nil))
-
-            (= child-status :failure)
-            ;; Child failed - sequence fails, propagate error
-            {:result/events
-             [(->event
-               {:type :sheet/node-execution-completed
-                :tags #{[:sheet sheet-id]
-                        [:node parent-id]
-                        [:tick tick-id]}
-                :body (cond-> {:sheet-id sheet-id
-                               :tick-id tick-id
-                               :node-id parent-id
-                               :status :failure}
-                        (:error event) (assoc :error (:error event))
-                        (seq exec-context) (assoc :inputs exec-context))})]}
-
-            (= child-status :timeout)
-            ;; D-003: Child timed out (e.g. RLM Phase 2 budget exceeded) -
-            ;; propagate :timeout up so callers can distinguish budget exhaustion
-            ;; from a generic failure. Like :failure, sequence does not continue.
-            {:result/events
-             [(->event
-               {:type :sheet/node-execution-completed
-                :tags #{[:sheet sheet-id]
-                        [:node parent-id]
-                        [:tick tick-id]}
-                :body (cond-> {:sheet-id sheet-id
-                               :tick-id tick-id
-                               :node-id parent-id
-                               :status :timeout}
-                        (:error event) (assoc :error (:error event))
-                        (seq exec-context) (assoc :inputs exec-context))})]}
-
-            (= child-status :blocked)
-            ;; WS-2a: a child raised the orc block signal (a gated tool call
-            ;; needs permission). Like :failure/:timeout, the sequence does not
-            ;; continue — but unlike :timeout it short-circuits regardless of
-            ;; composite kind: the whole turn must pause for permission, not
-            ;; try another sibling. Propagate :blocked + the OPAQUE payload up.
-            {:result/events
-             [(->event
-               {:type :sheet/node-execution-completed
-                :tags #{[:sheet sheet-id]
-                        [:node parent-id]
-                        [:tick tick-id]}
-                :body (cond-> {:sheet-id sheet-id
-                               :tick-id tick-id
-                               :node-id parent-id
-                               :status :blocked}
-                        (contains? event :block-payload)
-                        (assoc :block-payload (:block-payload event))
-                        (seq exec-context) (assoc :inputs exec-context))})]}
-
-            (= child-status :running)
-            ;; Child returned running - propagate up
-            {:result/events
-             [(->event
-               {:type :sheet/node-execution-completed
-                :tags #{[:sheet sheet-id]
-                        [:node parent-id]
-                        [:tick tick-id]}
-                :body (cond-> {:sheet-id sheet-id
-                               :tick-id tick-id
-                               :node-id parent-id
-                               :status :running}
-                        (seq exec-context) (assoc :inputs exec-context))})]}
-
-            ;; Unknown status - do nothing
-            :else nil)
-
-          :fallback
-          (case child-status
-            (:success :partial)
-            ;; Child succeeded (or partially succeeded — D-008) - fallback succeeds.
-            ;; :partial means "we got something usable" so fallback stops here.
-            ;; The :status surfaced matches the child's so downstream sees the truth.
-            ;; Like a sequence, the fallback's completion reports the writes of
-            ;; the child that succeeded (as sources into the write log), so a
-            ;; judge on the fallback is shown what the fallback produced.
-            (let [write-sources (value-log/resolve-write-sources
-                                 event-store (:tenant-id context) tick-id event)]
-              {:result/events
-               [(->event
-                 {:type :sheet/node-execution-completed
-                  :tags #{[:sheet sheet-id]
-                          [:node parent-id]
-                          [:tick tick-id]}
-                  :body (cond-> {:sheet-id sheet-id
-                                 :tick-id tick-id
-                                 :node-id parent-id
-                                 :status child-status}
-                          (seq write-sources)
-                          (assoc :write-keys (vec (keys write-sources))
-                                 :write-sources write-sources)
-                          (seq exec-context) (assoc :inputs exec-context))})]})
-            ;; D-003: :timeout from a child is like :failure for fallback purposes —
-            ;; we didn't get useful output, try the next sibling. If no next sibling,
-            ;; fallback completes with :timeout (truthful propagation).
-            (:failure :timeout)
-            (if next-child-id
-              ;; Continue to next child
-              ;; Declared reads not inlined (see the :sequence branch). A
-              ;; fallback retries siblings against the same inputs, so inlining
-              ;; would store one copy per attempt.
-              (let [inputs exec-context]
-                {:result/events
-                 [(->event
-                   {:type :sheet/node-execution-started
-                    :tags (node-execution-tags context sheet-id tick-id next-child-id)
-                    :body (execution-lease/stamp
-                           context (get nodes-by-id next-child-id)
-                           {:sheet-id sheet-id
-                            :tick-id tick-id
-                            :node-id next-child-id
-                            :inputs inputs})})]})
-              ;; All children failed - fallback fails
-              {:result/events
-               [(->event
-                 {:type :sheet/node-execution-completed
-                  :tags #{[:sheet sheet-id]
-                          [:node parent-id]
-                          [:tick tick-id]}
-                  :body (cond-> {:sheet-id sheet-id
-                                 :tick-id tick-id
-                                 :node-id parent-id
-                                 :status :failure}
-                          (seq exec-context) (assoc :inputs exec-context))})]})
-            :running
-            ;; Child returned running - propagate up
-            {:result/events
-             [(->event
-               {:type :sheet/node-execution-completed
-                :tags #{[:sheet sheet-id]
-                        [:node parent-id]
-                        [:tick tick-id]}
-                :body (cond-> {:sheet-id sheet-id
-                               :tick-id tick-id
-                               :node-id parent-id
-                               :status :running}
-                        (seq exec-context) (assoc :inputs exec-context))})]}
-            ;; WS-2a: a child raised the orc block signal. A block is NOT a
-            ;; "this approach failed, try the next sibling" — the turn must
-            ;; pause for permission, so the fallback short-circuits and
-            ;; propagates :blocked + the OPAQUE payload up (does NOT try the
-            ;; next child).
-            :blocked
-            {:result/events
-             [(->event
-               {:type :sheet/node-execution-completed
-                :tags #{[:sheet sheet-id]
-                        [:node parent-id]
-                        [:tick tick-id]}
-                :body (cond-> {:sheet-id sheet-id
-                               :tick-id tick-id
-                               :node-id parent-id
-                               :status :blocked}
-                        (contains? event :block-payload)
-                        (assoc :block-payload (:block-payload event))
-                        (seq exec-context) (assoc :inputs exec-context))})]}
-            ;; Unknown status - do nothing
-            nil)
-
-          :parallel
-          ;; For parallel nodes, check if all children completed based on policies.
-          ;; Uses event-store CAS to prevent duplicate completions when
-          ;; multiple children complete rapidly and all see the same state.
-          (let [child-counts (count-child-statuses context sheet-id tick-id parent exec-context)
-                completion (parallel-completion-strategy
-                            {:strategy-id (:strategy-id parent)
-                             :child-counts child-counts
-                             :success-policy (:success-policy parent)
-                             :failure-policy (:failure-policy parent)
-                             :event event
-                             :parent parent})]
-            (when completion
-              (let [event (->event
-                            {:type :sheet/node-execution-completed
-                             :tags #{[:sheet sheet-id]
-                                     [:node parent-id]
-                                     [:tick tick-id]}
-                             :body (cond-> {:sheet-id sheet-id
-                                            :tick-id tick-id
-                                            :node-id parent-id
-                                            :status (:status completion)}
-                                     (seq exec-context) (assoc :inputs exec-context))})]
-                ;; CAS: only append if no completion for this node+tick exists yet.
-                ;; Event-store handles publishing, so no need to return events.
-                (es/append event-store
-                  {:events [event]
-                   :tenant-id tenant-id
-                   :cas {:types #{:sheet/node-execution-completed}
-                         :tags #{[:tick tick-id] [:node parent-id]}
-                         :predicate-fn (fn [existing]
-                                         (empty? (into [] existing)))}})
-                {})))
-
-          ;; Map-each has special handling via execute-map-each-node
-          :map-each
-          nil
-
-          ;; Unknown parent type
-          nil))))))
-
-;; =============================================================================
-;; Map-Each Node Execution Processor
-;; =============================================================================
-
-;; Process Manager State for Map-Each Iterations
-;;
-;; This atom is only a process-local coordination CACHE for active map-each
-;; execution. The event log is authoritative: recovery reconstructs completed
-;; item contexts and their results before any pending child is resumed.
-(defonce ^:private map-each-state (atom {}))
-
-(defn- map-each-key [tick-id node-id]
-  (str tick-id "-" node-id))
-
-;; =============================================================================
-;; D-008: classify-map-each-outcome — pure deep module
-;; =============================================================================
-
-(defn classify-map-each-outcome
-  "Classify the outcome of a map-each based on its results vector.
-
-   Input:
-     {:results    [...]   ;; raw value for success, {:__status :failure ...} for failure
-      :item-count N}      ;; total items started
-
-   Returns a 3-tuple: [status partial-summary-or-nil output-vector]
-     status  = :success | :partial | :failure
-     summary = nil OR {:total :succeeded :failed :failure-indices :failure-reasons}
-     output  = successes-only vector
-
-   Rule table (Q6 from D-008 PRD):
-     - Empty input          -> [:success nil []]
-     - All items succeeded  -> [:success nil <full vector>]
-     - 0 < failed < N       -> [:partial <summary> <successes-only>]
-     - All items failed     -> [:failure <summary> []]"
-  [{:keys [results item-count]}]
-  (if (zero? item-count)
-    [:success nil []]
-    (let [failure? (fn [r] (and (map? r) (= :failure (:__status r))))
-          indexed (map-indexed vector results)
-          failed-pairs (filter (fn [[_ r]] (failure? r)) indexed)
-          successful-pairs (remove (fn [[_ r]] (failure? r)) indexed)
-          failed-count (count failed-pairs)]
-      (cond
-        (zero? failed-count)
-        [:success nil (vec results)]
-
-        :else
-        (let [summary {:total item-count
-                       :succeeded (- item-count failed-count)
-                       :failed failed-count
-                       :failure-indices (mapv first failed-pairs)
-                       :failure-reasons (into {} (map (fn [[i r]] [i (or (:__error r) "(no error reason — node timed out or returned nil)")]) failed-pairs))}
-              status (if (= failed-count item-count) :failure :partial)
-              output (mapv second successful-pairs)]
-          [status summary output])))))
 
 (defn- map-each-item-result
   "Reconstruct one direct map child's result from its durable completion and
@@ -5093,7 +7224,7 @@
         item-index (get-in completion [:inputs ::map-each-index])
         map-each-parent-id (get-in completion [:inputs ::map-each-parent])
         item (nth items item-index)
-        writes (value-log/resolve-writes context (:tenant-id context)
+        writes (rm/resolve-writes context (:tenant-id context)
                                          (:tick-id completion) completion)
         special? #{source-key output-key}
         effective-writes
@@ -5102,13 +7233,13 @@
          (not-empty
           (reduce-kv (fn [acc k v] (if (special? k) acc (assoc acc k v)))
                      {}
-                     (get (value-log/writes-by-iteration tick-events)
+                     (get (logic/writes-by-iteration tick-events)
                           {::map-each-index item-index
                            ::map-each-parent map-each-parent-id}
                           {})))
-         (let [latest (merge (value-log/tick-seeds
+         (let [latest (merge (rm/tick-seeds
                               context (:tenant-id context) (:tick-id completion))
-                             (value-log/latest-values tick-events))]
+                             (logic/latest-values tick-events))]
            (reduce-kv
             (fn [acc k v]
               (if (and (keyword? k)
@@ -5139,7 +7270,7 @@
 
 (defn- map-each-result-events
   [context sheet-id tick-id parent-id output-key into-value status summary]
-  (let [validated (executor/validate-leaf-outputs
+  (let [validated (logic/validate-leaf-outputs
                     (resolve-blackboard context sheet-id tick-id)
                     {:status :success :outputs {output-key into-value}})
         rejected? (= :failure (:status validated))
@@ -5149,22 +7280,20 @@
                                  :node-type :map-each
                                  :status (if rejected? :failure status)
                                  :write-keys (if rejected? [] [output-key])
-                                 :write-profile (profile-values (:outputs validated))}
+                                 :write-profile (logic/todo-processors-profile-values (:outputs validated))}
                           summary (assoc :partial-summary summary)
                           rejected? (assoc :error (:error validated)
                                            :rejected-write-keys [output-key]
-                                           :rejected-write-profile (profile-values (:rejected-writes validated))))]
-    [;; The aggregate is produced by this parent execution, not an item seed.
-     ;; Canonical completion readback joins writes by execution identity.
+                                           :rejected-write-profile (logic/todo-processors-profile-values (:rejected-writes validated))))]
+    [
      (if rejected?
-       ;; Keep the candidate as diagnostic evidence, never canonical state.
        (->event
         {:type :sheet/execution-value-rejected
          :tags #{[:sheet sheet-id] [:tick tick-id]}
-         :body (value-storage/prepare-write
+         :body (logic/prepare-write
                  context {:sheet-id sheet-id :tick-id tick-id :node-id parent-id
                           :key output-key :value into-value})})
-       (make-bb-write-event context sheet-id tick-id output-key
+       (logic/make-bb-write-event context sheet-id tick-id output-key
                             (get-in validated [:outputs output-key])
                             {:node-id parent-id}))
      (->event
@@ -5176,7 +7305,7 @@
   [context sheet-id tick-id parent-id state results completed-count]
   (let [total-items (count (:items state))
         [status summary output]
-        (classify-map-each-outcome {:results results :item-count total-items})
+        (logic/classify-map-each-outcome {:results results :item-count total-items})
         parent-node (get (resolve-nodes-by-id context sheet-id tick-id) parent-id)
         into-value (if (:preserve-failures? parent-node) results output)]
     (into [(->event
@@ -5194,7 +7323,7 @@
      (let [item (nth (:items state) idx)
            child-id (:child-id state)
            child-node (get (resolve-nodes-by-id context sheet-id tick-id) child-id)]
-       [(make-bb-write-event context sheet-id tick-id (:item-key state) item
+       [(logic/make-bb-write-event context sheet-id tick-id (:item-key state) item
                              {:node-id child-id
                               :input-seed? true
                               :exec-context {::map-each-index idx
@@ -5202,7 +7331,7 @@
         (->event
          {:type :sheet/node-execution-started
           :tags (node-execution-tags context sheet-id tick-id child-id)
-          :body (execution-lease/stamp
+          :body (commands/stamp
                  context child-node
                  {:sheet-id sheet-id :tick-id tick-id :node-id child-id
                   :inputs {(:item-key state) item
@@ -5241,11 +7370,11 @@
 
               :sheet/execution-value-referenced
               (assoc values (:key event)
-                     (value-log/resolve-source context (:tenant-id context)
+                     (rm/resolve-source context (:tenant-id context)
                                                (:source event)))
 
               values))
-          (value-log/tick-seeds context (:tenant-id context) tick-id)
+          (rm/tick-seeds context (:tenant-id context) tick-id)
           events-before-start)
          source-key)))))
 
@@ -5259,7 +7388,7 @@
   [context sheet-id tick-id parent-id]
   (let [node (get (resolve-nodes-by-id context sheet-id tick-id) parent-id)
         source-key (:source-key node)
-        tick-events (value-log/read-tick-events
+        tick-events (rm/read-tick-events
                      context (:tenant-id context) tick-id)
         declared-source (declared-map-each-source context tick-id parent-id
                                                   source-key tick-events)
@@ -5319,12 +7448,8 @@
                                    :completed-indices completed-indices
                                    :in-flight in-flight)
             installed (atom nil)
-            state-key (map-each-key tick-id parent-id)]
-        ;; Recovery reads outside the atom, so another recovery or a live child
-        ;; completion may advance the coordinator before this snapshot installs.
-        ;; Merge monotonically under the same swap used by completion delivery:
-        ;; terminal contexts and active reservations may be added, never erased.
-        (swap! map-each-state
+            state-key (logic/map-each-key tick-id parent-id)]
+        (swap! logic/map-each-state
                (fn [all-state]
                  (let [current (get all-state state-key)
                        current-completed (or (:completed-indices current) #{})
@@ -5359,6 +7484,11 @@
            :dispatch-indices (:recovery-dispatch-indices state)
            :completed? (= total-items (count (:completed-indices state)))})))))
 
+(defn resume-in-progress!
+  "Recover durable frontiers using the same coordinator as the map-each processor."
+  [context]
+  (resume-frontiers! context recover-map-each-coordinator!))
+
 (defn execute-map-each-node
   "Handle execution of map-each nodes.
    Iterates over a list in the blackboard, executing the child subtree for each item.
@@ -5367,7 +7497,7 @@
   (let [sheet-id (:sheet-id event)
         tick-id (:tick-id event)
         node-id (:node-id event)
-        event-inputs (:inputs event)  ;; May contain writes from previous sequence child
+        event-inputs (:inputs event)
         nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
         node (get nodes-by-id node-id)]
     (when (= :map-each (:type node))
@@ -5376,28 +7506,18 @@
             output-key (:output-key node)
             max-concurrency (or (:max-concurrency node) 1)
             children-ids (:children-ids node)
-            child-id (first children-ids) ;; map-each has exactly one child subtree
-            ;; Only the source key needs a value here — it IS the iteration
-            ;; list. Everything else this handler uses is node config.
+            child-id (first children-ids)
             blackboard (resolve-blackboard-values context sheet-id tick-id
                                                   [source-key])
-            ;; Check event inputs first (may contain writes from previous sequence child),
-            ;; then fall back to blackboard. This handles race condition where read model
-            ;; hasn't yet processed the execution-value-written events.
             source-list (if (:resumed-from-event-id event)
-                          ;; Recovery replays exactly the source the original
-                          ;; map start consumed. It may have been generated by
-                          ;; an earlier sequence child rather than tick-seeded,
-                          ;; and an item may since have overwritten the key.
                           (declared-map-each-source
                            context tick-id node-id source-key
-                           (value-log/read-tick-events
+                           (rm/read-tick-events
                             context (:tenant-id context) tick-id))
                           (or (get event-inputs source-key)
                               (get-in blackboard [source-key :value])))]
         (cond
           (not (sequential? source-list))
-          ;; Source is not a list - fail
           {:result/events
            [(->event
              {:type :sheet/node-execution-completed
@@ -5412,19 +7532,17 @@
                      :error (str "Source key '" source-key "' is not a list")}})]}
 
           (empty? source-list)
-          ;; Empty list - succeed with empty results
           {:result/events
            (map-each-result-events context sheet-id tick-id node-id
                                    output-key [] :success nil)}
 
           (not child-id)
-          ;; No child subtree - succeed with original list
           {:result/events
            (map-each-result-events context sheet-id tick-id node-id
                                    output-key (vec source-list) :success nil)}
 
           :else
-          (let [state-key (map-each-key tick-id node-id)
+          (let [state-key (logic/map-each-key tick-id node-id)
                 items (vec source-list)
                 total-items (count items)
                 batch-size (min max-concurrency total-items)
@@ -5442,7 +7560,7 @@
             (if-not (:resumed-from-event-id event)
               (let [initial-state (assoc base-state
                                          :in-flight (set batch-indices))]
-                (swap! map-each-state assoc state-key initial-state)
+                (swap! logic/map-each-state assoc state-key initial-state)
                 {:result/events
                  (into
                   [(->event
@@ -5452,9 +7570,7 @@
                             :item-index 0 :total-items total-items}})]
                   (map-each-start-events context sheet-id tick-id node-id
                                          initial-state batch-indices))})
-              ;; Recovery: the durable log, not progress or process memory,
-              ;; decides which declared item contexts are complete or active.
-              (let [installed-state (get @map-each-state state-key)
+              (let [installed-state (get @logic/map-each-state state-key)
                     recovery (if (and installed-state
                                       (contains? installed-state
                                                  :recovery-dispatch-indices))
@@ -5468,11 +7584,11 @@
                                 context sheet-id tick-id node-id))
                     {:keys [state dispatch-indices completed?]} recovery
                     completed-count (count (:completed-indices state))]
-                (swap! map-each-state update state-key
+                (swap! logic/map-each-state update state-key
                        dissoc :recovery-dispatch-indices)
                 (if completed?
                   (do
-                    (swap! map-each-state dissoc state-key)
+                    (swap! logic/map-each-state dissoc state-key)
                     {:result/events
                      (map-each-completion-events context sheet-id tick-id node-id
                                                  state (:results state) completed-count)})
@@ -5496,36 +7612,22 @@
         tick-id (:tick-id event)
         completing-node-id (:node-id event)
         inputs (:inputs event)
-        ;; One read of the tick's events, reused for every resolution below.
-        ;; This used to be a resolve-writes call that read the tick and threw
-        ;; the events away, so holding them costs nothing extra.
-        tick-events (value-log/read-tick-events context (:tenant-id context) tick-id)
-        ;; Check if this is a map-each child
+        tick-events (rm/read-tick-events context (:tenant-id context) tick-id)
         map-each-parent-id (get inputs ::map-each-parent)
         item-index (get inputs ::map-each-index)]
     (when (and map-each-parent-id item-index)
-      (let [state-key (map-each-key tick-id map-each-parent-id)
-            state (get @map-each-state state-key)]
-        ;; Only process if:
-        ;; 1. State exists for this map-each
-        ;; 2. The completing node is the DIRECT child of the map-each (not a descendant)
+      (let [state-key (logic/map-each-key tick-id map-each-parent-id)
+            state (get @logic/map-each-state state-key)]
         (when (and state (= completing-node-id (:child-id state)))
           (let [{:keys [items child-id item-key output-key]} state
                 computed-result (map-each-item-result context tick-events state event)
-                ;; Atomically update state and determine action.
-                ;; This prevents race conditions when multiple children complete concurrently.
-                ;; Track :in-flight so concurrent completions don't all pick the same next-to-start.
                 action (atom nil)
-                _ (swap! map-each-state
+                _ (swap! logic/map-each-state
                          (fn [all-state]
                            (let [s (get all-state state-key)]
                              (if-not s
-                               ;; State already cleaned up (shouldn't happen)
                                (do (reset! action :noop) all-state)
                                (if (contains? (:completed-indices s) item-index)
-                                 ;; Duplicate/reordered delivery for an already
-                                 ;; terminal execution context cannot reopen or
-                                 ;; overwrite its aligned slot.
                                  (do (reset! action {:type :noop
                                                      :completed-count
                                                      (count (:completed-indices s))})
@@ -5534,17 +7636,12 @@
                                      completed-indices (conj (:completed-indices s) item-index)
                                      completed-count (count completed-indices)
                                      total (count (:items s))
-                                     ;; Remove the just-completed index from in-flight
                                      in-flight-after-removal (disj (:in-flight s) item-index)]
                                  (if (= completed-count total)
-                                   ;; All done — remove state, action = :complete
                                    (do (reset! action {:type :complete
                                                        :results new-results
                                                        :completed-count completed-count})
                                        (dissoc all-state state-key))
-                                   ;; Find the next declared context that is
-                                   ;; neither terminal nor already active. A nil
-                                   ;; result is still terminal evidence.
                                    (let [next-to-start (first
                                                         (filter #(and (not (contains? completed-indices %))
                                                                       (not (contains? in-flight-after-removal %)))
@@ -5583,10 +7680,7 @@
                     :tags #{[:sheet sheet-id] [:node map-each-parent-id] [:tick tick-id]}
                     :body {:sheet-id sheet-id :tick-id tick-id :node-id map-each-parent-id
                            :item-index (:completed-count act) :total-items total-items}})
-                  ;; Write item to blackboard so children in sequence can read it
-                  ;; Attributed to the iteration that will read it — see the
-                  ;; batch-dispatch site above.
-                  (make-bb-write-event context sheet-id tick-id item-key next-item
+                  (logic/make-bb-write-event context sheet-id tick-id item-key next-item
                                        {:node-id child-id
                                         :input-seed? true
                                         :exec-context {::map-each-index (:next-index act)
@@ -5599,7 +7693,6 @@
                                     ::map-each-index (:next-index act)
                                     ::map-each-parent map-each-parent-id}}})]})
 
-              ;; :wait or :noop — just emit progress
               {:result/events
                [(->event
                  {:type :sheet/map-each-progress-updated
@@ -5641,39 +7734,27 @@
         tick-id (:tick-id event)
         node-id (:node-id event)
         status (:status event)
-        error (:error event)  ;; Extract error from node completion
-        ;; WS-2a: the OPAQUE block payload rides the root node's :blocked
-        ;; completion up onto the tree-tick-completed event so the delivered
-        ;; result carries it. orc never interprets it.
+        error (:error event)
         block-payload (:block-payload event)
         tick-ctx (rm/get-tick-execution-context context tick-id)
         correlation-id (:correlation-id tick-ctx)
         root-node-id (:root-node-id tick-ctx)
-        ;; Per-execution override from options, else global dynamic default
-        max-ticks (or (get-in tick-ctx [:options :max-ticks]) *max-tick-iterations*)
-        ;; Get current tick to check iteration count and cancellation.
-        ;; Ancestor-aware: a child tick (RLM Phase 2 / delegate) spawned in
-        ;; the window where its parent was being cancelled self-terminates
-        ;; here instead of running to its own timeout.
+        max-ticks (or (get-in tick-ctx [:options :max-ticks]) logic/*max-tick-iterations*)
         tick (rm/get-tick context tick-id)
         current-iteration (or (:iteration tick) 1)
-        cancelled? (or (contains? @budget-cancellation-claims tick-id)
+        cancelled? (or (contains? @logic/budget-cancellation-claims tick-id)
                        (= :cancelled (:status tick))
                        (and (:parent-tick-id tick)
                             (rm/is-tick-or-ancestor-cancelled? context (:parent-tick-id tick))))]
     (when (= node-id root-node-id)
       (cond
-        ;; Cancellation is already the tick's terminal decision. A root-node
-        ;; completion racing in afterwards must not append a second terminal
-        ;; tree-tick event.
         cancelled?
         {:result/events []}
 
-        ;; Status is running and we haven't hit max iterations - re-tick
         (and (= status :running)
              (< current-iteration max-ticks))
         {:result/events
-         [(budget-facts/event context
+         [(rm/event context
            {:type :sheet/tree-tick-completed
             :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
                     correlation-id (conj [:correlation correlation-id]))
@@ -5682,7 +7763,7 @@
                            :iteration current-iteration
                            :root-status :running}
                     correlation-id (assoc :correlation-id correlation-id))})
-          (budget-facts/event context
+          (rm/event context
            {:type :sheet/tree-tick-started
             :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
                     correlation-id (conj [:correlation correlation-id]))
@@ -5691,7 +7772,6 @@
                            :iteration (inc current-iteration)}
                     correlation-id (assoc :correlation-id correlation-id))})]}
 
-        ;; Either success/failure, or hit max iterations
         :else
         (let [max-ticks-exhausted? (and (= status :running)
                                         (>= current-iteration max-ticks))
@@ -5704,25 +7784,14 @@
               final-error (or error
                               (when max-ticks-exhausted?
                                 (str "Maximum tick budget exhausted (" max-ticks ")")))
-              ;; Only the keys this tick WROTE, not the whole blackboard. A
-              ;; tick is seeded with its caller's working set, so echoing every
-              ;; seeded key back out re-stores values the tick never touched.
-              ;; Callers still see the full blackboard —
-              ;; deliver-execution-result rehydrates it from the
-              ;; tick-execution-context read model.
               output-keys (when tick-ctx
                             (let [bb (:blackboard tick-ctx)
                                   written (tick-written-keys event-store
                                                              (:tenant-id context)
                                                              tick-id)]
                               (vec (for [[k _] bb
-                                         ;; nil written-set => could not be
-                                         ;; determined => name every key.
                                          :when (or (nil? written) (contains? written k))]
                                      k))))]
-          ;; Route terminal append through the command CAS. A pubsub event may
-          ;; be delivered more than once; returning a raw processor event here
-          ;; allowed equivalent terminal records to race into the log.
           (process-lifecycle-command! context
             (cond-> {:command/id (random-uuid)
                            :command/timestamp (time/now)
@@ -5739,12 +7808,385 @@
                     (= :blocked final-status) (assoc :block-payload block-payload)
                     final-error (assoc :error final-error))))))))
 
-
 ;; =============================================================================
 ;; Execution Completion Delivery
 ;; =============================================================================
 
-(def ^:private tick-family-ids family-usage/tick-family-ids)
+(defn advance-ephemeral-frontier
+  "Evaluate deterministic ordered control flow to its next durable leaf or
+   terminal outcome. Repeated delivery cannot start the same frontier twice."
+  [{:keys [event event-store tenant-id] :as context}]
+  (let [sheet-id (:sheet-id event)
+        tick-id (:tick-id event)
+        tick-ctx (tick-ctx-of context tick-id)
+        nodes-by-id (:nodes-by-id tick-ctx)
+        root-id (:root-node-id tick-ctx)
+        iteration (or (:iteration event) (get-in event [:inputs ::tick-iteration]) 1)
+        iteration-context (when (> iteration 1) {::tick-iteration iteration})
+        events (into [] (es/read event-store {:tenant-id tenant-id
+                                             :tags #{[:tick tick-id]}}))
+        terminal? (some #(and (= :sheet/tree-tick-completed (:event/type %))
+                              (not= :running (:root-status %))) events)
+        current-iteration? (fn [lifecycle-event]
+                             (= iteration-context
+                                (not-empty (select-keys (:inputs lifecycle-event)
+                                                        [::tick-iteration]))))
+        started (into #{} (comp (filter #(and (= :sheet/node-execution-started
+                                                    (:event/type %))
+                                                 (current-iteration? %)))
+                                (map :node-id)) events)
+        completed (logic/completed-statuses (filter current-iteration? events))
+        decisions (reduce (fn [result summary]
+                            (if (and (= :sheet/ephemeral-evaluations-recorded
+                                        (:event/type summary))
+                                     (= iteration (:iteration summary)))
+                              (reduce (fn [m step]
+                                        (if (= :condition (:node-type step))
+                                          (assoc m (:node-id step) (:status step))
+                                          m))
+                                      result (:steps summary))
+                              result))
+                          {} events)
+        recorded-step-signatures
+        (into #{}
+              (comp
+               (filter #(and (= :sheet/ephemeral-evaluations-recorded
+                                  (:event/type %))
+                              (= iteration (:iteration %))))
+               (mapcat :steps)
+               (map (juxt :node-id :node-type :status)))
+              events)
+        blackboard (resolve-blackboard-values context sheet-id tick-id nil)]
+    (when (and (not terminal?) (ephemeral-routing-active? context tick-id nodes-by-id))
+      (let [{:keys [boundary status steps error block-payload]}
+            (logic/evaluate-ephemeral-node root-id nodes-by-id blackboard completed decisions)
+            new-steps (remove #(contains? recorded-step-signatures
+                                          [(:node-id %) (:node-type %) (:status %)])
+                              steps)
+            summary (logic/ephemeral-summary-event sheet-id tick-id iteration new-steps)]
+        (cond
+          (and boundary (not (contains? started boundary)))
+          {:result/events
+           (cond-> []
+             summary (conj summary)
+             true (conj (->event {:type :sheet/node-execution-started
+                                  :tags (node-execution-tags context sheet-id tick-id boundary)
+                                  :body (commands/stamp
+                                         context (get nodes-by-id boundary)
+                                         {:sheet-id sheet-id :tick-id tick-id
+                                          :node-id boundary
+                                          :inputs (or iteration-context {})})})))}
+
+          boundary nil
+
+          :else
+          (let [completion (complete-tree-tick
+                            (assoc context :event {:sheet-id sheet-id
+                                                   :tick-id tick-id
+                                                   :node-id root-id
+                                                   :status status
+                                                   :error error
+                                                   :block-payload block-payload}))]
+            (update completion :result/events
+                    #(cond-> (vec %)
+                       summary (into [summary])))))))))
+
+(defn execute-tree-tick
+  "When a tree tick starts, begin executing from the root node.
+   Reads from tick-scoped execution context (snapshot-based execution)."
+  [{:keys [event event-store] :as context}]
+  (let [sheet-id (:sheet-id event)
+        tick-id (:tick-id event)
+        tick-ctx (rm/get-tick-execution-context context tick-id)
+        root-id (:root-node-id tick-ctx)
+        nodes-by-id (:nodes-by-id tick-ctx)
+        root-node (when root-id (get nodes-by-id root-id))]
+    (when root-node
+      (if (and (not= :legacy (get-in tick-ctx [:options :durability-mode]))
+               (logic/ephemeral-routing-tree? nodes-by-id))
+        (advance-ephemeral-frontier context)
+      {:result/events
+       [(->event
+         {:type :sheet/node-execution-started
+          :tags (node-execution-tags context sheet-id tick-id root-id)
+          :body (commands/stamp
+                 context root-node
+                 {:sheet-id sheet-id
+                 :tick-id tick-id
+                 :node-id root-id
+                 :inputs (cond-> {}
+                           (> (or (:iteration event) 1) 1)
+                           (assoc ::tick-iteration (:iteration event)))})})]}))))
+
+(defn handle-child-completion
+  "When a child node completes, handle the parent's logic.
+   For sequences: continue on success, fail on failure.
+   For fallbacks: succeed on success, continue on failure.
+   For parallel: check policies to determine completion.
+   Propagates execution context from child to parent/siblings."
+  [{:keys [event event-store tenant-id] :as context}]
+  (let [sheet-id (:sheet-id event)
+        tick-id (:tick-id event)
+        child-id (:node-id event)
+        child-status (:status event)
+        child-writes (rm/resolve-writes context (:tenant-id context) tick-id event)
+        event-inputs (:inputs event)
+        exec-context (logic/extract-execution-context event-inputs)
+        nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
+        child (get nodes-by-id child-id)
+        parent-id (:parent-id child)]
+    (if (ephemeral-routing-active? context tick-id nodes-by-id)
+      (advance-ephemeral-frontier context)
+      (when (and parent-id
+               (not (some #(and (= parent-id (:node-id %))
+                                (logic/matches-execution-context? % exec-context))
+                          (into [] (es/read event-store
+                                           {:types #{:sheet/node-execution-completed}
+                                            :tags #{[:tick tick-id]}
+                                            :tenant-id tenant-id})))))
+      (let [parent (get nodes-by-id parent-id)
+            siblings (:children-ids parent)
+            child-index (.indexOf (vec siblings) child-id)
+            next-child-id (logic/next-child-strategy
+                           {:strategy-id (:strategy-id parent)
+                            :siblings siblings
+                            :child-index child-index
+                            :event event
+                            :parent parent})]
+        (case (:type parent)
+          :sequence
+          (cond
+            (#{:success :tree-generated :partial} child-status)
+            (if next-child-id
+              (let [next-index (inc child-index)
+                    total-children (count siblings)
+                    already-continued?
+                    (some #(and (= :sheet/sequence-progress-updated
+                                    (:event/type %))
+                                (= parent-id (:node-id %))
+                                (= next-index (:child-index %))
+                                (= exec-context (or (:exec-context %) {})))
+                          (into [] (es/read event-store
+                                           {:types #{:sheet/sequence-progress-updated}
+                                            :tags #{[:tick tick-id]}
+                                            :tenant-id tenant-id})))
+                    inputs (if (seq exec-context)
+                             (merge exec-context child-writes)
+                             exec-context)]
+                (when-not already-continued?
+                  {:result/events
+                   [
+                    (->event
+                     {:type :sheet/sequence-progress-updated
+                      :tags #{[:sheet sheet-id]
+                              [:node parent-id]
+                              [:tick tick-id]}
+                      :body (cond-> {:sheet-id sheet-id
+                                     :tick-id tick-id
+                                     :node-id parent-id
+                                     :child-index next-index
+                                     :total-children total-children}
+                              (seq exec-context)
+                              (assoc :exec-context exec-context))})
+                    (->event
+                     {:type :sheet/node-execution-started
+                      :tags (node-execution-tags context sheet-id tick-id next-child-id)
+                      :body (commands/stamp
+                             context (get nodes-by-id next-child-id)
+                             {:sheet-id sheet-id
+                              :tick-id tick-id
+                              :node-id next-child-id
+                              :inputs inputs})})]}))
+              (let [sibling-set (set siblings)
+                    child-completions (->> (es/read event-store
+                                             {:types #{:sheet/node-execution-completed}
+                                              :tags #{[:tick tick-id]}
+                                              :tenant-id tenant-id})
+                                           (into [])
+                                           (filter (fn [e]
+                                                     (and (sibling-set (:node-id e))
+                                                          (logic/matches-execution-context? e exec-context)))))
+                    any-partial? (some #(= :partial (:status %)) child-completions)
+                    final-status (if any-partial? :partial child-status)]
+                (complete-node-or-fail! context
+                  (cond-> {:command/id (random-uuid)
+                                  :command/timestamp (time/now)
+                                  :command/name :sheet/complete-node-execution
+                                  :sheet-id sheet-id
+                                  :tick-id tick-id
+                                  :node-id parent-id
+                                  :node-type (:type parent)
+                                  :status final-status
+                                  :write-sources (rm/resolve-write-sources
+                                                  event-store (:tenant-id context)
+                                                  tick-id event)}
+                           (seq exec-context) (assoc :inputs exec-context)))
+                nil))
+
+            (= child-status :failure)
+            {:result/events
+             [(->event
+               {:type :sheet/node-execution-completed
+                :tags #{[:sheet sheet-id]
+                        [:node parent-id]
+                        [:tick tick-id]}
+                :body (cond-> {:sheet-id sheet-id
+                               :tick-id tick-id
+                               :node-id parent-id
+                               :status :failure}
+                        (:error event) (assoc :error (:error event))
+                        (seq exec-context) (assoc :inputs exec-context))})]}
+
+            (= child-status :timeout)
+            {:result/events
+             [(->event
+               {:type :sheet/node-execution-completed
+                :tags #{[:sheet sheet-id]
+                        [:node parent-id]
+                        [:tick tick-id]}
+                :body (cond-> {:sheet-id sheet-id
+                               :tick-id tick-id
+                               :node-id parent-id
+                               :status :timeout}
+                        (:error event) (assoc :error (:error event))
+                        (seq exec-context) (assoc :inputs exec-context))})]}
+
+            (= child-status :blocked)
+            {:result/events
+             [(->event
+               {:type :sheet/node-execution-completed
+                :tags #{[:sheet sheet-id]
+                        [:node parent-id]
+                        [:tick tick-id]}
+                :body (cond-> {:sheet-id sheet-id
+                               :tick-id tick-id
+                               :node-id parent-id
+                               :status :blocked}
+                        (contains? event :block-payload)
+                        (assoc :block-payload (:block-payload event))
+                        (seq exec-context) (assoc :inputs exec-context))})]}
+
+            (= child-status :running)
+            {:result/events
+             [(->event
+               {:type :sheet/node-execution-completed
+                :tags #{[:sheet sheet-id]
+                        [:node parent-id]
+                        [:tick tick-id]}
+                :body (cond-> {:sheet-id sheet-id
+                               :tick-id tick-id
+                               :node-id parent-id
+                               :status :running}
+                        (seq exec-context) (assoc :inputs exec-context))})]}
+
+            :else nil)
+
+          :fallback
+          (case child-status
+            (:success :partial)
+            (let [write-sources (rm/resolve-write-sources
+                                 event-store (:tenant-id context) tick-id event)]
+              {:result/events
+               [(->event
+                 {:type :sheet/node-execution-completed
+                  :tags #{[:sheet sheet-id]
+                          [:node parent-id]
+                          [:tick tick-id]}
+                  :body (cond-> {:sheet-id sheet-id
+                                 :tick-id tick-id
+                                 :node-id parent-id
+                                 :status child-status}
+                          (seq write-sources)
+                          (assoc :write-keys (vec (keys write-sources))
+                                 :write-sources write-sources)
+                          (seq exec-context) (assoc :inputs exec-context))})]})
+            (:failure :timeout)
+            (if next-child-id
+              (let [inputs exec-context]
+                {:result/events
+                 [(->event
+                   {:type :sheet/node-execution-started
+                    :tags (node-execution-tags context sheet-id tick-id next-child-id)
+                    :body (commands/stamp
+                           context (get nodes-by-id next-child-id)
+                           {:sheet-id sheet-id
+                            :tick-id tick-id
+                            :node-id next-child-id
+                            :inputs inputs})})]})
+              {:result/events
+               [(->event
+                 {:type :sheet/node-execution-completed
+                  :tags #{[:sheet sheet-id]
+                          [:node parent-id]
+                          [:tick tick-id]}
+                  :body (cond-> {:sheet-id sheet-id
+                                 :tick-id tick-id
+                                 :node-id parent-id
+                                 :status :failure}
+                          (seq exec-context) (assoc :inputs exec-context))})]})
+            :running
+            {:result/events
+             [(->event
+               {:type :sheet/node-execution-completed
+                :tags #{[:sheet sheet-id]
+                        [:node parent-id]
+                        [:tick tick-id]}
+                :body (cond-> {:sheet-id sheet-id
+                               :tick-id tick-id
+                               :node-id parent-id
+                               :status :running}
+                        (seq exec-context) (assoc :inputs exec-context))})]}
+            :blocked
+            {:result/events
+             [(->event
+               {:type :sheet/node-execution-completed
+                :tags #{[:sheet sheet-id]
+                        [:node parent-id]
+                        [:tick tick-id]}
+                :body (cond-> {:sheet-id sheet-id
+                               :tick-id tick-id
+                               :node-id parent-id
+                               :status :blocked}
+                        (contains? event :block-payload)
+                        (assoc :block-payload (:block-payload event))
+                        (seq exec-context) (assoc :inputs exec-context))})]}
+            nil)
+
+          :parallel
+          (let [child-counts (count-child-statuses context sheet-id tick-id parent exec-context)
+                completion (logic/parallel-completion-strategy
+                            {:strategy-id (:strategy-id parent)
+                             :child-counts child-counts
+                             :success-policy (:success-policy parent)
+                             :failure-policy (:failure-policy parent)
+                             :event event
+                             :parent parent})]
+            (when completion
+              (let [event (->event
+                            {:type :sheet/node-execution-completed
+                             :tags #{[:sheet sheet-id]
+                                     [:node parent-id]
+                                     [:tick tick-id]}
+                             :body (cond-> {:sheet-id sheet-id
+                                            :tick-id tick-id
+                                            :node-id parent-id
+                                            :status (:status completion)}
+                                     (seq exec-context) (assoc :inputs exec-context))})]
+                (es/append event-store
+                  {:events [event]
+                   :tenant-id tenant-id
+                   :cas {:types #{:sheet/node-execution-completed}
+                         :tags #{[:tick tick-id] [:node parent-id]}
+                         :predicate-fn (fn [existing]
+                                         (empty? (into [] existing)))}})
+                {})))
+
+          :map-each
+          nil
+
+          nil))))))
+
+(def ^:private tick-family-ids rm/tick-family-ids)
 
 (defn- build-node-trace
   "Build a per-node execution trace for a completed tick and its descendants.
@@ -5773,7 +8215,7 @@
       []
       (let [family-ids (tick-family-ids event-store tenant-id tick-id)
             family-events
-            (value-storage/hydrate-events
+            (logic/hydrate-events
              context
              (into []
                    (mapcat (fn [family-tick-id]
@@ -5784,14 +8226,14 @@
                                                      :tags #{[:tick family-tick-id]}}
                                               tenant-id (assoc :tenant-id tenant-id))))))
                    family-ids))
-            writes-by-execution (value-log/writes-by-execution family-events)]
+            writes-by-execution (logic/writes-by-execution family-events)]
         (->> family-events
              (filter #(= :sheet/node-execution-completed (:event/type %)))
              (sort-by :event/timestamp)
              (mapv (fn [ev]
                      (let [writes (or (not-empty
                                        (get writes-by-execution
-                                            (value-log/execution-key ev)))
+                                            (logic/execution-key ev)))
                                       (:writes ev)
                                       {})]
                        (cond-> {:node-id (:node-id ev)
@@ -5800,8 +8242,6 @@
                                 :status (:status ev)
                                 :timestamp (:event/timestamp ev)}
                          (:inputs ev) (assoc :inputs (:inputs ev))
-                         ;; Keyed by (node-id, exec-context) so map-each
-                         ;; iterations stay distinct.
                          (seq writes) (assoc :writes writes)
                          (:usage ev) (assoc :usage (:usage ev))
                          (:duration-ms ev) (assoc :duration-ms (:duration-ms ev)))))))))
@@ -5831,18 +8271,11 @@
                 usage (:usage event)
                 child-by-node (:by-node usage)]
             (cond
-              ;; Pass-through: this node already has a per-child breakdown
-              ;; (it was a parent that aggregated Phase 2 sub-LLM calls).
-              ;; Inherit those entries directly so the structured paths
-              ;; are preserved.
               (and node-id (seq child-by-node))
               (merge-with (fn [a b]
                             (merge-with + a b))
                           acc child-by-node)
 
-              ;; Simple case: this node had its own usage but no sub-breakdown.
-              ;; Build a path from map-each context (if present) and add as
-              ;; a single entry.
               (and node-id usage)
               (let [map-each-parent (some (fn [k]
                                             (when (and (keyword? k)
@@ -5887,9 +8320,6 @@
         root-status (:root-status event)
         tick-ctx (rm/get-tick-execution-context context tick-id)
         executed-version (:version-number tick-ctx)
-        ;; A model decision's answer key is never null-filled: when the
-        ;; decision failed it wrote nothing, and a fabricated nil under the
-        ;; answer key is exactly what routing guards must never see.
         optional-write-keys (into #{}
                                   (mapcat (fn [{:keys [writes options executor]}]
                                             (if (= :decision executor)
@@ -5897,45 +8327,20 @@
                                               (filter (set writes)
                                                       (:optional-writes options)))))
                                   (vals (:nodes-by-id tick-ctx)))
-        ;; complete-tree-tick stores only the keys this tick wrote, so the
-        ;; full blackboard is rehydrated here from the tick-execution-context
-        ;; read model. Falls back to the event's own :outputs for legacy ticks
-        ;; dispatched without an execution snapshot.
-        ;; The caller is owed the tick's END STATE, so this resolves straight
-        ;; from the log rather than through the read model. Delivery is the one
-        ;; place that must not depend on how far the projection has caught up:
-        ;; a node's writes are appended atomically with its completion, so the
-        ;; log is complete by the time we see tree-tick-completed, while the
-        ;; cache can still be catching up under concurrent projections — which
-        ;; would silently drop a key from the caller's :outputs.
-        ;;
-        ;; The cached key set is still unioned in, so a declared-but-unwritten
-        ;; key is reported as nil rather than going missing, as before.
-        ;;
-        ;; MUST run before forget-tick! below, which drops the memoized seeds.
         outputs (or (when-let [bb (rm/get-tick-blackboard context tick-id)]
                       (merge (zipmap (remove optional-write-keys (keys bb))
                                      (repeat nil))
-                             (value-log/final-values context tenant-id tick-id)))
+                             (rm/final-values context tenant-id tick-id)))
                     (:outputs event))
         error (:error event)
-        ;; WS-2a: the opaque block payload, present on a :blocked tree tick.
         block-payload (:block-payload event)]
-    ;; Skip intermediate :running completions — those are re-tick signals,
-    ;; not final results. complete-tree-tick converts :running to :failure
-    ;; when max iterations are exhausted.
     (when (not= root-status :running)
-      ;; Get aggregated usage before clearing
-      (let [usage (get-tick-usage tick-id)
+      (let [usage (logic/get-tick-usage tick-id)
             by-node (aggregate-tick-by-node event-store tenant-id tick-id)
             usage-with-breakdown (cond-> usage
                                    (seq by-node) (assoc :by-node by-node))
-            result-status (runtime/terminal-root-status->result-status
+            result-status (logic/terminal-root-status->result-status
                            root-status)
-            ;; Build per-leaf-node execution trace from the event store.
-            ;; First-class field — consumers (bench harnesses, eval frameworks,
-            ;; ontology consolidators) read `:node-trace` from the result
-            ;; instead of querying the event store themselves.
             trace-start-ms (System/currentTimeMillis)
             node-trace (build-node-trace context tenant-id tick-id)
             trace-duration-ms (- (System/currentTimeMillis) trace-start-ms)
@@ -5943,82 +8348,27 @@
                      :tick-id tick-id
                      :node-count (count node-trace)
                      :duration-ms trace-duration-ms)]
-        ;; Clean up budget and usage tracking for this tick
-        (clear-llm-count! tick-id)
-        (clear-tick-usage! tick-id)
-        (execution-budget/clear-tick! tick-id)
-        ;; Safe here and not before: `outputs` above was already resolved.
-        (value-log/forget-tick! tick-id)
-        (runtime/deliver-completion! tick-id
+        (logic/clear-llm-count! tick-id)
+        (logic/clear-tick-usage! tick-id)
+        (logic/clear-tick! tick-id)
+        (logic/forget-tick! tick-id)
+        (logic/deliver-completion! tick-id
           (cond-> {:status result-status
                    :trace-id tick-id
                    :error error
                    :configured-max-ticks (:configured-max-ticks event)
                    :consumed-ticks (:consumed-ticks event)
                    :terminal-reason (:terminal-reason event)}
-            ;; A workflow timeout has one canonical public shape whether the
-            ;; live completion or durable reconstruction wins the delivery
-            ;; race: partial values remain durable evidence, not caller-visible
-            ;; outputs from an incomplete execution.
             (not= :timeout result-status)
             (assoc :outputs (or outputs {})
-                   :output-sources (value-log/final-sources context tenant-id tick-id)
-                   ;; Include raw tree for :tree-generated status (canonical
-                   ;; form generated at execution time).
+                   :output-sources (rm/final-sources context tenant-id tick-id)
                    :generated-tree-raw (get outputs :generated-tree-raw))
             executed-version (assoc :executed-version executed-version)
-            ;; Include usage if any LLM calls were made
             (pos? (:total-tokens usage 0)) (assoc :usage usage-with-breakdown)
-            ;; WS-2a: carry the opaque payload out to the caller's result.
             (= :blocked root-status) (assoc :block-payload block-payload)
-            ;; Always include :node-trace when we have any leaf events.
             (seq node-trace) (assoc :node-trace node-trace)))
-        (runtime/forget-ephemeral-context! tick-id)))
-    ;; No events to emit
+        (logic/forget-ephemeral-context! tick-id)))
     nil))
-
-(defn deliver-cancellation
-  "When a tick is cancelled, unblock any caller waiting on runtime/execute
-   immediately instead of letting it hang until its timeout. The status
-   stays :failure (existing callers switch on :status); :cancelled? true is
-   the additive discriminator. Idempotent with the eventual terminal
-   delivery: whichever fires first wins the promise, the other no-ops."
-  [{:keys [event]}]
-  (let [tick-id (:tick-id event)]
-    (runtime/deliver-completion! tick-id
-      {:status :failure
-       :error (or (:reason event) "tick cancelled")
-       :cancelled? true
-       :outputs {}
-       :trace-id tick-id})
-    ;; A cancelled tick never reaches deliver-execution-result, so its seed
-    ;; memo would otherwise be retained for the life of the process.
-    ;; Keep the short-lived cancellation claim after the event is delivered.
-    ;; Event subscribers can observe cancellation before the tick projection
-    ;; does; clearing here reopens that gap to late budget-exhausted siblings.
-    ;; claim-budget-cancellation! prunes the bounded ledger by age.
-    (swap! tick-llm-counts dissoc tick-id)
-    (execution-budget/cancel-active-work! tick-id)
-    (execution-budget/clear-tick! tick-id)
-    (value-log/forget-tick! tick-id)
-    (runtime/forget-ephemeral-context! tick-id))
-  nil)
-
-;; =============================================================================
-;; Trace Assembly (Post-hoc from events)
-;; =============================================================================
-
-(defn trace-execution-context
-  "Return the execution-disambiguating context for trace correlation.
-   This distinguishes repeated executions of the same node under map-each."
-  [inputs]
-  (select-keys (or inputs {})
-               [::map-each-index ::map-each-parent ::tick-iteration]))
-
-(defn trace-execution-key
-  "Correlation key for matching started/completed events in trace assembly."
-  [event]
-  [(:node-id event) (trace-execution-context (:inputs event))])
 
 (defn- originating-tick-started
   [event-store tenant-id tick-id]
@@ -6053,27 +8403,6 @@
      :root-trace-id root-id
      :child-trace-ids children}))
 
-(defn- timestamp-ms [timestamp]
-  (cond
-    (instance? java.time.Instant timestamp) (.toEpochMilli ^java.time.Instant timestamp)
-    (instance? java.time.OffsetDateTime timestamp) (-> ^java.time.OffsetDateTime timestamp .toInstant .toEpochMilli)
-    :else (-> (java.time.OffsetDateTime/parse (str timestamp)) .toInstant .toEpochMilli)))
-
-(defn- elapsed-ms [started completed]
-  (when (and started completed)
-    (max 0 (- (timestamp-ms (:event/timestamp completed))
-              (timestamp-ms (:event/timestamp started))))))
-
-(defn- trace-node-path [nodes-by-id node-id]
-  (loop [current node-id, path (), seen #{}, depth 0]
-    (if (or (nil? current) (contains? seen current) (>= depth 100))
-      (vec path)
-      (let [node (get nodes-by-id current)]
-        (recur (:parent-id node)
-               (conj path (:name node))
-               (conj seen current)
-               (inc depth))))))
-
 (defn- await-event-visible!
   "Fence pubsub delivery against event-store query visibility. A processor may
    receive an event from a multi-event append before a concurrent read exposes
@@ -6091,20 +8420,6 @@
             (Thread/sleep 5)
             (recur)))))))
 
-(defn order-researcher-events
-  "Order a campaign's trace entries by DURABLE position — the string form of the
-   source event's UUIDv7 id (the same order the event store itself returns), with
-   a yield placed right after the checkpoint that carried it — and strip the
-   ordering key. Never sort by the rendered `:at` strings: they are stamped by
-   different producers at different precisions and Java drops trailing zero
-   groups, so `…49.64Z` sorts lexically AFTER `…49.640123Z` although it is
-   earlier (seen once in five full brick runs as a claim ordered after its own
-   effect)."
-  [entries]
-  (->> entries
-       (sort-by ::durable-order)
-       (mapv #(dissoc % ::durable-order))))
-
 (defn- assemble-execution-trace-owned
   [{:keys [event event-store] :as context}]
   (await-event-visible! event-store (:tenant-id context) event)
@@ -6112,42 +8427,23 @@
         sheet-id (:sheet-id event)
         root-status (:root-status event)
         tick-ctx (rm/get-tick-execution-context context tick-id)]
-    ;; Only assemble traces for tick-scoped executions
     (when tick-ctx
       (let [nodes-by-id (:nodes-by-id tick-ctx)
             version-number (:version-number tick-ctx)
             correlation-id (:correlation-id tick-ctx)
-            ;; Read all events for this tick (into [] to realize reducible)
             tick-events (into [] (es/read event-store {:tags #{[:tick tick-id]} :tenant-id (:tenant-id context)}))
-            ;; Trace publications carry the tick tag too. Exclude them so a
-            ;; refresh cannot manufacture a newer source revision merely by
-            ;; observing an earlier trace assembly.
             source-event-count (count (remove #(contains? #{:sheet/execution-traced
                                                             :sheet/execution-trace-refreshed}
                                                           (:event/type %))
                                               tick-events))
-            ;; Find tick-started event for timing
             started-event (first (filter #(= :sheet/tree-tick-started (:event/type %)) tick-events))
             started-at (when started-event (:event/timestamp started-event))
             completed-at (:event/timestamp event)
-            ;; Which keys the tick touched and how big each value was — not
-            ;; the values. :output-snapshot profiles the keys this tick wrote;
-            ;; :input-snapshot profiles the keys it was given and did not
-            ;; write. Values rehydrate via the node-trace-detail query.
             written-keys (apply disj
                                 (or (tick-written-keys event-store (:tenant-id context) tick-id)
                                     #{})
                                 (keys (:seed-sources started-event)))
-            ;; From the projection already bound above. This handler runs on
-            ;; tree-tick-completed, and complete-node-execution appends a
-            ;; node's writes and its completion event in ONE command result,
-            ;; so every write in the tick is visible before we get here.
             final-bb (or (:blackboard tick-ctx) {})
-            ;; The cached blackboard already carries a :profile per key — it is
-            ;; recorded exactly when there was a value to describe. So trace
-            ;; assembly needs no values at all: it reads the shapes straight
-            ;; off the metadata instead of resolving values only to measure
-            ;; and discard them.
             snapshot-profile (fn [key-pred]
                                (reduce-kv (fn [acc k entry]
                                             (if (and (key-pred k) (some? (:profile entry)))
@@ -6156,7 +8452,6 @@
                                           {} final-bb))
             input-snapshot (snapshot-profile #(not (contains? written-keys %)))
             output-snapshot (snapshot-profile #(contains? written-keys %))
-            ;; Correlate node-execution-started and completed events
             started-events (filter #(= :sheet/node-execution-started (:event/type %)) tick-events)
             completed-events (filter #(= :sheet/node-execution-completed (:event/type %)) tick-events)
             ephemeral-events (filter #(= :sheet/ephemeral-evaluations-recorded
@@ -6206,14 +8501,10 @@
                   (:iterations terminal-researcher-event))
             researcher-iterations
             (if (seq researcher-iteration-record-events)
-              ;; Version 2 has one authoritative history source. Preserve the
-              ;; immutable record without re-selecting fields; :iteration is a
-              ;; one-based compatibility alias for existing trace consumers.
               (->> researcher-iteration-record-events
                    (map :iteration-record)
                    (sort-by (juxt :iteration-index :attempt-ordinal))
                    (mapv #(assoc % :iteration (inc (:iteration-index %)))))
-              ;; Version-1 campaigns remain readable during migration.
               (->> (merge terminal-iterations checkpoint-iterations)
                    (sort-by key)
                    (mapv val)))
@@ -6312,45 +8603,31 @@
                       :iteration (:checkpoint-next-iteration resume-event)
                       :at (str (:event/timestamp resume-event))})
                    researcher-resume-events))
-             order-researcher-events)
-            started-by-execution (into {} (map (juxt trace-execution-key identity) started-events))
-            ;; Build completed map by node plus execution context. Map-each runs
-            ;; the same child node-id once per item, so keying only by node-id
-            ;; collapses all child completions into whichever event was seen last.
+             logic/order-researcher-events)
+            started-by-execution (into {} (map (juxt logic/trace-execution-key identity) started-events))
             completed-by-execution (reduce (fn [acc e]
-                                             (assoc acc (trace-execution-key e) e))
+                                             (assoc acc (logic/trace-execution-key e) e))
                                            {}
                                            completed-events)
-            ;; Build node traces
             durable-node-traces
             (vec
              (for [started started-events
                                 :let [node-id (:node-id started)
                                       node (get nodes-by-id node-id)
                                       completed (get completed-by-execution
-                                                     (trace-execution-key started))
-                                      exec-context (trace-execution-context (:inputs started))
+                                                     (logic/trace-execution-key started))
+                                      exec-context (logic/trace-execution-context (:inputs started))
                                       parent-started (when-let [parent-id (:parent-id node)]
                                                        (or (get started-by-execution [parent-id exec-context])
                                                            (get started-by-execution [parent-id {}])))
                                       node-duration (or (:duration-ms completed)
-                                                        (elapsed-ms started completed))]
+                                                        (logic/todo-processors-elapsed-ms started completed))]
                                 :when node]
                             (cond-> {:node-id node-id
                                      :trace-instance-id (:event/id started)
                                      :node-name (:name node)
                                      :node-type (:type node)
-                                     :path (trace-node-path nodes-by-id node-id)
-                                     ;; :node-type and :executor are separate
-                                     ;; axes and consumers need both — a leaf is
-                                     ;; :leaf whether it calls an LLM or runs
-                                     ;; Clojure, and only :executor says which.
-                                     ;; A node-id is not unique within a tick —
-                                     ;; map-each runs the same child once per
-                                     ;; item — so this is what makes each entry
-                                     ;; addressable. Same shape
-                                     ;; value-log/execution-key reads off
-                                     ;; lifecycle events.
+                                     :path (logic/trace-node-path nodes-by-id node-id)
                                      :exec-context exec-context
                                      :status (or (:status completed) :unknown)
                                      :started-at (str (:event/timestamp started))
@@ -6370,13 +8647,6 @@
                               (assoc :failure-kind (:failure-kind completed))
                               (:provider-evidence completed)
                               (assoc :provider-evidence (:provider-evidence completed))
-                              ;; Shape, not values — every value here is
-                              ;; already durable in
-                              ;; :sheet/execution-value-written. The
-                              ;; :sheet/node-trace-detail query rehydrates them
-                              ;; on demand; the profiles keep the trace useful
-                              ;; on its own for dashboards and for deciding
-                              ;; what to drill into.
                               (seq (:write-keys completed))
                               (assoc :write-keys (:write-keys completed)
                                      :output-profile (:write-profile completed))
@@ -6388,11 +8658,6 @@
                                      :rejected-output-profile
                                      (:rejected-write-profile completed))
 
-                              ;; Read shape comes straight off the completion
-                              ;; event, which captures reads resolved at
-                              ;; execution time. Control nodes start a non-leaf
-                              ;; child with only the map-each context, so the
-                              ;; started event has no reads to fall back to.
                               (seq (:read-keys completed))
                               (assoc :read-keys (:read-keys completed)
                                      :input-profile (:input-profile completed)))))
@@ -6407,7 +8672,7 @@
                                   :trace-instance-id (:trace-instance-id step)
                                   :node-name (:name node)
                                   :node-type (:type node)
-                                  :path (trace-node-path nodes-by-id node-id)
+                                  :path (logic/trace-node-path nodes-by-id node-id)
                                   :status (:status step)
                                   :started-at (str (:event/timestamp summary))
                                   :completed-at (str (:event/timestamp summary))
@@ -6427,10 +8692,9 @@
                                       node-trace)))
                              (sort-by :started-at)
                              vec)
-            ;; Calculate duration
             duration-ms (if (and started-at completed-at)
-                          (max 0 (- (timestamp-ms completed-at)
-                                    (timestamp-ms started-at)))
+                          (max 0 (- (logic/timestamp-ms completed-at)
+                                    (logic/timestamp-ms started-at)))
                           0)
             trace-id tick-id
             {:keys [parent-trace-id root-trace-id child-trace-ids]}
@@ -6446,22 +8710,17 @@
                            :failure)
             configured-max-ticks (or (:configured-max-ticks event)
                                      (get-in tick-ctx [:options :max-ticks])
-                                     *max-tick-iterations*)
+                                     logic/*max-tick-iterations*)
             consumed-ticks (or (:consumed-ticks event)
                                (:iteration event)
                                (:iteration (rm/get-tick context tick-id))
                                1)
             terminal-reason (or (:terminal-reason event) root-status)]
-        ;; Store trace via supervised background work (best-effort, non-blocking).
-        ;; Must be async because cp/process-command -> es/append -> pubsub/pub
-        ;; can deadlock if called synchronously within a todo processor thread.
-        ;; Hosts may inject lifecycle ownership; the ordinary library default
-        ;; remains a future because ORC does not own the host's shutdown.
         ((or (:orc/submit-background! context)
              (fn [task] (future (task))))
          (fn []
            (try
-             (trace-publication/publish!
+             (commands/publish!
               context
               (cond-> {:trace-id trace-id
                        :sheet-id sheet-id
@@ -6487,9 +8746,7 @@
                 version-number (assoc :version-number version-number)
                 (:error event) (assoc :error (:error event))))
              (catch Exception _e
-               ;; Log but don't fail — trace storage is best-effort
                nil))))
-        ;; No events to emit directly
         nil))))
 
 (defn assemble-execution-trace
@@ -6523,37 +8780,6 @@
     (when terminal-event
       (assemble-execution-trace (assoc context :event terminal-event)))))
 
-;; =============================================================================
-;; Todo Processor Registry
-;; =============================================================================
-
-;; =============================================================================
-;; Snapshot Restore Processor
-;; =============================================================================
-
-(defn- flatten-snapshot-nodes
-  "Flatten a nested snapshot tree into a list of [node parent-id] pairs,
-   in creation order (parent before children)."
-  [snapshot-node parent-id]
-  (when snapshot-node
-    (let [node-id (random-uuid)
-          node-record [node-id parent-id snapshot-node]
-          children (or (:children snapshot-node) [])]
-      (cons node-record
-            (mapcat #(flatten-snapshot-nodes % node-id) children)))))
-
-(defn- collect-deletion-order
-  "Collect nodes in deletion order (children before parents, leaf-first).
-   Returns vector of node-ids to delete."
-  [nodes-by-id root-id]
-  (letfn [(collect [node-id]
-            (let [node (get nodes-by-id node-id)
-                  children-ids (:children-ids node)]
-              (concat (mapcat collect children-ids)
-                      [node-id])))]
-    (when root-id
-      (vec (collect root-id)))))
-
 (defn restore-from-snapshot
   "Restore sheet state from a version or stash snapshot.
    Handles both :sheet/draft-reverted and :sheet/stash-restored events.
@@ -6569,14 +8795,13 @@
         snapshot (:snapshot event)]
     (when (and (#{:sheet/draft-reverted :sheet/stash-restored} event-type)
                snapshot)
-      (let [;; Get current state to delete
+      (let [
             current-nodes-by-id (rm/get-nodes-by-id context sheet-id)
             current-sheet (rm/get-sheet context sheet-id)
             current-root-id (:root-node-id current-sheet)
             current-blackboard (rm/get-blackboard-by-key context sheet-id)
 
-            ;; Generate deletion events for nodes (leaf-first order)
-            node-deletion-ids (collect-deletion-order current-nodes-by-id current-root-id)
+            node-deletion-ids (logic/collect-deletion-order current-nodes-by-id current-root-id)
             node-deletion-events (mapv (fn [node-id]
                                          (->event
                                           {:type :sheet/node-deleted
@@ -6586,7 +8811,6 @@
                                                   :node-id node-id}}))
                                        node-deletion-ids)
 
-            ;; Generate deletion events for blackboard keys
             key-deletion-events (mapv (fn [[k _]]
                                         (->event
                                          {:type :sheet/key-deleted
@@ -6595,11 +8819,9 @@
                                                  :key k}}))
                                       current-blackboard)
 
-            ;; Extract snapshot data
             snapshot-nodes (:nodes snapshot)
             blackboard-schema (:blackboard-schema snapshot)
 
-            ;; Generate key declaration events
             key-declaration-events (mapv (fn [[k schema]]
                                            (->event
                                             {:type :sheet/key-declared
@@ -6609,10 +8831,8 @@
                                                     :schema schema}}))
                                          blackboard-schema)
 
-            ;; Flatten snapshot tree to get node creation order
-            node-records (flatten-snapshot-nodes snapshot-nodes nil)
+            node-records (logic/flatten-snapshot-nodes snapshot-nodes nil)
 
-            ;; Generate node creation and configuration events
             node-events (mapcat
                          (fn [[node-id parent-id snapshot-node]]
                            (let [node-type (:type snapshot-node)
@@ -6624,7 +8844,6 @@
                                                                :node-id node-id
                                                                :type node-type}
                                                         parent-id (assoc :parent-id parent-id))})
-                                 ;; Name event
                                  name-event (when (:name snapshot-node)
                                               (->event
                                                {:type :sheet/node-name-set
@@ -6633,7 +8852,6 @@
                                                 :body {:sheet-id sheet-id
                                                        :node-id node-id
                                                        :name (:name snapshot-node)}}))
-                                 ;; Configuration events based on node type
                                  config-events
                                  (case node-type
                                    :leaf
@@ -6753,7 +8971,6 @@
                                                          (some? (:inherit-ontology? snapshot-node))
                                                          (assoc :inherit-ontology? (:inherit-ontology? snapshot-node)))}))])
 
-                                   ;; sequence, fallback, repl-researcher - no extra config needed
                                    [])]
                              (filterv some? (into [create-event name-event] config-events))))
                          node-records)]
@@ -6764,10 +8981,6 @@
                       key-declaration-events
                       node-events))}))))
 
-;; =============================================================================
-;; Processor Registration (defprocessor delegates to existing handler fns)
-;; =============================================================================
-
 (defprocessor :sheet recover-active-executions
   {:topics #{:sheet/recovery-scan-triggered}}
   "Rediscover this tenant's unfinished durable frontiers after startup.
@@ -6776,7 +8989,7 @@
    CAS chooses one recovered start when trigger delivery or scanners race."
   [context]
   {:result/checkpoint :after
-   :result/effect #(runtime/resume-in-progress! context)})
+   :result/effect #(resume-in-progress! context)})
 
 (defprocessor :sheet start-tree-tick
   {:topics #{:sheet/tree-tick-started}}
@@ -6801,11 +9014,6 @@
    of the stream — re-executing every historical node-execution-started
    event. The six retired names leave inert checkpoints behind."
   [context]
-  ;; Resolve the tick context and the node ONCE, then run the one executor
-  ;; whose node type matches. The chain this replaces tried all seven in turn
-  ;; and each projected the whole tick context before testing the type. Node
-  ;; types are disjoint, so at most one executor ever acted; an unknown type or
-  ;; a missing node still yields nil, as the chain did.
   (let [context (with-resolved-tick-ctx context)
         {:keys [event]} context
         tick-ctx (:ctx (::resolved-tick-ctx context))
@@ -6886,33 +9094,10 @@
   {:topics #{:sheet/tick-cancelled}}
   "Unblock callers waiting on a cancelled tick."
   [context]
-  (deliver-cancellation context))
+  (logic/deliver-cancellation context))
 
 (defprocessor :sheet assemble-execution-trace
   {:topics #{:sheet/tree-tick-completed}}
   "Assemble and store execution trace from events."
   [context]
   (assemble-execution-trace context))
-
-;; =============================================================================
-;; RLM Rolling Judge — RETIRED in Gap-2
-;; =============================================================================
-;;
-;; The standalone `:rlm evaluate-rlm-tree` processor (heuristic-only
-;; structural eval of model-generated trees) is no longer here. Its
-;; functionality moved to the unified evaluator protocol:
-;;
-;;   - Heuristic re-extracted to:
-;;     `components/evaluation/src/.../core/heuristic_structural.clj`
-;;   - Wired as the `:heuristic-structural` judge type in:
-;;     `components/evaluation/src/.../core/judge_runtime.clj`
-;;   - Consumers attach it via `:sheet/set-node-judges` to specific
-;;     leaf nodes. The judge fires when the host node's :writes carry
-;;     a `:generated-tree-raw` entry — what a repl-researcher's Phase 1
-;;     emit-tree! produces.
-;;
-;; The `:rlm/tree-evaluated` event TYPE remains in the schema registry
-;; for backward compatibility with any external consumer, but no code
-;; in this repo emits it. New evaluations land as `:judge/score-emitted`
-;; events with `:judge-name "<consumer-chosen-name>"` and
-;; `:judge-config {:type :heuristic-structural}`.

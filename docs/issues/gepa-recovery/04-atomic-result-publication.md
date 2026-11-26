@@ -6,7 +6,7 @@ AGENTS.md; docs/ORC-PRINCIPLES.md; specs/gepa.allium DurableOptimizationLifecycl
 
 ## Exact change
 
-Own only those two existing command implementations in components/gepa/src/ai/obney/orc/gepa/core/commands.clj and a new GEPA test namespace. Preserve the existing local record-subsample-result CAS unchanged. Both candidate-result and legacy task-call completion currently read before append without atomic admission. Add tenant-scoped CAS under their existing durable identities and idempotent duplicate handling. A real competing different result must not overwrite a committed result. Do not modify task-ledger, metric-runtime, schemas, interface, or .allium files.
+Own only those two existing command implementations in components/gepa-service/src/ai/obney/orc/gepa/core/commands.clj and a new GEPA test namespace. Preserve the existing local record-subsample-result CAS unchanged. Both candidate-result and legacy task-call completion currently read before append without atomic admission. Add tenant-scoped CAS under their existing durable identities and idempotent duplicate handling. A real competing different result must not overwrite a committed result. Do not modify task-ledger, metric-runtime, schemas, interface, or .allium files.
 
 ## TDD cycles
 

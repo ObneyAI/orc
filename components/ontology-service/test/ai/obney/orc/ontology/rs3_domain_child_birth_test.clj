@@ -1,0 +1,242 @@
+(ns ai.obney.orc.ontology.rs3-domain-child-birth-test
+  "RS-3 cycle 1 — `:ontology/mint-domain-child` births a domain child
+   through ONE command: the child's tree-class concept exists, carrying
+   its judged label; the parent's narrower set contains the child
+   (`get-narrower-concepts`, the same graph edge walk-down's own child
+   lookup reads); and `:ontology/domain-child-minted` is emitted.
+   RS-P2's verdict: the COMMAND path (ensure both concepts + dispatch
+   `create-relationship`), never a description body write (CC-6).
+
+   Idempotent: minting the same child identity again emits nothing new
+   (`@invariant DomainChildIdentityIsStable`)."
+  (:require [ai.obney.orc.ontology.core.todo-processors]
+            [ai.obney.orc.ontology.core.logic :as logic]
+            [clojure.test :refer [deftest testing is]]
+            [ai.obney.ontology.interface :as graph]
+            [ai.obney.orc.ontology.interface :as ontology]
+            [ai.obney.orc.ontology.interface.schemas]
+            [ai.obney.orc.ontology.test-helpers :as th]
+            [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.grain.time.interface :as time]))
+
+(defn- mint-command [parent-id child-id label]
+  {:command/name :ontology/mint-domain-child
+   :command/id (random-uuid)
+   :command/timestamp (time/now)
+   :parent-tree-id parent-id
+   :child-tree-id child-id
+   :domain-label label
+   :source-sheet-id (random-uuid)
+   :source-tick-id (random-uuid)
+   :source-node-id (random-uuid)})
+
+(defn- dispatch!
+  "Dispatch through the real command processor, which APPENDS the result's
+   events itself (Grain command-processor-v2 `execute-command`). Never
+   follow it with `th/apply-events!` — that appended every event a second
+   time (RS-5 inspection finding: one mint left ten events in the store)."
+  [ctx command]
+  (cp/process-command (assoc ctx :command command)))
+
+(defn- tree-class-uri [id] (str "tree-class:" id))
+
+(deftest mint-domain-child-births-the-child-concept-and-parent-edge
+  (testing "the child's tree-class concept exists with :label = the domain
+            label, the parent's narrower set contains the child, and
+            :ontology/domain-child-minted is emitted"
+    (th/with-test-context [base]
+      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+            parent-id (random-uuid)
+            child-id (random-uuid)
+            r (dispatch! ctx (mint-command parent-id child-id "marathon-training-plan"))
+            events (:command-result/events r)
+            child-concept (ontology/get-concept-by-uri ctx (tree-class-uri child-id))]
+        (is (some #(= :ontology/domain-child-minted (:event/type %)) events)
+            ":ontology/domain-child-minted was emitted")
+        (is (some? child-concept)
+            "the child's tree-class concept exists")
+        (is (= "marathon-training-plan" (:label child-concept))
+            "the child concept's :label is the domain label")
+        (is (= :tree-class (:scope child-concept)) "born in the tree-class scope")
+        (is (= :agent-authored (get-in child-concept [:provenance :kind]))
+            "provenance names the agent-authored kind")
+        (is (contains? (set (:broader child-concept)) (tree-class-uri parent-id))
+            "the child's broader set names its parent from birth")
+        (is (contains? (ontology/get-narrower-concepts ctx (tree-class-uri parent-id))
+                       (tree-class-uri child-id))
+            "the parent's narrower set contains the child — the same edge
+             walk-down's own child lookup reads")))))
+
+(deftest graph-api-can-find-the-born-family-by-identity-and-vector
+  (th/with-test-context [ctx]
+    (let [ctx (assoc ctx :command-registry (cp/global-command-registry))
+          child (random-uuid)
+          cmd (assoc (mint-command (random-uuid) child "race-planning")
+                     :birth-description "Plans a race training schedule.")
+          result (with-redefs [logic/embedding-embed-text (constantly [0.25 0.75])]
+                   (dispatch! ctx cmd))
+          event (first (filter #(= :ontology/domain-child-minted (:event/type %))
+                               (:command-result/events result)))
+          concept (ontology/get-concept-by-uri ctx (tree-class-uri child))
+          oid (:ontology-id concept)
+          cid (:concept-id concept)]
+      (is (some? event))
+      (is (uuid? oid))
+      (is (uuid? cid))
+      (is (= concept (graph/get-concept ctx oid cid)))
+      (is (nil? (graph/get-concept (assoc ctx :tenant-id (random-uuid)) oid cid)))
+      (is (= [0.25 0.75] (:embedding concept)))
+      (is (= cid (:concept-id (first (graph/search ctx oid
+                                      {:query-text "training" :embed-query (constantly [0.25 0.75])
+                                       :embedding-model logic/default-model-id
+                                       :weights {:embedding 1 :graph 0 :lexical 0} :limit 1})))))
+      (let [revision (graph/get-revision ctx oid)]
+        (is (empty? (:command-result/events (dispatch! ctx (assoc cmd :command/id (random-uuid))))))
+        (is (= revision (graph/get-revision ctx oid)))))))
+
+(deftest a-family-birth-whose-embedding-fails-is-refused-and-appends-nothing
+  (testing "orchestrator inspection (DomainFamilyDescribesItselfFromBirth): a
+            family born with a birth description must be embedded at birth;
+            when the embedding cannot be generated the mint is refused
+            loudly and nothing lands, never an unembedded family"
+    (th/with-test-context [base]
+      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+            parent-id (random-uuid)
+            child-id (random-uuid)
+            cmd (assoc (mint-command parent-id child-id "marathon-training-plan")
+                       :birth-description "Plans a marathon build toward a race date.")
+            outcome (with-redefs [logic/embedding-embed-text (fn [& _] nil)]
+                      (try {:result (dispatch! ctx cmd)}
+                           (catch Throwable t {:thrown t})))
+            minted (into [] (es/read (:event-store ctx)
+                                     {:tenant-id (:tenant-id ctx)
+                                      :types #{:ontology/domain-child-minted
+                                               :ontology/concept-created
+                                               :ontology/concept-embedded}}))]
+        (is (or (:thrown outcome)
+                (not (seq (:command-result/events (:result outcome)))))
+            (str "the mint is refused: " (pr-str (select-keys (:result outcome) [:command-result/events :error/message]))))
+        (is (empty? minted) "no concept, no embedding, no mint event landed")
+        (is (nil? (ontology/get-concept-by-uri ctx (tree-class-uri child-id))))))))
+
+(deftest mint-domain-child-is-idempotent-on-the-same-identity
+  (testing "minting the same child identity again emits nothing new"
+    (th/with-test-context [base]
+      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+            parent-id (random-uuid)
+            child-id (random-uuid)]
+        (dispatch! ctx (mint-command parent-id child-id "recipe-scaling"))
+        (let [r2 (dispatch! ctx (mint-command parent-id child-id "recipe-scaling"))]
+          (is (empty? (:command-result/events r2))
+              "re-minting the SAME identity emits nothing new")
+          (is (= 1 (count (into [] (es/read (:event-store ctx)
+                                            {:tenant-id (:tenant-id ctx)
+                                             :types #{:ontology/domain-child-minted}}))))
+              "exactly ONE domain-child-minted event in the store after two mints")
+          (is (contains? (ontology/get-narrower-concepts ctx (tree-class-uri parent-id))
+                         (tree-class-uri child-id))
+              "the edge still holds after the no-op re-mint"))))))
+
+
+(deftest default-domain-children-fn-reads-the-concepts-label-after-mint
+  (testing "before any mint, the default domain-children lookup returns [];
+            after cycle 1's mint, it returns the child with its label read
+            from the CONCEPT (not a description)"
+    (th/with-test-context [base]
+      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+            parent-id (random-uuid)
+            child-id (random-uuid)]
+        (is (= [] (#'logic/default-domain-children-fn ctx parent-id))
+            "no domain children before any mint")
+        (dispatch! ctx (mint-command parent-id child-id "marathon-training-plan"))
+        (is (= [{:target-id child-id :domain-label "marathon-training-plan"}]
+               (#'logic/default-domain-children-fn ctx parent-id))
+            "after the mint, the default fn returns the child with its
+             CONCEPT label")))))
+
+
+(defn- claim-command [ctx child-id content]
+  {:command/name :ontology/record-claim-deltas
+   :command/id (random-uuid)
+   :command/timestamp (time/now)
+   :granularity :tree-class
+   :target-identifier child-id
+   :deltas [{:operation :add
+             :kind :representative-use
+             :content content
+             :context-guard nil
+             :recommendation nil
+             :episodes []
+             :from-legacy-corpus false
+             :evidence-basis :classification-signature}]
+   :evidence-event-count 0
+   :claim-set-version (ontology/get-claim-set-version ctx :tree-class child-id)})
+
+(deftest get-tree-class-children-reads-tree-class-scope-description
+  (testing "a child described ONLY by a :tree-class claim (CV-1's signature
+            route) IS returned by walk-down's own child lookup, once the
+            child is declared NOT a domain family. CV-E
+            (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): every child
+            `mint-domain-child` creates IS a domain family by construction
+            (agent-authored provenance, a judged label) — walk-down now
+            excludes exactly this shape of child by default
+            (`non-family-child?`, real-store-backed). This test's own
+            concern is the :tree-class-scope preference (RS-5 gap A), not
+            family exclusion, so it declares that seam explicitly; the
+            family-exclusion guarantee itself is proven on this same real
+            mint in rs5_domain_child_chain_test.clj."
+    (th/with-test-context [base]
+      (let [ctx (assoc base :command-registry (cp/global-command-registry)
+                       :domain-family-parent-fn (fn [_ _] nil))
+            parent-id (random-uuid)
+            child-id (random-uuid)]
+        (dispatch! ctx (mint-command parent-id child-id "marathon-training-plan"))
+        (dispatch! ctx (claim-command ctx child-id "marathon training plan: 16-week schedule"))
+        (let [children (#'logic/get-tree-class-children ctx parent-id)]
+          (is (= 1 (count children)))
+          (is (= child-id (:target-id (first children))))
+          (is (some? (:description (first children)))
+              "the child's :tree-class-scoped assembled description is returned"))))))
+
+(deftest get-tree-class-children-excludes-a-real-minted-domain-family
+  (testing "CV-E (`DomainFamilyIsALeafOnTheDomainAxis`, revised C5'): with
+            the REAL `:domain-family-parent-fn` default (a real store read,
+            not stubbed), a real minted domain child (family) is excluded —
+            walk-down finds NO children under its parent"
+    (th/with-test-context [base]
+      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+            parent-id (random-uuid)
+            child-id (random-uuid)]
+        (dispatch! ctx (mint-command parent-id child-id "marathon-training-plan"))
+        (dispatch! ctx (claim-command ctx child-id "marathon training plan: 16-week schedule"))
+        (let [children (#'logic/get-tree-class-children ctx parent-id)]
+          (is (empty? children)
+              "the real minted family is excluded — walk-down sees no children"))))))
+
+(deftest get-tree-class-children-still-returns-tree-fingerprint-seeded-child
+  (testing "GUARD: a seeded child described ONLY at :tree-fingerprint scope
+            (walk_down_classifier_test's world) is STILL returned — the
+            fallback is preserved"
+    (th/with-test-context [base]
+      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+            parent-uri "tree-class:seed-parent"
+            child-fp "seed:tree:ChunkedExtraction"
+            body {:capabilities [] :strengths [] :weaknesses [] :avoid-when []
+                  :representative-uses [] :summary "seed child" :version 1
+                  :consolidated-from-event-count 0
+                  :parent-tree-id "seed-parent"}]
+        (dispatch! ctx {:command/name :ontology/record-tree-description
+                        :command/id (random-uuid)
+                        :command/timestamp (time/now)
+                        :target-id child-fp
+                        :body body})
+        (let [ev (last (into [] (es/read (:event-store ctx)
+                                         {:tenant-id (:tenant-id ctx)
+                                          :types #{:ontology/tree-description-updated}})))]
+          (logic/on-tree-description-updated-project-concept (assoc ctx :event ev)))
+        (let [children (#'logic/get-tree-class-children ctx "seed-parent")]
+          (is (= 1 (count children)))
+          (is (= child-fp (:target-id (first children))))
+          (is (= "seed child" (:summary (:description (first children))))
+              "the :tree-fingerprint-scoped description is still read as a fallback"))))))

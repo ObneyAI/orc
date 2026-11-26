@@ -3,11 +3,11 @@
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.model-call-journal :as journal]
             [ai.obney.orc.orc-service.core.todo-processors :as processors]
             [ai.obney.orc.orc-service.retained-ordinary-model-plan-test :as fixture]
             [hato.client :as http]
-            [cognitect.anomalies :as anom])
+            [cognitect.anomalies :as anom]
+            [ai.obney.orc.orc-service.core.logic :as service-logic])
   (:import [java.nio.file Files] [java.time Instant]))
 
 (def packet-schema
@@ -50,18 +50,16 @@
     @saved))
 
 (defn retain! [ctx owner authored plan]
-  (let [owned (assoc owner :configuration-id (journal/retained-configuration-id plan))]
+  (let [owned (assoc owner :configuration-id (service-logic/retained-configuration-id plan))]
     (is (accepted? (h/run-and-apply! ctx (fixture/command :sheet/retain-model-plan
-                     (assoc owned :plan-scope-id (journal/plan-scope-id owner authored) :plan plan)))))
-    (journal/callbacks ctx owned (:candidates plan) (:policy plan))))
+                     (assoc owned :plan-scope-id (service-logic/plan-scope-id owner authored) :plan plan)))))
+    (processors/callbacks ctx owned (:candidates plan) (:policy plan))))
 
 (defn future-plan []
   (assoc-in (fixture/plan-fixture :unregistered-no-dispatch "fixture/original")
             [:candidates 0 :profile :version] "future-profile-v2"))
 
 
-;; Synthetic decoded receipt fixtures written through current commands. These
-;; prove recovery of durable native values, not hosted-provider model semantics.
 (defn recover!
   ([receipts expected-status] (recover! receipts expected-status nil))
   ([receipts expected-status decorate]
@@ -77,7 +75,7 @@
                       (is (accepted? ((:record-request! cb) (assoc (dissoc receipt :outcome :provider-outcome) :phase :started))))
                       (when-not (= :started (:phase receipt))
                         (is (accepted? ((:record-request! cb) (assoc receipt :phase :completed))))))
-                    {:configuration-id (journal/retained-configuration-id plan)})))
+                    {:configuration-id (service-logic/retained-configuration-id plan)})))
         tick (get-in saved [:owner :tick-id]) node (get-in saved [:owner :node-id])
         tenant (get-in saved [:ctx-options :context :tenant-id]) calls (atom 0)]
     (with-redefs [http/post (fn [& _] (swap! calls inc) (throw (ex-info "No recovery dispatch" {})))]
@@ -167,12 +165,12 @@
               ((:record-request! cb) (assoc-in completed [:outcome :outputs] {})))))
         (doseq [foreign-owner [(assoc owner :configuration-id "foreign-configuration")
                                (assoc owner :node-id (random-uuid))]]
-          (let [foreign (journal/callbacks ctx foreign-owner (:candidates plan) (:policy plan))]
+          (let [foreign (processors/callbacks ctx foreign-owner (:candidates plan) (:policy plan))]
             (is (empty? (:request-receipts foreign)))
             (is (= ::anom/conflict (::anom/category ((:record-request! foreign) started))))))
         (is (= 2 (count (:request-receipts
-                         (journal/callbacks ctx (assoc owner :configuration-id
-                                                 (journal/retained-configuration-id plan))
+                         (processors/callbacks ctx (assoc owner :configuration-id
+                                                 (service-logic/retained-configuration-id plan))
                            (:candidates plan) (:policy plan))))))
         (orc/cancel! ctx (:tick-id owner))
         {}))))

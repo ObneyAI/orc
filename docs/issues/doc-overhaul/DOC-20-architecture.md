@@ -34,7 +34,7 @@ Existing execution-mechanics content (any content present before this issue). An
 
 ## Live QA the orchestrator runs
 
-Read `components/gepa/deps.edn` — confirm the boundary table dep for gepa matches. Read `components/evaluation/deps.edn` — same. Read `components/colbert/deps.edn` — confirm Python bridge dep noted.
+Read `components/gepa-service/deps.edn` — confirm the boundary table dep for gepa matches. Read `components/evaluation/deps.edn` — same. Read `components/colbert/deps.edn` — confirm Python bridge dep noted.
 
 ## Blocked by
 

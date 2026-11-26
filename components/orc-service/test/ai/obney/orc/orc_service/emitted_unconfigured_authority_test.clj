@@ -6,12 +6,11 @@
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.todo-processors :as processors]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
-            [ai.obney.orc.orc-service.core.researcher-effects :as effects]
-            [ai.obney.orc.orc-service.core.emitted-model-authority :as model-authority]
             [ai.obney.orc.orc-service.retained-emitted-model-plan-test :as fixture]
             [ai.obney.orc.orc-service.retained-prime-model-plan-test :as prime]
-            [ai.obney.orc.orc-service.emitted-model-authority-test :as authority]))
+            [ai.obney.orc.orc-service.emitted-model-authority-test :as authority]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def proof (atom nil))
 (def proofs (atom []))
@@ -58,10 +57,10 @@
                     root-start (first (filter #(and (= :sheet/tree-tick-started (:event/type %))
                                                     (= (:tick-id parent) (:tick-id %))) before))
                     work (actual-leaf (last @staged))]
-                (is (h/settle-until! #(some? (runtime/durable-terminal-result ctx tick)) :timeout-ms 10000))
+                (is (h/settle-until! #(some? (service-commands/durable-terminal-result ctx tick)) :timeout-ms 10000))
                 (when (instance? java.util.concurrent.Future work)
                   (is (not= :timeout (deref work 10000 :timeout))))
-                (let [result (runtime/durable-terminal-result ctx tick)
+                (let [result (service-commands/durable-terminal-result ctx tick)
                       events (authority/events ctx)
                       child-start (first (filter #(and (= :sheet/tree-tick-started (:event/type %)) (= tick (:tick-id %))) events))]
                   (is (= :success (:status result)) (pr-str result))
@@ -79,7 +78,7 @@
                     (let [sent (first @predictions)
                           spent (first (filter #(= :sheet/provider-call-reserved (:event/type %)) events))]
                     (is (= (:logical-action-identity spent)
-                           (effects/provider-logical-action-identity
+                           (service-logic/provider-logical-action-identity
                              {:tick-id tick :node-id (:node-id current) :iteration-index 0
                               :provider (:provider sent) :model "fixture/single" :module (:module sent)
                               :inputs (:inputs sent) :options (:options sent)}))
@@ -120,11 +119,11 @@
             now (atom 0)
             context (assoc ctx :orc/model-authority-now-ms #(deref now)
                                :orc/model-authority-sleep! #(swap! now + %))
-            expired (try (model-authority/ensure! context current 50) nil
+            expired (try (processors/ensure! context current 50) nil
                          (catch clojure.lang.ExceptionInfo e (ex-data e)))
             interrupted (try
                           (.interrupt (Thread/currentThread))
-                          (model-authority/ensure! ctx current (+ (System/currentTimeMillis) 10000))
+                          (processors/ensure! ctx current (+ (System/currentTimeMillis) 10000))
                           false
                           (catch InterruptedException _ true)
                           (finally (Thread/interrupted)))]

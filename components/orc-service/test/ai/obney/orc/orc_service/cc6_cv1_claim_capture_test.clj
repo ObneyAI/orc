@@ -26,15 +26,15 @@
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
-            [ai.obney.orc.ontology.core.read-models]
-            [ai.obney.orc.ontology.core.task-classifier :as task-classifier]
+            [ai.obney.orc.ontology.core.read-models :as ontology-rm]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-v3.interface.schemas]
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.kv-store.interface :as kv]
-            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]))
+            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -95,10 +95,6 @@
 (def ^:private no-behaviors
   {:behaviors [] :outcome :novel :rerank-fallback? false})
 
-;; ===========================================================================
-;; CYCLE 3 — the fresh-mint capture lands as a claim, and the class is still
-;; retrievable through the ASSEMBLED body.
-;; ===========================================================================
 
 (deftest fresh-mint-capture-lands-as-a-claim-not-a-body
   (testing "the wedge's convergence capture records a :representative-use claim
@@ -108,7 +104,7 @@
     (with-test-ctx [ctx]
       (let [class-id (random-uuid)
             n (node)
-            signature (task-classifier/build-task-signature n)]
+            signature (ontology-logic/build-task-signature n)]
         (with-redefs [ontology/classify-task (fn [_ _] (fresh-mint-result class-id))
                       ontology/classify-behaviors (fn [_ _] no-behaviors)]
           (tp/maybe-auto-classify-and-set-context n ctx))
@@ -132,24 +128,13 @@
               "and the signature is in :summary — the field ColBERT indexes, so
                convergence still works"))))))
 
-;; ===========================================================================
-;; CYCLE 8 — the capture must still REACH the index.
-;;
-;; This is the one thing the migration could silently destroy. CV-1 exists so a
-;; just-minted class is RETRIEVABLE by the next similar signature; retrievable
-;; means present in the ColBERT `ontology-descriptions` index; and the index is
-;; rebuilt off a counter that, before this slice, only `*-description-updated`
-;; events moved. Move the writer onto claim events and leave the counter alone
-;; and CV-1 keeps writing, keeps assembling a body, and never gets indexed —
-;; a convergence regression with a fully green claim-side suite.
-;; ===========================================================================
 
 (deftest a-claim-write-drives-the-reindex-trigger
   (testing "a claim-delta write moves the reindex counter, so an assembled body
             reaches the ColBERT corpus exactly as a recorded body did"
     (with-test-ctx [ctx]
       (let [class-id (random-uuid)
-            rm (requiring-resolve 'ai.obney.orc.ontology.core.read-models/get-reindex-state)]
+            rm #'ontology-rm/get-reindex-state]
         (is (zero? (:events-since-last-rebuild (rm ctx)))
             "control: the counter starts at zero")
         (with-redefs [ontology/classify-task (fn [_ _] (fresh-mint-result class-id))

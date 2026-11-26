@@ -9,13 +9,14 @@
    saw `[:effect-completed :action-completed :effect-claimed …]` — a claim after its own
    effect — once in five full brick runs."
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.todo-processors :as tp]))
+            [ai.obney.orc.orc-service.core.todo-processors :as tp]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- order
   "RED-first seam: `tp/order-researcher-events` is the pure ordering step this test
    pins; it does not exist until the fix lands."
   [entries]
-  (if-let [f (resolve 'ai.obney.orc.orc-service.core.todo-processors/order-researcher-events)]
+  (if-let [f #'service-logic/order-researcher-events]
     (f entries)
     ::missing))
 

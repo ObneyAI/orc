@@ -7,7 +7,8 @@
    - Trend calculation (improving/declining/stable)
    - Metrics computation (success rate, avg duration)"
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.orc-service.core.read-models :as rm]))
+            [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Test Helpers
@@ -34,14 +35,11 @@
 (def test-sheet-id #uuid "11111111-1111-1111-1111-111111111111")
 (def test-node-id #uuid "22222222-2222-2222-2222-222222222222")
 
-;; =============================================================================
-;; rolling-metrics* Tests
-;; =============================================================================
 
 (deftest rolling-metrics-success-event-test
   (testing "handles success event correctly"
     (let [event (make-success-event test-sheet-id test-node-id 100)
-          state (rm/rolling-metrics {} [event])
+          state (service-logic/rolling-metrics {} [event])
           metrics (get state [test-sheet-id test-node-id])]
       (is (= 1 (count (:executions metrics))))
       (is (= 1 (:success-count metrics)))
@@ -51,7 +49,7 @@
 (deftest rolling-metrics-failure-event-test
   (testing "handles failure event correctly"
     (let [event (make-failure-event test-sheet-id test-node-id 50)
-          state (rm/rolling-metrics {} [event])
+          state (service-logic/rolling-metrics {} [event])
           metrics (get state [test-sheet-id test-node-id])]
       (is (= 1 (count (:executions metrics))))
       (is (= 0 (:success-count metrics)))
@@ -63,7 +61,7 @@
     (let [events [(make-success-event test-sheet-id test-node-id 100)
                   (make-success-event test-sheet-id test-node-id 150)
                   (make-failure-event test-sheet-id test-node-id 200)]
-          state (rm/rolling-metrics {} events)
+          state (service-logic/rolling-metrics {} events)
           metrics (get state [test-sheet-id test-node-id])]
       (is (= 3 (count (:executions metrics))))
       (is (= 2 (:success-count metrics)))
@@ -76,20 +74,18 @@
           node-b #uuid "bbbb0000-0000-0000-0000-000000000000"
           events [(make-success-event test-sheet-id node-a 100)
                   (make-failure-event test-sheet-id node-b 200)]
-          state (rm/rolling-metrics {} events)]
+          state (service-logic/rolling-metrics {} events)]
       (is (= 1 (:success-count (get state [test-sheet-id node-a]))))
       (is (= 1 (:failure-count (get state [test-sheet-id node-b])))))))
 
 (deftest rolling-metrics-window-limit-test
   (testing "respects rolling window size limit"
-    (let [;; Create 150 events (exceeds 100 window)
+    (let [
           events (mapv #(make-success-event test-sheet-id test-node-id %)
                        (range 150))
-          state (rm/rolling-metrics {} events)
+          state (service-logic/rolling-metrics {} events)
           metrics (get state [test-sheet-id test-node-id])]
-      ;; Should only keep last 100 in executions vector
       (is (= 100 (count (:executions metrics))))
-      ;; But counts accumulate
       (is (= 150 (:success-count metrics))))))
 
 ;; =============================================================================
@@ -99,53 +95,52 @@
 (deftest calculate-trend-insufficient-data-test
   (testing "returns nil with fewer than 10 executions"
     (let [executions (repeat 5 {:status :success})]
-      (is (nil? (rm/calculate-trend executions))))))
+      (is (nil? (service-logic/calculate-trend executions))))))
 
 (deftest calculate-trend-exactly-10-test
   (testing "returns :stable with exactly 10 executions (no older data)"
     (let [executions (repeat 10 {:status :success})]
-      (is (= :stable (rm/calculate-trend executions))))))
+      (is (= :stable (service-logic/calculate-trend executions))))))
 
 (deftest calculate-trend-improving-test
   (testing "detects improving trend"
-    (let [;; First 10: 50% success, Last 10: 90% success
+    (let [
           older (concat (repeat 5 {:status :success})
                         (repeat 5 {:status :failure}))
           recent (concat (repeat 9 {:status :success})
                          (repeat 1 {:status :failure}))
           executions (concat older recent)]
-      (is (= :improving (rm/calculate-trend executions))))))
+      (is (= :improving (service-logic/calculate-trend executions))))))
 
 (deftest calculate-trend-declining-test
   (testing "detects declining trend"
-    (let [;; First 10: 90% success, Last 10: 50% success
+    (let [
           older (concat (repeat 9 {:status :success})
                         (repeat 1 {:status :failure}))
           recent (concat (repeat 5 {:status :success})
                          (repeat 5 {:status :failure}))
           executions (concat older recent)]
-      (is (= :declining (rm/calculate-trend executions))))))
+      (is (= :declining (service-logic/calculate-trend executions))))))
 
 (deftest calculate-trend-stable-test
   (testing "returns :stable for consistent performance"
-    (let [;; Both periods: ~80% success
+    (let [
           older (concat (repeat 8 {:status :success})
                         (repeat 2 {:status :failure}))
           recent (concat (repeat 8 {:status :success})
                          (repeat 2 {:status :failure}))
           executions (concat older recent)]
-      (is (= :stable (rm/calculate-trend executions))))))
+      (is (= :stable (service-logic/calculate-trend executions))))))
 
 (deftest calculate-trend-within-threshold-test
   (testing "small changes (< 10%) are :stable"
-    (let [;; First 10: 70% success, Last 10: 70% success (0% diff)
+    (let [
           older (concat (repeat 7 {:status :success})
                         (repeat 3 {:status :failure}))
           recent (concat (repeat 7 {:status :success})
                          (repeat 3 {:status :failure}))
           executions (concat older recent)]
-      ;; Same performance = stable
-      (is (= :stable (rm/calculate-trend executions))))))
+      (is (= :stable (service-logic/calculate-trend executions))))))
 
 ;; =============================================================================
 ;; compute-node-metrics Tests
@@ -164,7 +159,7 @@
                    :success-count 2
                    :failure-count 1
                    :total-duration 450}
-          result (rm/compute-node-metrics metrics)]
+          result (service-logic/compute-node-metrics metrics)]
       (is (= 3 (:execution-count result)))
       (is (approx= (/ 2 3.0) (:success-rate result)))
       (is (approx= (/ 1 3.0) (:failure-rate result)))
@@ -176,7 +171,7 @@
                    :success-count 5
                    :failure-count 0
                    :total-duration 500}
-          result (rm/compute-node-metrics metrics)]
+          result (service-logic/compute-node-metrics metrics)]
       (is (= 1.0 (:success-rate result)))
       (is (= 0.0 (:failure-rate result))))))
 
@@ -186,7 +181,7 @@
                    :success-count 0
                    :failure-count 5
                    :total-duration 250}
-          result (rm/compute-node-metrics metrics)]
+          result (service-logic/compute-node-metrics metrics)]
       (is (= 0.0 (:success-rate result)))
       (is (= 1.0 (:failure-rate result))))))
 
@@ -196,7 +191,7 @@
                    :success-count 0
                    :failure-count 0
                    :total-duration 0}
-          result (rm/compute-node-metrics metrics)]
+          result (service-logic/compute-node-metrics metrics)]
       (is (nil? result)))))
 
 (deftest compute-node-metrics-nil-duration-test
@@ -206,19 +201,18 @@
                    :success-count 2
                    :failure-count 0
                    :total-duration 100}
-          result (rm/compute-node-metrics metrics)]
-      ;; avg-duration should only count the one with value
+          result (service-logic/compute-node-metrics metrics)]
       (is (= 100.0 (:avg-duration-ms result))))))
 
 (deftest compute-node-metrics-includes-trend-test
   (testing "includes trend calculation"
-    (let [;; 20 executions, all success -> :stable trend
+    (let [
           executions (repeat 20 {:status :success :duration-ms 100})
           metrics {:executions (vec executions)
                    :success-count 20
                    :failure-count 0
                    :total-duration 2000}
-          result (rm/compute-node-metrics metrics)]
+          result (service-logic/compute-node-metrics metrics)]
       (is (contains? result :recent-trend))
       (is (= :stable (:recent-trend result))))))
 
@@ -245,7 +239,7 @@
           metadata {:name "Test Sheet"
                     :problem-types ["problem:Classification"]}
           events [(make-metadata-event sheet-1 metadata)]
-          state (rm/tree-metadata {} events)]
+          state (service-logic/tree-metadata {} events)]
       (is (= metadata (get state sheet-1))))))
 
 (deftest tree-metadata-multiple-sheets-test
@@ -254,7 +248,7 @@
           sheet-2 #uuid "22222222-2222-2222-2222-222222222222"
           events [(make-metadata-event sheet-1 {:name "Sheet 1"})
                   (make-metadata-event sheet-2 {:name "Sheet 2"})]
-          state (rm/tree-metadata {} events)]
+          state (service-logic/tree-metadata {} events)]
       (is (= "Sheet 1" (:name (get state sheet-1))))
       (is (= "Sheet 2" (:name (get state sheet-2)))))))
 
@@ -263,7 +257,7 @@
     (let [sheet-1 #uuid "11111111-1111-1111-1111-111111111111"
           events [(make-metadata-event sheet-1 {:name "Original"})
                   (make-metadata-event sheet-1 {:name "Updated"})]
-          state (rm/tree-metadata {} events)]
+          state (service-logic/tree-metadata {} events)]
       (is (= "Updated" (:name (get state sheet-1)))))))
 
 (deftest tree-metadata-delete-test
@@ -271,11 +265,11 @@
     (let [sheet-1 #uuid "11111111-1111-1111-1111-111111111111"
           events [(make-metadata-event sheet-1 {:name "Test"})
                   (make-sheet-deleted-event sheet-1)]
-          state (rm/tree-metadata {} events)]
+          state (service-logic/tree-metadata {} events)]
       (is (nil? (get state sheet-1))))))
 
 (deftest tree-metadata-unknown-event-test
   (testing "ignores unknown event types"
     (let [events [{:event/type :unknown/event :body {:foo "bar"}}]
-          state (rm/tree-metadata {} events)]
+          state (service-logic/tree-metadata {} events)]
       (is (empty? state)))))

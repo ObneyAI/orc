@@ -16,7 +16,7 @@ Two intertwined deliverables:
 
 Wire RLM `:tree-results` entries through `evaluation/evaluate-trace` to produce judge scores, then through an adapted GEPA proposer to extract a *principle* (in the C-1 storage shape) for each tree run that contains useful learning signal. The principles get written via the existing `:ontology/record-tree-strength`/`record-tree-weakness` commands — same shape C-1 already validated with hand-authored seeds.
 
-GEPA's existing infrastructure (`gepa/core/reflection.clj` `ReflectiveExample` builder, `gepa/core/proposer.clj` `propose-new-instruction` / `propose-mutation`) is the reuse candidate. But GEPA was designed for static-workflow instruction optimization; whether its proposer's prompt strategy produces useful principles for RLM tree-design decisions is an OPEN QUESTION that the sub-grill must answer.
+GEPA's existing infrastructure (`gepa/core/logic.clj` `ReflectiveExample` builder, `gepa/core/logic.clj` `propose-new-instruction` / `propose-mutation`) is the reuse candidate. But GEPA was designed for static-workflow instruction optimization; whether its proposer's prompt strategy produces useful principles for RLM tree-design decisions is an OPEN QUESTION that the sub-grill must answer.
 
 ### 2. Adversarial judge audit (plan-doc issue 011)
 
@@ -91,7 +91,7 @@ C-1 must ship and live-verify that the principle shape is useful before C-3 auto
 - Parent PRD: [`docs/prd/category-c-self-improving-loop.md`](../../prd/category-c-self-improving-loop.md)
 - GEPA reuse candidate: [`docs/GEPA-INTEGRATION-PLAN.md`](../../GEPA-INTEGRATION-PLAN.md)
 - Existing judges: `components/evaluation/src/.../core/judges.clj` + `components/evaluation/src/.../core/rubrics.clj`
-- Existing GEPA proposer: `components/gepa/src/.../core/proposer.clj`
-- Existing GEPA reflection: `components/gepa/src/.../core/reflection.clj`
+- Existing GEPA proposer: `components/gepa-service/src/.../core/proposer.clj`
+- Existing GEPA reflection: `components/gepa-service/src/.../core/reflection.clj`
 - FUTURE-VISION Phase 1 (GEPA Foundation): [`docs/FUTURE-VISION.md`](../../FUTURE-VISION.md) — Reflection Sheet → Instruction Proposal → Pareto frontier
 - Plan-doc issue 011 source: this work was previously enumerated as the "Verify judge feedback quality (HITL)" issue in the RLM Phase 2 issue tracker

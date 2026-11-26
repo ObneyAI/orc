@@ -7,12 +7,10 @@
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.todo-processors :as processors]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
-            [ai.obney.orc.orc-service.core.budget-facts :as budget-facts]
-            [ai.obney.orc.orc-service.core.model-call-journal :as journal]
-            [ai.obney.orc.orc-service.core.executor :as executor]
-            [ai.obney.orc.orc-service.core.researcher-effects :as effects]
-            [ai.obney.orc.orc-service.retained-prime-model-plan-test :as prime])
+            [ai.obney.orc.orc-service.retained-prime-model-plan-test :as prime]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models])
   (:import [com.sun.net.httpserver HttpServer HttpHandler]
            [java.net InetSocketAddress] [java.util.concurrent TimeUnit]))
 (def proofs (atom []))
@@ -209,21 +207,21 @@
                                             {:cognitect.anomalies/category :cognitect.anomalies/unavailable
                                              :cognitect.anomalies/message "UNSAFE-NOT-FOR-OUTPUT"}
                                             (read-events store query)))]
-                     (try (journal/prepare-inline-call ctx owner {:fallback-models [{:provider backup}]}
+                     (try (processors/prepare-inline-call ctx owner {:fallback-models [{:provider backup}]}
                             #(do (swap! resolve-count inc) (throw (ex-info "resolver must not run" {}))))
                           nil (catch clojure.lang.ExceptionInfo e e)))
             history-failed (with-redefs [es/read (fn [store query]
                                                   (if (contains? (:types query) :sheet/model-plan-retained)
                                                     {:cognitect.anomalies/category :cognitect.anomalies/unavailable}
                                                     (read-events store query)))]
-                             (try (journal/prepare-inline-call ctx owner {:fallback-models [{:provider backup}]}
+                             (try (processors/prepare-inline-call ctx owner {:fallback-models [{:provider backup}]}
                                     #(do (swap! resolve-count inc) (throw (ex-info "resolver must not run" {}))))
                                   nil (catch clojure.lang.ExceptionInfo e e)))
             invalid-tick (random-uuid)
             invalid-command {:sheet-id (:sheet-id original) :tick-id invalid-tick :inputs {}
                              :options {:researcher-campaign-node-id (:node-id original)}}
             partial (try
-                      (budget-facts/event ctx {:type :sheet/tree-tick-started :tags #{[:tick invalid-tick]}
+                      (service-read-models/event ctx {:type :sheet/tree-tick-started :tags #{[:tick invalid-tick]}
                                                :body (dissoc invalid-command :inputs)})
                       nil (catch clojure.lang.ExceptionInfo e e))
             public-result (h/run-and-apply! ctx (prime/command :sheet/tick-tree invalid-command))]
@@ -255,9 +253,6 @@
                              {:reasoning "Execute the next controlled role protocol." :code (nth codes (dec n))}
                              (= "fixture/emitted-backup" (:model body))
                              (let [value (nth [packet second-value third-value] (dec n))]
-                               ;; Inline's authored output is one packet field;
-                               ;; emitted AI flattens its one map output to payload.
-                               ;; The fixture answers the actual declared envelope.
                                (if (= ["packet"] (get-in body [:tools 0 :function :parameters :required]))
                                  {:packet value} value))
                              :else packet)))
@@ -309,8 +304,8 @@
                                               :event-store-conn store})
               _ (reset! second-context ctx) resumed (orc/resume-in-progress! ctx)
               _ (is (some :resumed? resumed))
-              _ (is (h/settle-until! #(some? (runtime/durable-terminal-result ctx tick)) :timeout-ms 20000))
-              result (runtime/durable-terminal-result ctx tick)
+              _ (is (h/settle-until! #(some? (service-commands/durable-terminal-result ctx tick)) :timeout-ms 20000))
+              result (service-commands/durable-terminal-result ctx tick)
               events (into [] (es/read (:event-store ctx) {:tenant-id tenant}))
               plans (filter #(and (= :sheet/model-plan-retained (:event/type %)) (= :subcall (:role %))) events)
               physical (filter #(and (= :sheet/model-request-recorded (:event/type %)) (= :subcall (:role %))
@@ -369,7 +364,7 @@
         (with-redefs [llm/preflight-provider! (fn [& args] (swap! preflights inc) (apply original-preflight args))]
           (h/run-and-apply! ctx (prime/command :sheet/tick-tree
                                  {:sheet-id child :tick-id tick :parent-tick-id (:tick-id parent) :inputs {} :options options}))
-          (is (h/settle-until! #(some? (runtime/durable-terminal-result ctx tick)) :timeout-ms 5000)))
+          (is (h/settle-until! #(some? (service-commands/durable-terminal-result ctx tick)) :timeout-ms 5000)))
         (let [events (orc/value-log-read-tick-events ctx (:tenant-id ctx) tick)
               completion (first (filter #(and (= :sheet/node-execution-completed (:event/type %))
                                                (= :failure (:status %))) events))]
@@ -391,7 +386,7 @@
                             (merge (select-keys parent [:sheet-id :tick-id :node-id])
                                    {:ownership-epoch 1 :iteration-index 0 :kind :generated-child
                                     :logical-action-identity logical-child
-                                    :attempt-identity (effects/attempt-identity logical-child 1 0)
+                                    :attempt-identity (service-logic/attempt-identity logical-child 1 0)
                                     :attempt-ordinal 0 :claimed-at (str (java.time.Instant/now))}))))))
             child (orc/build-workflow! ctx
                     (orc/workflow (str "known-emitted-response-" (random-uuid))
@@ -417,7 +412,7 @@
           (let [node (:id (first (orc/get-nodes-for-sheet ctx child)))
                 owner {:sheet-id child :tick-id tick :node-id node :node-start-id (get-in (first @staged) [:event :event/id])
                        :exec-context {} :role :subcall :logical-action-id (pr-str [tick node {}])}
-                callbacks (journal/callbacks ctx owner candidates :temporary-transport)
+                callbacks (processors/callbacks ctx owner candidates :temporary-transport)
                 _ (is (nil? (:cognitect.anomalies/category ((:claim! callbacks) 0 (first candidates)))))
                 _ (is (nil? (:cognitect.anomalies/category ((:record-request! callbacks) (assoc request :phase :started)))))
                 _ (is (nil? (:cognitect.anomalies/category ((:record-request! callbacks)
@@ -433,7 +428,7 @@
                 leaf (first (filter #(= :ai (:executor %)) (orc/get-nodes-for-sheet ctx child)))
                 preflights (atom 0) reservations (atom 0) actual-preflight llm/preflight-provider!
                 result (with-redefs [llm/preflight-provider! (fn [& args] (swap! preflights inc) (apply actual-preflight args))]
-                         (executor/execute-ai leaf blackboard primary
+                         (processors/execute-ai leaf blackboard primary
                            :options {:tick-id tick :exec-context {} :model-role-context {:context ctx :owner current}
                                      :reserve-llm-call! (fn [] (swap! reservations inc) nil)
                                      :execution-deadline-ms (+ (System/currentTimeMillis) 10000)}))
@@ -447,7 +442,7 @@
             (is (zero? @preflights)) (is (zero? @reservations))
             (is (= 2 (count physical)))
             (is (= #{(:request-id request)} (set (map #(get-in % [:request :request-id]) physical))))
-            (is (= (journal/configuration-id candidates :temporary-transport) (:configuration-id recorded)))
+            (is (= (service-logic/configuration-id candidates :temporary-transport) (:configuration-id recorded)))
             (is (= (:logical-action-id owner) (:logical-action-id recorded)))
             (is (not-any? #(= :sheet/model-plan-retained (:event/type %)) after))
             (is (not= (:node-start-id owner) (:node-start-id current)))
@@ -471,7 +466,7 @@
                           (h/run-and-apply! ctx (prime/command :sheet/claim-researcher-effect
                             (merge (select-keys parent [:sheet-id :tick-id :node-id])
                                    {:ownership-epoch 1 :iteration-index 0 :kind :generated-child
-                                    :logical-action-identity logical :attempt-identity (effects/attempt-identity logical 1 0)
+                                    :logical-action-identity logical :attempt-identity (service-logic/attempt-identity logical 1 0)
                                     :attempt-ordinal 0 :claimed-at (str (java.time.Instant/now))}))))))
             child (orc/build-workflow! ctx
                     (orc/workflow (str "actual-emitted-append-race-" (random-uuid))
@@ -489,7 +484,7 @@
                        :node-start-id (get-in (first @staged) [:event :event/id]) :exec-context {} :role :subcall
                        :logical-action-id "same-original-child-request"}
                 candidates [{:provider primary :model "fixture/emitted" :options {}}]
-                callbacks (journal/callbacks ctx owner candidates :temporary-transport)
+                callbacks (processors/callbacks ctx owner candidates :temporary-transport)
                 request {:request-id (random-uuid) :candidate-index 0 :attempt-ordinal 0
                          :provider primary :requested-model "fixture/emitted"}
                 _ (is (nil? (:cognitect.anomalies/category ((:claim! callbacks) 0 (first candidates)))))

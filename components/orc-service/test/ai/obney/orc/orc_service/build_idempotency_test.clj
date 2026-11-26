@@ -3,10 +3,11 @@
    Verifies that build-workflow! skips all events when content hash matches."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.dsl :as dsl]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.grain.schema-util.interface :as schema-util]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- count-events
   "Count all events in the event store for the given context."
@@ -14,10 +15,10 @@
   (count (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx)}))))
 
 (defn- simple-workflow []
-  (dsl/workflow "idempotency-test"
-    (dsl/blackboard {:input :string :output :string})
-    (dsl/sequence "main"
-      (dsl/llm "process"
+  (service-logic/workflow "idempotency-test"
+    (service-logic/dsl-blackboard {:input :string :output :string})
+    (service-logic/sequence "main"
+      (service-logic/llm "process"
         :model "test/model"
         :instruction "Process the input"
         :reads [:input]
@@ -27,7 +28,7 @@
   (testing "first build stores a content hash on the sheet"
     (h/with-test-context [ctx]
       (let [wf (simple-workflow)
-            sheet-id (dsl/build-workflow! ctx wf)
+            sheet-id (service-commands/build-workflow! ctx wf)
             sheet (rm/get-sheet ctx sheet-id)]
         (is (some? sheet))
         (is (string? (:content-hash sheet)))
@@ -37,9 +38,9 @@
   (testing "rebuilding an identical workflow emits no new events"
     (h/with-test-context [ctx]
       (let [wf (simple-workflow)
-            _ (dsl/build-workflow! ctx wf)
+            _ (service-commands/build-workflow! ctx wf)
             events-after-first (count-events ctx)
-            _ (dsl/build-workflow! ctx wf)
+            _ (service-commands/build-workflow! ctx wf)
             events-after-second (count-events ctx)]
         (is (pos? events-after-first) "first build should emit events")
         (is (= events-after-first events-after-second)
@@ -49,18 +50,18 @@
   (testing "rebuilding with a different instruction triggers a full rebuild"
     (h/with-test-context [ctx]
       (let [wf1 (simple-workflow)
-            sheet-id (dsl/build-workflow! ctx wf1)
+            sheet-id (service-commands/build-workflow! ctx wf1)
             events-after-first (count-events ctx)
             hash-after-first (:content-hash (rm/get-sheet ctx sheet-id))
-            wf2 (dsl/workflow "idempotency-test"
-                  (dsl/blackboard {:input :string :output :string})
-                  (dsl/sequence "main"
-                    (dsl/llm "process"
+            wf2 (service-logic/workflow "idempotency-test"
+                  (service-logic/dsl-blackboard {:input :string :output :string})
+                  (service-logic/sequence "main"
+                    (service-logic/llm "process"
                       :model "test/model"
                       :instruction "CHANGED instruction"
                       :reads [:input]
                       :writes [:output])))
-            _ (dsl/build-workflow! ctx wf2)
+            _ (service-commands/build-workflow! ctx wf2)
             events-after-second (count-events ctx)
             hash-after-second (:content-hash (rm/get-sheet ctx sheet-id))]
         (is (< events-after-first events-after-second)
@@ -72,17 +73,17 @@
   (testing "rebuilding with a different blackboard schema triggers a full rebuild"
     (h/with-test-context [ctx]
       (let [wf1 (simple-workflow)
-            sheet-id (dsl/build-workflow! ctx wf1)
+            sheet-id (service-commands/build-workflow! ctx wf1)
             events-after-first (count-events ctx)
-            wf2 (dsl/workflow "idempotency-test"
-                  (dsl/blackboard {:input :string :output :string :extra :int})
-                  (dsl/sequence "main"
-                    (dsl/llm "process"
+            wf2 (service-logic/workflow "idempotency-test"
+                  (service-logic/dsl-blackboard {:input :string :output :string :extra :int})
+                  (service-logic/sequence "main"
+                    (service-logic/llm "process"
                       :model "test/model"
                       :instruction "Process the input"
                       :reads [:input]
                       :writes [:output])))
-            _ (dsl/build-workflow! ctx wf2)
+            _ (service-commands/build-workflow! ctx wf2)
             events-after-second (count-events ctx)]
         (is (< events-after-first events-after-second)
             "changed blackboard should trigger rebuild")))))
@@ -91,7 +92,7 @@
   (testing "a fresh build emits events and stores a content hash"
     (h/with-test-context [ctx]
       (let [wf (simple-workflow)
-            sheet-id (dsl/build-workflow! ctx wf)
+            sheet-id (service-commands/build-workflow! ctx wf)
             event-count (count-events ctx)
             sheet (rm/get-sheet ctx sheet-id)]
         (is (pos? event-count) "first build should emit events")
@@ -109,16 +110,16 @@
           items-schema [:vector item-schema]
           unrelated-schema :string})
         (h/with-test-context [ctx]
-          (let [wf (dsl/workflow "referenced-schema-idempotency-test"
-                     (dsl/blackboard {:items items-schema}))
-                sheet-id (dsl/build-workflow! ctx wf)
+          (let [wf (service-logic/workflow "referenced-schema-idempotency-test"
+                     (service-logic/dsl-blackboard {:items items-schema}))
+                sheet-id (service-commands/build-workflow! ctx wf)
                 initial-events (count-events ctx)]
             (is (= [:vector [:map [:overview :string]]]
                    (:schema (get (rm/get-blackboard-by-key ctx sheet-id) :items)))
                 "the first build persists the effective schema snapshot")
 
             (schema-util/register! {unrelated-schema :int})
-            (dsl/build-workflow! ctx wf)
+            (service-commands/build-workflow! ctx wf)
             (is (= initial-events (count-events ctx))
                 "an unrelated registry change is a zero-event no-op")
 
@@ -127,7 +128,7 @@
               [:map
                [:overview
                 [:or :string [:map [:credential-line :string]]]]]})
-            (dsl/build-workflow! ctx wf)
+            (service-commands/build-workflow! ctx wf)
             (is (< initial-events (count-events ctx))
                 "a transitive registry dependency change rebuilds the sheet")
             (is (= [:vector

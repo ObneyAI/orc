@@ -7,15 +7,7 @@
    non-recursive mode."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [ai.obney.orc.llm.interface :as llm]
-            ;; Loading interface.schemas registers the malli command schemas
-            ;; (:sheet/create-sheet, :sheet/tick-tree, etc.) that the command
-            ;; processor uses during Phase 2 execution. Without this, the tree
-            ;; executor's :sheet/create-sheet command fails malli/schema lookup
-            ;; and Phase 2 silently aborts before any tree events are emitted.
             [ai.obney.orc.orc-service.interface.schemas]
-            [ai.obney.orc.orc-service.core.executor :as executor]
-            [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
-            [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.todo-processors :as tp-core]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -23,7 +15,8 @@
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as lmdb-store]
-            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]))
+            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- with-checkpoint-effect-capabilities
   "Supply RR-7's injected effect seam to tests that call the executor directly.
@@ -31,8 +24,8 @@
    Contexts produced by the real todo processor retain their Grain-backed
    capabilities because caller-provided entries override these test fakes."
   [test-fn]
-  (let [execute executor/execute-repl-researcher-rlm]
-    (with-redefs [executor/execute-repl-researcher-rlm
+  (let [execute tp-core/execute-repl-researcher-rlm]
+    (with-redefs [tp-core/execute-repl-researcher-rlm
                   (fn [node blackboard provider context & options]
                     (apply execute node blackboard provider
                            (merge {:researcher-ownership-epoch 1
@@ -46,9 +39,6 @@
 
 (use-fixtures :each with-checkpoint-effect-capabilities)
 
-;; =============================================================================
-;; Test context (mirrors rlm-tree-executor-test pattern)
-;; =============================================================================
 
 (defn- create-test-context-with-provider
   "Create test context with a non-nil llm-provider so LLM nodes actually execute
@@ -94,9 +84,6 @@
      (try ~@body
           (finally (stop-test-context ~ctx-sym)))))
 
-;; =============================================================================
-;; compute-tree-result-summary — pure deep module
-;; =============================================================================
 
 (defn- mk-node-completion-event
   "Build a fixture :sheet/node-execution-completed event."
@@ -122,7 +109,7 @@
                        (mk-node-completion-event {:node-id (random-uuid) :status :success})]
           tree-raw [:sequence [:llm {:instruction "x"}] [:final {:keys [:summary]}]]
           writes [:summary]
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events tick-events
                      :tree-raw tree-raw
@@ -155,8 +142,6 @@
                          :duration-ms 5500
                          :trace-id tick-id
                          :usage {:prompt-tokens 800 :completion-tokens 400 :total-tokens 1200}}
-          ;; 24 leaf nodes (22 success + 2 failure) PLUS the map-each completion
-          ;; event carrying :partial-summary (verbatim from D-008).
           partial-sum {:total 24 :succeeded 22 :failed 2
                        :failure-indices [7 17]
                        :failure-reasons {7 "Rate limit exhausted"
@@ -170,7 +155,7 @@
           tick-events (vec (concat leaf-events [map-each-event]))
           tree-raw [:sequence [:map-each {:from :chunks :into :results} [:llm {}]] [:final {}]]
           writes [:summary]
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events tick-events
                      :tree-raw tree-raw
@@ -192,7 +177,7 @@
     (let [tick-id #uuid "00000000-0000-0000-0000-000000000003"
           map-each-id (random-uuid)
           phase2-result {:status :failure
-                         :outputs {}                  ;; nothing produced
+                         :outputs {}
                          :duration-ms 3200
                          :trace-id tick-id
                          :usage {:prompt-tokens 600 :completion-tokens 100 :total-tokens 700}}
@@ -204,7 +189,7 @@
                                                     :status :failure
                                                     :partial-summary partial-sum})
           tick-events (vec (concat leaf-events [map-each-event]))
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events tick-events
                      :tree-raw [:sequence [:map-each {} [:llm {}]]]
@@ -221,7 +206,6 @@
 (deftest summary-for-timeout-status
   (testing ":timeout → phase2-elapsed-ms + budget-remaining-ms + nodes-completed-before-cancel"
     (let [tick-id #uuid "00000000-0000-0000-0000-000000000004"
-          ;; Phase 2 returns :timeout from D-003's timeout-default
           phase2-result {:status :timeout
                          :error "Tree execution timed out"
                          :duration-ms 4523
@@ -229,9 +213,8 @@
                          :phase2-elapsed-ms 4500
                          :budget-remaining-ms 0
                          :usage {:prompt-tokens 200 :completion-tokens 100 :total-tokens 300}}
-          ;; 4 leaves managed to complete before cancellation, others didn't get an event
           leaf-events (repeat 4 (mk-node-completion-event {:node-id (random-uuid) :status :success}))
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events leaf-events
                      :tree-raw [:sequence [:map-each {} [:llm {}]] [:final {}]]
@@ -245,16 +228,6 @@
       (is (= 4 (:nodes-completed-before-cancel summary))
           "nodes-completed-before-cancel = count of leaf node-execution-completed events at cancel time"))))
 
-;; =============================================================================
-;; R-7a: :outputs-previews — value preview surfaced in tree-results summary
-;;
-;; Observability gap from the image_analysis A-Z-zero audit: a tree completes
-;; structurally-successfully but its payload is semantically broken, and the
-;; model has no way to notice because the summary only carries :outputs-keys
-;; (the KEY names), not a preview of the VALUES. Adding :outputs-previews
-;; gives the model visible-by-default evidence of what landed in each key
-;; without requiring drill-down primitives.
-;; =============================================================================
 
 (deftest summary-includes-map-output-preview
   (testing "map outputs appear in :outputs-previews as {:keys [sorted-keys] :sample-3 [[k v-preview] ...]}"
@@ -264,7 +237,7 @@
                          :duration-ms 100
                          :trace-id (random-uuid)
                          :usage {:total-tokens 50}}
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events [(mk-node-completion-event {:node-id (random-uuid) :status :success})]
                      :tree-raw [:sequence [:llm {}] [:final {}]]
@@ -287,7 +260,7 @@
                          :duration-ms 100
                          :trace-id (random-uuid)
                          :usage {:total-tokens 50}}
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events [(mk-node-completion-event {:node-id (random-uuid) :status :success})]
                      :tree-raw [:sequence [:llm {}] [:final {}]]
@@ -298,13 +271,13 @@
 
 (deftest summary-includes-collection-output-preview
   (testing "vector outputs appear in :outputs-previews as {:count N :sample-3 [first three pr-str'd]}"
-    (let [lines (mapv #(str "line-" %) (range 50))   ; 50 strings
+    (let [lines (mapv #(str "line-" %) (range 50))
           phase2-result {:status :success
                          :outputs {:lines lines}
                          :duration-ms 100
                          :trace-id (random-uuid)
                          :usage {:total-tokens 50}}
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events [(mk-node-completion-event {:node-id (random-uuid) :status :success})]
                      :tree-raw [:sequence [:llm {}] [:final {}]]
@@ -321,13 +294,13 @@
 
 (deftest summary-includes-string-output-preview
   (testing "string outputs appear in :outputs-previews truncated to 500 chars with overflow marker"
-    (let [long-text (apply str (repeat 100 "ONTARIO POWER AUTHORITY "))   ; 2400 chars
+    (let [long-text (apply str (repeat 100 "ONTARIO POWER AUTHORITY "))
           phase2-result {:status :success
                          :outputs {:answer long-text}
                          :duration-ms 100
                          :trace-id (random-uuid)
                          :usage {:total-tokens 50}}
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events [(mk-node-completion-event {:node-id (random-uuid) :status :success})]
                      :tree-raw [:sequence [:llm {}] [:final {}]]
@@ -340,22 +313,6 @@
       (is (re-find #"truncated.*full 2400 chars" preview)
           "overflow marker shows the full original length so the model knows there's more"))))
 
-;; =============================================================================
-;; T2-Hardening-A: per-leaf failure detail surfaces inline as :failed-leaves
-;;
-;; Today's summary surfaces map-each per-child failures via :failure-indices
-;; + :failure-reasons (sourced from D-008's :partial-summary on the map-each
-;; parent's completion event). But non-map-each direct-leaf failures — a
-;; :code or :llm leaf throwing or returning :status :failure — surface only
-;; as aggregate :nodes-failed N. The model on the next iteration sees the
-;; tree failed but not WHICH leaf failed with what error.
-;;
-;; Fix: reuse the existing rlm-drill-down/tree-failures-from-events function
-;; (which already filters direct-leaf failures from tick-events) and surface
-;; the result inline as :failed-leaves on the summary. Map-each path stays
-;; unchanged — :failed-leaves is the parallel surface for the other branch.
-;; Stays factual per the orc principle: descriptive, not prescriptive.
-;; =============================================================================
 
 (deftest summary-surfaces-failed-leaves-for-non-map-each-failure
   (testing "T2-Hardening-A: when a non-map-each leaf throws, :failed-leaves carries the node-id + error string inline"
@@ -372,7 +329,7 @@
                        (mk-node-completion-event {:node-id bad-leaf-id
                                                   :status :failure
                                                   :error "Duplicate key: null"})]
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events tick-events
                      :tree-raw '[:sequence
@@ -401,7 +358,7 @@
                          :usage {:total-tokens 50}}
           tick-events [(mk-node-completion-event {:node-id (random-uuid) :status :success})
                        (mk-node-completion-event {:node-id (random-uuid) :status :success})]
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events tick-events
                      :tree-raw [:sequence [:llm {}] [:final {}]]
@@ -429,7 +386,7 @@
                                                     :status :partial
                                                     :partial-summary partial-sum})
           tick-events (vec (concat leaf-events [map-each-event]))
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events tick-events
                      :tree-raw [:sequence [:map-each {} [:llm {}]] [:final {}]]
@@ -440,18 +397,6 @@
       (is (= {1 "Rate limit" 2 "Schema validation"} (:failure-reasons summary)))
       (is (vector? (:failed-leaves summary))
           ":failed-leaves is still surfaced because the leaf failure events DO match the direct-leaf filter")
-      ;; Important nuance: the underlying drill-down function considers each
-      ;; leaf-completion event with :status :failure as a direct-leaf failure
-      ;; AS LONG AS it doesn't carry :partial-summary. The map-each parent
-      ;; carries :partial-summary so it's filtered out. The map-each CHILDREN's
-      ;; completion events DON'T carry :partial-summary themselves, so they
-      ;; ARE direct-leaf failures from the data's point of view. The existing
-      ;; :failure-indices coverage is a higher-level summary FROM the parent's
-      ;; :partial-summary block; :failed-leaves is the per-event view. They
-      ;; can coexist (one row per failed child) without inconsistency.
-      ;;
-      ;; If product-side decides one or the other should suppress, that's a
-      ;; downstream rendering concern, not a compute-tree-result-summary one.
       (is (= 2 (count (:failed-leaves summary)))
           "Two leaf-failure events produce two :failed-leaves entries"))))
 
@@ -471,7 +416,7 @@
                        (mk-node-completion-event {:node-id leaf-b
                                                   :status :failure
                                                   :error "Code executor result could not be reconciled with declared :writes"})]
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events tick-events
                      :tree-raw '[:sequence
@@ -488,34 +433,22 @@
              (set (map :error (:failed-leaves summary))))
           "verbatim error strings preserve the executor's diagnostic"))))
 
-;; =============================================================================
-;; C-Loop-4: detect-nil-writes — pure deep module
-;;
-;; A tree can return :status :success with declared writes that are nil or
-;; empty-collection (the risk-analysis case: a broken :code aggregator wrote
-;; :obligations nil + :penalties nil while still returning :success). The
-;; model on the next iteration needs to SEE this signal — but not have it
-;; enforced, because "empty" can be the correct answer for some tasks.
-;;
-;; "Empty" is: nil, "", [], (), {}, #{}.
-;; NOT empty: 0, false (could be real answers).
-;; =============================================================================
 
 (deftest detect-nil-writes-mixed-input
   (testing "returns only the declared keys whose values are nil/empty"
-    (let [outputs {:issues [{:id 1}]                ; populated vector — NOT nil
-                   :ambiguities []                  ; empty vector — IS nil
-                   :missing nil                     ; nil — IS nil
-                   :recommendations "use X"         ; populated string — NOT nil
-                   :notes ""                        ; empty string — IS nil
-                   :metadata {}                     ; empty map — IS nil
-                   :tags #{}                        ; empty set — IS nil
-                   :history ()                      ; empty seq — IS nil
-                   :score 0                         ; numeric zero — NOT nil
-                   :flag? false}                    ; boolean false — NOT nil
+    (let [outputs {:issues [{:id 1}]
+                   :ambiguities []
+                   :missing nil
+                   :recommendations "use X"
+                   :notes ""
+                   :metadata {}
+                   :tags #{}
+                   :history ()
+                   :score 0
+                   :flag? false}
           writes-declared [:issues :ambiguities :missing :recommendations
                            :notes :metadata :tags :history :score :flag?]
-          nil-writes (executor/detect-nil-writes
+          nil-writes (service-logic/detect-nil-writes
                        {:outputs outputs
                         :writes-declared writes-declared})]
       (is (= #{:ambiguities :missing :notes :metadata :tags :history}
@@ -530,7 +463,7 @@
                    :items [1 2 3]
                    :count 42}
           writes-declared [:summary :items :count]
-          nil-writes (executor/detect-nil-writes
+          nil-writes (service-logic/detect-nil-writes
                        {:outputs outputs
                         :writes-declared writes-declared})]
       (is (empty? nil-writes)
@@ -538,11 +471,11 @@
 
 (deftest detect-nil-writes-only-checks-declared-keys
   (testing "keys NOT in :writes-declared are ignored even if nil"
-    (let [outputs {:declared-and-empty []           ; declared, IS nil
-                   :undeclared-and-nil nil          ; undeclared, ignored
-                   :input-blackboard-key "doc text"}; undeclared, ignored
+    (let [outputs {:declared-and-empty []
+                   :undeclared-and-nil nil
+                   :input-blackboard-key "doc text"}
           writes-declared [:declared-and-empty]
-          nil-writes (executor/detect-nil-writes
+          nil-writes (service-logic/detect-nil-writes
                        {:outputs outputs
                         :writes-declared writes-declared})]
       (is (= [:declared-and-empty] nil-writes)
@@ -552,21 +485,12 @@
   (testing "declared key absent from :outputs map → counted as nil"
     (let [outputs {:present "value"}
           writes-declared [:present :absent]
-          nil-writes (executor/detect-nil-writes
+          nil-writes (service-logic/detect-nil-writes
                        {:outputs outputs
                         :writes-declared writes-declared})]
       (is (= [:absent] nil-writes)
           "declared but absent key is equivalent to nil — the model's contract said it would produce :absent and it didn't"))))
 
-;; =============================================================================
-;; C-Loop-4: compute-tree-result-summary surfaces :nil-writes
-;;
-;; The summary entry is what the model sees on its NEXT iteration via
-;; (get-var :tree-results). Adding :nil-writes here is the load-bearing
-;; surface — once it's in the summary, the model sees the signal verbatim
-;; without any prompt-template change. RED#3 then teaches the model what
-;; the signal MEANS via prompt text.
-;; =============================================================================
 
 (deftest summary-includes-nil-writes-on-status-success-with-nil-declared-writes
   (testing "the risk-analysis-style case: :status :success but two declared writes came back nil/empty"
@@ -581,7 +505,7 @@
           tick-events [(mk-node-completion-event {:node-id (random-uuid) :status :success})]
           tree-raw [:sequence [:llm {}] [:final {}]]
           writes [:issues :ambiguities :missing :recommendations]
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events tick-events
                      :tree-raw tree-raw
@@ -598,7 +522,7 @@
                          :duration-ms 100
                          :trace-id (random-uuid)
                          :usage {:total-tokens 50}}
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events [(mk-node-completion-event {:node-id (random-uuid) :status :success})]
                      :tree-raw [:sequence [:llm {}] [:final {}]]
@@ -610,12 +534,12 @@
 (deftest summary-nil-writes-on-failure-status
   (testing ":nil-writes is computed regardless of :status — :failure can also leave declared writes nil"
     (let [phase2-result {:status :failure
-                         :outputs {:partial-data "got this far"}     ; :final-result never written
+                         :outputs {:partial-data "got this far"}
                          :duration-ms 500
                          :trace-id (random-uuid)
                          :usage {:total-tokens 25}}
           tick-events [(mk-node-completion-event {:node-id (random-uuid) :status :failure})]
-          summary (executor/compute-tree-result-summary
+          summary (service-logic/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events tick-events
                      :tree-raw [:sequence [:llm {}] [:final {}]]
@@ -623,9 +547,6 @@
       (is (= [:final-result] (:nil-writes summary))
           ":final-result was declared but never written — surfaces alongside the failure information"))))
 
-;; =============================================================================
-;; merge-tree-result-into-sandbox — pure deep module
-;; =============================================================================
 
 (deftest merge-merges-only-writes-declared-keys
   (testing "Phase 2 outputs filtered to :writes-declared keys; input blackboard keys NOT re-merged"
@@ -633,7 +554,6 @@
                         :generated-tree-raw [:sequence [:final {}]]
                         :existing-var "preserved"}
           phase2-result {:status :success
-                         ;; :outputs includes both input keys (:document) AND :writes-declared (:summary)
                          :outputs {:document "(original input doc)"
                                    :summary "the result"}
                          :duration-ms 1000
@@ -644,7 +564,7 @@
                    :status :success
                    :elapsed-ms 1000
                    :outputs-keys [:summary]}
-          new-vars (executor/merge-tree-result-into-sandbox
+          new-vars (service-logic/merge-tree-result-into-sandbox
                      sandbox-vars phase2-result writes summary)]
       (is (= "the result" (:summary new-vars))
           ":summary (:writes-declared) merged into sandbox-vars")
@@ -655,17 +575,12 @@
 
 (deftest merge-clears-dispatch-marker-but-preserves-tree-raw
   (testing ":generated-tree (dispatch marker) is cleared but :generated-tree-raw is preserved so the final! response + bench EDN capture can record what the model designed"
-    ;; The implementation deliberately preserves :generated-tree-raw — the
-    ;; final! return path and downstream consumers (notably the bench EDN
-    ;; capture) read this to record the tree the model actually produced.
-    ;; Bench EDNs like legal-issue-detection_2026-06-01_225737.edn confirm
-    ;; :generated-tree-raw is the load-bearing field that records the design.
     (let [sandbox-vars {:generated-tree :some-form
                         :generated-tree-raw [:sequence [:final {}]]
                         :unrelated "kept"}
           phase2-result {:status :success :outputs {:result "x"}
                          :duration-ms 100 :trace-id (random-uuid)}
-          new-vars (executor/merge-tree-result-into-sandbox
+          new-vars (service-logic/merge-tree-result-into-sandbox
                      sandbox-vars phase2-result [:result] {:status :success})]
       (is (not (contains? new-vars :generated-tree))
           ":generated-tree (canonical dispatch marker) must be cleared so the dispatch doesn't re-fire on the next iteration")
@@ -676,7 +591,7 @@
 
 (deftest merge-does-not-erase-preserved-value-with-nil-recovery-output
   (testing "a focused recovery tree cannot erase successful work from an earlier tree"
-    (let [new-vars (executor/merge-tree-result-into-sandbox
+    (let [new-vars (service-logic/merge-tree-result-into-sandbox
                     {:preserved-value "PRESERVED"}
                     {:status :success
                      :outputs {:answer "RECOVERED" :preserved-value nil}}
@@ -691,16 +606,14 @@
           phase2-result-1 {:status :success :outputs {:summary "first"}
                            :duration-ms 100 :trace-id (random-uuid)}
           summary-1 {:tick-id (random-uuid) :status :success :elapsed-ms 100}
-          ;; First merge — :tree-results doesn't exist yet
-          sandbox-vars-1 (executor/merge-tree-result-into-sandbox
+          sandbox-vars-1 (service-logic/merge-tree-result-into-sandbox
                            sandbox-vars-0 phase2-result-1 [:summary] summary-1)
           _ (is (= [summary-1] (:tree-results sandbox-vars-1))
                 ":tree-results created with first entry")
-          ;; Second merge — :tree-results should append, not replace
           phase2-result-2 {:status :partial :outputs {:summary "second"}
                            :duration-ms 200 :trace-id (random-uuid)}
           summary-2 {:tick-id (random-uuid) :status :partial :elapsed-ms 200}
-          sandbox-vars-2 (executor/merge-tree-result-into-sandbox
+          sandbox-vars-2 (service-logic/merge-tree-result-into-sandbox
                            sandbox-vars-1 phase2-result-2 [:summary] summary-2)]
       (is (= [summary-1 summary-2] (:tree-results sandbox-vars-2))
           ":tree-results appends, preserving order (first → second)")
@@ -709,9 +622,6 @@
       (is (= 2 (count (:tree-results sandbox-vars-2)))
           "history accumulates across sequential merges"))))
 
-;; =============================================================================
-;; Integration: recursive dispatch in execute-repl-researcher-rlm
-;; =============================================================================
 
 (deftest checkpointed-mode-yields-and-resumes-after-one-iteration
   (testing "A one-iteration quantum returns :running and resumes without replaying completed work"
@@ -732,9 +642,9 @@
                           2 {:outputs {:code "(final! {:summary (get-var :memo)})"}
                              :usage {:prompt_tokens 4 :completion_tokens 2 :total_tokens 6}}
                           (throw (ex-info "completed iteration was replayed" {}))))]
-          (let [yielded (executor/execute-repl-researcher-rlm
+          (let [yielded (tp-core/execute-repl-researcher-rlm
                          node {} :openrouter ctx)
-                resumed (executor/execute-repl-researcher-rlm
+                resumed (tp-core/execute-repl-researcher-rlm
                          node {} :openrouter
                          (assoc ctx :researcher-checkpoint (:checkpoint yielded)))]
             (is (= :running (:status yielded)))
@@ -758,7 +668,7 @@
                     (fn [& _]
                       (swap! calls inc)
                       {:outputs {:code "(store! :memo :step)"}})]
-        (let [result (executor/execute-repl-researcher-rlm
+        (let [result (tp-core/execute-repl-researcher-rlm
                       node {} :openrouter
                       (assoc ctx :persist-researcher-checkpoint!
                              #(swap! persisted conj %)))]
@@ -782,7 +692,7 @@
                       {:outputs {:code (if (= 1 (swap! calls inc))
                                          "(store! :memo 1)"
                                          "(store! :memo 2)")}})]
-        (let [result (executor/execute-repl-researcher-rlm node {} :test ctx)
+        (let [result (tp-core/execute-repl-researcher-rlm node {} :test ctx)
               history (get-in result [:checkpoint :history])]
           (is (= :running (:status result)))
           (is (some #{:memo} (:vars-created (first history))))
@@ -791,10 +701,6 @@
 
 (deftest checkpoint-survives-generated-tree-containing-inline-source
   (testing "A campaign whose tree evidence carries quoted (fn ...) source checkpoints and resumes instead of dying"
-    ;; merge-clears-dispatch-marker-but-preserves-tree-raw pins that
-    ;; :generated-tree-raw is DELIBERATELY preserved in sandbox-vars. RR6 makes
-    ;; that representation authored source data; a live closure is rejected at
-    ;; emit-tree!, while quoted function forms remain durable across a yield.
     (with-test-ctx [ctx]
       (let [calls (atom 0)
             node {:type :repl-researcher
@@ -810,7 +716,7 @@
                           1 {:outputs {:code "(store! :generated-tree-raw (quote [:sequence [:code {:fn (fn [in] in)}] [:final {:keys [:summary]}]]))"}}
                           2 {:outputs {:code "(final! {:summary \"done\"})"}}
                           (throw (ex-info "completed iteration was replayed" {}))))]
-          (let [yielded (executor/execute-repl-researcher-rlm node {} :openrouter ctx)]
+          (let [yielded (tp-core/execute-repl-researcher-rlm node {} :openrouter ctx)]
             (is (= :running (:status yielded))
                 (str "quoted inline source must not fail the campaign: "
                      (pr-str (select-keys yielded [:status :error]))))
@@ -820,9 +726,9 @@
                               [:checkpoint :sandbox-vars
                                :generated-tree-raw 1 1 :fn]))
                 "the checkpoint retains the authored function form")
-            (is (executor/checkpoint-durable-value? (:checkpoint yielded))
+            (is (service-logic/checkpoint-durable-value? (:checkpoint yielded))
                 "the yielded checkpoint is durable end to end")
-            (let [resumed (executor/execute-repl-researcher-rlm
+            (let [resumed (tp-core/execute-repl-researcher-rlm
                            node {} :openrouter
                            (assoc ctx :researcher-checkpoint (:checkpoint yielded)))]
               (is (= :success (:status resumed)))
@@ -830,11 +736,11 @@
                   "the completed first iteration is not sent to the provider again"))))))))
 
 (deftest checkpoint-values-reject-jvm-local-state
-  (is (executor/checkpoint-durable-value?
+  (is (service-logic/checkpoint-durable-value?
        {:nested [1 "two" #{:three}]
         :id (random-uuid)}))
-  (is (false? (executor/checkpoint-durable-value? {:callback (fn [] :local)})))
-  (is (false? (executor/checkpoint-durable-value? {:pending (future :value)}))))
+  (is (false? (service-logic/checkpoint-durable-value? {:callback (fn [] :local)})))
+  (is (false? (service-logic/checkpoint-durable-value? {:pending (future :value)}))))
 
 (deftest registered-checkpoint-codec-survives-rehydration
   (with-test-ctx [ctx]
@@ -843,7 +749,7 @@
                  :encode str
                  :decode #(java.time.Duration/parse %)}
           duration (java.time.Duration/ofSeconds 42)
-          durable (executor/encode-checkpoint-value [codec] {:duration duration})
+          durable (service-logic/encode-checkpoint-value [codec] {:duration duration})
           node {:type :repl-researcher
                 :instruction "read restored duration"
                 :writes [:summary]
@@ -861,11 +767,11 @@
                       :campaign-started-at-ms (System/currentTimeMillis)
                       :campaign-deadline-ms (+ (System/currentTimeMillis) 5000)}]
       (is (= {:duration duration}
-             (executor/decode-checkpoint-value [codec] durable)))
+             (service-logic/decode-checkpoint-value [codec] durable)))
       (with-redefs [llm/predict
                     (fn [& _]
                       {:outputs {:code "(final! {:summary (str (get-var :duration))})"}})]
-        (let [result (executor/execute-repl-researcher-rlm
+        (let [result (tp-core/execute-repl-researcher-rlm
                       node {} :openrouter
                       (assoc ctx
                              :researcher-checkpoint checkpoint
@@ -889,7 +795,7 @@
                                   (reset! provider-options options)
                                   (Thread/sleep 250)
                                   {:outputs {:code "nil"}})]
-        (let [result (executor/execute-repl-researcher-rlm node {} :openrouter ctx)
+        (let [result (tp-core/execute-repl-researcher-rlm node {} :openrouter ctx)
               elapsed-ms (/ (- (System/nanoTime) started) 1000000.0)]
           (is (= :timeout (:status result)))
           (is (= :provider (:timeout-kind result)))
@@ -913,10 +819,10 @@
                       (if (= 1 (swap! calls inc))
                         (do (Thread/sleep 200) {:outputs {:code "never"}})
                         {:outputs {:code "(final! {:summary \"recovered\"})"}}))]
-        (let [timed-out-attempt (executor/execute-repl-researcher-rlm
+        (let [timed-out-attempt (tp-core/execute-repl-researcher-rlm
                                  node {} :openrouter ctx)
               checkpoint (:checkpoint timed-out-attempt)
-              resumed (executor/execute-repl-researcher-rlm
+              resumed (tp-core/execute-repl-researcher-rlm
                        node {} :openrouter
                        (assoc ctx :researcher-checkpoint checkpoint))]
           (is (= :running (:status timed-out-attempt)))
@@ -936,12 +842,12 @@
           code "(emit-tree! [:final {:keys [:summary]}])"
           generated-tree-source "[:final {:keys [:summary]}]"
           expected-action-id
-          (researcher-effects/logical-action-identity
+          (service-logic/logical-action-identity
            {:tick-id tick-id
             :node-id node-id
             :iteration-index 0
             :generated-code-hash
-            (researcher-effects/generated-code-hash code)
+            (service-logic/generated-code-hash code)
             :kind :generated-child
             :target :generated-tree
             :arguments {:generated-tree-source generated-tree-source
@@ -961,7 +867,7 @@
       (with-redefs [llm/predict
                     (fn [& _]
                       {:outputs {:code code}})
-                    tree-executor/execute-tree
+                    tp-core/execute-tree
                     (fn [_ _ options]
                       (swap! stable-tick-ids conj (:stable-tick-id options))
                       (if (= 1 (swap! tree-attempts inc))
@@ -969,9 +875,9 @@
                          :trace-id (first @stable-tick-ids) :sheet-id (random-uuid)}
                         {:status :success :outputs {:summary "done"}
                          :trace-id (second @stable-tick-ids) :sheet-id (random-uuid)}))]
-        (let [first-result (executor/execute-repl-researcher-rlm
+        (let [first-result (tp-core/execute-repl-researcher-rlm
                            node {} :openrouter context)
-              resumed (executor/execute-repl-researcher-rlm
+              resumed (tp-core/execute-repl-researcher-rlm
                        node {} :openrouter
                        (assoc context
                               :researcher-checkpoint (:checkpoint first-result)
@@ -1003,7 +909,7 @@
           started (System/nanoTime)]
       (with-redefs [llm/predict (fn [& _]
                                   {:outputs {:code "(do (store! :before :local) (slow {}) (store! :after :late))"}})]
-        (let [result (executor/execute-repl-researcher-rlm
+        (let [result (tp-core/execute-repl-researcher-rlm
                       node {} :openrouter
                       (assoc ctx
                              :tick-id (random-uuid)
@@ -1033,14 +939,14 @@
                       (swap! calls inc)
                       {:outputs {:code "(store! :memo \"from-provider\")"}
                        :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})]
-        (executor/execute-repl-researcher-rlm
+        (tp-core/execute-repl-researcher-rlm
          node {} :openrouter
          (assoc base-context :persist-researcher-action! #(reset! recorded %))))
       (let [action @recorded]
         (is (= :provider (:action-kind action)))
         (with-redefs [llm/predict (fn [& _]
                                     (throw (ex-info "provider action was repeated" {})))]
-          (let [result (executor/execute-repl-researcher-rlm
+          (let [result (tp-core/execute-repl-researcher-rlm
                         node {} :openrouter
                         (assoc base-context :researcher-actions
                                {(:action-id action) action}))]
@@ -1063,7 +969,7 @@
                     (fn [& _]
                       (swap! calls inc)
                       {:outputs {:code "(final! {:summary \"finished\"})"}})]
-        (let [interrupted (executor/execute-repl-researcher-rlm
+        (let [interrupted (tp-core/execute-repl-researcher-rlm
                            node {} :openrouter
                            (assoc ctx :persist-researcher-checkpoint!
                                   (fn [checkpoint]
@@ -1073,7 +979,7 @@
           (is (= :success (get-in @persisted [:terminal-result :status])))))
       (with-redefs [llm/predict (fn [& _]
                                   (throw (ex-info "terminal provider was repeated" {})))]
-        (let [resumed (executor/execute-repl-researcher-rlm
+        (let [resumed (tp-core/execute-repl-researcher-rlm
                        node {} :openrouter
                        (assoc ctx :researcher-checkpoint @persisted))]
           (is (= :success (:status resumed)) (pr-str resumed))
@@ -1098,7 +1004,7 @@
                 :rlm {:checkpointed? true}
                 :max-iterations 5}]
       (with-redefs [llm/predict (fn [& _] (swap! calls inc))]
-        (let [result (executor/execute-repl-researcher-rlm
+        (let [result (tp-core/execute-repl-researcher-rlm
                       node {} :openrouter (assoc ctx :researcher-checkpoint checkpoint))]
           (is (= :timeout (:status result)))
           (is (= :campaign (:timeout-kind result)))
@@ -1115,8 +1021,6 @@
                       :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}
                       :cumulative-tree-ms 125
                       :campaign-started-at-ms 1
-                      ;; This is exactly the deadline derived from the node's
-                      ;; 1,000 ms total Phase-1/Phase-2 budget.
                       :campaign-deadline-ms 1001}
           node {:type :repl-researcher
                 :instruction "expired budget"
@@ -1125,7 +1029,7 @@
                 :rlm {:checkpointed? true}
                 :max-iterations 5}]
       (with-redefs [llm/predict (fn [& _] (swap! calls inc))]
-        (let [result (executor/execute-repl-researcher-rlm
+        (let [result (tp-core/execute-repl-researcher-rlm
                       node {} :openrouter (assoc ctx :researcher-checkpoint checkpoint))]
           (is (= :failure (:status result)) (pr-str result))
           (is (re-find #"Budget exhausted in Phase 1" (str (:error result)))
@@ -1155,7 +1059,7 @@
                       :timeouts {:campaign-ms 1000}}
                 :max-iterations 5}]
       (with-redefs [llm/predict (fn [& _] (swap! calls inc))]
-        (let [result (executor/execute-repl-researcher-rlm
+        (let [result (tp-core/execute-repl-researcher-rlm
                       node {} :openrouter (assoc ctx :researcher-checkpoint checkpoint))]
           (is (= :timeout (:status result)) (pr-str result))
           (is (= :campaign (:timeout-kind result)) (pr-str result))
@@ -1175,13 +1079,13 @@
                       (case (swap! calls inc)
                         1 {:outputs {:code "(emit-tree! [:sequence [:final {:keys [:summary]}]])"}}
                         2 {:outputs {:code "(final! {:summary \"repaired\"})"}}))
-                    tree-executor/execute-tree
+                    tp-core/execute-tree
                     (fn [& _]
                       {:status :timeout
                        :error "child exceeded Phase-2 deadline"
                        :duration-ms 37
                        :trace-id (random-uuid)})]
-        (let [result (executor/execute-repl-researcher-rlm node {} :openrouter ctx)]
+        (let [result (tp-core/execute-repl-researcher-rlm node {} :openrouter ctx)]
           (is (= :success (:status result)) (pr-str result))
           (is (= "repaired" (get-in result [:outputs :summary])) (pr-str result))
           (is (= 2 @calls) "the timeout must be visible to a second reasoning turn")
@@ -1200,13 +1104,13 @@
                     (fn [& _]
                       (swap! calls inc)
                       {:outputs {:code "(emit-tree! [:sequence [:final {:keys [:summary]}]])"}})
-                    tree-executor/execute-tree
+                    tp-core/execute-tree
                     (fn [& _]
                       {:status :timeout
                        :error "child exceeded Phase-2 deadline"
                        :duration-ms 37
                        :trace-id (random-uuid)})]
-        (let [result (executor/execute-repl-researcher-rlm node {} :openrouter ctx)]
+        (let [result (tp-core/execute-repl-researcher-rlm node {} :openrouter ctx)]
           (is (= :timeout (:status result)) (pr-str result))
           (is (= "child exceeded Phase-2 deadline" (:error result)) (pr-str result))
           (is (= 1 @calls) "explicit non-recursive mode must not start a repair turn")
@@ -1227,7 +1131,7 @@
                 (with-redefs [llm/predict
                               (fn [& _]
                                 {:outputs {:code "(do (get-index {}) (store! :memo :done))"}})]
-                  (executor/execute-repl-researcher-rlm
+                  (tp-core/execute-repl-researcher-rlm
                    node {} :openrouter
                    (assoc ctx
                           :tick-id tick-id
@@ -1245,12 +1149,12 @@
                                                   :result :any
                                                   :checkpoint-safe? true}}))]
         (is (= :running (:status safe-result)))
-        (is (= (researcher-effects/logical-action-identity
+        (is (= (service-logic/logical-action-identity
                 {:tick-id tick-id
                  :node-id node-id
                  :iteration-index 0
                  :generated-code-hash
-                 (researcher-effects/generated-code-hash
+                 (service-logic/generated-code-hash
                   "(do (get-index {}) (store! :memo :done))")
                  :kind :tool
                  :target "get-index"
@@ -1271,7 +1175,7 @@
       (with-redefs [llm/predict (fn [& _]
                                   (swap! provider-calls inc)
                                   {:outputs {:code "(final! {:summary \"done\"})"}})]
-        (let [result (executor/execute-repl-researcher-rlm
+        (let [result (tp-core/execute-repl-researcher-rlm
                       node {} :openrouter
                       (assoc ctx :call-tool-fn
                              (fn [& _] (swap! effect-calls inc))))]
@@ -1298,7 +1202,7 @@
                     (fn [& _]
                       (swap! provider-calls inc)
                       {:outputs {:code "(do (get-index {:page 1}) (final! {:summary \"done\"}))"}})]
-        (let [result (executor/execute-repl-researcher-rlm
+        (let [result (tp-core/execute-repl-researcher-rlm
                       node {} :openrouter
                       (assoc ctx :call-tool-fn
                              (fn [tool-name args]
@@ -1331,7 +1235,7 @@
                       (fn [& _]
                         (swap! provider-calls inc)
                         {:outputs {:code "(do (get-index {:page 2}) (final! {:summary \"done\"}))"}})]
-          (let [result (executor/execute-repl-researcher-rlm
+          (let [result (tp-core/execute-repl-researcher-rlm
                         node {} :openrouter
                         (assoc ctx :call-tool-fn host-caller))]
             (is (= :failure (:status result)) (pr-str result))
@@ -1357,7 +1261,7 @@
                     (fn [& _]
                       (swap! provider-calls inc)
                       {:outputs {:code "(final! {:summary \"done\"})"}})]
-        (let [result (executor/execute-repl-researcher-rlm
+        (let [result (tp-core/execute-repl-researcher-rlm
                       node {} :openrouter
                       (assoc ctx :call-tool-fn (fn [_tool-name] {:ok true})))]
           (is (= :failure (:status result)) (pr-str result))
@@ -1388,9 +1292,9 @@
                           2 {:outputs {:code "(final! {:summary (get-var :summary)})"}})
                         (do (swap! phase2-calls inc)
                             {:outputs {:summary "child-result"}})))]
-        (let [yielded (executor/execute-repl-researcher-rlm
+        (let [yielded (tp-core/execute-repl-researcher-rlm
                        node blackboard :openrouter ctx)
-              resumed (executor/execute-repl-researcher-rlm
+              resumed (tp-core/execute-repl-researcher-rlm
                        node blackboard :openrouter
                        (assoc ctx :researcher-checkpoint (:checkpoint yielded)))]
           (is (= :running (:status yielded)))
@@ -1429,12 +1333,12 @@
                         (do (swap! phase2-calls inc)
                             {:outputs {:summary "once"}})))]
         (reset! first-result
-                (executor/execute-repl-researcher-rlm node blackboard :openrouter context)))
+                (tp-core/execute-repl-researcher-rlm node blackboard :openrouter context)))
       (is (= :running (:status @first-result)) (pr-str @first-result))
       (is (= #{:provider :phase2} (set (map :action-kind (vals @actions)))))
       (with-redefs [llm/predict (fn [& _]
                                   (throw (ex-info "completed work repeated" {})))]
-        (let [result (executor/execute-repl-researcher-rlm
+        (let [result (tp-core/execute-repl-researcher-rlm
                       node blackboard :openrouter
                       (assoc context
                              :persist-researcher-action! nil
@@ -1470,7 +1374,7 @@
                           {:outputs {:summary "durable-child"}
                            :usage {:prompt_tokens 3 :completion_tokens 1 :total_tokens 4}})))]
         (let [interrupted
-              (executor/execute-repl-researcher-rlm
+              (tp-core/execute-repl-researcher-rlm
                node blackboard :openrouter
                (assoc base-context :persist-researcher-action!
                       (fn [action]
@@ -1480,7 +1384,7 @@
           (is (= :failure (:status interrupted)) (pr-str interrupted))))
       (with-redefs [llm/predict (fn [& _]
                                   (throw (ex-info "provider or child was repeated" {})))]
-        (let [resumed (executor/execute-repl-researcher-rlm
+        (let [resumed (tp-core/execute-repl-researcher-rlm
                        node blackboard :openrouter
                        (assoc base-context
                               :researcher-actions @actions
@@ -1501,12 +1405,12 @@
           code "(emit-tree! [:sequence [:final {:keys [:summary]}]])"
           generated-tree-source "[:sequence [:final {:keys [:summary]}]]"
           phase2-action-id
-          (researcher-effects/logical-action-identity
+          (service-logic/logical-action-identity
            {:tick-id parent-tick-id
             :node-id node-id
             :iteration-index 0
             :generated-code-hash
-            (researcher-effects/generated-code-hash code)
+            (service-logic/generated-code-hash code)
             :kind :generated-child
             :target :generated-tree
             :arguments {:generated-tree-source generated-tree-source
@@ -1552,9 +1456,9 @@
                           2 {:outputs {:code "(final! {:summary \"done\"})"}})
                         (throw (ex-info "reconstructed child unexpectedly executed"
                                         {}))))]
-        (let [yielded (executor/execute-repl-researcher-rlm
+        (let [yielded (tp-core/execute-repl-researcher-rlm
                        node {} :openrouter context)
-              result (executor/execute-repl-researcher-rlm
+              result (tp-core/execute-repl-researcher-rlm
                       node {} :openrouter
                       (assoc context :researcher-checkpoint (:checkpoint yielded)))
               replayed-child-duration 250]
@@ -1582,12 +1486,7 @@
       (let [outer-call-count (atom 0)
             outer-prompt-snapshots (atom [])
             phase1-module? (fn [module]
-                             ;; Phase 1 (outer RLM) module has :outputs [{:name :code ...}]
-                             ;; Phase 2 sub-LLM modules have :outputs named after :writes (e.g. :summary)
                              (boolean (some #(= :code (:name %)) (:outputs module))))]
-        ;; First Phase 1 call returns an emit-tree! that produces a :summary.
-        ;; Phase 2 sub-LLM call gets a stub :summary response.
-        ;; Second Phase 1 call (after recur) calls (final! ...) to terminate.
         (with-redefs [llm/predict
                       (fn [_provider module inputs _opts]
                         (cond
@@ -1606,17 +1505,11 @@
                                                            :output-schemas {:summary :string}}]
                                                     [:final {:keys [:summary]}]])"}
                                :usage {:prompt_tokens 50 :completion_tokens 25 :total_tokens 75}}
-                              ;; Second outer iteration: must see :tree-results in
-                              ;; the system prompt's Available Variables. Return
-                              ;; final! to terminate.
                               {:outputs {:code "(final! {:summary \"final wrap-up\"
                                                         :iteration-count 2})"}
                                :usage {:prompt_tokens 60 :completion_tokens 30 :total_tokens 90}}))
 
                           :else
-                          ;; Phase 2 sub-LLM — return a mock :summary so the tree
-                          ;; can produce outputs that get merged in for iteration 2
-                          ;; to inspect.
                           {:outputs {:summary "tree-produced summary"}
                            :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}}))]
           (let [node {:type :repl-researcher
@@ -1629,7 +1522,7 @@
                                        :schema :string
                                        :value "test document"
                                        :version 1}}
-                result (executor/execute-repl-researcher-rlm
+                result (tp-core/execute-repl-researcher-rlm
                          node blackboard :openrouter ctx)]
             (is (= :success (:status result))
                 (str "Expected :success after recur + final!, got: " (:status result)
@@ -1640,9 +1533,6 @@
                 "Final outputs contain :summary")
             (is (= 2 (get-in result [:outputs :iteration-count]))
                 "Final outputs reflect the second iteration's final!")
-            ;; Verify :tree-results was visible to the second outer LLM call.
-            ;; The variable surfaces in the "Available Variables" section of
-            ;; the system prompt (module :instructions).
             (let [second-instructions (:instructions (nth @outer-prompt-snapshots 1))]
               (is (re-find #":tree-results" second-instructions)
                   "Second outer iteration's prompt instructions must surface :tree-results as an available variable"))))))))
@@ -1651,8 +1541,6 @@
   (testing "Model keeps emitting trees without final! → :max-iterations exhausts cleanly"
     (with-test-ctx [ctx]
       (let [call-count (atom 0)]
-        ;; Mock predict to ALWAYS return emit-tree! (never final!). Loop must
-        ;; exhaust :max-iterations and return :failure with a clear message.
         (with-redefs [llm/predict
                       (fn [_provider _module _inputs _opts]
                         (swap! call-count inc)
@@ -1669,9 +1557,9 @@
                       :reads [:document]
                       :writes [:summary]
                       :rlm {:recursive? true :checkpointed? false}
-                      :max-iterations 3}  ;; small for fast test
+                      :max-iterations 3}
                 blackboard {:document {:key :document :schema :string :value "x" :version 1}}
-                result (executor/execute-repl-researcher-rlm
+                result (tp-core/execute-repl-researcher-rlm
                          node blackboard :openrouter ctx)]
             (is (= :failure (:status result))
                 (str "Expected :failure when max-iterations exhausted, got: " (:status result)))
@@ -1705,7 +1593,7 @@
                       :rlm {:recursive? true :checkpointed? false}
                       :max-iterations 5}
                 blackboard {:document {:key :document :schema :string :value "x" :version 1}}
-                result (executor/execute-repl-researcher-rlm
+                result (tp-core/execute-repl-researcher-rlm
                          node blackboard :openrouter ctx)]
             (is (= :success (:status result)))
             (is (number? (:cumulative-thinking-ms result))
@@ -1717,9 +1605,6 @@
             (is (>= (:cumulative-thinking-ms result) 0)
                 ":cumulative-thinking-ms is non-negative (>= 0)")))))))
 
-;; =============================================================================
-;; R-2: Drill-down primitives — end-to-end against the live event store
-;; =============================================================================
 
 (deftest recursive-mode-drill-down-primitives-read-event-store-after-recur
   (testing "Iter 2 can call drill-down primitives against the real event store"
@@ -1733,7 +1618,6 @@
                           (phase1-module? module)
                           (let [n (swap! outer-call-count inc)]
                             (if (= 1 n)
-                              ;; Iter 1: emit a small tree that produces :summary
                               {:outputs {:code "(emit-tree!
                                                   [:sequence
                                                     [:llm {:instruction \"summarize\"
@@ -1742,9 +1626,6 @@
                                                            :output-schemas {:summary :string}}]
                                                     [:final {:keys [:summary]}]])"}
                                :usage {:prompt_tokens 50 :completion_tokens 25 :total_tokens 75}}
-                              ;; Iter 2: call EACH drill-down primitive, fold into final!.
-                              ;; The code captures structural properties — not raw values
-                              ;; that depend on internal ids/timing.
                               {:outputs {:code "(let [d (tree-detail)
                                                        t (tree-trajectory)
                                                        f (tree-failures)]
@@ -1756,7 +1637,6 @@
                                :usage {:prompt_tokens 60 :completion_tokens 30 :total_tokens 90}}))
 
                           :else
-                          ;; Phase 2 sub-LLM produces :summary
                           {:outputs {:summary "tree-produced summary"}
                            :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}}))]
           (let [node {:type :repl-researcher
@@ -1768,7 +1648,7 @@
                       :max-iterations 5}
                 blackboard {:document {:key :document :schema :string
                                        :value "doc text" :version 1}}
-                result (executor/execute-repl-researcher-rlm
+                result (tp-core/execute-repl-researcher-rlm
                          node blackboard :openrouter ctx)
                 outs (:outputs result)]
             (is (= :success (:status result))
@@ -1776,26 +1656,17 @@
                      " error: " (:error result)))
             (is (= 2 @outer-call-count)
                 "Two outer predict calls — iter 1 emits, iter 2 inspects + final!")
-            ;; tree-detail returned an object — these fields prove it's the real
-            ;; event-store projection, not a stub.
             (is (= :success (:detail-status outs))
                 ":detail-status was pulled out of (tree-detail) result")
             (is (pos? (:node-count outs))
                 "(tree-detail) returned a :nodes vector with at least one entry")
             (is (= "tree-produced summary" (:summary outs))
                 ":outputs map from (tree-detail) carried the sub-LLM's :summary value")
-            ;; trajectory + failures should be queryable. Trajectory may be empty
-            ;; if the bookend event isn't yet in the store; failures must be 0 for
-            ;; a successful tree.
             (is (number? (:trajectory-count outs))
                 "(tree-trajectory) result has a counted shape")
             (is (= 0 (:failure-count outs))
                 "(tree-failures) returned empty for a successful tree")))))))
 
-;; =============================================================================
-;; T2-Hardening-A: end-to-end — Phase 2 :code throw surfaces inline as
-;; :failed-leaves on the :tree-results entry the next Phase-1 iteration sees.
-;; =============================================================================
 
 (deftest recursive-mode-failed-leaves-surface-on-tree-results
   (testing "T2-Hardening-A: when a Phase-2 :code leaf throws, the next iteration's :tree-results entry carries :failed-leaves with :node-id + :error"
@@ -1809,10 +1680,6 @@
                           (phase1-module? module)
                           (let [n (swap! outer-call-count inc)]
                             (if (= 1 n)
-                              ;; Iter 1: emit a tree with a :code :fn that
-                              ;; intentionally throws — exercises the same
-                              ;; runtime path a model-authored buggy
-                              ;; validator hits in production.
                               {:outputs {:code "(emit-tree!
                                                   [:sequence
                                                     [:code {:fn (fn [_]
@@ -1822,9 +1689,6 @@
                                                             :output-schemas {:produced :string}}]
                                                     [:final {:keys [:produced]}]])"}
                                :usage {:prompt_tokens 50 :completion_tokens 25 :total_tokens 75}}
-                              ;; Iter 2: read :tree-results, project its
-                              ;; failed-leaf shape into declared outputs so
-                              ;; the test can assert via (:outputs result).
                               {:outputs {:code "(let [tr (get-var :tree-results)
                                                        e (first tr)
                                                        fl (:failed-leaves e)
@@ -1839,8 +1703,6 @@
                                :usage {:prompt_tokens 60 :completion_tokens 30 :total_tokens 90}}))
 
                           :else
-                          ;; No Phase 2 sub-LLM in this test — the :code node
-                          ;; throws before any LLM child runs.
                           {:outputs {} :usage {}}))]
           (let [node {:type :repl-researcher
                       :instruction "Intentional fault test"
@@ -1850,7 +1712,7 @@
                       :rlm {:recursive? true :checkpointed? false}
                       :max-iterations 5}
                 blackboard {}
-                result (executor/execute-repl-researcher-rlm
+                result (tp-core/execute-repl-researcher-rlm
                          node blackboard :openrouter ctx)
                 outs (:outputs result)]
             (is (= :success (:status result))

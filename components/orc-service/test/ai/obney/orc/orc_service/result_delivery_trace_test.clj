@@ -70,8 +70,6 @@
                   (completion-event sheet-id child-tick child-node)
                   (write-event sheet-id grandchild-tick grandchild-node :result :grandchild)
                   (completion-event sheet-id grandchild-tick grandchild-node)
-                  ;; This event is appended later than the root start, which
-                  ;; made the old timestamp-window implementation include it.
                   (write-event sheet-id unrelated-tick unrelated-node :result :unrelated)
                   (completion-event sheet-id unrelated-tick unrelated-node)])
         (let [trace (#'processors/build-node-trace {:event-store store}

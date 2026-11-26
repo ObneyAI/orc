@@ -6,10 +6,11 @@
    carries the verbatim raw response so the parse problem is diagnosable
    and the Phase-1 model can recover. Rerunning is the job of the
    node-level :retry primitive (execute-with-retry), not an internal loop."
-  (:require [ai.obney.orc.orc-service.core.executor :as executor]
+  (:require
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.llm.interface :as llm]))
+            [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (def test-blackboard
   {:question {:key :question :schema :string :value "What is 2+2?" :version 1}
@@ -36,7 +37,7 @@
                        :usage {:prompt-tokens 100 :completion-tokens 50 :total-tokens 150}
                        :model "fake/model"
                        :raw-response raw})]
-        (let [result (executor/execute-leaf base-node test-blackboard :openrouter)]
+        (let [result (service-processors/execute-leaf base-node test-blackboard :openrouter)]
           (is (= 1 @call-count) "no internal nil retry — rerunning is node-level :retry's job")
           (is (= :failure (:status result)))
           (is (str/includes? (:error result) ":answer")
@@ -57,7 +58,7 @@
                        :usage {:prompt-tokens 10 :completion-tokens 5 :total-tokens 15}
                        :model "fake/model"
                        :raw-response "[[ ## answer ## ]]\n4"})]
-        (let [result (executor/execute-leaf node test-blackboard :openrouter)]
+        (let [result (service-processors/execute-leaf node test-blackboard :openrouter)]
           (is (= :failure (:status result)))
           (is (str/includes? (:error result) ":extra"))
           (is (not (str/includes? (:error result) ":answer "))
@@ -74,7 +75,7 @@
                          :usage {:prompt-tokens 10 :completion-tokens 2 :total-tokens 12}
                          :model "fake/model"
                          :raw-response "[[ ## answer ## ]]\n4"}))]
-        (let [result (executor/execute-leaf base-node test-blackboard :openrouter
+        (let [result (service-processors/execute-leaf base-node test-blackboard :openrouter
                                             :options {:retry-delay-ms 1})]
           (is (= 2 @call-count))
           (is (= :success (:status result)))
@@ -88,7 +89,7 @@
                      :usage {:prompt-tokens 10 :completion-tokens 2 :total-tokens 12}
                      :model "fake/model"
                      :raw-response "[[ ## answer ## ]]\n4"})]
-      (let [result (executor/execute-leaf base-node test-blackboard :openrouter)]
+      (let [result (service-processors/execute-leaf base-node test-blackboard :openrouter)]
         (is (= :success (:status result)))
         (is (= "4" (get-in result [:outputs :answer])))
         (is (nil? (:error result)))))))
@@ -108,7 +109,7 @@
                          :usage {:prompt-tokens 10 :completion-tokens 2 :total-tokens 12}
                          :model "fake/model"
                          :raw-response "[[ ## answer ## ]]\n4"}))]
-        (let [result (executor/execute-leaf node test-blackboard :openrouter)]
+        (let [result (service-processors/execute-leaf node test-blackboard :openrouter)]
           (is (= 3 @call-count) "node-level :retry drove the reruns")
           (is (= :success (:status result)))
           (is (= "4" (get-in result [:outputs :answer]))))))))
@@ -128,7 +129,7 @@
                                             :completion-tokens 5
                                             :total-tokens 15}
                                     :output-truncated? true}})))]
-    (let [result (executor/execute-leaf base-node test-blackboard :openrouter
+    (let [result (service-processors/execute-leaf base-node test-blackboard :openrouter
                                         :options {:max-retries 0})]
       (is (= :failure (:status result)))
       (is (= :missing-forced-tool-call (:failure-kind result)))
@@ -151,7 +152,7 @@
                                                :completion-tokens 2
                                                :total-tokens 12}
                                        :output-truncated? false}})]
-    (let [result (executor/execute-leaf base-node test-blackboard :openrouter
+    (let [result (service-processors/execute-leaf base-node test-blackboard :openrouter
                                         :options {:max-retries 0})]
       (is (= :failure (:status result)))
       (is (= :schema-validation-failed (:failure-kind result)))

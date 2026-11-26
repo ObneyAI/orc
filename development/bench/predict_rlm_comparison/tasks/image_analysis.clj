@@ -33,7 +33,6 @@
   "development/bench/predict_rlm_comparison/references/predict-rlm/image_analysis/sample/input/screenshot.png")
 
 (def ^:private default-query
-  ;; Verbatim from predict-rlm examples/image_analysis/run.py DEFAULT_QUERY.
   "
 
     What letters appear in each image, and how many times does each letter appear? Always include: logo text, header address/phone/fax, header email, header website URL, \"Page N\" footers, etc.
@@ -50,21 +49,6 @@
     Output the letter statistics in alphabetical order (A-Z).")
 
 (def ^:private instruction
-  ;; Port-cleanup notes (see references/predict-rlm/image_analysis/signature.py.txt
-  ;; for the original verbatim source):
-  ;;
-  ;; predict-rlm's signature docstring is a Python procedural recipe ("load via
-  ;; pathlib, call predict() with dspy.Image, gather with asyncio"). It conflates
-  ;; (a) the end-goal — analyze + answer thoroughly — with (b) a tool list
-  ;; specific to their Python-in-WASM runtime. Keeping it verbatim would inject
-  ;; Python tool names into our prompt and bury the goal under their step list,
-  ;; which our model takes as procedure rather than methodology.
-  ;;
-  ;; Port principle: keep the end-goal and quality bar verbatim; strip the
-  ;; language-specific tool list and the "step 1/2/3/4" procedural framing.
-  ;; Do not add tree-shape hints or methodology of our own. The model still
-  ;; sees the verbatim user query below; methodology suggestions baked into
-  ;; their default query are preserved there.
   "Analyze the provided image(s) and answer the query thoroughly.
 
    Your answer must fully address the query and capture every relevant detail
@@ -93,20 +77,8 @@
   {:name "Image Analysis (predict-rlm port)"
    :slug "image-analysis"
    :pattern "Single-image vision QA — letter-frequency extraction with consistency check"
-   ;; Apples-to-apples model setup matching predict-rlm:
-   ;;   main LM (Phase-1 researcher): openai/gpt-5.4
-   ;;   sub-LM (Phase-2 :llm leaves):  openai/gpt-5.1-chat
-   ;; Both available on OpenRouter (the gpt-5 family requires max_tokens >= 16
-   ;; — our defaults satisfy that). Comment out these two lines to fall back
-   ;; to the runner's default model (gemini-3-flash-preview).
    :model "openai/gpt-5.4"
    :sub-model "google/gemini-3-flash-preview"
-   ;; NOTE: :available-code-nodes intentionally NOT set for this task —
-   ;; we want to verify the model writes its OWN inline :code fns for
-   ;; deterministic transforms (the inline-fn affordance was added with
-   ;; the framework prompt update to advertise this option). If the
-   ;; model still defaults to LLM-based counting without an advertised
-   ;; counter, that's an instruction-tuning finding.
    :instruction instruction
    :input-schemas {:image [:string {:field-type :image}]
                    :query :string}
@@ -120,7 +92,6 @@
     "Trace JSONL should contain at least one sub-LLM call with an image_url content block."
     "Compare token / cost / duration against predict-rlm reported numbers in references/predict-rlm/image_analysis/sample/output/output.md."]
    :predict-rlm-reported
-   ;; From references/predict-rlm/image_analysis/sample/output/output.md.
    {:main-lm-calls 4
     :main-lm-input-tokens 17048
     :main-lm-output-tokens 1821

@@ -10,9 +10,9 @@
             [ai.obney.ontology.interface :as graph]
             [ai.obney.orc.ontology.interface.evolutionary :as evolutionary]
             [ai.obney.orc.ontology.interface.schemas]
-            [ai.obney.orc.ontology.core.evolutionary-commands]
             [ai.obney.orc.orc-service.complex-e2e-support :as live]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.ontology.core.commands]))
 
 (defn- event-type [event]
   (or (:event/type event) (:type event)))
@@ -30,9 +30,9 @@
 (defn- events-of [ctx type]
   (filterv #(= type (event-type %)) (live/events ctx)))
 
-(defn- contribution-extractions [ctx]
-  ;; A contribution keeps its submitted candidates separately from merged graph
-  ;; state. Canonicalize candidates for per-source post-import assertions.
+(defn- contribution-extractions
+  "Canonicalize submitted candidates while preserving the original per-source evidence."
+  [ctx]
   (mapv (fn [event]
           (let [body (event-body event)
                 source (:source body)
@@ -118,9 +118,6 @@
                      (pr-str (mapv #(select-keys % [:label :alt-labels :entity-type :source-id])
                                    (vals concepts-by-uri))))))
 
-          ;; Contact the real OpenRouter endpoint with a deliberately invalid
-          ;; credential. This is an actual provider/HTTP failure, not a fake or
-          ;; scripted model. No partial ontology snapshot may become current.
           (let [_ (live/register-openrouter-auth-failure!)
                 before-terminal-count (count (events-of ctx :evolutionary/build-completed))
                 before-contribution-count (count (events-of ctx :ontology/contribution-imported))

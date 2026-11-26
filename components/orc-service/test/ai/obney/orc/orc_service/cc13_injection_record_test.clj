@@ -13,16 +13,15 @@
 
    Every assertion here reads the PROJECTION back — never a command's return
    value."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [ai.obney.orc.evaluation.interface :as evaluation]
+            [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.core.todo-processors :as tp]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.test-helpers :as th]
             [ai.obney.grain.time.interface :as time]
-            [ai.obney.orc.ontology.interface :as ontology]))
+            [ai.obney.orc.ontology.interface :as ontology]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-;; =============================================================================
-;; Fixtures — production-faithful shapes, DISJOINT ids (the SJ-1 lesson)
-;; =============================================================================
 
 (defn- mk-structural-candidate
   [target-id fitness content]
@@ -73,9 +72,6 @@
    :version version
    :consolidated-from-event-count 0})
 
-;; =============================================================================
-;; RED #1 — a render leaves an injection record in the projection
-;; =============================================================================
 
 (deftest render-emits-an-injection-record-readable-from-the-projection
   (th/with-test-context [ctx]
@@ -105,9 +101,6 @@
           (is (= tick-id (:tick-id record)))
           (is (= (:id node) (:node-id record))))))))
 
-;; =============================================================================
-;; RED #2 — WHAT was injected, AT WHAT VERSION, and at what dose
-;; =============================================================================
 
 (deftest record-names-the-rendered-candidates-their-versions-and-the-dose
   (th/with-test-context [ctx]
@@ -165,13 +158,6 @@
         (is (= 64 (count (:prompt-content-hash record)))
             "SHA-256 hex")))))
 
-;; =============================================================================
-;; RED #3 — the record describes what was RENDERED, not what was RETRIEVED
-;; =============================================================================
-;;
-;; The whole point of the record is attribution. A record built from the raw
-;; retrieval rather than from the render's own display filter would attribute
-;; outcomes to content the model never saw.
 
 (deftest record-excludes-candidates-the-render-did-not-show
   (th/with-test-context [ctx]
@@ -183,8 +169,6 @@
                         (mk-payload {:assigned-tree-id shown-id
                                      :structural-candidates
                                      [(mk-structural-candidate shown-id 0.90 "shown pattern")
-                                      ;; Below the render's display floor —
-                                      ;; retrieved, scored, never shown.
                                       (mk-structural-candidate below-floor-id 0.12 "noise pattern")]
                                      :behaviors []}))
           render-ctx (assoc ctx :sheet-id sheet-id :tick-id tick-id)
@@ -229,13 +213,6 @@
         (is (= [(str behavior-id)]
                (map :candidate-id (filter #(= :behavioral (:axis %)) (:candidates record)))))))))
 
-;; =============================================================================
-;; RED #4 — the correlated-trace keys that join the record to OUTCOMES
-;; =============================================================================
-;;
-;; The deferred ledger joins to outcomes via :root-trace-id. An RLM Phase-2
-;; tree runs in a CHILD tick, so a record that only knew its own tick would
-;; strand the child's injection from the run it belongs to.
 
 (defn- sheet-with-a-root-leaf!
   "A real sheet with a root leaf, built through real commands."
@@ -254,8 +231,6 @@
           child-tick (random-uuid)
           tree-id (random-uuid)]
 
-      ;; A real two-level tick lineage, built through the real tick-tree
-      ;; command (which is what stamps :parent-tick-id).
       (th/run-command ctx (assoc (assoc (th/make-tick-tree-command sheet-id :tick-id root-tick) :inputs {})
                                  :correlation-id correlation-id))
       (th/run-command ctx (assoc (assoc (th/make-tick-tree-command sheet-id :tick-id child-tick) :inputs {})
@@ -296,26 +271,6 @@
         (let [record (rm/get-injection-record ctx sheet-id tick-id (:id node))]
           (is (= tick-id (:root-trace-id record))))))))
 
-;; =============================================================================
-;; RED #5 — the join to judge scores, over a real store
-;; =============================================================================
-;;
-;; The SJ-1 lesson: a bare sheet-id join silently misattributes across turns.
-;; So the fixtures here are two DIFFERENT turns on the SAME sheet with
-;; different injections and different outcomes — the exact shape a sheet-id
-;; join gets wrong and a [sheet-id tick-id] join gets right.
-;;
-;; The evaluation component is loaded at RUNTIME rather than declared as a
-;; dependency: orc-service must not gain a compile-time edge to a component
-;; above it just to prove a join. The commands and read model exercised here
-;; are the real ones — no stubs.
-
-(def ^:private evaluation-side
-  (delay
-    (require 'ai.obney.orc.evaluation.interface.schemas
-             'ai.obney.orc.evaluation.core.commands
-             'ai.obney.orc.evaluation.core.judge-runtime)
-    {:get-judge-scores (resolve 'ai.obney.orc.evaluation.core.judge-runtime/get-judge-scores)}))
 
 (defn- record-judge-score!
   [ctx sheet-id tick-id node-id judge-name score]
@@ -344,13 +299,9 @@
     node))
 
 (deftest injection-record-joins-to-that-turns-judge-scores
-  ;; Force the evaluation side BEFORE the test context is built:
-  ;; create-test-context snapshots the global command registry, so a component
-  ;; loaded afterwards would not be dispatchable in it.
-  (let [get-scores (:get-judge-scores @evaluation-side)]
+  (let [get-scores evaluation/get-judge-scores]
    (th/with-test-context [ctx]
     (let [sheet-id (random-uuid)
-          ;; Two turns, same sheet — the misattribution trap.
           tick-a (random-uuid)
           tick-b (random-uuid)
           tree-a (random-uuid)
@@ -364,8 +315,6 @@
             (str "judge score fixture must actually land: " (:cognitect.anomalies/message r))))
 
       (let [records (vals (rm/get-injection-records ctx sheet-id))
-            ;; The join, exactly as a consumer would do it: for each ledger
-            ;; row, the judge scores keyed by the SAME occurrence.
             joined (into {} (for [r records]
                               [(:candidate-id r)
                                (mapv :score (get-scores ctx (:sheet-id r) (:node-id r) (:tick-id r)))]))]
@@ -383,9 +332,6 @@
           (is (= 2 (count (filter #(= sheet-id (:sheet-id %)) records)))
               "sheet-id alone selects BOTH turns; only the tick disambiguates")))))))
 
-;; =============================================================================
-;; RED #6 — the /tmp sidecar is gone
-;; =============================================================================
 
 (deftest render-writes-no-tmp-sidecar
   (th/with-test-context [ctx]
@@ -400,17 +346,11 @@
       (testing "the information it used to hold is in the store instead"
         (is (some? (rm/get-injection-records ctx sheet-id)))))))
 
-;; =============================================================================
-;; RED #7 — the holdout is OFF BY DEFAULT
-;; =============================================================================
-;;
-;; Default-off is the whole reason this is affordable as a standing engine
-;; feature: it costs nothing until someone deliberately runs an experiment.
 
 (deftest holdout-is-off-by-default
   (testing "the shipped default config holds out nothing"
-    (is (false? (:enabled? tp/*injection-holdout*)))
-    (is (zero? (:fraction tp/*injection-holdout*))))
+    (is (false? (:enabled? service-logic/*injection-holdout*)))
+    (is (zero? (:fraction service-logic/*injection-holdout*))))
 
   (th/with-test-context [ctx]
     (let [sheet-id (random-uuid)
@@ -437,13 +377,10 @@
       (testing "the baseline policy is named on the treated arm too — otherwise the comparison has no named control"
         (is (string? (:baseline-policy-id record)))))))
 
-;; =============================================================================
-;; RED #8 — when enabled, the control condition renders WITHOUT the treatment
-;; =============================================================================
 
 (deftest holdout-arm-renders-without-the-treatment-and-is-stamped
   (th/with-test-context [ctx]
-    (binding [tp/*injection-holdout* {:enabled? true
+    (binding [service-logic/*injection-holdout* {:enabled? true
                                       :fraction 1.0
                                       :baseline-policy-id "cc13-experiment/no-injection"}]
       (let [sheet-id (random-uuid)
@@ -476,9 +413,6 @@
         (testing "but the candidate set it was DENIED is still recorded — otherwise the arms are not comparable"
           (is (= [(str tree-id)] (map :candidate-id (:candidates record)))))))))
 
-;; =============================================================================
-;; RED #9 — the holdout is configurable per-context, and the RNG is a seam
-;; =============================================================================
 
 (deftest holdout-is-configurable-per-context
   (th/with-test-context [ctx]
@@ -511,8 +445,8 @@
                                      :structural-candidates
                                      [(mk-structural-candidate tree-id 0.9 "pattern")]
                                      :behaviors []}))]
-      (binding [tp/*injection-holdout* {:enabled? true :fraction 0.25}
-                tp/*holdout-assignment* (fn [occurrence fraction]
+      (binding [service-logic/*injection-holdout* {:enabled? true :fraction 0.25}
+                service-logic/*holdout-assignment* (fn [occurrence fraction]
                                           (swap! seen conj [occurrence fraction])
                                           true)]
         (with-redefs [ontology/get-description (fn [_ _ _] (body-with-version 1))]
@@ -527,7 +461,7 @@
 
 (deftest default-assignment-is-stable-per-occurrence-and-splits-across-occurrences
   (th/with-test-context [ctx]
-    (binding [tp/*injection-holdout* {:enabled? true :fraction 0.5}]
+    (binding [service-logic/*injection-holdout* {:enabled? true :fraction 0.5}]
       (let [sheet-id (random-uuid)
             arm-for (fn [tick-id]
                       (let [tree-id (random-uuid)
@@ -540,7 +474,6 @@
                           (tp/apply-r05-classifier-context
                             node (assoc ctx :sheet-id sheet-id :tick-id tick-id)))
                         (:arm (rm/get-injection-record ctx sheet-id tick-id (:id node)))))
-            ;; 40 distinct occurrences at a 50% holdout.
             arms (mapv (fn [_] (arm-for (random-uuid))) (range 40))]
 
         (testing "assignment actually SPLITS — it is randomized, not a constant"
@@ -551,7 +484,7 @@
 
 (deftest default-assignment-is-deterministic-for-the-same-occurrence
   (th/with-test-context [ctx]
-    (binding [tp/*injection-holdout* {:enabled? true :fraction 0.5}]
+    (binding [service-logic/*injection-holdout* {:enabled? true :fraction 0.5}]
       (let [sheet-id (random-uuid)
             tick-id (random-uuid)
             tree-id (random-uuid)
@@ -569,13 +502,6 @@
           (is (= first-instruction second-instruction)
               "same occurrence identity ⇒ same assignment ⇒ same rendered prompt"))))))
 
-;; =============================================================================
-;; RED #10 — verbatim block capture is available, and OFF by default
-;; =============================================================================
-;;
-;; The sidecar's one legitimate consumer (the bench runner) quoted the verbatim
-;; prepend. Keeping that possible without making every production render pay
-;; for it is what the flag is for.
 
 (deftest rendered-block-capture-is-off-by-default-and-opt-in
   (th/with-test-context [ctx]
@@ -595,7 +521,7 @@
                       (rm/get-injection-record ctx sheet-id tick-id (:id node))))]
 
       (testing "off by default — the standing engine stores no prompt text"
-        (is (false? tp/*capture-rendered-block?*))
+        (is (false? service-logic/*capture-rendered-block?*))
         (is (nil? (:rendered-block (render! tick-a {})))))
 
       (testing "on when a run asks for it, and it is the block the model actually saw"
@@ -605,14 +531,6 @@
                                            "## Suggested patterns from corpus"))
           (is (= (:rendered-chars record) (count (:rendered-block record)))))))))
 
-;; =============================================================================
-;; RED #11 — a fresh-mint behavioral MARKER is not a candidate
-;; =============================================================================
-;;
-;; Found by a pre-existing r-inject test the first implementation regressed:
-;; the marker means "no candidate cleared threshold", so the render shows mint
-;; guidance and reads no body. Recording it would both misstate what the model
-;; saw and fire a read against a concept that does not exist yet.
 
 (deftest fresh-mint-behavioral-marker-is-not-recorded-and-triggers-no-body-read
   (th/with-test-context [ctx]

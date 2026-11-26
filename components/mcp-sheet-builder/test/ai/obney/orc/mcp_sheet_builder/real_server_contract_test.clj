@@ -18,7 +18,6 @@
            (java.nio.charset StandardCharsets)
            (java.util.concurrent Executors)))
 
-;; The shape `mcp/list-tools` returns for a real server: keyword keys all the way down.
 (def ^:private discovered-tool
   {:name "list_directory"
    :inputSchema {:$schema "http://json-schema.org/draft-07/schema#"

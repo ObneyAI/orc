@@ -25,10 +25,11 @@
    (`docker exec orc-rs7-postgres createdb -U orc rs7_pre_fix`); pass 2
    continues pass 1's database, tenant and results-dir — see `resolve-store-opts` and the full launcher example
    in the `(comment ...)` block at the bottom of this file."
-  (:require [ai.obney.grain.event-store-v3.interface :as es]
+  (:require [runner]
+            [time-literals.read-write]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.ontology.interface :as ontology]
-            [ai.obney.orc.ontology.core.reranker :as reranker]
             [ai.obney.orc.ontology.core.todo-processors :as ont-tp]
             [ai.obney.orc.ontology.test-support.c2d-ood-stress-test :as ood]
             [rs6-specialisation-sweep :as rs6]
@@ -38,7 +39,9 @@
             [clojure.java.shell :as shell]
             [clojure.pprint :as pp]
             [clojure.set :as set]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries])
   (:import [java.nio.file Files StandardCopyOption]))
 
 ;; =============================================================================
@@ -66,7 +69,7 @@
    `time-literals.read-write/tags` or resume/compare-runs throws on the
    FIRST previously-persisted record with a classify outcome."
   [f]
-  (edn/read-string {:readers @(requiring-resolve 'time-literals.read-write/tags)} (slurp f)))
+  (edn/read-string {:readers time-literals.read-write/tags} (slurp f)))
 
 (defn- pass-dir [results-dir pass]
   (io/file results-dir (str "pass-" pass)))
@@ -92,9 +95,6 @@
            vec)
       [])))
 
-;; =============================================================================
-;; Corpus + manifest loading
-;; =============================================================================
 
 (defn load-manifest [manifest-path]
   (edn/read-string (slurp manifest-path)))
@@ -109,16 +109,11 @@
         tasks (ood/load-corpus (str corpus-path "/tasks"))]
     (vec (for [t tasks
                :let [entry (get entries-by-slug (:slug t))]
-               ;; a rejected entry is never run: the frozen corpus sha covers
-               ;; accepted entries only (the baseline arm ran two rejected tasks)
                :when (and entry
                           (not= :rejected (:review-status entry))
                           (or (nil? corpus-filter) (corpus-filter entry)))]
            (assoc t :ground-truth entry)))))
 
-;; =============================================================================
-;; install-tee! — per-task :usage / :rerank-calls / :timed-out? capture
-;; =============================================================================
 
 (defn install-tee!
   "Alter-var-root on `orc/execute` and `reranker/rerank!` so every call made
@@ -129,8 +124,8 @@
    or a later run in the SAME process double-tees."
   []
   (let [captured (atom {})
-        orig-execute @#'orc/execute
-        orig-rerank! @#'reranker/rerank!
+        orig-execute orc/execute
+        orig-rerank! ontology-logic/reranker-rerank!
         touch! (fn [slug f]
                  (when slug
                    (swap! captured update slug
@@ -143,7 +138,7 @@
             (when (:usage result)
               (touch! slug #(update % :usage-events conj (:usage result))))
             result))))
-    (alter-var-root #'reranker/rerank!
+    (alter-var-root #'ontology-logic/reranker-rerank!
       (constantly
         (fn [ctx opts]
           (let [slug (::task-slug ctx)
@@ -151,12 +146,12 @@
             (touch! slug (fn [m]
                            (-> m
                                (update :rerank-calls inc)
-                               (update :timed-out? #(or % (reranker/timed-out? result))))))
+                               (update :timed-out? #(or % (ontology-logic/timed-out? result))))))
             result))))
     {:captured captured
      :restore! (fn []
                  (alter-var-root #'orc/execute (constantly orig-execute))
-                 (alter-var-root #'reranker/rerank! (constantly orig-rerank!)))}))
+                 (alter-var-root #'ontology-logic/reranker-rerank! (constantly orig-rerank!)))}))
 
 (defn- tee-summary [captured slug]
   (let [m (get @captured slug {:usage-events [] :rerank-calls 0 :timed-out? false})
@@ -168,11 +163,6 @@
                       nil (:usage-events m))]
     {:usage usage :rerank-calls (:rerank-calls m) :timed-out? (:timed-out? m)}))
 
-;; =============================================================================
-;; reached-via / newborn-in-index? — best-effort REPORTING derivation, never
-;; a gate. `:match` is split seed-match vs index-match by the assigned
-;; concept's own provenance; everything else follows :assigned-via directly.
-;; =============================================================================
 
 (defn- concept-provenance-kind [ctx assigned-tree-id]
   (when assigned-tree-id
@@ -193,9 +183,6 @@
       :seed-match)
     :else :deferred))
 
-;; =============================================================================
-;; run-pass!
-;; =============================================================================
 
 (def default-task-timeout-ms 180000)
 (def default-snapshot-every 25)
@@ -245,17 +232,14 @@
    `force-rebuild!` the ColBERT index so retrieval reflects the restored
    state. Returns the restored ctx."
   [snapshot]
-  (let [runner-start! (requiring-resolve 'runner/start!)
-        runner-state (requiring-resolve 'runner/system-state)
-        drive-projectors! (requiring-resolve 'runner/drive-projectors!)]
-    (runner-start!)
-    (let [ctx (deref @runner-state)
-          appendable (mapv #(dissoc % :event/id :event/timestamp) snapshot)]
-      (when (seq appendable)
-        (es/append (:event-store ctx) {:tenant-id (:tenant-id ctx) :events appendable}))
-      (drive-projectors! ctx)
-      (ont-tp/force-rebuild! ctx)
-      ctx)))
+  (runner/start!)
+  (let [ctx (runner/current-context)
+        appendable (mapv #(dissoc % :event/id :event/timestamp) snapshot)]
+    (when (seq appendable)
+      (es/append (:event-store ctx) {:tenant-id (:tenant-id ctx) :events appendable}))
+    (runner/drive-projectors! ctx)
+    (ont-tp/force-rebuild! ctx)
+    ctx))
 
 (defn- maybe-reindex! [ctx reindex-policy completed-count]
   (when (and (map? reindex-policy)
@@ -265,7 +249,7 @@
     (ont-tp/force-rebuild! ctx)))
 
 (defn- active-index-id [ctx]
-  ((requiring-resolve 'runner/active-index-id) ctx))
+  (runner/active-index-id ctx))
 
 (defn resume-decision
   "PURE: given a slug's PRIOR persisted record (or nil, when none exists)
@@ -277,11 +261,6 @@
                 (or (= :ok (:status prior))
                     (and (= :error (:status prior)) (not retry-errors?))))))
 
-;; =============================================================================
-;; :store — RS7-PS: translate `{:kind :in-memory}` / `{:kind :postgres
-;; :database "<name>" :tenant-id <uuid-or-nil>}` into `runner/start!`'s
-;; options, and record it (never credentials) on `run.edn`.
-;; =============================================================================
 
 (defn- read-run-edn [dir] (read-edn-file (io/file dir "run.edn")))
 
@@ -397,9 +376,6 @@
                corpus-filter task-timeout-ms snapshot-every store]
         :or {reindex-policy :none retry-errors? false
              task-timeout-ms default-task-timeout-ms snapshot-every default-snapshot-every}}]
-  ;; Pass 2 measures stability against the tree pass 1 grew, so it must run on
-  ;; pass 1's store and tenant. A pass 2 started on a fresh tenant would seed
-  ;; a new corpus and report stability against nothing, silently; refuse it.
   (when (= 2 pass)
     (let [prior (maybe-read-run-edn results-dir)
           pass-1 (load-pass-records results-dir 1)]
@@ -418,29 +394,13 @@
         boundary (store-boundary ctx)
         tee (install-tee!)
         pdir (pass-dir results-dir pass)
-        ;; :newborn-in-index? tracking: remember, per assigned concept, the
-        ;; index-id active AT MINT TIME (an agent-authored concept is never
-        ;; in the index that predates its own mint). A later classify that
-        ;; reaches the SAME concept is "newborn-in-index?" true only once the
-        ;; active index has moved past that mint-time index.
         minted-index-at (atom {})
-        ;; RS7-PS: the fields that are known BEFORE any task runs — written
-        ;; to run.edn immediately (below) so a crash mid-pass still leaves
-        ;; `:store` (kind/database/tenant-id) on disk for
-        ;; `resolve-store-opts` to resume from. `:finished-at nil` marks an
-        ;; in-flight or crashed run; the final write (below) refreshes
-        ;; :commit/:dirty?/:finished-at over the SAME map.
         run-edn-base {:corpus-sha256 (:corpus-sha256 manifest)
                       :task-order task-order
                       :reindex-policy reindex-policy
                       :parallelism 1
-                      :thresholds {:rerank-timeout-ms reranker/default-rerank-timeout-ms}
+                      :thresholds {:rerank-timeout-ms ontology-logic/default-rerank-timeout-ms}
                       :started-at started-at
-                      ;; RS7-PS: never credentials — kind/database/tenant-id
-                      ;; only. `:tenant-id` comes from `ctx` itself (the
-                      ;; store actually in use), not from `store`, so a
-                      ;; caller that passed no explicit tenant-id still
-                      ;; gets an accurate, resumable record.
                       :store {:kind (:kind store :in-memory)
                               :database (:database store)
                               :tenant-id (:tenant-id ctx)}}
@@ -491,17 +451,13 @@
         (write-run-edn!
           {:commit (try (str/trim (:out (shell/sh "git" "rev-parse" "HEAD"))) (catch Throwable _ nil))
            :dirty? (try (not (str/blank? (:out (shell/sh "git" "status" "--porcelain")))) (catch Throwable _ nil))
-           :models {:reranker-model (reranker/resolve-model ctx nil)}
+           :models {:reranker-model (ontology-logic/resolve-model ctx nil)}
            :jvm-args (vec (.getInputArguments (java.lang.management.ManagementFactory/getRuntimeMXBean)))
            :finished-at (str (java.time.Instant/now))})
         {:results-dir results-dir :records records})
       (finally
         ((:restore! tee))))))
 
-;; =============================================================================
-;; analyse — pure over records + manifest (no IO, no LLM). run-pass! writes
-;; the records to disk; this fn just needs THEM, not the dir.
-;; =============================================================================
 
 (defn- median [coll]
   (when (seq coll)
@@ -574,10 +530,6 @@
              :groups (into (sorted-map)
                            (for [[g rs] by-group :when g] [g (per-group-analysis g rs)]))
              :in-domain-mint-count (count in-domain-mints)
-             ;; A mint count alone hid the first post-fix arm's failure: in-domain
-             ;; tasks LANDED on wrong families. In-domain accuracy is judged against
-             ;; the brief's expected seed, and family sharing across groups is the
-             ;; false-merge measure.
              :in-domain-seed-match-count (count (filter #(and (:corpus-in-domain? %)
                                                              (:expected-seed-id %)
                                                              (= (str (:expected-seed-id %)) (str (:assigned-tree-id %))))
@@ -632,9 +584,6 @@
                            (= maj (:assigned-tree-id r2)))]
                (if (seq evald) (double (/ (count (filter true? evald)) (count evald))) 0.0))))))
 
-;; =============================================================================
-;; compare-runs — refuses mismatched corpora, reports changed slugs
-;; =============================================================================
 
 (defn compare-runs
   "Refuses (returns `{:refused? true :reason ...}`, writes nothing) unless
@@ -679,9 +628,6 @@
                                     (:slug r) (:a-via r) (:b-via r) (:a-label r) (:b-label r) (:changed? r))))))
         report))))
 
-;; =============================================================================
-;; TRAFFIC.md — markdown renderer over an `analyse` result
-;; =============================================================================
 
 (defn traffic-md
   [{:keys [total groups in-domain-mint-count confounder-mint-count deferral-count
@@ -711,9 +657,6 @@
                         g (:child-count a) (:mint-count a) (:landing-count a)
                         (:label-variant-count a) (:converged-strict? a) (:converged-relaxed? a))))))
 
-;; =============================================================================
-;; run-e2e! — 15-group end-to-end subset (v01 + last accepted variant)
-;; =============================================================================
 
 (defn- tree-node-count [tree]
   (if (sequential? tree)
@@ -744,20 +687,15 @@
   [ctx {:keys [manifest-path corpus-path groups results-dir store]}]
   (let [manifest (load-manifest manifest-path)
         corpus (load-traffic-corpus corpus-path manifest)
-        run! (requiring-resolve 'runner/run!)
         _ (.mkdirs (io/file results-dir))
         results
         (vec
-          ;; Order per PLAN.md Part A: every group's FIRST variant runs before
-          ;; any group's later variant, on ONE store, so a later variant lands
-          ;; on the family its group's first campaign minted and sees what that
-          ;; campaign accrued (the "first mints, later lands" proof).
           (for [entry (let [per-group (mapv #(e2e-slugs-for-group corpus %) groups)]
                         (concat (keep first per-group) (mapcat rest per-group)))
                 :let [slug (:slug entry)]]
             (do
               (println "\n=== e2e:" slug)
-              (let [record (run! {:name slug :slug slug :pattern "traffic-e2e" :documents []
+              (let [record (runner/run! {:name slug :slug slug :pattern "traffic-e2e" :documents []
                                   :instruction (:instruction entry) :writes [:result]
                                   :rlm {:auto-classify? true}})
                     sheet-id (some-> record :r-inject-trace :injection-records first :sheet-id)
@@ -803,23 +741,6 @@
           (with-out-str (pp/pprint {:store store-record :results results})))
     {:results-dir results-dir :store store-record :results results}))
 
-(comment
-  ;; Launcher, in-memory store (from the worktree root, OPENROUTER_API_KEY in
-  ;; the environment):
-  ;; clojure -J-Djava.awt.headless=true -J-Xmx1600m -M:dev:test -e "(require 'runner) (runner/start!) (Thread/sleep 45000) (require 'rs7-traffic-sweep) (let [ctx (deref @(requiring-resolve 'runner/system-state))] (rs7-traffic-sweep/run-pass! ctx {:corpus-path traffic-corpus-gen/corpus-dir :manifest-path (str traffic-corpus-gen/corpus-dir \"/manifest.edn\") :results-dir \"development/bench/ood-stress-results/rs7-pass-1\" :pass 1 :reindex-policy {:every-k 25}})) (runner/stop!) (shutdown-agents) (System/exit 0)"
+#_(do
 
-  ;; Launcher, PERSISTENT Postgres store (RS7-PS) — the RS-7 arms run ~7
-  ;; hours, so a crash mid-arm should not lose the store. Rules: ONE
-  ;; database per ARM (e.g. `rs7_pre_fix`), created BEFORE the run with
-  ;; `docker exec orc-rs7-postgres createdb -U orc rs7_pre_fix`. Pass 2 runs
-  ;; with the SAME results-dir and database, so resolve-store-opts reuses
-  ;; pass 1's tenant; run-pass! refuses a pass 2 on any other tenant. `resolve-store-opts` is
-  ;; how `:store` is "passed through to runner/start!": it derives
-  ;; `runner/start!`'s `:event-store-conn`/`:tenant-id` from the SAME
-  ;; `:store` value recorded on `run.edn`, reusing the prior run's tenant
-  ;; id (via `maybe-read-run-edn`) so a resumed JVM reconnects to the exact
-  ;; tenant the killed JVM was writing to instead of minting a fresh,
-  ;; empty one. `runner/start!` itself then decides — from the store's own
-  ;; events, never from run.edn — whether to reseed or resume-in-place:
-  ;; clojure -J-Djava.awt.headless=true -J-Xmx1600m -M:dev:test -e "(require 'runner) (require 'rs7-traffic-sweep) (let [results-dir \"development/bench/ood-stress-results/rs7-pre-fix\" store {:kind :postgres :database \"rs7_pre_fix\"} {:keys [event-store-conn tenant-id]} (rs7-traffic-sweep/resolve-store-opts store (rs7-traffic-sweep/maybe-read-run-edn results-dir))] (runner/start! {:event-store-conn event-store-conn :tenant-id tenant-id}) (let [ctx (deref @(requiring-resolve 'runner/system-state))] (rs7-traffic-sweep/run-pass! ctx {:corpus-path traffic-corpus-gen/corpus-dir :manifest-path (str traffic-corpus-gen/corpus-dir \"/manifest.edn\") :results-dir results-dir :pass 1 :reindex-policy {:every-k 25} :store (assoc store :tenant-id tenant-id)}))) (runner/stop!) (shutdown-agents) (System/exit 0)"
   )

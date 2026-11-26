@@ -18,11 +18,10 @@
        -M:dev -m el2-grounded-rank-proto"
   (:require [runner]
             [ai.obney.orc.ontology.interface :as ont]
-            [ai.obney.orc.ontology.core.task-classifier :as tc]
-            [ai.obney.orc.ontology.core.reranker :as reranker]
             [ai.obney.orc.colbert.interface :as colbert]
             [clojure.string :as str]
-            [clojure.pprint :as pp]))
+            [clojure.pprint :as pp]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
 (def parent-name-by-id
   {#uuid "8ad38e72-05e4-3201-bac7-3ed9c54a2791" "Research"
@@ -57,18 +56,14 @@
 (def rename-move-symbol-id (derive-child-id "rename-move-symbol" code-building))
 
 (defn build-sig [instruction]
-  (tc/build-task-signature {:instruction instruction
+  (ontology-logic/build-task-signature {:instruction instruction
                             :reads [:user-message :active-plan :workspace-root]
                             :writes [:assistant-response]
                             :mcp-tools ["shell/exec" "fs/read" "fs/list"]}))
 
-;; The E4 force-fit case.
 (def refactor-instruction
   "Refactor the order service to extract a pure pricing helper from the request handler, preserving existing behavior and keeping all current tests green.")
 
-;; ============================================================================
-;; The enrichment under test (mirrors what will go into apply-rerank).
-;; ============================================================================
 (defn coerce-target-id
   "Candidate :document-metadata :target-id round-trips through ColBERT JSON as
    a string; coerce to UUID when it parses as one (matches the descriptions
@@ -127,7 +122,6 @@
       (seq weaknesses)            (assoc :weaknesses (compact-weaknesses weaknesses))
       true                        (assoc ::scope-hit scope-hit ::body-found? (some? body)))))
 
-;; Behavioral intent with the avoid-when-aware HARD rule (mirrors the prompt edit).
 (def el2-behavioral-intent
   (str "I'm classifying a task to find behavioral subtrees — reusable "
        "competencies (analysis / validation / research / design / etc.) "
@@ -137,8 +131,6 @@
        "matter fit, not only structural shape. Higher fitness = better "
        "behavioral match."))
 
-;; A STRONGER reranker prompt that puts the avoid-when rule front-and-center,
-;; used to test whether the reranker CAN honor avoid-when if pushed hard.
 (def hard-avoid-when-instruction
   "You are ranking candidate descriptions by their fitness for a caller's intent.
 
@@ -169,10 +161,8 @@ Raw JSON only, starting with [ and ending with ]. Return ALL candidates.")
     (println "FATAL: OPENROUTER_API_KEY not set") (System/exit 1))
   (try
     (runner/start!)
-    (let [ctx (deref (var-get (requiring-resolve 'runner/system-state)))]
+    (let [ctx (runner/current-context)]
 
-      ;; -- 0. RULE OUT HARNESS: confirm rename-move-symbol's body + :avoid-when
-      ;;       is reachable, and at WHICH scope --
       (println "\n############ 0. RULE-OUT-HARNESS: scope of the guard body ############")
       (doseq [[n p] children]
         (let [id (derive-child-id n p)
@@ -185,8 +175,6 @@ Raw JSON only, starting with [ and ending with ]. Return ALL candidates.")
             (println "    rename-move-symbol weaknesses avoid-when:")
             (doseq [w (:weaknesses bf)] (println "      -" (pr-str (:avoid-when w)))))))
 
-      ;; -- 0b. RAW ColBERT pool (NO granularity filter, k=12) — is Code-building
-      ;;        even RECALLED for the refactor task? --
       (println "\n############ 0b. RAW ColBERT recall pool for `refactor` (no filter, k=12) ############")
       (let [raw-pool (ont/search-descriptions ctx
                        {:query (build-sig refactor-instruction)
@@ -200,7 +188,6 @@ Raw JSON only, starting with [ and ending with ]. Return ALL candidates.")
                              (-> r :document-metadata :granularity)
                              (double (or (:score r) 0.0)))))))
 
-      ;; -- 1. retrieve the raw behavioral candidates for the refactor case --
       (println "\n############ 1. RAW behavioral candidates for `refactor` (pre-enrich) ############")
       (let [raw (ont/search-descriptions ctx
                   {:query (build-sig refactor-instruction)
@@ -216,7 +203,6 @@ Raw JSON only, starting with [ and ending with ]. Return ALL candidates.")
                              (-> r :document-metadata :granularity)
                              (some-> (:fitness-score r) double)))))
 
-        ;; -- 2. ENRICH + show :avoid-when present per candidate --
         (println "\n############ 2. ENRICHED payload (the EL-2 input-side fix) ############")
         (let [enriched (mapv #(enrich-candidate ctx %) raw)]
           (doseq [c enriched]
@@ -230,11 +216,9 @@ Raw JSON only, starting with [ and ending with ]. Return ALL candidates.")
                                    enriched))]
             (pp/pprint (dissoc rms ::scope-hit ::body-found?)))
 
-          ;; -- 3. REAL reranker on the enriched payload --
           (println "\n############ 3. REAL reranker on ENRICHED payload ############")
-          ;; strip the proto-only ::scope-hit / ::body-found? markers before send
           (let [clean (mapv #(dissoc % ::scope-hit ::body-found?) enriched)
-                reranked (reranker/rerank! ctx {:query (build-sig refactor-instruction)
+                reranked (ontology-logic/reranker-rerank! ctx {:query (build-sig refactor-instruction)
                                                 :intent el2-behavioral-intent
                                                 :candidates clean})
                 by-id (into {} (map (juxt :document-id identity)) clean)]
@@ -256,9 +240,6 @@ Raw JSON only, starting with [ and ending with ]. Return ALL candidates.")
               (println "  Code-building BEATS rename child? ="
                        (boolean (and cb-rank (or (nil? rms-rank) (< cb-rank rms-rank))))))
 
-            ;; -- 4. HARD avoid-when prompt: can the reranker be FORCED to honor
-            ;;       avoid-when as a veto? Redef the private instruction + rebuild
-            ;;       the workflow var, then rerank the SAME enriched payload. --
             (println "\n############ 4. SAME payload, HARD avoid-when-veto prompt ############")
             (let [hard-wf (ai.obney.orc.orc-service.interface/workflow "ontology-description-reranker-hard"
                             (ai.obney.orc.orc-service.interface/blackboard
@@ -275,8 +256,8 @@ Raw JSON only, starting with [ and ending with ]. Return ALL candidates.")
                               :writes [:reranked-json]
                               :options {:max-retries 3 :retry-delay-ms [500 1500 3000]
                                         :use-function-calling? true}))]
-              (with-redefs [reranker/reranker-workflow hard-wf]
-                (let [reranked2 (reranker/rerank! ctx {:query (build-sig refactor-instruction)
+              (with-redefs [ontology-logic/reranker-workflow hard-wf]
+                (let [reranked2 (ontology-logic/reranker-rerank! ctx {:query (build-sig refactor-instruction)
                                                        :intent el2-behavioral-intent
                                                        :candidates clean})
                       order2 (mapv (fn [r] (coerce-target-id

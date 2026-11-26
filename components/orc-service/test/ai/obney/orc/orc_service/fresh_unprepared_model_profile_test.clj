@@ -22,9 +22,6 @@
 (def proofs (atom []))
 
 (defn response-for [role body]
-  ;; Like the existing public fixture, answer in the protocol ACTUALLY requested.
-  ;; This lets the intended wire-profile assertions fail even if both protocols
-  ;; happen to decode successfully. It never repairs production model output.
   (let [outer? (or (= role :prime) (= "fixture/outer" (:model body)))
         outputs (if outer? {:reasoning reasoning :code (if (= role :prime) prime-code inline-code)} {:detail packet})
         tools? (seq (:tools body))
@@ -89,7 +86,6 @@
       (h/with-async-test-context [ctx {:event-store-conn {:type :sqlite :database-file (str db) :maximum-pool-size 2}
                                      :context {:tenant-id tenant :llm-provider (if (= role :prime) primary outer)
                                                :probe-effects prefix-count
-                                               ;; Context-free opt-out SCI uses the supported TWO-arg legacy seam.
                                                :call-tool-fn (fn [tool args] (swap! tool-calls conj [tool args]) {:ok true})}}]
         (let [workflow-definition (definition role primary backup primary-only?)
               sheet (orc/build-workflow! ctx workflow-definition)
@@ -153,8 +149,6 @@
                            :rlm/researcher-resume-state-saved :rlm/researcher-effect-claimed
                            :rlm/researcher-effect-completed :rlm/researcher-effect-indeterminate} (:event/type %)) events))
           (is (false? (get-in (first (filter #(= "research" (:name %)) (orc/get-nodes-for-sheet ctx sheet))) [:rlm :checkpointed?])))
-          ;; These options govern predictor return/validation, not retained wire controls.
-          ;; The spy delegates every call to the REAL predictor and loopback HTTP.
           (is (= (count expected-models) (count @predictor-calls)))
           (is (every? #(= true (get-in % [:options :with-metadata?])) @predictor-calls))
           (is (every? #(= false (get-in % [:options :validate?])) @predictor-calls))

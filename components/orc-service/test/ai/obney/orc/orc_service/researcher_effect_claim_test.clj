@@ -7,9 +7,7 @@
    claim append; it is not a substitute for any production state."
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.researcher-effects :as effects]
             [ai.obney.orc.orc-service.core.todo-processors :as todo]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.test-helpers :as h]
@@ -19,7 +17,8 @@
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
-            [cognitect.anomalies :as anom]))
+            [cognitect.anomalies :as anom]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- command
   [name body]
@@ -128,7 +127,7 @@
             tick-id (random-uuid)
             node-id (random-uuid)
             logical-id "sha256:det-e2e-261-logical"
-            attempt-id (effects/attempt-identity logical-id 1 0)
+            attempt-id (service-logic/attempt-identity logical-id 1 0)
             frontier-result (claim-frontier! ctx sheet-id tick-id node-id 1)
             effect-count (atom 0)
             ready (java.util.concurrent.CountDownLatch. 2)
@@ -143,8 +142,6 @@
                  (let [result (claim-effect! ctx sheet-id tick-id node-id 1
                                              logical-id attempt-id)]
                    (when-not (::anom/category result)
-                     ;; Injected capability: dispatch is permitted only after
-                     ;; the claim append has returned successfully.
                      (swap! effect-count inc))
                    result))))]
         (is (nil? (::anom/category frontier-result)) (pr-str frontier-result))
@@ -158,9 +155,7 @@
                                     (= logical-id
                                        (:logical-action-identity %)))
                               events)
-              get-claims (ns-resolve
-                          'ai.obney.orc.orc-service.core.read-models
-                          'get-researcher-effect-claims)
+              get-claims #'rm/get-researcher-effect-claims
               projected (when get-claims
                           (get-claims ctx sheet-id tick-id node-id))]
           (is (not-any? #{::timeout} results) (pr-str results))
@@ -193,10 +188,10 @@
             tick-id (random-uuid)
             node-id (random-uuid)
             old-logical "sha256:old-logical"
-            old-attempt (effects/attempt-identity old-logical 1 0)
+            old-attempt (service-logic/attempt-identity old-logical 1 0)
             new-logical "sha256:new-logical"
-            stale-new-attempt (effects/attempt-identity new-logical 1 0)
-            new-attempt (effects/attempt-identity new-logical 2 0)]
+            stale-new-attempt (service-logic/attempt-identity new-logical 1 0)
+            new-attempt (service-logic/attempt-identity new-logical 2 0)]
         (is (nil? (::anom/category
                    (claim-frontier! ctx sheet-id tick-id node-id 1))))
         (is (nil? (::anom/category
@@ -224,7 +219,7 @@
               campaign-events
               (filterv #(contains? (:event/tags %)
                                    [:researcher-campaign
-                                    (effects/campaign-tag-id sheet-id tick-id node-id)])
+                                    (service-logic/campaign-tag-id sheet-id tick-id node-id)])
                        (h/read-all-events ctx))
               projected (rm/get-researcher-effect-claims ctx sheet-id tick-id node-id)]
           (is (= ::anom/conflict (::anom/category duplicate-completion))
@@ -250,7 +245,7 @@
             tick-id (random-uuid)
             node-id (random-uuid)
             logical-id "sha256:det-e2e-272-orphaned-action"
-            attempt-id (effects/attempt-identity logical-id 1 0)]
+            attempt-id (service-logic/attempt-identity logical-id 1 0)]
         (is (nil? (::anom/category
                    (claim-frontier! ctx sheet-id tick-id node-id 1))))
         (is (nil? (::anom/category
@@ -314,10 +309,10 @@
             completed-logical "sha256:det-e2e-272-completed"
             unresolved-logical "sha256:det-e2e-272-unresolved"
             missing-logical "sha256:det-e2e-272-missing"
-            current-attempt (effects/attempt-identity current-logical 1 0)
-            completed-attempt (effects/attempt-identity completed-logical 1 0)
-            unresolved-attempt (effects/attempt-identity unresolved-logical 1 0)
-            missing-attempt (effects/attempt-identity missing-logical 1 0)]
+            current-attempt (service-logic/attempt-identity current-logical 1 0)
+            completed-attempt (service-logic/attempt-identity completed-logical 1 0)
+            unresolved-attempt (service-logic/attempt-identity unresolved-logical 1 0)
+            missing-attempt (service-logic/attempt-identity missing-logical 1 0)]
         (is (nil? (::anom/category
                    (claim-frontier! ctx sheet-id tick-id node-id 1))))
         (doseq [[logical-id attempt-id]
@@ -388,13 +383,13 @@
                                       (array-map :modes (hash-set :vector :graph)
                                                  :limit 5)
                                       :query "fence"))
-          base-id (effects/logical-action-identity base)
-          reordered-id (effects/logical-action-identity reordered)
+          base-id (service-logic/logical-action-identity base)
+          reordered-id (service-logic/logical-action-identity reordered)
           other (assoc base :target "lookup")
-          first-order [(effects/logical-action-identity base)
-                       (effects/logical-action-identity other)]
-          second-order [(effects/logical-action-identity other)
-                        (effects/logical-action-identity reordered)]]
+          first-order [(service-logic/logical-action-identity base)
+                       (service-logic/logical-action-identity other)]
+          second-order [(service-logic/logical-action-identity other)
+                        (service-logic/logical-action-identity reordered)]]
       (is (= base-id reordered-id))
       (is (= first-order (vec (reverse second-order)))
           "evaluation order does not become identity input")
@@ -408,12 +403,12 @@
                [:target "lookup"]
                [:arguments {:query "different"}]]]
         (is (not= base-id
-                  (effects/logical-action-identity (assoc base field changed)))
+                  (service-logic/logical-action-identity (assoc base field changed)))
             (str field " is part of the logical identity preimage")))))
   (testing "list, vector, set, and map arguments retain distinct types"
     (let [identity-for
           (fn [arguments]
-            (effects/logical-action-identity
+            (service-logic/logical-action-identity
              {:tick-id #uuid "00000000-0000-0000-0000-000000000001"
               :node-id #uuid "00000000-0000-0000-0000-000000000002"
               :iteration-index 0
@@ -426,16 +421,16 @@
 
 (deftest physical-attempt-identity-is-stable-unique-and-non-negative
   (let [logical-id "sha256:logical-attempt-contract"
-        attempt-1 (effects/attempt-identity logical-id 1 0)]
-    (is (= attempt-1 (effects/attempt-identity logical-id 1 0)))
-    (is (not= attempt-1 (effects/attempt-identity logical-id 2 0))
+        attempt-1 (service-logic/attempt-identity logical-id 1 0)]
+    (is (= attempt-1 (service-logic/attempt-identity logical-id 1 0)))
+    (is (not= attempt-1 (service-logic/attempt-identity logical-id 2 0))
         "an ownership retry has a distinct physical attempt")
-    (is (not= attempt-1 (effects/attempt-identity logical-id 1 1))
+    (is (not= attempt-1 (service-logic/attempt-identity logical-id 1 1))
         "an ordinal retry has a distinct physical attempt")
     (is (re-matches #"sha256:[0-9a-f]{64}" attempt-1))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo
                           #"non-negative"
-                          (effects/attempt-identity logical-id 1 -1))))
+                          (service-logic/attempt-identity logical-id 1 -1))))
   (testing "a negative ordinal is rejected before any claim append"
     (h/with-async-test-context [ctx]
       (let [sheet-id (random-uuid)
@@ -587,22 +582,22 @@
                              :completion_tokens 1
                              :total_tokens 2}})]
       (let [first-result
-            (executor/execute-repl-researcher-rlm
+            (todo/execute-repl-researcher-rlm
              node (blackboard duration-a) :test context)
             second-result
-            (executor/execute-repl-researcher-rlm
+            (todo/execute-repl-researcher-rlm
              node (blackboard duration-b) :test context)
             tool-claims (filterv #(= :tool (:kind %)) @claims)
             expected-logical
-            (effects/logical-action-identity
+            (service-logic/logical-action-identity
              {:tick-id tick-id
               :node-id node-id
               :iteration-index 0
-              :generated-code-hash (effects/generated-code-hash source)
+              :generated-code-hash (service-logic/generated-code-hash source)
               :kind :tool
               :target "search"
               :arguments
-              (executor/encode-checkpoint-value
+              (service-logic/encode-checkpoint-value
                [codec] {:duration duration-a})})]
         (is (= [:success :success]
                (mapv :status [first-result second-result])))
@@ -615,7 +610,7 @@
     (is (thrown-with-msg?
          clojure.lang.ExceptionInfo
          #"unsupported"
-         (effects/logical-action-identity
+         (service-logic/logical-action-identity
           {:tick-id tick-id
            :node-id node-id
            :iteration-index 0
@@ -624,7 +619,7 @@
            :target "search"
            :arguments (Object.)})))
     (is (= "sha256:ccb3a19c2efac938f6898e946c265ca3f5643eb718ff05c1d939f7b3d1ed9c11"
-           (effects/logical-action-identity
+           (service-logic/logical-action-identity
             {:tick-id #uuid "00000000-0000-0000-0000-000000000001"
              :node-id #uuid "00000000-0000-0000-0000-000000000002"
              :iteration-index 0
@@ -680,9 +675,7 @@
                        (h/read-tick-events ctx tick-id))
               provider-claim (first (filter #(= :provider (:kind %))
                                             campaign-events))
-              identity-fn (ns-resolve
-                           'ai.obney.orc.orc-service.core.researcher-effects
-                           'provider-logical-action-identity)
+              identity-fn #'service-logic/provider-logical-action-identity
               expected-logical
               (when identity-fn
                 (identity-fn {:tick-id tick-id
@@ -692,8 +685,6 @@
                               :model "deterministic-model"
                               :module (:module @observation)
                               :inputs (:inputs @observation)
-                              ;; The logical request precedes physical retry normalization.
-                              ;; This fixture authors no retry option; dispatch adds zero.
                               :options (dissoc (:options @observation) :max-retries)}))
               projected (rm/get-researcher-effect-claims
                          ctx sheet-id tick-id node-id)]
@@ -833,9 +824,6 @@
                                       (:command/name candidate))
                                    (= 2 (:ownership-epoch candidate)))
                             (do
-                              ;; This is a real CAS race: frontier 3 commits
-                              ;; after this worker won frontier 2 but before its
-                              ;; resolution command reaches the append boundary.
                               (real-process-command
                                (assoc command-context
                                       :command
@@ -1223,11 +1211,11 @@
                 "outer and generated-code-origin provider calls have distinct content identities")
             (is (every? #(= :completed (:status %)) provider-claims))
             (is (some #(= duration
-                          (get-in (executor/decode-checkpoint-value [codec] (:result %))
+                          (get-in (service-logic/decode-checkpoint-value [codec] (:result %))
                                   [:outputs :detail]))
                       provider-claims)
                 "projected checkpoint data decodes to the original native Duration")
-            (is (some #(= (executor/encode-checkpoint-value [codec]
+            (is (some #(= (service-logic/encode-checkpoint-value [codec]
                                                             inline-result)
                            (:result %))
                       provider-claims)
@@ -1316,8 +1304,6 @@
                                        (= node-id (:node-id %)))
                                  (h/read-all-events ctx))))
                 recovered-worker-finished (promise)
-                ;; The async processor returns nil. Observe its existing exact
-                ;; worker-exit capability instead of interpreting a return value.
                 recovered-dispatch-result
                 (when start-event
                   (todo/execute-repl-researcher-node
@@ -1402,7 +1388,7 @@
                   (fn [& _]
                     (swap! provider-calls inc)
                     {:outputs {:code "(final! {:summary \"unsafe\"})"}})]
-      (let [result (executor/execute-repl-researcher-rlm
+      (let [result (todo/execute-repl-researcher-rlm
                     node {} :test context)]
         (is (= :failure (:status result)) (pr-str result))
         (is (zero? @provider-calls)
@@ -1431,7 +1417,7 @@
                   (fn [& _]
                     (swap! provider-calls inc)
                     {:outputs {:code "(final! {:summary \"unsafe\"})"}})]
-      (let [result (executor/execute-repl-researcher-rlm
+      (let [result (todo/execute-repl-researcher-rlm
                     node {} :test context)]
         (is (= :failure (:status result)) (pr-str result))
         (is (re-find #"claim.*complete|effect-claim"
@@ -1439,7 +1425,7 @@
             (pr-str result))
         (is (zero? @provider-calls)
             "a checkpointed executor without claim capabilities cannot fire a provider"))
-      (let [result (executor/execute-repl-researcher-rlm
+      (let [result (todo/execute-repl-researcher-rlm
                     node {} :test
                     (assoc (dissoc context :researcher-ownership-epoch)
                            :claim-researcher-effect!
@@ -1679,10 +1665,10 @@
                  :claim-researcher-effect! (fn [_] {:command-result/events []})
                  :complete-researcher-effect! (fn [_] {:command-result/events []})}
                 replay-result
-                (executor/execute-repl-researcher-rlm
+                (todo/execute-repl-researcher-rlm
                  node replay-blackboard :test replay-context)
                 stale-legacy-replay-result
-                (executor/execute-repl-researcher-rlm
+                (todo/execute-repl-researcher-rlm
                  node replay-blackboard :test
                  (assoc replay-context
                         :researcher-actions
@@ -1695,7 +1681,7 @@
                 "the post-completion legacy researcher-action append was lost")
             (is (= :completed (:status tool-claim)))
             (is (= {:value duration}
-                   (executor/decode-checkpoint-value [codec]
+                   (service-logic/decode-checkpoint-value [codec]
                                                      (:result tool-claim))))
             (is (= :success (:status replay-result)) (pr-str replay-result))
             (is (= "PT42S" (get-in replay-result [:outputs :summary]))
@@ -1768,7 +1754,7 @@
                    (get-in @tool-observation
                            [:tool-context :orc/idempotency-key])))
             (is (= :completed (:status tool-claim)))
-            (is (= (effects/attempt-identity
+            (is (= (service-logic/attempt-identity
                     (:logical-action-identity tool-claim)
                     (:ownership-epoch tool-claim)
                     (:attempt-ordinal tool-claim))
@@ -1908,14 +1894,13 @@
                               (when (= event-id (:event/id event)) index))
                             events)))
                   expected-logical
-                  (effects/logical-action-identity
+                  (service-logic/logical-action-identity
                    {:tick-id tick-id
                     :node-id node-id
                     :iteration-index 0
-                    :generated-code-hash (effects/generated-code-hash source)
+                    :generated-code-hash (service-logic/generated-code-hash source)
                     :kind :tool
                     :target "search"
-                    ;; Reverse insertion order from the generated array-map.
                     :arguments (array-map :limit 2 :query "fence")})]
               (is entered? "the winning worker reached provider dispatch")
               (is (some? start-event))
@@ -2217,7 +2202,7 @@
           (is (nil? (::anom/category
                      (claim-frontier! ctx sheet-id tick-id node-id 1))))
           (let [first-result
-                (executor/execute-repl-researcher-rlm
+                (todo/execute-repl-researcher-rlm
                  node blackboard :test
                  (assoc ctx
                         :sheet-id sheet-id
@@ -2248,7 +2233,7 @@
                         (:logical-action-identity old-child)
                         (:attempt-identity old-child)))))
             (let [second-result
-                  (executor/execute-repl-researcher-rlm
+                  (todo/execute-repl-researcher-rlm
                    node blackboard :test
                    (assoc ctx
                           :sheet-id sheet-id
@@ -2500,9 +2485,6 @@
                                 (reset! old-child-attempt-id
                                         (:attempt-identity candidate))
                                 (deliver old-child-claim-persisted result)
-                                ;; The old parent has durably claimed, but the
-                                ;; executor cannot observe the successful claim
-                                ;; or dispatch the child before recovery begins.
                                 @release-old-claim-return)
                               result)
 
@@ -2669,8 +2651,8 @@
             tick-id (random-uuid)
             node-id (random-uuid)
             logical-id "sha256:rr7-one-logical-mint"
-            attempt-1 (effects/attempt-identity logical-id 1 0)
-            attempt-2 (effects/attempt-identity logical-id 2 0)
+            attempt-1 (service-logic/attempt-identity logical-id 1 0)
+            attempt-2 (service-logic/attempt-identity logical-id 2 0)
             mint-body {:capabilities ["retain evidence"]
                        :strengths []
                        :weaknesses []

@@ -1,5 +1,13 @@
 # ORC Allium distillation coverage
 
+## Durable workflow values
+
+The ORC service specification covers the serializable value boundary for
+blackboard writes, blocking payloads, and durable rejection evidence. The
+workflow integration obligation DURABLE-WORKFLOW-VALUES verifies refusal through
+a draft command, isolation of execution writes, and retrieval of structured
+rejection evidence through the public node trace query. With the standalone graph spec imported, this annotation preserves every diagnostic in the extraction baseline. [Current diagnostic baseline](#current-diagnostic-baseline)
+
 ## Checkpoint recovery and delegate admission review
 
 The scoped regression witnesses cover two existing contracts: rejected partial
@@ -108,17 +116,18 @@ are represented in a checked Allium specification.
 | Component | Domain | Spec | Status |
 |---|---|---|---|
 | `agent-browser` | Agent-oriented browser interaction | `agent-browser.allium` | Distilled and checked |
-| `colbert` | Late-interaction indexing and retrieval | `colbert.allium` | Distilled and checked |
-| `evaluation` | Rubrics, judges, scoring, and feedback | `evaluation.allium` | Distilled and checked |
+| `colbert-service` | Late-interaction indexing and retrieval | `colbert.allium` | Distilled and checked |
+| `evaluation-service` | Rubrics, judges, scoring, and feedback | `evaluation.allium` | Distilled and checked |
 | `file-store` | Storage contract | `file-storage.allium` | Distilled and checked |
 | `file-store-local` | Local implementation of storage contract | `file-storage.allium` | Distilled and checked as adapter |
 | `file-store-s3` | S3 implementation of storage contract | `file-storage.allium` | Distilled and checked as adapter |
-| `gepa` | Pareto-based prompt optimization | `gepa.allium` | Distilled and checked |
+| `gepa-service` | Pareto-based prompt optimization | `gepa.allium` | Distilled and checked |
 | `grain-test-utils` | Test-only Grain helpers | — | Excluded: test infrastructure |
+| `integrations` | Optional provider registration and persisted code-function lookup | `orc-service.allium` and provider specs | Shared implementation of existing package boundaries |
 | `langfuse` | Trace destination adapter | `observability.allium` | Distilled and checked with the managed exporter lifecycle exposed by `orc-service` |
 | `llm` | Structured provider prediction and streaming | `llm.allium` | Distilled and checked |
 | `mcp-sheet-builder` | Workflow generation and portable MCP transport lifecycle | `mcp-sheet-builder.allium`, `mcp-client.allium` | Distilled, specified, and verified through DET-E2E-145 |
-| `ontology` | Agent learning, classification, extraction and build coordination; graph library consumer | `ontology.allium` plus the pinned graph specification | Split ownership; graph contracts imported |
+| `ontology-service` | Agent learning, classification, extraction and build coordination; graph library consumer | `ontology.allium` plus the pinned graph specification | Split ownership; graph contracts imported |
 | `orc-service` | Behavior-tree execution and RLM runtime | `orc-service.allium` | Distilled and checked |
 | `predict-rlm-image-tools` | Image benchmark deterministic transforms | `predict-rlm-tools.allium` | Distilled and checked |
 | `predict-rlm-invoice-tools` | Invoice workbook transform | `predict-rlm-tools.allium` | Distilled and checked |
@@ -166,7 +175,7 @@ six reconciled-contract tests and one retained timeout replay. The six
 reconciled-contract cases now pass 44 assertions. No production assertion was
 removed or skipped. The existing field-guide and native-input contracts govern
 these checks; the reconciliation introduces no new production domain or
-behavior. Current Allium checks retain 12 modules, 39 warnings and 116
+behavior. At the time of this reconciliation, Allium covered 12 modules, 39 warnings and 116
 informational diagnostics, with zero errors and zero process findings. Check
 exits 1 and analyse exits 0; this remains a warning baseline, not a clean check.
 
@@ -248,7 +257,7 @@ no flat-value correlation workaround was added. The model feedback/reopen and
 full live-portability obligations remain separate. Structural/process analysis
 remains at 39 warnings/114 information diagnostics, not a clean baseline.
 
-The final audit enumerated every Clojure namespace under each component's
+The pre-extraction audit enumerated every Clojure namespace under each component's
 `src/` tree. The twelve specifications cover 145 product namespaces across the 16
 non-empty product components. The one additional namespace belongs to
 `grain-test-utils`, whose public purpose is test-fixture construction and is
@@ -278,24 +287,18 @@ and zero process findings under Allium language version 3.
 
 ## Current diagnostic baseline
 
-`allium check` exits non-zero when warnings or informational diagnostics are
-present, while `allium analyse` returns success when those diagnostics produce
-no process findings. Thus “zero errors” above does not mean
-`allium check specs` exits cleanly. Under the current checked-in specifications
-and Allium CLI 3.5.3, `allium check specs` reports 155 structural diagnostics
-across the twelve specifications: 116 informational and 39 warnings, zero
-errors. `analyse` reports zero process findings. Before the GEPA reflection
-repair the same CLI measured 113 informational and 39 warnings; the repair adds
-two `unreachableTrigger` diagnostics for `ParentMinibatchEvaluated`, an internal
-evaluation callback like `SubsampleEvaluationCompleted`. The reflection token
-budget adds one for `ReflectionBudgetExhausted`, the internal callback beside
-`OptimizationBudgetExhausted`.
+The merged ORC and pinned graph specifications cover 13 modules. Allium 3.5.0
+reports 241 structural diagnostics, comprising 203 informational messages and
+38 warnings, with zero errors and zero process findings. Check exits 1 and
+analyse exits 0. Diagnostic codes, severities and messages match the extraction
+branch baseline, including after the durable value specification change. Refresh
+the pinned graph spec when reproducing this result. [Combined verification](#ontology-extraction-ownership-18-september-2026)
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 77 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations. The RR-12 map-each recovery, RR-13 blocked-child callback, RR-14 resume-persistence, GEPA parent-minibatch evaluation and GEPA reflection-budget triggers are such startup/internal callbacks. |
-| `allium.field.unused` | 39 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
-| `allium.externalEntity.missingSourceHint` | 17 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
+| `allium.rule.unreachableTrigger` | 71 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations. The RR-12 map-each recovery, RR-13 blocked-child callback, RR-14 resume-persistence, GEPA parent-minibatch evaluation and GEPA reflection-budget triggers are such startup/internal callbacks. |
+| `allium.field.unused` | 132 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
 | `allium.definition.unused` | 18 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
 | `allium.surface.unusedBinding` | 2 | Surface bindings not yet referenced by the surface body; candidates for connection or removal during tending |
@@ -790,7 +793,7 @@ by the deterministic judge/campaign tests is the repository's normal injected
 capability seam. The still-open Grain PR #22 remains a stack portability gate,
 not an unverified RR-17 behavior.
 
-`clojure -M:poly test brick:evaluation` ran every evaluation namespace in the
+`clojure -M:poly test brick:evaluation-service` ran every evaluation namespace in the
 `orc` consuming project with zero test failures, then stopped before the
 `orc-evaluation` context because the composed worktree resolves
 `cat/schema-util` from both the local Grain checkout and the remote PR-22 SHA.
@@ -1241,9 +1244,9 @@ the contribution's original input plus opaque full producer model provenance,
 including resolved models, trace identity and per-call usage. Resolution that
 would collapse distinct existing graph identities is rejected by the library.
 
-The final measured diagnostic totals remain 232 across 13 modules: 198
-information, 34 warnings, 0 errors; analyse reports 0 findings. The ORC ontology
-module retains 44 information and 5 warnings, while the standalone graph module
+The earlier extraction run measured 232 diagnostics across 13 modules: 198
+information, 34 warnings, 0 errors; analyse reports 0 findings. At that point the ORC ontology
+module retained 44 information and 5 warnings, while the standalone graph module
 retains 16 information and 1 warning. Raw outputs were refreshed in the
 standalone project's `evidence/extraction-combined-spec-{check,analyse}.json`.
 
@@ -1326,7 +1329,7 @@ transport or tool seam injected, plus gated REAL-model runs:
   (DET-E2E-307).
 - mcp-sheet-builder `ExecutorsUseTheNodesToolCaller` — `tool_seam_unification_test.clj`,
   `weed_followups_test.clj` (DET-E2E-305).
-- gepa `EveryModelInstructionIsAComponent` — `components/gepa/.../decision_instructions_test.clj`
+- gepa `EveryModelInstructionIsAComponent` — `components/gepa-service/.../decision_instructions_test.clj`
   (DET-E2E-308).
 - End to end on real models (Jev + Gemini): `real_llm_arc_e2e_test.clj` (DET-E2E-309).
 
@@ -1968,6 +1971,6 @@ Reproduction and scope appear in
 [the verification guide](../docs/RESEARCHER-RECOVERY-VERIFICATION.md).
 Arbitrary captured closures, compiled-sheet export/import of callable metadata,
 all restart windows and hosted reasoning quality remain unproven. The repair
-adds no excluded production domain. The existing specification baseline remains
+adds no excluded production domain. The specification baseline for this earlier repair comprised
 12 modules, 39 warnings, 116 informational diagnostics, zero errors and zero
 process findings; check exits 1 and analyse exits 0. This is not a clean check.

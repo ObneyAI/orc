@@ -1,13 +1,14 @@
 (ns ai.obney.orc.orc-service.gepa-named-startup-recovery-test
   "ResumeFromRecordedBoundary before a task manifest exists. The registered,
    named Grain processor catches up its persisted start after SQLite reopen."
-  (:require [clojure.java.io :as io]
+  (:require [ai.obney.orc.gepa.core.commands]
+            [ai.obney.orc.gepa.core.logic :as logic]
+            [ai.obney.orc.gepa.core.read-models :as rm]
+            [clojure.java.io :as io]
             [clojure.test :refer [deftest is]]
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.orc.gepa.interface :as gepa]
-            [ai.obney.orc.gepa.core.task-ledger :as ledger]
-            [ai.obney.orc.gepa.core.metric-runtime :as metric]
             [ai.obney.orc.grain-test-utils.interface :as tu]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h])
@@ -21,8 +22,6 @@
                   {:event-store-conn {:type :sqlite :database-file database :maximum-pool-size 2}
                    :context {:tenant-id tenant-id
                              :gepa/workflow-timeout-ms 15000
-                             ;; Count the actual built-in metric invocation;
-                             ;; the thunk still computes the real grade.
                              :gepa/metric-runner (fn [thunk _]
                                                    (swap! metric-calls inc)
                                                    (thunk))}})
@@ -30,8 +29,6 @@
         base (dissoc initial :processors)
         without (into #{} (remove #(= "sheet" (namespace %)))
                       (keys @tp/processor-registry*))]
-    ;; Sheet effects run normally. GEPA starts only through the named processor
-    ;; below, so fixture commands cannot advance the boundary before shutdown.
     (assoc base :processors (h/start-test-processors base without))))
 
 (defn- named-candidate-processor [ctx]
@@ -39,8 +36,6 @@
         {:keys [handler-fn topics]} (get @tp/processor-registry* processor-name)]
     (when-not (and handler-fn (seq topics))
       (throw (ex-info "The registered GEPA evaluation processor is required" {})))
-    ;; Unlike the generic async test helper, the production name enables Grain's
-    ;; checkpoint lookup and startup catch-up before pubsub subscription.
     (tp/start {:processor-name processor-name
                :event-pubsub (:event-pubsub ctx)
                :handler-fn handler-fn :topics topics
@@ -50,8 +45,6 @@
   (filterv #(= type (:event/type %)) (h/read-all-events ctx)))
 
 (defn- execution-evidence [ctx]
-  ;; Trace-rendering work can finish asynchronously. Freeze the durable task,
-  ;; execution and aggregate evidence whose duplicate effects this test guards.
   (filterv #(or (= "gepa" (namespace (:event/type %)))
                 (#{:sheet/tree-tick-started :sheet/node-execution-started
                    :sheet/node-execution-completed :sheet/tree-tick-completed}
@@ -70,7 +63,7 @@
         started (tu/process-command! ctx
                   {:command/name :gepa/start-optimization :optimization-id optimization-id
                    :sheet-id sheet-id :trainset [input] :valset [input]
-                   :metric-descriptor (metric/prepare! ctx optimization-id {})
+                   :metric-descriptor (logic/prepare! ctx optimization-id {})
                    :config {:max-metric-calls 1}})
         candidate-id (get-in (tu/process-command! ctx
                               {:command/name :gepa/create-candidate :optimization-id optimization-id
@@ -85,7 +78,7 @@
     (is (uuid? candidate-id))
     (is (nil? (:cognitect.anomalies/category evaluated)))
     (is (= 1 (count starts)))
-    (is (empty? (:boundaries (ledger/get-state ctx optimization-id))))
+    (is (empty? (:boundaries (rm/get-state ctx optimization-id))))
     (is (empty? (events-of ctx :sheet/tree-tick-started)))
     {:optimization-id optimization-id :candidate-id candidate-id
      :evaluation-event-id (:event/id (first starts)) :input input}))
@@ -104,11 +97,10 @@
             recovered (sheet-context database tenant-id metric-calls)]
         (try
           (is (= 0 @metric-calls))
-          (is (empty? (:boundaries (ledger/get-state recovered optimization-id))))
-          ;; No resume! or recovery scan: only real named processor startup.
+          (is (empty? (:boundaries (rm/get-state recovered optimization-id))))
           (let [processor (named-candidate-processor recovered)]
             (try
-              (let [tasks (vals (:tasks (ledger/get-state recovered optimization-id)))
+              (let [tasks (vals (:tasks (rm/get-state recovered optimization-id)))
                     task (first tasks)
                     trace-id (:trace-id task)
                     aggregates (events-of recovered :gepa/candidate-evaluated)
@@ -130,8 +122,6 @@
                 (is (some #(= evaluation-event-id (:triggered-by %))
                           (events-of recovered :grain/todo-processor-checkpoint))))
               (finally (tp/stop processor))))
-          ;; A second startup reads its durable checkpoint; the same evaluation
-          ;; cannot create another task, workflow, metric call or aggregate.
           (let [before (execution-evidence recovered)
                 processor (named-candidate-processor recovered)]
             (try

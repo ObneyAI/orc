@@ -66,11 +66,9 @@
                         (fn [tool-name _args] {"server" "github" "tool" tool-name}))
           registry (mcp/create-registry {"linear" linear-conn "github" github-conn})
           call-fn (mcp/registry->call-tool-fn registry)]
-      ;; Route to linear
       (let [result (call-fn "linear/list_issues" {:project "abc"})]
         (is (= "linear" (get result "server")))
         (is (= "list_issues" (get result "tool"))))
-      ;; Route to github
       (let [result (call-fn "github/list_pulls" {:repo "workshop"})]
         (is (= "github" (get result "server")))
         (is (= "list_pulls" (get result "tool"))))))
@@ -84,7 +82,6 @@
           registry (mcp/create-registry {"linear" conn})
           call-fn (mcp/registry->call-tool-fn registry)]
       (call-fn "linear/list_issues" {})
-      ;; The actual MCP server receives the bare tool name, not the prefixed one
       (is (= "list_issues" @received-name))))
 
   (testing "resolves unique unprefixed tool across servers"
@@ -94,13 +91,11 @@
                         (fn [tool-name _] {"from" "github"}))
           registry (mcp/create-registry {"linear" linear-conn "github" github-conn})
           call-fn (mcp/registry->call-tool-fn registry)]
-      ;; "list_issues" only exists on linear
       (is (= "linear" (get (call-fn "list_issues" {}) "from")))
-      ;; "list_pulls" only exists on github
       (is (= "github" (get (call-fn "list_pulls" {}) "from")))))
 
   (testing "errors on ambiguous unprefixed tool"
-    (let [;; Both servers have a tool named "search"
+    (let [
           conn1 (make-static-conn [{:name "search" :description "Search 1" :inputSchema {}}] nil)
           conn2 (make-static-conn [{:name "search" :description "Search 2" :inputSchema {}}] nil)
           registry (mcp/create-registry {"exa" conn1 "tavily" conn2})

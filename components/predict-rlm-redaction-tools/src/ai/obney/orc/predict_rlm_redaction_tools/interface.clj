@@ -42,10 +42,7 @@
       :targets-applied [target ...]      ;; subset of input :targets whose text was found
       :targets-missing [target ...]}     ;; subset whose text could not be located"
   [{:keys [inputs]}]
-  (let [;; Shape-detect the two expected inputs so the model can name its
-        ;; :reads keys freely. The page-texts value is a vector of strings;
-        ;; the targets value is a vector of maps. If both inputs match a
-        ;; shape, the first one bound to that shape wins.
+  (let [
         vals-by-shape (group-by (fn [v]
                                   (cond
                                     (and (vector? v) (every? string? v)) :strings
@@ -54,8 +51,6 @@
                                 (vals inputs))
         page-texts (vec (or (first (get vals-by-shape :strings)) []))
         targets (vec (or (first (get vals-by-shape :maps)) []))
-        ;; Reduce over targets, accumulating redactions per page and
-        ;; classifying each target as applied or missing.
         init-state {:texts page-texts
                     :applied []
                     :missing []
@@ -67,7 +62,6 @@
                               target-text (:text target)
                               current-text (get-in state [:texts page-idx])]
                           (if (nil? current-text)
-                            ;; page out of range
                             (update state :missing conj target)
                             (let [[new-text replaced?] (replace-target-in-text
                                                         current-text target-text)]

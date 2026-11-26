@@ -4,12 +4,10 @@
  [ai.obney.orc.llm.interface :as llm]
  [ai.obney.orc.orc-service.interface :as orc]
  [ai.obney.orc.orc-service.test-helpers :as h]
- [ai.obney.orc.orc-service.core.value-log :as value-log]))
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 (def proof (atom []))
 (def home (str (System/getProperty "java.io.tmpdir") "/orc-nullable-write-" (random-uuid) "/"))
 (defn emit-program [value]
- ;; Reuse the authored answer contract. Redeclaring every answer as nullable
- ;; would test a contract conflict rather than a nonnullable returned nil.
  (str "(emit-tree! [:sequence [:code {:fn '(fn [_] " value ") :reads [:seed] :writes [:answer]}] [:final {:keys [:answer]}]])"))
 (def cases [[:explicit-null "{:answer nil}" [:maybe :string]] [:missing-write "{}" [:maybe :string]] [:nonnullable-null "{:answer nil}" :string] [:whole-nil "nil" [:maybe :string]] [:false-seed "{:answer nil}" [:maybe :string] false] [:zero-seed "{:answer nil}" [:maybe :string] 0]])
 (defn run-case! [[kind second-value answer-schema seed-value]]
@@ -53,8 +51,8 @@
                           {:node-id (:node-id entry) :tick-id (:tick-id entry)
                            :inputs (orc/value-log-resolve-reads ctx (:tenant-id ctx) (:tick-id entry) completion)
                            :outputs (orc/value-log-resolve-writes ctx (:tenant-id ctx) (:tick-id entry) completion)})) family)
-          original-read value-log/read-tick-events
-          unresolved-family (with-redefs [value-log/read-tick-events
+          original-read service-read-models/read-tick-events
+          unresolved-family (with-redefs [service-read-models/read-tick-events
                              (fn [& args] (mapv (fn [event]
                               (if (and (= :sheet/execution-value-written (:event/type event)) (:node-id event)
                                        (= :answer (:key event)) (contains? event :value) (nil? (:value event)))

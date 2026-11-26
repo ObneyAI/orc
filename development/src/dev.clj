@@ -3,7 +3,7 @@
 
    Quick start:
      1. Connect to nREPL on port 7888
-     2. Eval the (start!) form in the comment block
+     2. Eval the (start!) form in the REPL example
      3. Build and execute workflows against `ctx`"
   (:require [ai.obney.orc.orc-dev.core :as orc-dev]
             [ai.obney.orc.orc-service.interface :as orc]
@@ -12,20 +12,18 @@
 
 (defonce service (atom nil))
 
-(declare stop!)
-
-(defn start! []
-  (when @service (stop!))
-  (reset! service (orc-dev/start))
-  (println "ORC started.")
-  :started)
-
 (defn stop! []
   (when-let [s @service]
     (orc-dev/stop s)
     (reset! service nil)
     (println "ORC stopped.")
     :stopped))
+
+(defn start! []
+  (when @service (stop!))
+  (reset! service (orc-dev/start))
+  (println "ORC started.")
+  :started)
 
 (defn ctx []
   (or (::orc-dev/context @service)
@@ -38,17 +36,14 @@
              :command/timestamp (time/now)}
             command-data))))
 
-(comment
+#_(do
   ;; === Quick Start ===
 
   (start!)
 
-  ;; Define a function for the code node to resolve
   (defn my-upper [{:keys [inputs]}]
     {:output (.toUpperCase (str (:input inputs)))})
 
-  ;; Build a workflow using the DSL
-  ;; See docs/dsl-tutorial.md for the full node reference
   (def my-workflow
     (orc/workflow "hello"
       (orc/blackboard {:input :string :output :string})
@@ -59,11 +54,8 @@
 
   (def sheet-id (orc/build-workflow! (ctx) my-workflow))
 
-  ;; Execute it
   (orc/execute (ctx) sheet-id {:input "hello from orc"})
-  ;; => {:status :success, :outputs {:input "hello from orc", :output "HELLO FROM ORC"}, ...}
 
-  ;; LLM node example (requires :llm-provider configured)
   (def llm-workflow
     (orc/workflow "greeting"
       (orc/blackboard {:name :string :greeting :string})

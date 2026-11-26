@@ -12,7 +12,7 @@ This is the navigational north star that every other doc in Wave 1 and Wave 2 wi
 4. `components/ontology/src/ai/obney/orc/ontology/core/embedding.clj` — DJL vs Python evidence
 5. `components/colbert/src/ai/obney/orc/colbert/core/bridge.clj` — Python bridge evidence
 6. `components/evaluation/src/ai/obney/orc/evaluation/core/judge_runtime.clj` — independence evidence
-7. `components/gepa/deps.edn` — zero ontology dep evidence
+7. `components/gepa-service/deps.edn` — zero ontology dep evidence
 8. `components/orc-service/src/ai/obney/orc/orc_service/core/executor.clj` line 2176 — recursive default
 9. `docs/prd/orc-documentation-overhaul.md` — the PRD that drives this issue
 
@@ -42,7 +42,7 @@ No. All claims verified by reading source files. No code execution needed.
 
 ## Live QA the orchestrator runs
 
-Read `components/gepa/deps.edn` — confirm zero `ontology` dep. Read `components/evaluation/src/.../core/judge_runtime.clj` — find the ontology require and confirm it is ONLY used for `get-living-description-enabled?`. Read `components/colbert/core/bridge.clj` line 1–15 — confirm Python subprocess. Read `components/ontology/core/embedding.clj` — confirm DJL `Criteria/builder`. Cross-check all Layer table entries against these reads.
+Read `components/gepa-service/deps.edn` — confirm zero `ontology` dep. Read `components/evaluation/src/.../core/judge_runtime.clj` — find the ontology require and confirm it is ONLY used for `get-living-description-enabled?`. Read `components/colbert/core/bridge.clj` line 1–15 — confirm Python subprocess. Read `components/ontology/core/embedding.clj` — confirm DJL `Criteria/builder`. Cross-check all Layer table entries against these reads.
 
 ## Blocked by
 

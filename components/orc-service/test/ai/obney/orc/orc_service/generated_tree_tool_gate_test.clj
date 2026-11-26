@@ -12,7 +12,7 @@
    These tests exercise that logic directly (no full create-sheet/child-tick
    harness needed): the tree-walking stamper, and execute-code's gating."
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def recorder (atom []))
 
@@ -38,7 +38,7 @@
   (reset! recorder [])
   (let [static-caller (fn [_ _] (swap! recorder conj {:kind :static-call}) {"ok" true})
         blackboard {:tool-context {:value {:session-id "S-123" :request-id "R-9"} :version 1}}
-        result (executor/execute-code node blackboard {:call-tool-fn static-caller})]
+        result (service-logic/executor-execute-code node blackboard {:call-tool-fn static-caller})]
     {:result result :events @recorder}))
 
 (deftest generated-code-node-with-tool-caller-fn-gates-its-tool-call
@@ -76,7 +76,7 @@
 (deftest inject-tool-caller-fn-stamps-generated-code-nodes
   (testing "inject-tool-caller-fn stamps the builder FQN onto each generated
             sheet/code node, leaving other node types untouched"
-    (let [inject @#'executor/inject-tool-caller-fn
+    (let [inject @#'service-logic/inject-tool-caller-fn
           tree '(sheet/sequence
                   (sheet/code :fn "a/b" :reads [:x] :writes [:y])
                   (sheet/llm :instruction "..." :reads [] :writes [:z])
@@ -93,6 +93,6 @@
         (is (not (contains? (apply hash-map (rest llm-form)) :tool-caller-fn))
             "non-code nodes are untouched"))))
   (testing "nil tool-caller-fn is a no-op (backwards compatible)"
-    (let [inject @#'executor/inject-tool-caller-fn
+    (let [inject @#'service-logic/inject-tool-caller-fn
           tree '(sheet/code :fn "a/b" :reads [] :writes [])]
       (is (= tree (inject tree nil))))))

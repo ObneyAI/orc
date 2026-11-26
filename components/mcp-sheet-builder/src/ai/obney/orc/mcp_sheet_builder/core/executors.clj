@@ -49,9 +49,6 @@
                       (get-in effective-context [:node :options :tool-name])
                       (some-> (get-in effective-context [:node :name])
                               (str/replace-first #"^call-" "")))
-        ;; Optional blackboard reads are represented as nil when absent. JSON
-        ;; Schema optional means the member is omitted, not sent as explicit
-        ;; null, so strip nils before invoking the MCP server.
         raw-args (into {} (remove (comp nil? val)) (dissoc inputs :tool-name))
         tool-args (if (and (= 1 (count raw-args)) (map? (val (first raw-args))))
                     (val (first raw-args))
@@ -151,17 +148,3 @@
                       (mcp-client/connect-legacy mcp-opts))]
     (merge {:mcp-session mcp-session}
            additional)))
-
-(comment
-  ;; Example: Create a tool executor
-  (def langfuse-search
-    (make-tool-executor
-     "searchLangfuseDocs"
-     {:query "query"}
-     :search-result))
-
-  ;; Example: Use the generic executor
-  (call-mcp-tool
-   {:inputs {:tool-name "searchLangfuseDocs"
-             :query "How to trace LLM calls?"}
-    :context {:mcp-session nil}}))

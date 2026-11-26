@@ -870,7 +870,7 @@ Create deterministic executors for testing:
 
 ### Judges Without a Model in Tests
 
-Assessments run the judge as a workflow, so test them by stubbing the provider seam with `with-redefs` on `llm/predict`, or by using a deterministic custom judge workflow (see [Building a custom judge](#building-a-custom-judge)). `judges/*use-mock-llm*` and `judges/with-mock-llm` only affect the retained synchronous functions such as `evaluate-single`; they have no effect on assessments. `components/evaluation/test/ai/obney/orc/evaluation/docs_examples_test.clj` shows both approaches running.
+Assessments run the judge as a workflow, so test them by stubbing the provider seam with `with-redefs` on `llm/predict`, or by using a deterministic custom judge workflow (see [Building a custom judge](#building-a-custom-judge)). `judges/*use-mock-llm*` and `judges/with-mock-llm` only affect the retained synchronous functions such as `evaluate-single`; they have no effect on assessments. `components/evaluation-service/test/ai/obney/orc/evaluation/docs_examples_test.clj` shows both approaches running.
 
 ---
 
@@ -878,7 +878,7 @@ Assessments run the judge as a workflow, so test them by stubbing the provider s
 
 > **Layer 1** — requires `evaluation` component. See [COMPONENT-MAP.md](COMPONENT-MAP.md), [EVALUATION-COMPONENT.md](EVALUATION-COMPONENT.md) and [JUDGE-ARCHITECTURE.md](JUDGE-ARCHITECTURE.md).
 
-A **judge** is a behaviour that grades an **assessment subject**, one completed execution of a node, against a **rubric**. Each judgment is a durable **assessment** that ends scored, failed or ungradable. The judge system is **general**: a judge attaches to any node (leaf, composite, delegate or the root), and attaching it enables it. No flag has to be turned on. The 5 default judges that `:repl-researcher` nodes get when the Living Description flag is on are covered in [`RLM-GUIDE.md`](RLM-GUIDE.md#judges-on-repl-researcher-nodes-rlm-specific-defaults--living-description-loop). Every code block marked `;; docs-example: <id>` in this section is run by `components/evaluation/test/ai/obney/orc/evaluation/docs_examples_test.clj`.
+A **judge** is a behaviour that grades an **assessment subject**, one completed execution of a node, against a **rubric**. Each judgment is a durable **assessment** that ends scored, failed or ungradable. The judge system is **general**: a judge attaches to any node (leaf, composite, delegate or the root), and attaching it enables it. No flag has to be turned on. The 5 default judges that `:repl-researcher` nodes get when the Living Description flag is on are covered in [`RLM-GUIDE.md`](RLM-GUIDE.md#judges-on-repl-researcher-nodes-rlm-specific-defaults--living-description-loop). Every code block marked `;; docs-example: <id>` in this section is run by `components/evaluation-service/test/ai/obney/orc/evaluation/docs_examples_test.clj`.
 
 ### Declare and attach in the DSL
 

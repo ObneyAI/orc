@@ -18,28 +18,5 @@
      (blocking-condition? t)   predicate — is this throwable the block signal?
      (block-payload t)         accessor — the opaque payload (nil if not a signal)")
 
-;; Marker interface: an instance is recognized as the block signal by type,
-;; and exposes its opaque payload. Kept minimal — orc never inspects the
-;; payload's shape.
 (definterface IBlockingCondition
   (blockPayload []))
-
-(defn block!
-  "Throw the orc block signal carrying `payload` (opaque to orc). The carrier
-   is an AssertionError subclass, so a Phase-1-style `catch AssertionError`
-   still catches it; the engine's leaf path recognizes it via
-   `blocking-condition?` and completes the node :blocked."
-  [payload]
-  (throw (proxy [AssertionError IBlockingCondition] ["orc blocking condition"]
-           (blockPayload [] payload))))
-
-(defn blocking-condition?
-  "True iff `t` is an orc block signal (as raised by `block!`)."
-  [t]
-  (instance? IBlockingCondition t))
-
-(defn block-payload
-  "The opaque payload carried by a block signal, or nil if `t` is not one."
-  [t]
-  (when (instance? IBlockingCondition t)
-    (.blockPayload ^IBlockingCondition t)))

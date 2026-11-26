@@ -123,13 +123,6 @@ sparingly. Favor prose over bullets; use bullets very sparingly.
      over coordinating sub-calls inline as imperative Phase-1 code.")
 
 (defn- load-inputs []
-  ;; Use per-page TEXT extraction (not vision) to keep the run efficient.
-  ;; predict-rlm renders all 136 pages as images and uses vision (their
-  ;; published cost: 194K tokens / ~4min / $0.52). Our path: extract text
-  ;; per page via PDFBox, iterate pages as plain strings. This is the same
-  ;; text-mode approach that worked for document_redaction (89 redactions
-  ;; in 27s). The fidelity caveat is documented in the report: ORC's
-  ;; comparison is text-extraction-based; predict-rlm is vision-based.
   {:document-page-texts (vec (pdf/extract-pages-as-text pdf-path))})
 
 (def task
@@ -162,7 +155,6 @@ sparingly. Favor prose over bullets; use bullets very sparingly.
     "Key organizations: Victoria Airport Authority (VAA), YYJ"
     "Financial info: 5% LOC, fixed management fee structure, revenue handling"
     "Report markdown has all 4 required sections"]
-   ;; predict-rlm publishes Run Stats for this benchmark in their sample/output/report.md
    :predict-rlm-reported {:main-lm-calls 8 :sub-lm-calls 63
                           :input-tokens 163557 :output-tokens 30515
                           :total-tokens 194072

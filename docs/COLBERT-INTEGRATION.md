@@ -2,7 +2,7 @@
 
 > **Reference Document** - The pure-JVM ColBERT signal for enhanced retrieval.
 >
-> Decision record: [ADR 0002 — Pure-JVM ColBERT signal](adr/0002-pure-jvm-colbert-signal.md). Related: [COMPONENT-MAP.md](COMPONENT-MAP.md) (Layer 5), `components/colbert/`
+> Decision record: [ADR 0002 — Pure-JVM ColBERT signal](adr/0002-pure-jvm-colbert-signal.md). Related: [COMPONENT-MAP.md](COMPONENT-MAP.md) (Layer 5), `components/colbert-service/`
 
 ## Start here: you're already retrieving from the ontology
 
@@ -205,7 +205,7 @@ If the `colbert` component is not on the classpath, `(find-ns 'ai.obney.orc.colb
 ## Component Structure
 
 ```
-components/colbert/
+components/colbert-service/
 ├── deps.edn                          # DJL api + tokenizers + onnxruntime (0.31.1)
 └── src/ai/obney/orc/colbert/
     ├── interface.clj                 # Public API

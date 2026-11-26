@@ -2,12 +2,11 @@
   (:require [clojure.test :refer [deftest is]]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.model-call-journal :as journal]
             [ai.obney.orc.orc-service.core.todo-processors :as processors]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.time.interface :as time]
-            [cognitect.anomalies :as anom]))
+            [cognitect.anomalies :as anom]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn command [name data]
   (merge {:command/name name :command/id (random-uuid) :command/timestamp (time/now)} data))
@@ -20,7 +19,7 @@
 (defn start-owner [context]
   (let [event (:event context)]
     {:sheet-id (:sheet-id event) :tick-id (:tick-id event) :node-id (:node-id event)
-     :node-start-id (:event/id event) :exec-context (value-log/exec-context (:inputs event)) :role :prime}))
+     :node-start-id (:event/id event) :exec-context (service-logic/exec-context (:inputs event)) :role :prime}))
 
 (deftest durable-sticky-selection-is-monotonic-and-mapped-researchers-are-isolated
   (let [starts (atom [])]
@@ -41,7 +40,7 @@
                           (map start-owner @starts))
           owner-a (first owners) owner-b (second owners)
           bind (fn [owner logical plan]
-                 (journal/callbacks ctx (assoc owner :logical-action-id logical) plan :temporary-transport))
+                 (processors/callbacks ctx (assoc owner :logical-action-id logical) plan :temporary-transport))
           active (bind owner-a "already-in-flight" candidates)
           first-backup (bind owner-a "call-backup-1" candidates)
           second-backup (bind owner-a "call-backup-2" candidates)]
@@ -66,8 +65,8 @@
       (is (nil? (::anom/category ((:select! first-backup) 1 (second candidates)))))
       (is (= 2 (:start-index (bind owner-a "after-late-first-backup" candidates)))
           "A late successful earlier backup never moves the durable selection backward")
-      (is (= (journal/configuration-id candidates :temporary-transport)
-             (journal/configuration-id (mapv #(-> % (assoc :protocol :chat)
+      (is (= (service-logic/configuration-id candidates :temporary-transport)
+             (service-logic/configuration-id (mapv #(-> % (assoc :protocol :chat)
                                                    (update :options assoc :validate? false
                                                            :with-provider-evidence? true
                                                            :model-role-context {:callback (fn [])})) candidates)

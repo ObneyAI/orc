@@ -189,8 +189,6 @@
                   router/completion
                   (fn [_ request]
                     (swap! calls inc)
-                    ;; Forcing is OPT-IN and this call does not opt in, so no
-                    ;; tool-choice should be sent at all.
                     (is (nil? (:tool-choice request)))
                     (is (nil? (:tool_choice request)))
                     {:choices [{:message {:tool-calls
@@ -285,21 +283,6 @@
         (is (= {:decision canonical-nested-keyword-output}
                (:outputs final)))))))
 
-;; ===========================================================================
-;; The forced tool call must survive the PROVIDER transform, not merely appear
-;; in the map we hand to litellm.
-;;
-;; `function-request` emitted :tool_choice (underscore) while litellm's
-;; OpenRouter provider reads (:tool-choice request) (hyphen). Those are
-;; different Clojure keywords, so the key never matched and tool_choice never
-;; reached the wire — the forced submit_response call was not actually forced,
-;; leaving the model free to answer with prose. When it does, there is no tool
-;; call, `parse-tool-call-response` yields nil, and the node fails.
-;;
-;; A test that stubs router/completion cannot catch this: it asserts what we
-;; SEND to litellm, and the key is dropped one layer further in. This asserts
-;; against litellm's real transform, which is where the wire request is built.
-;; ===========================================================================
 
 (deftest forced-tool-choice-is-opt-in-and-reaches-the-wire-when-requested
   (letfn [(capture [options]
@@ -400,14 +383,6 @@
       (is (= "resp-empty"
              (get-in (ex-data failure) [:provider-evidence :response-id]))))))
 
-;; ---------------------------------------------------------------------------
-;; SP-2 — ORC's own prediction-boundary validator knows what :optional means
-;;
-;; ORC does not use SIO's collection validator; `llm.core/validate-outputs` is
-;; private and stricter, because ORC's boundary wants every declared output to
-;; actually arrive. That strictness reads an ABSENT key as nil, which is the
-;; right answer for a required field and the wrong answer for an optional one.
-;; ---------------------------------------------------------------------------
 
 (def ^:private partial-reply
   {:inputs [{:name :question :spec :string}]
@@ -443,22 +418,8 @@
       (is (= {:answer "Paris" :aside "noted"}
              (llm/predict :test partial-reply {:question "Capital?"} {:validate? true}))))))
 
-;; ---------------------------------------------------------------------------
-;; SP-2 — three parser behaviours that the sio pin move CHANGES
-;;
-;; Nothing in ORC exercised SIO's parser before these: every executor test stubs
-;; `llm/predict` itself, so the parser only ever ran in production. Each case
-;; below is a measured difference between sio 91e7d100 and sio d6d27f9, pinned
-;; here so a later pin move cannot change it again unobserved.
-;; ---------------------------------------------------------------------------
 
 (deftest a-nil-provider-response-preserves-absence-not-a-bare-npe
-  ;; At 91e7d100 this threw java.lang.NullPointerException straight out of the
-  ;; parser: "Cannot invoke String.length() because this.text is null". A raw
-  ;; NPE carries no :failure-kind, so ORC's structured-failure vocabulary and
-  ;; every caller that classifies on it were blind to the case.
-  ;; Final parser presence is now explicit: no field is invented for a missing
-  ;; response. Validation still rejects that absence through the typed boundary.
   (with-redefs [router/supports-function-calling? (constantly false)
                 router/completion (fn [& _] {:choices [{:message {:content nil}}]})]
     (testing "the parser preserves absence instead of inventing a nullable value"
@@ -478,10 +439,6 @@
    :outputs [{:name :tags :spec [:vector :string]}]})
 
 (deftest a-scalar-under-a-vector-schema-is-lifted-into-a-one-element-vector
-  ;; At 91e7d100 this parsed as {:tags "\"a\""} — a bare string under a
-  ;; [:vector :string] schema, so validation rejected it and the node failed.
-  ;; It now parses as a one-element vector, which VALIDATES. Nodes that used to
-  ;; fail here will start succeeding; that is a widening, and it is deliberate.
   (with-redefs [router/supports-function-calling? (constantly false)
                 router/completion (fn [& _]
                                     {:choices [{:message {:content "[[ ## tags ## ]]\n\"a\""}}]})]
@@ -496,19 +453,6 @@
   {:inputs [{:name :question :spec :string}]
    :outputs [{:name :verdict :spec :string}]})
 
-;; ---------------------------------------------------------------------------
-;; OptionalOutputPresence — optional means the provider may say "no value"
-;;
-;; specs/llm.allium, @invariant OptionalOutputPresence: every declared optional
-;; output, and every optional entry of a map at any depth (nested maps, vector
-;; items, union branches), is offered to the provider as nullable, so a
-;; provider that emits every declared property is never forced to invent a
-;; value. A null returned for such an optional field is absence — removed
-;; before validation, never a present null — at every depth, for blocking and
-;; streaming predictions alike. Required outputs/entries are never made
-;; nullable; a null or missing value there still fails. An optional field
-;; whose own declared schema already accepts null keeps a returned null.
-;; ---------------------------------------------------------------------------
 
 (def ^:private answer+optional-aside
   {:inputs []
@@ -738,18 +682,6 @@
       (is (= :error (:orc/event final))
           "a null in a REQUIRED nested entry still fails validation, even streamed"))))
 
-;; ---------------------------------------------------------------------------
-;; Dropping a null optional is normalization, not validation — weed found
-;; that `drop-null-optional-outputs` ran only inside the `validate? true`
-;; branch of both `predict` and `predict-stream-v2`. Real callers run with
-;; :validate? false (evaluation/core/judges.clj, gepa/core/todo_processors.clj,
-;; mcp-sheet-builder's patterns.clj/intent_analyzer.clj): the wire now offers
-;; every optional field as nullable regardless of :validate?, so those
-;; callers would have started receiving PRESENT nulls they never saw before,
-;; violating "a null for an optional field is absence... never a present
-;; null" for the one flag real callers actually use. :validate? must only
-;; decide whether `validate-outputs` runs — normalization runs either way.
-;; ---------------------------------------------------------------------------
 
 (deftest a-null-top-level-optional-output-becomes-absent-with-validation-off
   (with-redefs [router/supports-function-calling? (constantly true)
@@ -824,24 +756,6 @@
            is no validation to fail")
       (is (= {:items [{:id nil}]} (:outputs final))))))
 
-;; ---------------------------------------------------------------------------
-;; Wire/decode symmetry — `nullable-optionals` (wire) and `drop-null-optionals`
-;; (decode) must walk the SAME schema shapes, or a shape can be told "null is
-;; fine" on the wire while decode has no way to turn that null back into
-;; absence — a real defect found by inspection: `nullable-optionals` used to
-;; fall through to a generic catch-all that recursed into every vector-shaped
-;; form (including :or, :and, :sequential, :set, :tuple, :map-of), while
-;; `drop-null-optionals` only handled :map/:vector/:maybe/:multi explicitly.
-;; That is WORSE than not rewriting the wire at all: the provider is told a
-;; null is acceptable and then validation rejects it anyway.
-;;
-;; This reaches into `ai.obney.orc.llm.core` directly (both functions are
-;; `defn-`) because the property under test is an internal structural
-;; invariant between two private helpers — the shared `descend` table both
-;; now read from — not a behavior naturally expressed once through the
-;; public boundary for every shape without per-shape provider-response
-;; plumbing duplicating what this table already proves once, generically.
-;; ---------------------------------------------------------------------------
 
 (def ^:private nullable-optionals* @#'core/nullable-optionals)
 (def ^:private drop-null-optionals* @#'core/drop-null-optionals)
@@ -897,18 +811,6 @@
                 "an un-rewritten shape's null must still fail validation, exactly as before this fix")))))))
 
 (deftest a-marker-repeated-after-prose-wins-and-takes-the-answer-with-it
-  ;; sio #11 relaxed the marker to be recognised after prose, and the parser
-  ;; takes the LAST match. Together they mean a model that refers back to its
-  ;; own marker overwrites its real answer with the words that follow the
-  ;; reference. At 91e7d100 this field was "true\n\nsee [[ ## verdict ## ]]
-  ;; above"; it is now "above", and the "true" is gone.
-  ;;
-  ;; This is the CC-4b grounded-verdict family. The direction is SAFE, and it is
-  ;; safe by construction rather than by luck: the strict extractor pinned in
-  ;; `cc4c_strict_verdict_extraction_test` establishes a verdict only from an
-  ;; exact one-word "true"/"false", so "above" reads as fail-CLOSED — as did the
-  ;; longer prose before it. Pinned here so a later parser change cannot quietly
-  ;; turn this field into something that reads OPEN.
   (with-redefs [router/supports-function-calling? (constantly false)
                 router/completion
                 (fn [& _]
@@ -916,10 +818,6 @@
     (is (= {:verdict "above"}
            (llm/predict :test verdict-spec {:question "Grounded?"} {:validate? false})))))
 
-;; --------------------------------------------------------------------------- ;;
-;; DeclaredMeaningReachesTheModel (llm.allium): input descriptions reach the
-;; model whether the request is marker-form or function-calling.
-;; --------------------------------------------------------------------------- ;;
 
 (def ^:private described-inputs-spec
   {:inputs [{:name :claim :spec :string :description "The claim under review"}
@@ -963,7 +861,6 @@
       (is (str/includes? text "note: n/a")))))
 
 (deftest marker-request-keeps-its-value-layout-with-the-input-field-guide
-  ;; The guide omits an empty description suffix; marker names and values stay exact.
   (is (= (str "Your input fields are:\n1. `claim` (str): The claim under review\n"
               "2. `evidence` (str): Evidence offered for the claim\n3. `note` (str)\n"
               "Your output fields are:\n1. `answer` (str): The verdict\n"
@@ -1044,9 +941,6 @@
              (llm/decode-provider-value [:map ["0" :double] [ns-key {:optional true} :int]]
                                         {:0 1 ns-key 5}))))))
 
-;; ---------------------------------------------------------------------------
-;; J21 — a provider that finished with an error is a failure, never an output
-;; ---------------------------------------------------------------------------
 
 (def ^:private finish-error-response
   {:id "gen-finish-error"
@@ -1122,8 +1016,6 @@
       (is (true? (get-in (ex-data r) [:provider-evidence :output-truncated?]))))))
 
 (deftest receipt-82-replay-is-a-provider-finish-error
-  ;; Decoded OpenRouter body of campaign receipt 82 (only the response-shape
-  ;; fields), converted to litellm's transformed choice shape.
   (let [decoded {:id "gen-1791252150-kF8Cdkfpix3iXEutQA3H"
                  :model "google/gemini-2.5-flash"
                  :choices [{:index 0 :finish_reason "error"

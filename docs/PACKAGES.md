@@ -107,14 +107,14 @@ Every evolutionary public read is tenant-scoped through the caller context,
 including source/concept/history/statistics queries. Learned descriptions and
 source extractions retain model provenance when model evidence is available.
 The public lifecycle API creates empty ontologies, validates concept/update/relationship
-mutations, returns stable identities, and supports command-ID retry reconciliation.
+mutations, returns stable identities, and supports retry reconciliation through a stable `:request-id`.
 `evolve` extracts sources and submits versioned contributions to those ontologies.
 
 The standalone library owns graph persistence, resolution, predicates, scoped
 search and RDF snapshots. ORC retains
 source extraction workflows, model adapters, task classification, claims,
 Living Descriptions and harvesting. Clojure fetches the graph library at the Git revision pinned in the
-[ontology component](../components/ontology/deps.edn).
+[ontology component](../components/ontology-service/deps.edn).
 This is a clean break: old evolutionary graph events and registry APIs are not
 replayed. See [the migration boundary](ONTOLOGY-EXTRACTION.md).
 
@@ -170,17 +170,12 @@ obneyai/orc {:git/url "https://github.com/ObneyAI/orc.git"
 
 ## How the packages compose
 
-```
-orc-service ........ engine (Layer 0)            [base of every package]
-  + evaluation ..... orc-evaluation              (Layer 1-2)
-      + gepa ....... orc-gepa                     (Layer 3)
-  + ontology ....... orc-ontology                 (Layers 4, 6 — DJL, in-JVM)
-      + colbert .... orc-colbert                  (Layer 5 — DJL OnnxRuntime, in-JVM)
-  + mcp ............ orc-mcp-sheet-builder         (Layer 8)
-
-self-improving loop  = ontology + colbert + evaluation on the engine
-                     = the orc umbrella, or those packages combined
-```
+The engine package supplies `orc-service` and its runtime dependencies. The
+evaluation, GEPA, ontology and MCP sheet-builder packages include that same
+engine. ColBERT can be installed independently or added to ontology for hybrid
+retrieval. Combine evaluation, ontology and ColBERT with the engine for the full
+self-improving loop. The umbrella package includes them together. [Package
+manifests](../projects)
 
 See [COMPONENT-MAP.md](COMPONENT-MAP.md) for the full opt-in layer table and the
 component dependency graph.

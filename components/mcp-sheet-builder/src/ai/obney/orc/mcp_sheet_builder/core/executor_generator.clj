@@ -51,8 +51,6 @@
   "Extract parameter names from JSON Schema properties.
    Returns vector of parameter name strings."
   [input-schema]
-  ;; A schema discovered through the MCP client arrives with keyword keys; a
-  ;; hand-written one may use strings. Both name the same parameters.
   (when-let [props (or (get input-schema "properties") (get input-schema :properties))]
     (mapv name (keys props))))
 
@@ -78,7 +76,6 @@
   (let [fn-name (str "call-" (sanitize-name tool-name))
         params (or (extract-input-params input-schema) [])
         output-k (or output-key (str tool-name "-result"))
-        ;; Build tool-args extraction code
         args-bindings (if (empty? params)
                         "{}"
                         (str "{"
@@ -186,9 +183,6 @@
       {:valid? false
        :errors [(str "Syntax error: " (.getMessage e))]})))
 
-;; ============================================================================
-;; File Content Generation (for portable export)
-;; ============================================================================
 
 (defn derive-namespace-from-path
   "Derive a Clojure namespace from a file path."
@@ -207,12 +201,10 @@
                     "   Generated at: " (java.time.Instant/now) "\"\n"
                     "  (:require [ai.obney.orc.mcp-sheet-builder.core.executors :as executors]\n"
                     "            [com.brunobonacci.mulog :as u]))\n\n")
-        ;; Generate each executor function
         executor-fns (for [{:keys [tool-name input-schema]} executor-defs]
                        (generate-executor-code
                         {:tool-name tool-name
                          :input-schema input-schema}))
-        ;; Generate registry map
         registry-entries (for [{:keys [tool-name]} executor-defs]
                            (str "   \"" tool-name "\" call-" (sanitize-name tool-name)))
         registry (str "\n;; Executor registry for lookup\n"
@@ -231,22 +223,18 @@
                     "   Generated at: " (java.time.Instant/now) "\"\n"
                     "  (:require [ai.obney.orc.orc-service.interface :as sheet]\n"
                     "            [" executors-ns " :as exec]))\n\n")
-        ;; Update :fn references to point to executors namespace
         updated-workflow (walk/postwalk
                           (fn [x]
                             (if (and (map? x)
                                      (= :code (:executor x))
                                      (string? (:fn x)))
-                              (let [;; Try to extract tool name from node name "call-<tool>"
+                              (let [
                                     name-match (when-let [n (:name x)]
                                                  (second (re-matches #"call-(.+)" n)))
-                                    ;; Or from writes "<tool>-result"
                                     writes-match (when-let [w (first (:writes x))]
                                                    (second (re-matches #"(.+)-result" (name w))))
-                                    ;; Or check if :fn already contains a tool name pattern
                                     fn-match (some #(when (str/includes? (:fn x) (str "call-" (sanitize-name %))) %)
                                                    tools)
-                                    ;; Use the first match found
                                     tool-name (or fn-match name-match writes-match)]
                                 (if (and tool-name (some #(= tool-name %) tools))
                                   (assoc x :fn (str executors-ns "/call-" (sanitize-name tool-name)))
@@ -261,26 +249,3 @@
                       "  [ctx]\n"
                       "  (sheet/build-workflow! ctx workflow))\n")]
     (str header workflow-def build-fn)))
-
-(comment
-  ;; Example usage:
-  (def sample-tool
-    {:name "searchLangfuseDocs"
-     :description "Search Langfuse documentation"
-     :inputSchema {"type" "object"
-                   "properties" {"query" {"type" "string"
-                                          "description" "Search query"}}
-                   "required" ["query"]}})
-
-  ;; Generate executor code only
-  (println (generate-executor-code {:tool-name "searchLangfuseDocs"
-                                    :input-schema (:inputSchema sample-tool)}))
-
-  ;; Generate complete namespace
-  (println (generate-namespace-code {:tool-id (UUID/randomUUID)
-                                     :tool-name "searchLangfuseDocs"
-                                     :input-schema (:inputSchema sample-tool)}))
-
-  ;; Build full executor definition
-  (build-executor-definition sample-tool)
-  )

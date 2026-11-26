@@ -31,7 +31,6 @@
   (testing "preserves field descriptions"
     (let [schema {"type" "string" "description" "User name"}
           result (msb/json-schema->malli schema)]
-      ;; Should be [:string {:description "User name"}]
       (is (vector? result))
       (is (= :string (first result)))
       (is (= "User name" (get-in result [1 :description]))))))
@@ -62,11 +61,9 @@
                   "required" ["query"]}
           result (msb/json-schema->malli schema)]
       (is (= :map (first result)))
-      ;; Required field: [:query :string] - no {:optional true} map
       (let [[_ & props] result
             query-prop (first (filter #(= :query (first %)) props))]
         (is (some? query-prop))
-        ;; Required fields have 2 elements [:key :type], optional have 3 [:key {:optional true} :type]
         (is (= 2 (count query-prop)))))))
 
 (deftest json-schema-object-optional-fields-test
@@ -76,7 +73,6 @@
                   "required" []}
           result (msb/json-schema->malli schema)]
       (is (= :map (first result)))
-      ;; Optional field: [:limit {:optional true} :int] - has 3 elements
       (let [[_ & props] result
             limit-prop (first (filter #(= :limit (first %)) props))]
         (is (some? limit-prop))

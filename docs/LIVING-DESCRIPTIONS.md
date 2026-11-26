@@ -186,7 +186,7 @@ SEMANTIC RETRIEVAL
 
 The consolidator's reflection input was extended to include judge scores alongside raw execution events. Verified live on `legal-issue-detection` multi-cycle:
 
-- **Per-event evaluator runtime** (`components/evaluation/src/.../core/judge_runtime.clj`) subscribes to `:sheet/node-execution-completed` and requests one durable assessment per attached judge, default or custom. Attaching a judge enables it. The Living Description flag gates only the defaults: when it is on, repl-researcher nodes without an explicit `:judges` get 5 default judges auto-attached: heuristic-structural + grounding + reasoning + completeness + instruction-following.
+- **Per-event evaluator runtime** (`components/evaluation-service/src/ai/obney/orc/evaluation/core/todo_processors.clj`) subscribes to `:sheet/node-execution-completed` and requests one durable assessment per attached judge, default or custom. Attaching a judge enables it. The Living Description flag gates only the defaults: when it is on, repl-researcher nodes without an explicit `:judges` get 5 default judges auto-attached: heuristic-structural + grounding + reasoning + completeness + instruction-following.
 - **Auditable model evidence** — LLM-authored description updates and rejections
   persist model provenance with the event, including provider/model identity and
   available usage metadata. Replaying events reconstructs the recorded decision;

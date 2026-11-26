@@ -27,17 +27,13 @@
    setup can externalise at all, so a green `:blocked` arm cannot be an
    artifact of a tick that was never tick-scoped."
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn seed-leaf [_] {:seed "seeded"})
 
-;; The write-key names are the real ones from the failing production node
-;; (`:turns` is the orc-sessions session transcript that made the window
-;; 6.4 MB); the values are small because this test is about WHERE the values
-;; land, not how big they are.
 (def ^:private blocked-writes
   {:turns [{:turn-id "t-1" :assistant "…"} {:turn-id "t-2" :assistant "…"}]
    :session {:session-id "s-1" :mode :implement}
@@ -99,7 +95,7 @@
 (deftest a-blocked-completion-externalises-its-writes-like-a-successful-one
   (h/with-async-test-context [ctx]
     (let [sheet-id (setup-sheet! ctx)
-          _ (runtime/execute ctx sheet-id {})
+          _ (service-commands/execute ctx sheet-id {})
           tick-id (tick-id-of-run ctx)
           success (complete-node! ctx sheet-id tick-id :success)
           blocked (complete-node! ctx sheet-id tick-id :blocked)
@@ -132,10 +128,7 @@
             "with a shape profile for each non-nil value"))
 
       (testing "and NOTHING was lost — the values are durable in the write log"
-        ;; This is the gate's own reasoning, asserted rather than assumed:
-        ;; reducing :writes to shape is only safe because the write events
-        ;; exist. If they did not, this would come back empty.
-        (let [recovered (value-log/writes-for (:events blocked) (:completion blocked))]
+        (let [recovered (service-logic/writes-for (:events blocked) (:completion blocked))]
           (is (= blocked-writes recovered)
               "every blocked write round-trips out of the canonical write log,
                nil-valued keys included")))

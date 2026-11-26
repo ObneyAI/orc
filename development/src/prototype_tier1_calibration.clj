@@ -14,7 +14,8 @@
    Run:
      export OPENROUTER_API_KEY=...
      clj -M:dev -e \"(require '[prototype-tier1-calibration :as p]) (p/run!)\""
-  (:require [ai.obney.orc.evaluation.core.judges :as judges]
+  (:require [ai.obney.orc.evaluation.interface :as evaluation]
+            [ai.obney.orc.evaluation.core.judges :as judges]
             [clojure.string :as str]
             [litellm.router :as litellm-router]))
 
@@ -31,12 +32,6 @@
 (def doc-path "development/bench/documents/employment_agreement.txt")
 (defn source-context [] {:document (slurp doc-path)})
 
-;; ---------------------------------------------------------------------------
-;; INSTRUCTION-FOLLOWING traces. Instruction has explicit, checkable directives:
-;; format (bullet list), required components (name, position, salary, start),
-;; a prohibition (no SIN/banking), and a length cap. Responses degrade in
-;; compliance from full (5) to ignoring the instruction (1).
-;; ---------------------------------------------------------------------------
 
 (def if-instruction
   (str "Summarize the employee's role in EXACTLY three bullet points. "
@@ -73,11 +68,6 @@
                              "legal documents. If you have concerns about your contract you "
                              "should consult an employment lawyer in your jurisdiction.")}}]))
 
-;; ---------------------------------------------------------------------------
-;; REASONING traces. Instruction asks the producer to DERIVE a figure with a
-;; visible chain. Responses degrade from a rigorous derivation (5) to an
-;; incoherent / absent one (1).
-;; ---------------------------------------------------------------------------
 
 (def reasoning-instruction
   (str "Using only the document, work out the employee's maximum possible "
@@ -115,10 +105,6 @@
                              "could be quite high. It is hard to say exactly. The figure is "
                              "what the employer decides.")}}]))
 
-;; ---------------------------------------------------------------------------
-;; COMPLETENESS traces. Instruction asks for FOUR distinct fields. Responses
-;; degrade from full coverage (5) to an empty stub (1).
-;; ---------------------------------------------------------------------------
 
 (def completeness-instruction
   (str "From the document, report four things: (1) the employee's full legal "
@@ -155,9 +141,9 @@
 
 (defn- judge-for [dim trace]
   (case dim
-    :instruction-following (-> (judges/instruction-following-judge {:inputs {:trace-data trace}}) :instruction-result)
-    :reasoning             (-> (judges/reasoning-judge {:inputs {:trace-data trace}}) :reasoning-result)
-    :completeness          (-> (judges/completeness-judge {:inputs {:trace-data trace}}) :completeness-result)))
+    :instruction-following (-> (evaluation/instruction-following-judge {:inputs {:trace-data trace}}) :instruction-result)
+    :reasoning             (-> (evaluation/reasoning-judge {:inputs {:trace-data trace}}) :reasoning-result)
+    :completeness          (-> (evaluation/completeness-judge {:inputs {:trace-data trace}}) :completeness-result)))
 
 (defn run-dimension! [dim traces]
   (println (str "\n=== PA-4 " (name dim) " live calibration (model: " judges/*judge-model* ") ===\n"))
@@ -179,7 +165,7 @@
                        label expected level (double (or score 0.0))
                        (if (= expected level) "MATCH" "DIVERGE"))))
     (let [levels (map :level rows)
-          monotonic? (apply >= (map #(or % -1) levels))  ;; expected order is high->low
+          monotonic? (apply >= (map #(or % -1) levels))
           matches (count (filter #(= (:expected %) (:level %)) rows))
           near (count (filter #(<= (Math/abs (long (- (int (:expected %)) (int (or (:level %) 0))))) 1) rows))]
       (println (format "  exact: %d/%d | within-1: %d/%d | monotonic(high->low): %s | levels=%s"

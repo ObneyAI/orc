@@ -22,13 +22,15 @@
             [ai.obney.orc.evaluation.interface.schemas]
             [ai.obney.orc.evaluation.core.judge-runtime]
             [ai.obney.orc.ontology.interface :as ontology]
-            [ai.obney.orc.ontology.core.consolidator]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [com.brunobonacci.mulog :as u]
             [runner]
-            [legal-issue-detection :as task]))
+            [legal-issue-detection :as task]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (defn verify!
   []
@@ -37,7 +39,7 @@
   (println "============================================================")
   (u/start-publisher! {:type :console})
   (runner/start!)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))]
+  (let [ctx (runner/current-context)]
     (try
       (cp/process-command
         (assoc ctx :command
@@ -49,7 +51,6 @@
 
       (println "\n--- Running legal-issue-detection once ---")
       (runner/run! task/task)
-      ;; Poll up to 60s for judges + composite to settle
       (loop [waited 0]
         (let [scores (count (into [] (es/read (:event-store ctx)
                                                {:types #{:judge/score-emitted}
@@ -107,27 +108,6 @@
       (finally
         (runner/stop!)))))
 
-;; =============================================================================
-;; Gap-8 RED#4 LIVE verify — share-remaining-mass policy under real conditions
-;; =============================================================================
-;;
-;; The unit tests cover the share-remaining math (judge_runtime_test.clj
-;; gap8-mixed-weights-unweighted-share-remaining-mass). This LIVE verify
-;; proves the policy holds end-to-end through the real event store +
-;; command processor + judge runtime processor when consumers declare
-;; mixed-weight judges on a node.
-;;
-;; Configuration: 3 judges declared explicitly with mixed weights —
-;;   "weighted-grounding" → :weight 0.5 (explicit)
-;;   "default-reasoning"  → no :weight (un-weighted)
-;;   "default-instruction-following" → no :weight (un-weighted)
-;; Expected :contributing-judges after composite:
-;;   weighted-grounding              :weight 0.5
-;;   default-reasoning               :weight 0.25  (remaining 0.5 / 2)
-;;   default-instruction-following   :weight 0.25
-;;
-;; Real OpenRouter (gemini-3-flash-preview) provides the scores; the
-;; weight arithmetic is what the verify asserts.
 
 (defn verify-mixed-weights!
   []
@@ -136,9 +116,8 @@
   (println "============================================================")
   (u/start-publisher! {:type :console})
   (runner/start!)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))]
+  (let [ctx (runner/current-context)]
     (try
-      ;; Opt-in
       (cp/process-command
         (assoc ctx :command
                {:command/name :ontology/set-living-description-enabled
@@ -147,7 +126,6 @@
                 :enabled? true}))
       (Thread/sleep 200)
 
-      ;; Create a sheet + declare 3 judges with mixed weights
       (let [sheet-result (cp/process-command
                            (assoc ctx :command
                                   {:command/name :sheet/create-sheet
@@ -173,7 +151,6 @@
                     :judge-config cfg})))
         (println "  → 3 judges declared with mixed weights [0.5, _, _]")
 
-        ;; Create a leaf node + attach all 3 judges
         (let [node-result (cp/process-command
                             (assoc ctx :command
                                    {:command/name :sheet/create-node
@@ -194,8 +171,6 @@
               tick-id (random-uuid)]
           (println "  → leaf node created and judges attached:" node-id)
 
-          ;; Fire a synthetic :sheet/complete-node-execution with realistic
-          ;; writes so the LLM judges have content to score
           (cp/process-command
             (assoc ctx :command
                    {:command/name :sheet/complete-node-execution
@@ -210,7 +185,6 @@
                     :duration-ms 100}))
           (println "  → node-execution-completed event dispatched")
 
-          ;; Poll up to 90s for both 3 scores + composite
           (loop [waited 0]
             (let [scores (count (filter #(= tick-id (:tick-id %))
                                         (into [] (es/read (:event-store ctx)
@@ -238,9 +212,6 @@
                 contributing (when composite (:contributing-judges composite))
                 weight-by-name (when contributing
                                  (into {} (map (juxt :judge-name :weight) contributing)))
-                ;; Expected:
-                ;;   weighted-grounding → 0.5
-                ;;   the 2 un-weighted → 0.25 each
                 weighted-ok? (and weight-by-name (= 0.5 (get weight-by-name "weighted-grounding")))
                 reasoning-ok? (and weight-by-name (= 0.25 (get weight-by-name "default-reasoning")))
                 instr-ok? (and weight-by-name (= 0.25 (get weight-by-name "default-instruction-following")))
@@ -269,7 +240,7 @@
       (finally
         (runner/stop!)))))
 
-(comment
+#_(do
   (require '[gap8-live-verify :as v])
-  (v/verify!)                ;; original (5 default judges, even-weight)
-  (v/verify-mixed-weights!)) ;; Gap-8 RED#4 (mixed-weight + share-remaining-mass)
+  (v/verify!)
+  (v/verify-mixed-weights!))

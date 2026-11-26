@@ -138,7 +138,7 @@ The EDN carries:
 ## 5. Adding your own seeds
 
 Hand-authored tree-class and behavioral-subtree seeds live in the shipped
-component resources at `components/ontology/resources/seeds/*.edn` (the
+component resources at `components/ontology-service/resources/seeds/*.edn` (the
 canonical source). The dev shim at `development/src/seed_descriptions.clj`
 loads from those EDN files and re-exports named-var access for in-tree
 tests. Each seed is a static map with:
@@ -153,7 +153,7 @@ tests. Each seed is a static map with:
 After adding a seed:
 
 1. Edit the relevant `.edn` file directly under
-   `components/ontology/resources/seeds/`.
+   `components/ontology-service/resources/seeds/`.
 2. Restart the runner (`(r/stop!)` then `(r/start!)`). The seed emit is part
    of `seed-corpus-and-build-index!` and runs at startup, reading from the
    updated EDN files.
@@ -218,6 +218,6 @@ expected variance band.
 - `docs/adr/0002-pure-jvm-colbert-signal.md` — why the signal is pure JVM
 - `docs/COLBERT-INTEGRATION.md` — the JVM architecture (encoder checkpoint,
   exact MaxSim, index artifact, model resolution)
-- `components/colbert/src/ai/obney/orc/colbert/interface.clj` — public API
-- `components/ontology/resources/seeds/` — shipped baseline seed corpus
+- `components/colbert-service/src/ai/obney/orc/colbert/interface.clj` — public API
+- `components/ontology-service/resources/seeds/` — shipped baseline seed corpus
 - `development/bench/r_inject_reports/` — expected-output reference EDNs

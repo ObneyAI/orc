@@ -1,7 +1,7 @@
 # Ontology extraction
 
 ORC uses the public interface and pure algorithms in `ai.obney.ontology`. The
-component pins the standalone library to a Git commit. [Dependency declaration](../components/ontology/deps.edn)
+component pins the standalone library to a Git commit. [Dependency declaration](../components/ontology-service/deps.edn)
 
 The library owns ontology and concept identity, typed predicates, source versions,
 contributions, resolution, atomic graph validation, revision snapshots and RDF.

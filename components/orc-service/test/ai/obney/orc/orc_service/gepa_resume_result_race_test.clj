@@ -45,8 +45,6 @@
                                          :parent-id parent-id :iteration 0
                                          :proposed-instructions {"answer" "new"}
                                          :component-updated "answer" :subsample-indices [0]})
-            ;; Exercise actual resume plus actual registered pubsub delivery.
-            ;; Other GEPA stages are deliberately outside this one-boundary test.
             without (into #{} (remove #(or (= "sheet" (namespace %))
                                            (= :gepa/on-subsample-evaluation-started %)))
                           (keys @tp/processor-registry*))
@@ -62,8 +60,6 @@
         (is (= :ready (get-in proposal [:command/result :status])))
         (with-redefs [todo/on-subsample-evaluation-started
                       (fn [context]
-                        ;; Command-return events precede store-assigned IDs;
-                        ;; correlate their durable logical boundary instead.
                         (swap! deliveries conj
                                (select-keys (:event context)
                                             [:optimization-id :parent-id :iteration]))

@@ -26,18 +26,21 @@
 
    Output: a console report identifying any orphan completion events
    (events without matching judges) and the inferred reason."
-  (:require [ai.obney.orc.evaluation.interface]
+  (:require [ai.obney.orc.evaluation.interface :as evaluation]
+            [ai.obney.orc.evaluation.interface]
             [ai.obney.orc.evaluation.interface.schemas]
-            [ai.obney.orc.evaluation.core.judge-runtime :as jr]
+            [ai.obney.orc.evaluation.core.judge-runtime]
             [ai.obney.orc.ontology.interface :as ontology]
-            [ai.obney.orc.ontology.core.consolidator]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [com.brunobonacci.mulog :as u]
             [runner]
-            [legal-issue-detection :as task]))
+            [legal-issue-detection :as task]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (defn diagnose!
   []
@@ -46,7 +49,7 @@
   (println "===========================================================")
   (u/start-publisher! {:type :console})
   (runner/start!)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))]
+  (let [ctx (runner/current-context)]
     (try
       (println "\n--- Enable Living Description ---")
       (cp/process-command
@@ -88,7 +91,7 @@
                 node (orc/get-node ctx (:sheet-id evt) (:node-id evt))
                 judges-for (count (filter #(= tuple [(:sheet-id %) (:node-id %) (:tick-id %)]) judges))
                 effective (try
-                            (jr/get-effective-judges-for-node ctx (:sheet-id evt) (:node-id evt))
+                            (evaluation/get-effective-judges-for-node ctx (:sheet-id evt) (:node-id evt))
                             (catch Throwable t (str "ERR: " (.getMessage t))))]
             (println "  ---")
             (println "    sheet:" (str (:sheet-id evt))
@@ -127,6 +130,6 @@
       (finally
         (runner/stop!)))))
 
-(comment
+#_(do
   (require '[gap3-anomaly-diagnose :as d])
   (d/diagnose!))

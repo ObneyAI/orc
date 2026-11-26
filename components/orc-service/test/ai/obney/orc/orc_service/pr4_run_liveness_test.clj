@@ -21,12 +21,9 @@
             [clojure.string :as str]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
-            [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
-;; =============================================================================
-;; Wedge fixture: work that never finishes and survives interrupts
-;; =============================================================================
 
 (defonce ^{:doc "Release valve for forever-blocking-fn. Each test resets it
   to a fresh promise and delivers it in `finally` so the leaked leaf thread
@@ -101,9 +98,6 @@
   (is (not (str/includes? (str/lower-case (:error result)) "timed out"))
       "the wedge error must not carry the retryable timeout fragment"))
 
-;; =============================================================================
-;; Seam 1: runtime/execute (runtime.clj promise deref)
-;; =============================================================================
 
 (deftest wedged-run-fails-distinctly-within-bound
   (testing "a forever-blocking leaf yields a bounded, distinct, attributable liveness failure"
@@ -126,8 +120,6 @@
   (testing "a run with recent engine activity at budget expiry is an over-budget :timeout, not a wedge"
     (h/with-async-test-context [ctx]
       (let [sheet-id (sheet/build-workflow! ctx slow-wf)
-            ;; the leaf STARTED (a durable node-execution-started event) just
-            ;; before expiry, so the engine's silence is younger than grace
             result (sheet/execute ctx sheet-id {}
                                   :timeout-ms 300
                                   :result-grace-ms 5000)]
@@ -136,9 +128,6 @@
         (is (not (:wedged? result))
             "a live run is never classified as wedged")))))
 
-;; =============================================================================
-;; The not-starved property, engine level (the W35 pattern)
-;; =============================================================================
 
 (deftest engine-not-starved-after-wedge
   (testing "after a run wedges and its bound fires, a second run in the same process executes normally"
@@ -156,10 +145,6 @@
           (is (= "ok" (get-in r2 [:outputs :output])))))
       (finally (some-> @release (deliver :done))))))
 
-;; =============================================================================
-;; Nested-run coverage (Shape B): a nested execute wedges; the OUTER turn
-;; receives the distinct failure attributably instead of hanging
-;; =============================================================================
 
 (defonce ^{:doc "Full test context handed to the nested-execute leaf, the way
   the reranker's rerank! reaches runtime/execute from inside a running turn."}
@@ -215,9 +200,6 @@
                 "attribution names the NESTED run, not the outer one"))))
       (finally (some-> @release (deliver :done))))))
 
-;; =============================================================================
-;; Seam 2: execute-stream (streaming.clj promise deref)
-;; =============================================================================
 
 (deftest streaming-run-wedge-fails-distinctly
   (testing "the execute-stream result promise resolves to the distinct liveness failure"
@@ -233,23 +215,20 @@
           (assert-wedged-shape result :orc.streaming/execute-stream)))
       (finally (some-> @release (deliver :done))))))
 
-;; =============================================================================
-;; Seam 3: rlm-tree-executor execute-tree (Phase 2 child-tick deref)
-;; =============================================================================
 
 (deftest rlm-child-tick-wedge-fails-distinctly
   (testing "a Phase-2 child tick that wedges yields the distinct liveness failure at the tree-executor seam"
     (reset! release (promise))
     (try
       (h/with-async-test-context [ctx]
-        (let [tree (rlm-dsl/rlm-dsl->orc-dsl
+        (let [tree (service-logic/rlm-dsl->orc-dsl
                     [:sequence
                      [:code {:fn "ai.obney.orc.orc-service.pr4-run-liveness-test/forever-blocking-fn"
                              :reads []
                              :writes [:output]
                              :output-schemas {:output :string}}]
                      [:final {:keys [:output]}]])
-              result (tree-executor/execute-tree tree ctx
+              result (service-processors/execute-tree tree ctx
                                                  {:timeout-ms 1500
                                                   :result-grace-ms 300})]
           (assert-wedged-shape result :orc.rlm-tree-executor/execute-tree)

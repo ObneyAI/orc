@@ -24,7 +24,7 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -59,21 +59,18 @@
 (defn run! []
   (let [ctx (create-context)]
     (try
-      (executor/setup-providers!)
+      (service-logic/setup-providers!)
       (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "RR In Tree"))
             sheet-id (-> sheet-result :command-result/events first :sheet-id)
 
-            ;; Declare blackboard keys: input → pre-output → rr-output → post-output
             _ (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :raw-input :string))
             _ (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :cleaned-input :string))
             _ (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :researched-summary :string))
             _ (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :final-report :string))
 
-            ;; Root :sequence
             seq-r (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
             seq-id (-> seq-r :command-result/events first :node-id)
 
-            ;; Child 0 — ordinary :ai leaf "pre-process"
             pre-r (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf :parent-id seq-id :index 0))
             pre-id (-> pre-r :command-result/events first :node-id)
             _ (h/run-and-apply! ctx (h/make-set-node-executor-command sheet-id pre-id :ai :model "google/gemini-2.5-flash"))
@@ -81,7 +78,6 @@
                                       "Clean the raw input: remove extra whitespace and normalize punctuation. Return only the cleaned text."))
             _ (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id pre-id [:raw-input] [:cleaned-input]))
 
-            ;; Child 1 — :repl-researcher in the MIDDLE
             rr-r (h/run-and-apply! ctx (h/make-create-node-command sheet-id :repl-researcher :parent-id seq-id :index 1))
             rr-id (-> rr-r :command-result/events first :node-id)
             _ (h/run-and-apply! ctx (h/make-set-repl-researcher-config-command
@@ -96,7 +92,6 @@
                                       :max-iterations 3
                                       :rlm {:debug? true}))
 
-            ;; Child 2 — ordinary :ai leaf "post-process" that READS the researcher's output
             post-r (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf :parent-id seq-id :index 2))
             post-id (-> post-r :command-result/events first :node-id)
             _ (h/run-and-apply! ctx (h/make-set-node-executor-command sheet-id post-id :ai :model "google/gemini-2.5-flash"))
@@ -135,7 +130,6 @@
             _ (println "  " (let [s (str (get-in result [:outputs :final-report]))]
                               (subs s 0 (min 400 (count s)))))
 
-            ;; Now verify via event store: did all 3 nodes complete with :success?
             tick-id (:trace-id result)
             events (when tick-id
                      (into [] (es/read (:event-store ctx)
@@ -163,4 +157,4 @@
         result)
       (finally (stop-context ctx)))))
 
-(comment (run!))
+#_(do (run!))

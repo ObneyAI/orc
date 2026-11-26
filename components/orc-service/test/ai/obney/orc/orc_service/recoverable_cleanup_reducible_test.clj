@@ -3,14 +3,14 @@
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.rlm-sandbox :as sandbox]
             [ai.obney.orc.orc-service.core.read-models :as read-models]
-            [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (deftest deferred-ownership-read-failure-retains-binding-and-completed-result
   (h/with-async-test-context [ctx]
-    (let [sctx (sandbox/build-rlm-context {:blackboard {} :durable-source-required? true})
-          emission (sandbox/execute-rlm-code sctx
+    (let [sctx (service-processors/build-rlm-context {:blackboard {} :durable-source-required? true})
+          emission (service-logic/execute-rlm-code sctx
                      "(emit-tree! '[:code {:reads [:n] :writes [:result] :output-schemas {:result :int} :fn (fn [{:keys [inputs]}] {:result (inc (:n inputs))})}])")
           actual-read es/read
           ownership-types #{:sheet/tree-tick-started :sheet/tree-tick-completed :sheet/tick-cancelled}
@@ -31,7 +31,7 @@
                                          (swap! reductions inc)
                                          (throw sentinel))))
                                    (actual-read store options)))]
-                   (tree/execute-tree (:generated-tree @(:sandbox-vars sctx)) ctx
+                   (service-processors/execute-tree (:generated-tree @(:sandbox-vars sctx)) ctx
                                       {:blackboard {:n 4} :timeout-ms 5000}))
           all (h/read-all-events ctx)
           configured (first (filter #(= :sheet/node-executor-set (:event/type %)) all))
@@ -42,7 +42,7 @@
         (println :OWNED-DEFERRED-READ-EVIDENCE
                  (pr-str {:attempts @read-attempts :reductions @reductions
                           :primary-result result :completion completed
-                          :function-id key :binding-retained? (some? (tree/lookup-ephemeral-fn key))}))
+                          :function-id key :binding-retained? (some? (service-logic/lookup-ephemeral-fn key))}))
         (is (nil? (:error emission)))
         (is (= [{:tenant-id (:tenant-id ctx) :tags #{[:sheet sheet]} :types ownership-types}]
                @read-attempts) "Only the exact ownership read is injected")
@@ -50,15 +50,15 @@
         (is (= :success (:root-status completed)) "Real command/processor execution durably finished")
         (is (= :success (:status result)) "Cleanup uncertainty must preserve the completed public result")
         (is (= 5 (get-in result [:outputs :result])))
-        (is (fn? (tree/lookup-ephemeral-fn key)) "Unknown live ownership conservatively retains the exact callable")
+        (is (fn? (service-logic/lookup-ephemeral-fn key)) "Unknown live ownership conservatively retains the exact callable")
         (is (= (:recoverable-fn configured)
-               (:orc/recoverable-fn (meta (tree/lookup-ephemeral-fn key)))))
-        (finally (when key (tree/clear-ephemeral-fn! key)))))))
+               (:orc/recoverable-fn (meta (service-logic/lookup-ephemeral-fn key)))))
+        (finally (when key (service-logic/clear-ephemeral-fn! key)))))))
 
 (deftest post-ownership-binding-observation-failure-retains-completed-result
   (h/with-async-test-context [ctx]
-    (let [sctx (sandbox/build-rlm-context {:blackboard {} :durable-source-required? true})
-          emission (sandbox/execute-rlm-code sctx
+    (let [sctx (service-processors/build-rlm-context {:blackboard {} :durable-source-required? true})
+          emission (service-logic/execute-rlm-code sctx
                      "(emit-tree! '[:code {:reads [:n] :writes [:result] :output-schemas {:result :int} :fn (fn [{:keys [inputs]}] {:result (inc (:n inputs))})}])")
           actual-read es/read
           actual-tick-context read-models/get-tick-execution-context
@@ -93,7 +93,7 @@
                                    @ownership-observed?)
                             (do (swap! failed-lookups conj tick-id) (throw sentinel))
                             (actual-tick-context context tick-id)))]
-            (tree/execute-tree (:generated-tree @(:sandbox-vars sctx)) ctx
+            (service-processors/execute-tree (:generated-tree @(:sandbox-vars sctx)) ctx
                                {:blackboard {:n 4} :timeout-ms 5000}))
           all (h/read-all-events ctx)
           configured (first (filter #(= :sheet/node-executor-set (:event/type %)) all))
@@ -103,7 +103,7 @@
         (println :OWNED-BINDING-OBSERVATION-EVIDENCE
                  (pr-str {:ownership-observed? @ownership-observed? :ownership-reads @ownership-reads
                           :failed-lookups @failed-lookups :primary-result result :completion completed
-                          :function-id key :binding-retained? (some? (tree/lookup-ephemeral-fn key))}))
+                          :function-id key :binding-retained? (some? (service-logic/lookup-ephemeral-fn key))}))
         (is (nil? (:error emission)))
         (is (= [{:tenant-id (:tenant-id ctx) :tags #{[:sheet sheet]} :types ownership-types}]
                @ownership-reads))
@@ -112,17 +112,17 @@
         (is (= :success (:root-status completed)))
         (is (= :success (:status result)) "Cleanup-only projection failure must preserve committed success")
         (is (= 5 (get-in result [:outputs :result])))
-        (is (fn? (tree/lookup-ephemeral-fn key)))
+        (is (fn? (service-logic/lookup-ephemeral-fn key)))
         (is (= (:recoverable-fn configured)
-               (:orc/recoverable-fn (meta (tree/lookup-ephemeral-fn key)))))
-        (finally (when key (tree/clear-ephemeral-fn! key)))))))
+               (:orc/recoverable-fn (meta (service-logic/lookup-ephemeral-fn key)))))
+        (finally (when key (service-logic/clear-ephemeral-fn! key)))))))
 
 (deftest absent-or-anomalous-cleanup-projection-does-not-prove-empty-bindings
   (doseq [missing [nil {:cognitect.anomalies/category :cognitect.anomalies/unavailable
                        :cognitect.anomalies/message "Owned projection temporarily unavailable"}]]
     (h/with-async-test-context [ctx]
-      (let [sctx (sandbox/build-rlm-context {:blackboard {} :durable-source-required? true})
-            emission (sandbox/execute-rlm-code sctx
+      (let [sctx (service-processors/build-rlm-context {:blackboard {} :durable-source-required? true})
+            emission (service-logic/execute-rlm-code sctx
                        "(emit-tree! '[:code {:reads [:n] :writes [:result] :output-schemas {:result :int} :fn (fn [{:keys [inputs]}] {:result (inc (:n inputs))})}])")
             actual-read es/read
             actual-tick-context read-models/get-tick-execution-context
@@ -156,7 +156,7 @@
                                      @ownership-observed?)
                               (do (swap! missing-lookups conj tick-id) missing)
                               (actual-tick-context context tick-id)))]
-              (tree/execute-tree (:generated-tree @(:sandbox-vars sctx)) ctx
+              (service-processors/execute-tree (:generated-tree @(:sandbox-vars sctx)) ctx
                                  {:blackboard {:n 4} :timeout-ms 5000}))
             all (h/read-all-events ctx)
             configured (first (filter #(= :sheet/node-executor-set (:event/type %)) all))
@@ -167,7 +167,7 @@
                    (pr-str {:missing-projection missing :ownership-observed? @ownership-observed?
                             :ownership-reads @ownership-reads :missing-lookups @missing-lookups
                             :primary-result result :completion completed
-                            :function-id key :binding-retained? (some? (tree/lookup-ephemeral-fn key))}))
+                            :function-id key :binding-retained? (some? (service-logic/lookup-ephemeral-fn key))}))
           (is (nil? (:error emission)))
           (is (= [{:tenant-id (:tenant-id ctx) :tags #{[:sheet sheet]} :types ownership-types}]
                  @ownership-reads))
@@ -176,7 +176,7 @@
           (is (= :success (:root-status completed)))
           (is (= :success (:status result)))
           (is (= 5 (get-in result [:outputs :result])))
-          (is (fn? (tree/lookup-ephemeral-fn key)) "Unavailable bindings cannot be treated as known ephemeral-only")
+          (is (fn? (service-logic/lookup-ephemeral-fn key)) "Unavailable bindings cannot be treated as known ephemeral-only")
           (is (= (:recoverable-fn configured)
-                 (:orc/recoverable-fn (meta (tree/lookup-ephemeral-fn key)))))
-          (finally (when key (tree/clear-ephemeral-fn! key))))))))
+                 (:orc/recoverable-fn (meta (service-logic/lookup-ephemeral-fn key)))))
+          (finally (when key (service-logic/clear-ephemeral-fn! key))))))))

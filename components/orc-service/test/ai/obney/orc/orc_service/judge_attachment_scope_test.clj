@@ -4,8 +4,9 @@
    and the attachment survives export, DSL generation and import."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.dsl :as dsl]
-            [ai.obney.orc.orc-service.core.read-models :as rm]))
+            [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn echo [{:keys [inputs]}] {:answer (:request inputs)})
 
@@ -15,7 +16,7 @@
                    :item [:string {:description "Current item"}]
                    :results [:vector [:string {:description "Result"}]]})
 
-(defn- leaf [n] (dsl/code n :fn "ai.obney.orc.orc-service.judge-attachment-scope-test/echo"
+(defn- leaf [n] (service-logic/code n :fn "ai.obney.orc.orc-service.judge-attachment-scope-test/echo"
                           :reads [:request] :writes [:answer]))
 
 (defn- node-named [ctx sheet-id n]
@@ -25,17 +26,17 @@
 
 (deftest any-node-accepts-a-declared-judge-and-unknown-targets-are-rejected
   (h/with-test-context [ctx]
-    (let [child (dsl/build-workflow! ctx (dsl/workflow "s9a-cmd-child" (dsl/blackboard bb) (leaf "echo")))
-          sheet (dsl/build-workflow! ctx
-                  (dsl/workflow "s9a-cmd-parent"
-                    (dsl/blackboard bb)
-                    (dsl/judges {:quality {:type :grounding}})
-                    (dsl/sequence "root-seq"
-                      (dsl/parallel "par" (leaf "p1"))
-                      (dsl/map-each "each" :from :items :as :item :into :results (leaf "e1"))
-                      (dsl/fallback "fb" (leaf "f1"))
-                      (dsl/condition "cond" :check {:key :request :op :equals :value "x"})
-                      (dsl/delegate "del" :target-sheet-id child :reads [:request] :writes [:answer]))))]
+    (let [child (service-commands/build-workflow! ctx (service-logic/workflow "s9a-cmd-child" (service-logic/dsl-blackboard bb) (leaf "echo")))
+          sheet (service-commands/build-workflow! ctx
+                  (service-logic/workflow "s9a-cmd-parent"
+                    (service-logic/dsl-blackboard bb)
+                    (service-logic/dsl-judges {:quality {:type :grounding}})
+                    (service-logic/sequence "root-seq"
+                      (service-logic/parallel "par" (leaf "p1"))
+                      (service-logic/map-each "each" :from :items :as :item :into :results (leaf "e1"))
+                      (service-logic/fallback "fb" (leaf "f1"))
+                      (service-logic/condition "cond" :check {:key :request :op :equals :value "x"})
+                      (service-logic/delegate "del" :target-sheet-id child :reads [:request] :writes [:answer]))))]
       (doseq [n ["root-seq" "par" "each" "fb" "cond" "del" "p1"]]
         (let [id (:id (node-named ctx sheet n))
               r (h/run-and-apply! ctx (h/make-set-node-judges-command sheet id ["quality"]))]
@@ -50,16 +51,16 @@
                                             sheet (:id (node-named ctx sheet "root-seq")) ["nope"])))))))))
 
 (defn- attached-workflow [wf-name child]
-  (dsl/workflow wf-name
-    (dsl/blackboard bb)
-    (dsl/judges {:quality {:type :grounding}})
-    (dsl/sequence "root-seq" :judges ["quality"]
-      (dsl/parallel "par" {:judges ["quality"]} (leaf "p1"))
-      (dsl/map-each "each" :from :items :as :item :into :results :judges ["quality"] (leaf "e1"))
-      (dsl/fallback "fb" :judges ["quality"] (dsl/code "f1" :fn "ai.obney.orc.orc-service.judge-attachment-scope-test/echo"
+  (service-logic/workflow wf-name
+    (service-logic/dsl-blackboard bb)
+    (service-logic/dsl-judges {:quality {:type :grounding}})
+    (service-logic/sequence "root-seq" :judges ["quality"]
+      (service-logic/parallel "par" {:judges ["quality"]} (leaf "p1"))
+      (service-logic/map-each "each" :from :items :as :item :into :results :judges ["quality"] (leaf "e1"))
+      (service-logic/fallback "fb" :judges ["quality"] (service-logic/code "f1" :fn "ai.obney.orc.orc-service.judge-attachment-scope-test/echo"
                                                        :reads [:request] :writes [:answer] :judges ["quality"]))
-      (dsl/condition "cond" :check {:key :request :op :equals :value "x"} :judges ["quality"])
-      (dsl/delegate "del" :target-sheet-id child :reads [:request] :writes [:answer] :judges ["quality"]))))
+      (service-logic/condition "cond" :check {:key :request :op :equals :value "x"} :judges ["quality"])
+      (service-logic/delegate "del" :target-sheet-id child :reads [:request] :writes [:answer] :judges ["quality"]))))
 
 (def ^:private attached-names ["root-seq" "par" "each" "fb" "f1" "cond" "del"])
 
@@ -70,20 +71,20 @@
 
 (deftest dsl-attaches-judges-to-composites-and-delegates-and-round-trips
   (h/with-test-context [ctx]
-    (let [child (dsl/build-workflow! ctx (dsl/workflow "s9a-dsl-child" (dsl/blackboard bb) (leaf "echo")))
-          sheet (dsl/build-workflow! ctx (attached-workflow "s9a-dsl-parent" child))
-          exported (dsl/export-sheet ctx sheet)]
+    (let [child (service-commands/build-workflow! ctx (service-logic/workflow "s9a-dsl-child" (service-logic/dsl-blackboard bb) (leaf "echo")))
+          sheet (service-commands/build-workflow! ctx (attached-workflow "s9a-dsl-parent" child))
+          exported (service-commands/export-sheet ctx sheet)]
       (is (= all-attached (judges-by-name ctx sheet)) "the read model shows every attachment")
       (testing "re-building an unchanged definition is a no-op; changing only attachments rebuilds"
-        (is (= sheet (dsl/build-workflow! ctx (attached-workflow "s9a-dsl-parent" child))))
+        (is (= sheet (service-commands/build-workflow! ctx (attached-workflow "s9a-dsl-parent" child))))
         (is (= all-attached (judges-by-name ctx sheet))))
       (doseq [pretty? [true false]]
-        (let [code (dsl/export-to-dsl exported :pretty? pretty?)
-              regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
+        (let [code (service-logic/export-to-dsl exported :pretty? pretty?)
+              regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.interface)]
                             (eval (read-string code)))
-              rebuilt (dsl/build-workflow! ctx (assoc regenerated :workflow-name (str "s9a-dsl-regen-" pretty?)))]
+              rebuilt (service-commands/build-workflow! ctx (assoc regenerated :workflow-name (str "s9a-dsl-regen-" pretty?)))]
           (is (= all-attached (judges-by-name ctx rebuilt))
               (str "DSL text round trip (pretty? " pretty? ")"))))
       (testing "EDN import keeps the attachments"
-        (let [imported (dsl/import-sheet ctx (assoc-in exported [:sheet :name] "s9a-dsl-imported"))]
+        (let [imported (service-commands/import-sheet ctx (assoc-in exported [:sheet :name] "s9a-dsl-imported"))]
           (is (= all-attached (judges-by-name ctx imported))))))))

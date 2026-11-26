@@ -11,13 +11,15 @@
             [ai.obney.orc.evaluation.core.commands]
             [ai.obney.orc.evaluation.core.judge-runtime]
             [ai.obney.orc.evaluation.interface.schemas]
-            [ai.obney.orc.ontology.core.consolidator]
             [ai.obney.orc.ontology.core.todo-processors]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.orc-service.complex-e2e-support :as live]
             [ai.obney.orc.orc-service.core.read-models :as read-models]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (defn- command! [ctx command]
   (cp/process-command

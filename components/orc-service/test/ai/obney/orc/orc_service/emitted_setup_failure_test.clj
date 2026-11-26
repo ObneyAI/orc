@@ -9,9 +9,6 @@
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.test-helpers :as h]))
 
-;; MODEL-CONTRACT-19 / GeneratedChildSetupMustSucceedBeforeExecution.
-;; The only fake is the external provider; public authoring, compilation,
-;; commands, SQLite events, execution and projections are real.
 (def proof (atom nil))
 (defn emitted [schema]
   (str "(emit-tree! [:sequence [:llm {:instruction \"Copy seed into generated-answer.value.\" "

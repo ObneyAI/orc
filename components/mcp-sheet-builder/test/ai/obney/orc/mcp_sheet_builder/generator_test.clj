@@ -44,9 +44,7 @@
   (testing "generates blackboard schema from tools"
     (let [bb (gen/generate-blackboard-schema [search-tool])]
       (is (map? bb))
-      ;; Should have input keys
       (is (contains? bb :query))
-      ;; Should have result key
       (is (contains? bb :search-result)))))
 
 (deftest generate-blackboard-schema-multiple-tools-test
@@ -86,10 +84,9 @@
 
 (deftest topological-sort-with-sequential
   (testing "sorts by sequential relationships"
-    (let [tools [extract-tool search-tool]  ;; Reversed order
+    (let [tools [extract-tool search-tool]
           rels [{:type :sequential :from "search" :to "extract"}]
           sorted (gen/topological-sort-by-relationships tools rels)]
-      ;; search should come before extract
       (is (= "search" (:name (first sorted)))))))
 
 ;; ============================================================================
@@ -141,7 +138,6 @@
   (testing "generates sequential pipeline workflow"
     (let [result (gen/generate-sheet sample-analysis {:pattern :sequential-pipeline})]
       (is (map? result))
-      ;; Workflow should contain sequence node
       (is (some? (:workflow result))))))
 
 (deftest generate-sheet-research-compilation

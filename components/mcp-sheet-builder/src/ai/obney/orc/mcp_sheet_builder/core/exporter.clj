@@ -32,35 +32,6 @@
     :edn (sheet/save-sheet! ctx sheet-id path))
   path)
 
-(defn build-and-export-sheet!
-  "Build a sheet from MCP tools and export it to a file.
-
-   Convenience function combining build-sheet-from-mcp! + export.
-   This is the recommended way to create reusable MCP-powered sheets.
-
-   Args:
-     ctx - Context with :event-store
-     mcp-opts - MCP connection options {:preset :tavily} or {:type :streamable-http ...}
-     export-path - File path to save the sheet
-
-   Options:
-     :format - :dsl (default) or :edn
-     :pattern - Specific pattern to use
-     :pattern-hint - Description for pattern selection
-
-   Returns:
-   {:sheet-id uuid
-    :workflow-name string
-    :pattern keyword
-    :tools [...]
-    :exported-to string   ;; File path}"
-  [ctx mcp-opts export-path & {:keys [format] :or {format :dsl} :as opts}]
-  (let [build-sheet-from-mcp! (requiring-resolve 'ai.obney.orc.mcp-sheet-builder.core.builders/build-sheet-from-mcp!)
-        build-opts (dissoc opts :format)
-        result (build-sheet-from-mcp! ctx mcp-opts build-opts)]
-    (export-generated-sheet! ctx (:sheet-id result) export-path :format format)
-    (assoc result :exported-to export-path)))
-
 ;; ============================================================================
 ;; Executor Export
 ;; ============================================================================
@@ -124,10 +95,8 @@
         sheet-file (str dir "/" name ".clj")
         tools (mapv :tool-name executor-defs)]
 
-    ;; Export executors
     (export-executors! executor-defs executors-file :namespace executors-ns)
 
-    ;; Export workflow
     (let [workflow-content (executor-gen/generate-workflow-file-content
                             workflow-data executors-ns workflow-ns tools)]
       (io/make-parents sheet-file)

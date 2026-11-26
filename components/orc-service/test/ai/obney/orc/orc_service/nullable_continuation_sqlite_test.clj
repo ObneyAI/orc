@@ -16,8 +16,6 @@
            [java.util.concurrent TimeUnit]))
 
 (defn accept-null [{:keys [inputs]}]
-  ;; This authored action distinguishes absent from present nil in its real
-  ;; runtime inputs. A nil? check alone would accept missing input incorrectly.
   {:accepted (and (contains? inputs :answer) (nil? (:answer inputs)))})
 
 (defn- digest [file]
@@ -41,8 +39,6 @@
      :producer-writes (bt/value-log-resolve-writes ctx (:tenant-id ctx) tick-id producer)
      :consumer-reads (bt/value-log-resolve-reads ctx (:tenant-id ctx) tick-id consumer)
      :consumer-writes (bt/value-log-resolve-writes ctx (:tenant-id ctx) tick-id consumer)
-     ;; Compare complete native event print forms in fresh process, avoiding
-     ;; EDN tagged Java-time reader differences. No event is excluded.
      :events (mapv pr-str events)}))
 
 (defn- fresh-jvm-classpath
@@ -62,7 +58,6 @@
     (str/join java.io.File/pathSeparator (distinct (concat loader-paths bootstrap-paths)))))
 
 (defn -main [manifest-path result-path]
-  ;; Query only: no provider, poller, schedule or execution is started.
   (let [{:keys [database tenant-id tick-id]} (edn/read-string (slurp manifest-path))
         support (h/create-test-context)]
     (es/stop (:event-store support))
@@ -121,8 +116,6 @@
             (is (= :success (:status result)))
             (reset! before {:tick-id tick-id :observation (checkpoint ctx tick-id)}))
           (finally (h/stop-async-context ctx)))))
-    ;; Read the closed canonical log after the owned processors have drained;
-    ;; late bookkeeping is retained rather than silently excluded.
     (let [support (h/create-test-context)]
       (es/stop (:event-store support))
       (let [ctx (assoc support :tenant-id tenant-id

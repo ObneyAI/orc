@@ -28,16 +28,12 @@
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.core.commands]
             [ai.obney.orc.orc-service.core.read-models]
-            [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
-            ;; Register the ontology enrichment + description + read-model
-            ;; namespaces so the post-emit enrichment processor is on the
-            ;; global processor registry and its commands/read-models resolve.
+            [ai.obney.orc.orc-service.core.logic :as logic]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
             [ai.obney.orc.ontology.core.todo-processors]
-            [ai.obney.orc.ontology.core.harvest :as harvest]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.query-processor.interface :as qp]
@@ -45,13 +41,9 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]))
 
-;; ---------------------------------------------------------------------------
-;; Stub the consolidator's reflection LLM so any threshold-fired autonomous
-;; consolidation completes fast + deterministically (never a real OpenRouter
-;; call). CV-2's enrichment itself uses NO LLM; this is only harness hygiene.
-;; ---------------------------------------------------------------------------
 (defn- stub-predict-fixture [f]
   (with-redefs [llm/predict
                 (fn [_provider _module _inputs _options]
@@ -64,10 +56,6 @@
 
 (use-fixtures :each stub-predict-fixture)
 
-;; ---------------------------------------------------------------------------
-;; Context helpers (mirror rlm_rolling_metrics_test / el4_harvest_test — all
-;; registered processors started, so the enrichment processor fires for real).
-;; ---------------------------------------------------------------------------
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
         event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
@@ -104,9 +92,6 @@
   `(let [~sym (create-context)]
      (try ~@body (finally (stop-context ~sym)))))
 
-;; ---------------------------------------------------------------------------
-;; Fixtures — the emitted worked-DSL is a pure S-expr (matches seed shape).
-;; ---------------------------------------------------------------------------
 (def ^:private emitted-tree
   "A pure-data emitted S-expr tree (what emit-tree! captures before compiling
    a separate executable representation)."
@@ -114,9 +99,6 @@
    [:llm {:reads [:doc] :writes [:summary]}]
    [:final {:keys [:summary]}]])
 
-;; ---------------------------------------------------------------------------
-;; Real-grain fixtures — every step is a schema-validated command.
-;; ---------------------------------------------------------------------------
 (defn- classify!
   "RR-20: `source-tick-id` is now an explicit, caller-supplied argument
    (rather than a fresh random-uuid generated INSIDE this fn) because
@@ -140,12 +122,6 @@
             :was-fresh-mint? true})))
 
 (defn- record-floor! [ctx class-id signature]
-  ;; CV-1's provisional floor, as CC-6 writes it: a :representative-use CLAIM
-  ;; carrying the task signature, admitted past CC-4's guard on its declared
-  ;; :classification-signature basis (no judge has run at classify time). The
-  ;; body — including the :summary ColBERT indexes — is ASSEMBLED from this
-  ;; claim by CC-3, so the floor is the same floor; it simply is no longer a
-  ;; second writer of a slot the claim path owns.
   (cp/process-command
     (assoc ctx :command
            {:command/name :ontology/record-claim-deltas
@@ -182,15 +158,12 @@
    with genuinely different source text."
   ([ctx source-sheet-id source-tick-id tree] (complete-emit! ctx source-sheet-id source-tick-id tree nil))
   ([ctx source-sheet-id source-tick-id tree status]
-   ;; The Phase-2 bookend: an ephemeral :sheet-id (distinct from the source),
-   ;; carrying the emitted DSL + the source sheet-id/tick-id for the
-   ;; occurrence join.
    (cp/process-command
      (assoc ctx :command
             (cond-> {:command/name :sheet/record-rlm-tree-execution-completion
                      :command/id (random-uuid)
                      :command/timestamp (time/now)
-                     :sheet-id (random-uuid)  ;; ephemeral Phase-2 sheet
+                     :sheet-id (random-uuid)
                      :tick-id (random-uuid)
                      :trajectory []
                      :total-usage {:total-tokens 0}}
@@ -198,7 +171,7 @@
               source-tick-id  (assoc :source-tick-id source-tick-id)
               tree            (assoc :generated-tree tree
                                       :generated-tree-source (pr-str tree)
-                                      :tree-fingerprint (rlm-fingerprint/fingerprint tree))
+                                      :tree-fingerprint (logic/fingerprint tree))
               status          (assoc :status status))))))
 
 (defn- emit-strength
@@ -220,9 +193,6 @@
        (filter #(and (= :tree-class (:target-type %))
                      (= class-id (:target-id %))))))
 
-;; ===========================================================================
-;; CYCLE 1 — the completion command/event carries :generated-tree
-;; ===========================================================================
 
 (deftest cycle1-completion-event-carries-generated-tree
   (testing ":sheet/record-rlm-tree-execution-completion with :generated-tree + :source-sheet-id emits an event carrying both"
@@ -267,9 +237,6 @@
         (is (nil? (:source-sheet-id event))
             "No :source-sheet-id present when not supplied")))))
 
-;; ===========================================================================
-;; CYCLE 2 — post-emit enrichment lands the emitted DSL as :recommended-pattern
-;; ===========================================================================
 
 (deftest cycle2-enrichment-records-emitted-dsl-as-recommended-pattern
   (testing "after an emit, the assigned :tree-class description gains a :strengths entry whose :recommended-pattern = the emitted DSL; CV-1's :summary preserved"
@@ -278,15 +245,11 @@
             source-tick-id (random-uuid)
             class-id (random-uuid)
             signature "implement: summarize a document"]
-        ;; CV-1 floor: classify the task + record the provisional description.
         (classify! ctx source-sheet-id source-tick-id class-id)
         (record-floor! ctx class-id signature)
         (Thread/sleep 150)
-        ;; The RLM emits its tree (Phase-2 completion bookend). RR-20: a
-        ;; :success status is what earns this shape a :strength claim.
         (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)
         (Thread/sleep 400)
-        ;; Read the description read-model BACK — never trust a return value.
         (let [desc (ontology/get-description ctx :tree-class class-id)
               strength (emit-strength desc)]
           (is (some? desc) "the class description still exists")
@@ -298,9 +261,6 @@
           (is (= (pr-str emitted-tree) (:recommended-pattern strength))
               "the strength's :recommended-pattern is the emitted worked-DSL"))))))
 
-;; ===========================================================================
-;; CYCLE 3 — EL-4 harvest picks up the emitted DSL as :recommended-pattern
-;; ===========================================================================
 
 (deftest cycle3-harvest-body-returns-emitted-dsl
   (testing "harvest-body's best-recommended-pattern returns the emitted DSL for the enriched class (a harvested specialist ships the real worked pattern)"
@@ -313,18 +273,12 @@
         (Thread/sleep 150)
         (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)
         (Thread/sleep 400)
-        ;; Harvest assembles the durable behavior body by REUSING the
-        ;; enriched description (no second synthesis). It must carry the
-        ;; emitted worked-DSL as :recommended-pattern.
         (let [desc (ontology/get-description ctx :tree-class class-id)
-              body (harvest/harvest-body desc 12)]
+              body (ontology-queries/harvest-body desc 12)]
           (is (some? body) "harvest-body assembled from the enriched description")
           (is (= (pr-str emitted-tree) (:recommended-pattern body))
               "harvest ships the emitted worked-DSL, not just the summary"))))))
 
-;; ===========================================================================
-;; CYCLE 4 — timeout / no-emit path is safe (additive, never a regression)
-;; ===========================================================================
 
 (deftest cycle4-timeout-no-emit-leaves-cv1-floor-intact
   (testing "a turn that times out before emit (completion carries NO :generated-tree) records no enrichment; the class stays retrievable via CV-1's floor"
@@ -336,7 +290,6 @@
         (classify! ctx source-sheet-id source-tick-id class-id)
         (record-floor! ctx class-id signature)
         (Thread/sleep 150)
-        ;; Timeout bookend: source-sheet-id present, but NO emitted tree.
         (complete-emit! ctx source-sheet-id source-tick-id nil)
         (Thread/sleep 300)
         (let [desc (ontology/get-description ctx :tree-class class-id)]
@@ -350,29 +303,11 @@
   (testing "an emit whose source sheet was never classified enriches nothing and does not crash"
     (with-test-ctx [ctx]
       (let [unclassified-sheet (random-uuid)]
-        ;; No classify!, no floor — just an emit bookend for a stray sheet.
         (complete-emit! ctx unclassified-sheet (random-uuid) emitted-tree :success)
         (Thread/sleep 300)
         (is (nil? (ontology/get-tree-class-for-sheet ctx unclassified-sheet))
             "no class resolves for an unclassified sheet — enrichment is a no-op")))))
 
-;; ===========================================================================
-;; CYCLE 5 — an identical re-emit adds NO DUPLICATE.
-;;
-;; CC-6 CHANGED THE MECHANISM HERE, DELIBERATELY, so this test changed with it
-;; and the change is worth stating rather than burying. Under the whole-body
-;; writer, an identical re-emit was SKIPPED, because re-recording a byte-equal
-;; body would have been a pure cost: one more :tree-description-updated, one
-;; more reindex tick, no new information. Under claim operations the same event
-;; carries information the old shape had nowhere to put — this class emitted
-;; this pattern AGAIN — so it lands as a `:support`, and the mechanical entry
-;; becomes a counter instead of a string the reflection LLM had to reproduce
-;; verbatim (14 of the 145 historical rejections).
-;;
-;; What must NOT change is the property the old assertion was really defending:
-;; a re-emit must never DUPLICATE. That is asserted below, and the reinforcement
-;; itself is pinned in cc6_cv2_claim_enrichment_test.
-;; ===========================================================================
 
 (deftest cycle5-identical-re-emit-does-not-duplicate
   (testing "re-emitting the SAME DSL leaves exactly ONE worked-pattern entry in the assembled body, and ZERO whole-body tree-class writes on either pass"
@@ -385,7 +320,7 @@
         (Thread/sleep 150)
         (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)
         (Thread/sleep 400)
-        (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)  ;; identical re-emit
+        (complete-emit! ctx source-sheet-id source-tick-id emitted-tree :success)
         (Thread/sleep 400)
         (let [desc (ontology/get-description ctx :tree-class class-id)
               updates (tree-class-description-updates ctx class-id)]

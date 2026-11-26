@@ -15,11 +15,6 @@
             [clojure.pprint :as pprint]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
-            ;; RR-29: no `eval/...` call sites remain (the caller-less
-            ;; synchronous evaluate-trace API was deleted) — this require is
-            ;; kept only for its load-time side effect, registering the live
-            ;; judge-runtime processor and its command handlers (Phase 6
-            ;; reads back the :judge/score-emitted events they write).
             [ai.obney.orc.evaluation.interface]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.gepa.interface :as gepa]
@@ -35,7 +30,6 @@
 (def run-integration-tests?
   (= "true" (System/getenv "ORC_INTEGRATION_TESTS")))
 
-;; Register OpenRouter provider from OPENROUTER_API_KEY env var
 (when run-integration-tests?
   (llm/quick-setup!))
 
@@ -72,7 +66,6 @@
   (println "╚══════════════════════════════════════════════════════════════╝")
   (println)
 
-  ;; Phase 1: Build
   (when-let [p (:build report)]
     (println "── Phase 1: Build Workflow ──────────────────────────────────")
     (println (format "  Sheet ID:     %s" (:sheet-id p)))
@@ -84,7 +77,6 @@
     (println (format "  Build time:   %.0f ms" (:elapsed-ms p)))
     (println))
 
-  ;; Phase 2: Execute urgent
   (when-let [p (:execute-urgent report)]
     (println "── Phase 2: Execute (urgent ticket) ──────────────────────────")
     (println (format "  Status:       %s" (:status p)))
@@ -103,7 +95,6 @@
     (println (format "  Full outputs: %s" (pr-str (:raw-outputs p))))
     (println))
 
-  ;; Phase 3: Tracing
   (when-let [p (:tracing report)]
     (println "── Phase 3: Tracing ────────────────────────────────────────")
     (println (format "  Duration:       %s ms" (:duration-ms p)))
@@ -114,7 +105,6 @@
       (println (format "  Execution path: %s" (str/join " -> " (:node-names p)))))
     (println))
 
-  ;; Phase 4: Execute normal
   (when-let [p (:execute-normal report)]
     (println "── Phase 4: Execute (normal ticket) + Metrics ───────────────")
     (println (format "  Status:       %s" (:status p)))
@@ -130,7 +120,6 @@
     (println (format "    node-metrics:     %d nodes" (or (:node-metrics-count p) 0)))
     (println))
 
-  ;; Phase 5: Versioning
   (when-let [p (:versioning report)]
     (println "── Phase 5: Versioning ─────────────────────────────────────")
     (println (format "  Published versions:  %d" (:version-count p)))
@@ -139,7 +128,6 @@
     (println (format "  Version exec outputs: %s" (pr-str (:version-exec-outputs p))))
     (println))
 
-  ;; Phase 6: Evaluation
   (when-let [p (:evaluation report)]
     (println "── Phase 6: Evaluation Judges ────────────────────────────────")
     (println (format "  Eval time:    %.0f ms" (:elapsed-ms p)))
@@ -153,7 +141,6 @@
                        (or (:feedback d) ""))))
     (println))
 
-  ;; Phase 7: Ontology
   (when-let [p (:ontology report)]
     (println "── Phase 7: Ontology Classification ──────────────────────────")
     (println (format "  Overall score:  %.3f" (double (:overall-score p))))
@@ -172,7 +159,6 @@
                          (:uri f) (:dimension f) (double (or (:confidence f) 0))))))
     (println))
 
-  ;; Phase 8: GEPA
   (when-let [p (:gepa report)]
     (println "── Phase 8: GEPA Optimization ────────────────────────────────")
     (println (format "  Optimization ID:    %s" (:optimization-id p)))
@@ -209,7 +195,6 @@
         (println (format "      \"%s\"" instruction)))
       (println)))
 
-  ;; Phase 9: Export
   (when-let [p (:export report)]
     (println "── Phase 9: Export/Import ─────────────────────────────────────")
     (println (format "  Export keys:        %s" (str/join ", " (map name (:export-keys p)))))
@@ -217,7 +202,6 @@
     (println (format "  Idempotent rebuild: %s" (:idempotent? p)))
     (println))
 
-  ;; Timing summary
   (let [phases [[:build "Build"]
                 [:execute-urgent "Execute (urgent)"]
                 [:execute-normal "Execute (normal)"]
@@ -233,9 +217,6 @@
     (println (format "  %-22s %8.0f ms" "TOTAL" (double total)))
     (println)))
 
-;; =============================================================================
-;; Code Executor Functions (resolved by fully-qualified name at runtime)
-;; =============================================================================
 
 (defn classify-urgency
   "Code executor: reads :ticket-message, writes :urgency and :is-urgent."
@@ -305,15 +286,12 @@
                             :weight 0.3}})
 
     (sheet/sequence "triage-pipeline"
-      ;; Step 1: Code — classify urgency via regex
       (sheet/code "classify-urgency"
         :fn "ai.obney.orc.orc-service.end-to-end-integration-test/classify-urgency"
         :reads [:ticket-message]
         :writes [:urgency :is-urgent])
 
-      ;; Step 2: Parallel — LLM analysis + fallback category
       (sheet/parallel "analyze" {:success-policy :all}
-        ;; Fallback: try LLM category classification, fall back to code default
         (sheet/fallback "classify-category"
           (sheet/llm "llm-classify"
             :model "google/gemini-2.5-flash"
@@ -324,7 +302,6 @@
           (sheet/code "default-category"
             :fn "ai.obney.orc.orc-service.end-to-end-integration-test/default-category"
             :writes [:category]))
-        ;; LLM sentiment analysis
         (sheet/llm "sentiment-analysis"
           :model "google/gemini-2.5-flash"
           :instruction "Analyze the sentiment of this customer support ticket. Output exactly one word: positive, negative, or neutral."
@@ -332,17 +309,14 @@
           :writes [:sentiment]
           :judges ["instruction-judge"]))
 
-      ;; Step 3: Code — split ticket into sub-issues
       (sheet/code "split-issues"
         :fn "ai.obney.orc.orc-service.end-to-end-integration-test/split-issues"
         :reads [:ticket-message]
         :writes [:sub-issues])
 
-      ;; Step 4: Condition — verify urgency was classified
       (sheet/condition "check-classified"
         :check {:key :urgency :op :exists})
 
-      ;; Step 5: Map-each — process each sub-issue with LLM
       (sheet/map-each "process-sub-issues"
         :from :sub-issues
         :as :current-issue
@@ -354,7 +328,6 @@
           :reads [:current-issue]
           :writes [:sub-issue-summary]))
 
-      ;; Step 6: Code — build final routing decision
       (sheet/code "build-routing"
         :fn "ai.obney.orc.orc-service.end-to-end-integration-test/build-routing-decision"
         :reads [:urgency :sentiment :category]
@@ -373,9 +346,6 @@
     (binding [*report* (atom {})]
       (h/with-async-test-context [ctx]
 
-        ;; =====================================================================
-        ;; Phase 1: Build Workflow via DSL
-        ;; =====================================================================
         (testing "Phase 1: Build workflow via DSL"
           (let [[sheet-id build-ms] (timed (sheet/build-workflow! ctx triage-workflow))]
             (is (uuid? sheet-id) "build-workflow! returns a UUID")
@@ -402,9 +372,6 @@
                  :judge-names ["grounding-judge" "completeness-judge" "instruction-judge"]
                  :elapsed-ms build-ms}))
 
-            ;; =====================================================================
-            ;; Phase 2: Execute Workflow (urgent ticket)
-            ;; =====================================================================
             (testing "Phase 2: Execute with urgent ticket"
               (let [input {:ticket-message "URGENT: billing error on my account. Also my password reset isn't working."}
                     [result exec-ms] (timed (sheet/execute ctx sheet-id input :timeout-ms 120000))
@@ -440,13 +407,9 @@
                    :input input
                    :error (:error result)})
 
-                ;; =============================================================
-                ;; Phase 3: Verify Tracing
-                ;; =============================================================
                 (testing "Phase 3: Verify execution tracing"
                   (is (some? (:duration-ms result)) "Should have duration")
 
-                  ;; Poll for traces (assembled asynchronously)
                   (let [trace (loop [attempts 0]
                                 (let [result (h/run-query ctx (h/make-get-traces-query sheet-id :limit 1))
                                       traces (get-in result [:query/result :traces])]
@@ -464,18 +427,15 @@
                       (is (= sheet-id (:sheet-id trace)) "Trace should reference correct sheet")
                       (is (= :success (:status trace)) "Trace should show success")
 
-                      ;; Verify node traces
                       (let [node-traces (:node-traces trace)
                             node-names (set (map :node-name node-traces))]
                         (is (vector? node-traces) "Should have node-traces vector")
                         (is (>= (count node-traces) 5) "Should have traces for multiple nodes")
 
-                        ;; Key nodes should appear
                         (doseq [expected-name ["classify-urgency" "sentiment-analysis" "build-routing"]]
                           (is (contains? node-names expected-name)
                               (str "Node traces should include " expected-name)))
 
-                        ;; Check execution ordering: classify-urgency before build-routing
                         (let [idx-of (fn [name] (->> node-traces
                                                       (keep-indexed #(when (= name (:node-name %2)) %1))
                                                       first))]
@@ -490,9 +450,6 @@
                            :node-names (mapv :node-name node-traces)
                            :node-statuses (frequencies (map :status node-traces))})))))
 
-                ;; =============================================================
-                ;; Phase 4: Second Execution (normal priority) + Rolling Metrics
-                ;; =============================================================
                 (testing "Phase 4: Normal ticket + rolling metrics"
                   (let [input2 {:ticket-message "How do I reset my password?"}
                         [result2 exec2-ms] (timed (sheet/execute ctx sheet-id input2 :timeout-ms 120000))
@@ -525,9 +482,6 @@
                        :raw-outputs outputs2
                        :error (:error result2)})))
 
-                ;; =============================================================
-                ;; Phase 5: Versioning
-                ;; =============================================================
                 (testing "Phase 5: Publish version and execute against it"
                   (h/run-and-apply! ctx (h/make-publish-version-command sheet-id
                                           :description "v1 - initial triage pipeline"))
@@ -550,21 +504,6 @@
                          :version-exec-outputs (:outputs result-v1)
                          :version-exec-error (:error result-v1)}))))
 
-                ;; =============================================================
-                ;; Phase 6: Evaluation Judges (live event-driven judge runtime)
-                ;; =============================================================
-                ;; RR-29 deleted the caller-less synchronous evaluate-trace API
-                ;; this phase used to call directly against a hand-built trace.
-                ;; The live path is event-driven: `triage-workflow` already
-                ;; attaches judges to three nodes via `sheet/judges` /
-                ;; `:judges [...]` (llm-classify, sentiment-analysis,
-                ;; build-routing). Those judges only fire once the Living
-                ;; Description opt-in flag is on (see
-                ;; judge_async_command_test's set-living-description-enabled!
-                ;; pattern) — enable it, run one dedicated execution, and read
-                ;; back the :judge/score-emitted events the live runtime wrote
-                ;; for that tick, tagged [:tick tick-id] by
-                ;; evaluation.core.commands' record-judge-score handler.
                 (testing "Phase 6: Evaluate execution via the live judge runtime"
                   (h/run-and-apply! ctx
                     {:command/name :ontology/set-living-description-enabled
@@ -613,9 +552,6 @@
                              :dimensions dimensions
                              :judge-names (mapv :judge-name score-events)})
 
-                          ;; =========================================================
-                          ;; Phase 7: Ontology Classification
-                          ;; =========================================================
                           (testing "Phase 7: Classify evaluation into failure taxonomy"
                             (let [classification (ontology/classify-evaluation
                                                    {:score overall-score
@@ -629,7 +565,6 @@
                             (is (str/starts-with? (:uri failure) "failure:")
                                 (str "Failure URI should start with 'failure:', got: " (:uri failure))))
 
-                          ;; Also test with synthetic BAD evaluation to exercise failure taxonomy
                           (let [bad-eval {:score 0.25
                                           :dimensions [{:name "Grounding" :score 0.2
                                                         :feedback "The response contains hallucinated facts that were made up"}
@@ -641,19 +576,15 @@
                                                         :feedback "Missing key entities and truncated output"}]}
                                 bad-classification (ontology/classify-evaluation bad-eval)]
 
-                            ;; Should detect failures for low-scoring dimensions
                             (is (pos? (count (:failures bad-classification)))
                                 "Synthetic bad eval should produce failures")
                             (let [failure-uris (set (map :uri (:failures bad-classification)))
                                   failure-dims (set (map :dimension (:failures bad-classification)))]
-                              ;; Grounding, Instruction Following, Completeness should fail (< 0.7)
-                              ;; Reasoning should NOT fail (0.8 > 0.7)
                               (is (contains? failure-dims "Grounding") "Should flag Grounding failure")
                               (is (contains? failure-dims "Instruction Following") "Should flag Instruction Following failure")
                               (is (contains? failure-dims "Completeness") "Should flag Completeness failure")
                               (is (not (contains? failure-dims "Reasoning")) "Reasoning should not fail (0.8 > 0.7)")
 
-                              ;; Check subtype detection via feedback indicators
                               (is (some #(str/includes? % "Hallucination") failure-uris)
                                   "Should detect Hallucination subtype from 'hallucinated' feedback")
 
@@ -667,13 +598,8 @@
                                  :synthetic-failures (:failures bad-classification)
                                  :synthetic-failure-uris failure-uris}))))))))))
 
-                ;; =============================================================
-                ;; Phase 8: GEPA Optimization (real LLM loop)
-                ;; =============================================================
                 (testing "Phase 8: GEPA optimization (real)"
-                  (let [;; Metric: does the workflow's :category output match expected?
-                        ;; Uses same field names as GEPA's default-metric-fn for compatibility
-                        ;; with the async todo processors (which can't receive the metric-fn)
+                  (let [
                         category-metric (fn [input output]
                                           (let [expected (get input "expected")
                                                 actual (or (get output "category")
@@ -755,9 +681,6 @@
                          :valset-size (count valset)
                          :trainset-size (count trainset)}))))
 
-                ;; =============================================================
-                ;; Phase 9: Export/Import Round-Trip
-                ;; =============================================================
                 (testing "Phase 9: Export and import round-trip"
                   (let [[_ export-ms]
                         (timed
@@ -784,5 +707,4 @@
                     (record-phase! :export
                       (assoc (get @*report* :export) :elapsed-ms export-ms)))))))))
 
-      ;; Print the report after all phases
       (print-report @*report*))))

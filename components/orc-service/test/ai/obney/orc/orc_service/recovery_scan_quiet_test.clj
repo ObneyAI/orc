@@ -8,12 +8,14 @@
    nothing unless a start is abandoned."
   {:clj-kondo/config '{:lint-as {ai.obney.orc.orc-service.recovery-scan-quiet-test/with-registered clojure.core/let}}}
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.execution-lease]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.periodic-task.interface :as periodic]
-            [ai.obney.grain.todo-processor-v2.interface :as tp]))
+            [ai.obney.grain.todo-processor-v2.interface :as tp]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (def invocations (atom 0))
 (def gate (atom (promise)))
@@ -47,7 +49,7 @@
   "Stand in for an owner that died: this process's queued-lease renewer stops
    renewing every start it tracks, so only the recorded lease remains."
   []
-  (reset! @#'ai.obney.orc.orc-service.core.execution-lease/queued {})
+  (reset! @#'service-logic/queued {})
   (Thread/sleep 300))
 
 (defn- all-events [ctx]

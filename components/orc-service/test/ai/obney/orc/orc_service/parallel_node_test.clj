@@ -47,19 +47,16 @@
       (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Parallel Basic"))
             sheet-id (-> sheet-result :command-result/events first :sheet-id)]
 
-        ;; Declare blackboard
         (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :score-a :int))
         (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :score-b :int))
         (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :score-c :int))
 
-        ;; Create parallel node
         (let [parallel-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :parallel))
               parallel-id (-> parallel-result :command-result/events first :node-id)]
 
           (h/run-and-apply! ctx (h/make-set-parallel-config-command sheet-id parallel-id
                                   :success-policy :all :failure-policy :any))
 
-          ;; Create 3 scorer children
           (doseq [[idx [fn-name writes]] [[0 ["ai.obney.orc.orc-service.parallel-node-test/score-a" [:score-a]]]
                                           [1 ["ai.obney.orc.orc-service.parallel-node-test/score-b" [:score-b]]]
                                           [2 ["ai.obney.orc.orc-service.parallel-node-test/score-c" [:score-c]]]]]
@@ -69,7 +66,6 @@
               (h/run-and-apply! ctx (h/make-set-node-executor-command sheet-id leaf-id :code :fn fn-name))
               (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-id [] writes))))
 
-          ;; Execute
           (let [result (sheet/execute ctx sheet-id {})]
             (is (= :success (:status result)))
             (is (= 10 (get-in result [:outputs :score-a])))
@@ -93,7 +89,6 @@
           (h/run-and-apply! ctx (h/make-set-parallel-config-command sheet-id parallel-id
                                   :success-policy :all :failure-policy :any))
 
-          ;; Create 2 logged scorers
           (let [leaf-a (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf
                                                :parent-id parallel-id :index 0))
                 leaf-a-id (-> leaf-a :command-result/events first :node-id)
@@ -109,7 +104,6 @@
                                     :fn "ai.obney.orc.orc-service.parallel-node-test/logged-score-b"))
             (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-b-id [] [:score-b]))
 
-            ;; Execute
             (let [result (sheet/execute ctx sheet-id {})
                   log @execution-log
                   starts (filter #(= :start (first (vals %))) log)
@@ -117,8 +111,6 @@
 
               (is (= :success (:status result)))
 
-              ;; If concurrent, both should start within ~10ms of each other
-              ;; If sequential, second would start ~100ms after first
               (when (>= (count start-times) 2)
                 (let [time-diff (Math/abs (- (first start-times) (second start-times)))]
                   (is (< time-diff 50) "Both children should start nearly simultaneously"))))))))))
@@ -138,7 +130,6 @@
           (h/run-and-apply! ctx (h/make-set-parallel-config-command sheet-id parallel-id
                                   :success-policy :all :failure-policy :any))
 
-          ;; One succeeds, one fails
           (let [leaf-a (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf
                                                :parent-id parallel-id :index 0))
                 leaf-a-id (-> leaf-a :command-result/events first :node-id)
@@ -172,7 +163,6 @@
           (h/run-and-apply! ctx (h/make-set-parallel-config-command sheet-id parallel-id
                                   :success-policy :any :failure-policy :all))
 
-          ;; One succeeds, one fails
           (let [leaf-a (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf
                                                :parent-id parallel-id :index 0))
                 leaf-a-id (-> leaf-a :command-result/events first :node-id)

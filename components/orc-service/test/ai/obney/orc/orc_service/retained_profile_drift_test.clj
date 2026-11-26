@@ -4,12 +4,11 @@
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.model-call-journal :as journal]
-            [ai.obney.orc.orc-service.core.ordinary-model-plan :as plan]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.todo-processors :as processors]
             [ai.obney.orc.orc-service.retained-ordinary-model-plan-test :as fixture]
-            [hato.client :as http])
+            [hato.client :as http]
+            [ai.obney.orc.orc-service.core.logic :as service-logic])
   (:import [java.nio.file Files] [java.time Instant]))
 
 (def proof (atom nil))
@@ -40,9 +39,9 @@
                 module {:instructions "Copy the source."
                         :inputs [{:name :source :spec :string}]
                         :outputs [{:name :answer :spec :string} {:name :accepted :spec :boolean}]}
-                prepared (journal/prepare-ordinary-call
+                prepared (processors/prepare-ordinary-call
                           ctx owner (select-keys node [:provider :model :options :fallback-models :fallback-policy])
-                          #(plan/resolve-plan node primary module (:options node)))]
+                          #(service-logic/resolve-plan node primary module (:options node)))]
             (is (= ["legacy-marker-v1" "legacy-marker-v1"]
                    (mapv #(get-in % [:profile :version]) (get-in prepared [:plan :candidates]))))
             (reset! saved {:sheet sheet :producer producer :prepared (dissoc prepared :callbacks)})))))

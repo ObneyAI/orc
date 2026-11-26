@@ -6,13 +6,12 @@
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.model-call-journal :as journal]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.core.todo-processors :as processors]
             [ai.obney.orc.orc-service.inherited-profile-fallback-repro-test]
             [hato.client :as http]
             [litellm.router :as router]
-            [cognitect.anomalies :as anom])
+            [cognitect.anomalies :as anom]
+            [ai.obney.orc.orc-service.core.logic :as service-logic])
   (:import [java.nio.file Files] [java.time Instant]))
 
 (def proofs (atom []))
@@ -40,19 +39,16 @@
         backup (keyword (str "legacy-backup-" (random-uuid)))
         legacy-candidates [{:provider primary :model "fixture/primary" :options {:max-retries 0 :max-tokens 256}}
                            {:provider backup :model "fixture/backup" :options {:max-retries 0 :max-tokens 256}}]
-        config-id (journal/configuration-id legacy-candidates :temporary-transport)
+        config-id (service-logic/configuration-id legacy-candidates :temporary-transport)
         alternate-candidates (assoc-in legacy-candidates [0 :options :max-tokens] 257)
         expected-configs (cond-> #{config-id}
-                           ambiguous? (conj (journal/configuration-id alternate-candidates :temporary-transport)))
+                           ambiguous? (conj (service-logic/configuration-id alternate-candidates :temporary-transport)))
         base-context {:tenant-id tenant :auth-claims {} :llm-provider primary :probe-effects effects}
         saved (atom nil) real-handler processors/execute-leaf-node]
     (llm/register-provider! primary {:provider :openrouter :model "fixture/primary"
                                      :output-mode :function-calling :config {:api-key "SYNTHETIC-NOT-SENT"}})
     (llm/register-provider! backup {:provider :openrouter :model "fixture/backup"
                                     :config {:api-key "SYNTHETIC-NOT-SENT"}})
-    ;; This constructs historical-format facts through commands, not by bare
-    ;; appends or a direct executor call. Only the initial producer dispatch is
-    ;; held; prefix execution and the resumed dispatch use real processors.
     (with-redefs [processors/execute-leaf-node
                   (fn [ctx]
                     (if (= @target (get-in ctx [:event :node-id]))
@@ -67,7 +63,7 @@
           (let [event (:event (first @staged))
                 owner {:sheet-id sheet :tick-id tick :node-id producer :node-start-id (:event/id event)
                        :exec-context {} :role :node :logical-action-id (pr-str [tick producer {}])}
-                callbacks (journal/callbacks ctx owner legacy-candidates :temporary-transport)]
+                callbacks (processors/callbacks ctx owner legacy-candidates :temporary-transport)]
             (is (nil? (::anom/category ((:claim! callbacks) 0 (first legacy-candidates)))))
             (when (or terminal? ambiguous?)
               (is (nil? (::anom/category
@@ -80,7 +76,7 @@
                                                       :candidate-index 0 :provider primary
                                                       :requested-model "fixture/primary" :attempts []}}})))))
             (when ambiguous?
-              (let [other (journal/callbacks ctx owner alternate-candidates :temporary-transport)]
+              (let [other (processors/callbacks ctx owner alternate-candidates :temporary-transport)]
                 (is (nil? (::anom/category ((:claim! other) 0 (first alternate-candidates)))))))
             (reset! saved {:sheet sheet :producer producer :owner owner
                            :before (orc/value-log-read-tick-events ctx tenant tick)})))))
@@ -100,7 +96,7 @@
                 completion (last (filter #(and (= :sheet/node-execution-completed (:event/type %))
                                               (= (:producer @saved) (:node-id %))) after))
                 writes (orc/value-log-resolve-writes ctx tenant tick completion)
-                history (filter #(contains? journal/event-types (:event/type %)) after)]
+                history (filter #(contains? service-logic/model-call-journal-event-types (:event/type %)) after)]
             (is (zero? @http-calls))
             (is (= 1 @effects))
             (is (= 0 (count (filter #(= :sheet/provider-call-reserved (:event/type %)) after))))
@@ -165,7 +161,7 @@
                 a (plan-fixture primary "fixture/default-a") b (plan-fixture primary "fixture/default-b")
                 ready (java.util.concurrent.CountDownLatch. 2) release (promise)
                 workers (mapv (fn [plan]
-                                (future (journal/prepare-ordinary-call
+                                (future (processors/prepare-ordinary-call
                                          ctx owner authored
                                          #(do (.countDown ready) @release plan)))) [a b])]
             (is (.await ready 5 java.util.concurrent.TimeUnit/SECONDS))
@@ -179,22 +175,20 @@
               (is (= 1 (count (set (map :configuration-id results)))))
               (is (every? #(= (:plan winner) (:plan %)) results))
               (is (contains? #{a b} (:plan winner)))
-              (is (= (journal/retained-configuration-id (:plan winner)) (:configuration-id winner)))
-              ;; Public resume changes ownership durably while the staged
-              ;; fixture keeps both actual execution handlers from dispatching.
+              (is (= (service-logic/retained-configuration-id (:plan winner)) (:configuration-id winner)))
               (h/run-and-apply! ctx (command :sheet/resume-node-execution
                                             {:sheet-id sheet :tick-id tick :node-id producer
                                              :original-start-event-id (:node-start-id owner) :inputs {}}))
               (is (h/settle-until! #(= 2 (count @staged)) :timeout-ms 5000))
               (let [stale (h/run-and-apply! ctx
                             (command :sheet/retain-model-plan
-                                     (assoc owner :configuration-id (journal/retained-configuration-id a)
-                                            :plan-scope-id (journal/plan-scope-id owner authored) :plan a)))
+                                     (assoc owner :configuration-id (service-logic/retained-configuration-id a)
+                                            :plan-scope-id (service-logic/plan-scope-id owner authored) :plan a)))
                     claim ((get-in (first results) [:callbacks :claim!]) 0 (first (:candidates (:plan winner))))
                     other-tenant (h/run-and-apply! (assoc ctx :tenant-id (random-uuid))
                                    (command :sheet/retain-model-plan
-                                            (assoc owner :configuration-id (journal/retained-configuration-id a)
-                                                   :plan-scope-id (journal/plan-scope-id owner authored) :plan a)))]
+                                            (assoc owner :configuration-id (service-logic/retained-configuration-id a)
+                                                   :plan-scope-id (service-logic/plan-scope-id owner authored) :plan a)))]
                 (is (= ::anom/conflict (::anom/category stale)))
                 (is (= ::anom/conflict (::anom/category claim)))
                 (is (= ::anom/conflict (::anom/category other-tenant))))
@@ -202,8 +196,8 @@
                     unsafe (assoc-in a [:candidates 0 :options :extra-body :headers :Authorization] "SYNTHETIC-MUST-NOT-PERSIST")
                     rejected (h/run-and-apply! ctx
                                (command :sheet/retain-model-plan
-                                        (assoc new-owner :configuration-id (journal/retained-configuration-id unsafe)
-                                               :plan-scope-id (journal/plan-scope-id owner authored) :plan unsafe)))]
+                                        (assoc new-owner :configuration-id (service-logic/retained-configuration-id unsafe)
+                                               :plan-scope-id (service-logic/plan-scope-id owner authored) :plan unsafe)))]
                 (is (= ::anom/incorrect (::anom/category rejected))))
               (let [after (plan-history ctx tick)]
                 (is (= 1 (count (filter #(= :sheet/model-plan-retained (:event/type %)) after))))
@@ -235,13 +229,13 @@
           (is (h/settle-until! #(= 2 (count @staged)) :timeout-ms 5000))
           (let [owners (sort-by #(get (:exec-context %) :ai.obney.orc.orc-service.core.todo-processors/map-each-index)
                         (map (fn [{:keys [event]}]
-                               (let [execution (value-log/exec-context (:inputs event))]
+                               (let [execution (service-logic/exec-context (:inputs event))]
                                  {:sheet-id sheet :tick-id tick :node-id (:node-id event) :node-start-id (:event/id event)
                                   :exec-context execution :role :node
                                   :logical-action-id (pr-str [tick (:node-id event) execution])})) @staged))
                 authored {:fallback-models [{:provider backup :model "fixture/backup"}] :options {:max-retries 0}}
                 plans [(plan-fixture primary "fixture/mapped-a") (plan-fixture primary "fixture/mapped-b")]
-                results (mapv (fn [owner plan] (journal/prepare-ordinary-call ctx owner authored (constantly plan))) owners plans)
+                results (mapv (fn [owner plan] (processors/prepare-ordinary-call ctx owner authored (constantly plan))) owners plans)
                 entries (filter #(= :sheet/model-plan-retained (:event/type %)) (plan-history ctx tick))]
             (is (= 2 (count entries)))
             (is (= 2 (count (set (map :plan-scope-id entries)))))

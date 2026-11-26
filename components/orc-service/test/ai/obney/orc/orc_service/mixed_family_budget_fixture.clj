@@ -111,7 +111,6 @@
  (let [expected-result (expected (assoc inputs :unit-divisor (or (:experiment/unit-divisor execution-context) 1)))]
   (guard! (and (m/validate final-schema (:final-result inputs)) (= expected-result (:final-result inputs))) "Final typed/semantic contract")
   {:validated true}))
-;; Change the quantity meaning ONLY in declared schemas for the paired case.
 (defn board-for-unit [minor?]
  (if-not minor? board
   (walk/postwalk (fn [x] (if (and (vector? x) (= :quantity (first x)))
@@ -208,7 +207,6 @@
               (boolean? value) "boolean" (nil? value) "null"
               :else (throw (ex-info "Unsupported fixture key" {:value value})))
   :value (literal value)})
-(declare fixture-wire-value)
 (defn wire-fit? [schema value]
  (cond
   (:anyOf schema) (some #(wire-fit? % value) (:anyOf schema))

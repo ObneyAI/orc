@@ -6,8 +6,8 @@
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as bt]
-            [ai.obney.orc.orc-service.core.rlm-dsl :as dsl]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def contract
   [:map {:closed true :description "Complete measured result, preserving explicit empty values."}
@@ -79,8 +79,6 @@
       (finally (.stop server 0)))))
 
 
-;; MODEL-CONTRACT-23. Only HTTP responses are scripted; commands, SQLite,
-;; researcher checkpoint feedback, generated compilation and consumer are real.
 (deftest malformed-final-rejects-before-child-and-next-prime-recovers
   (let [valid (emitted {})
         malformed (update valid 2 conj '荣耀)
@@ -103,7 +101,7 @@
     (is (str/includes? feedback original) "Actual next prime retains complete original source")))
 
 (defn structural-error [tree]
-  (try (dsl/rlm-dsl->orc-dsl tree) nil
+  (try (service-logic/rlm-dsl->orc-dsl tree) nil
        (catch clojure.lang.ExceptionInfo e (ex-data e))))
 
 (deftest fixed-operands-and-nested-shapes-are-validated-eagerly
@@ -122,11 +120,11 @@
   (is (= [1 2] (:node-path (structural-error [:sequence [:map-each {} [:final {} 'ignored]]])))))
 
 (deftest valid-variadic-and-unicode-options-remain-intact
-  (is (= '(sheet/sequence) (dsl/rlm-dsl->orc-dsl [:sequence])))
-  (is (= '(sheet/parallel) (dsl/rlm-dsl->orc-dsl [:parallel])))
+  (is (= '(sheet/sequence) (service-logic/rlm-dsl->orc-dsl [:sequence])))
+  (is (= '(sheet/parallel) (service-logic/rlm-dsl->orc-dsl [:parallel])))
   (let [opts {:instruction "荣耀 — preserve names" :reads [:来源] :writes [:résultat]
               :options {:temperature 0.2} :custom-data '荣耀}
-        transformed (dsl/rlm-dsl->orc-dsl [:llm opts])]
+        transformed (service-logic/rlm-dsl->orc-dsl [:llm opts])]
     (is (= opts (apply hash-map (rest transformed)))))
   (is (= '(sheet/sequence (sheet/parallel (final! {:keys [:荣耀]})) (final! {:keys []}))
-         (dsl/rlm-dsl->orc-dsl [:sequence [:parallel [:final {:keys [:荣耀]}]] [:final {:keys []}]]))))
+         (service-logic/rlm-dsl->orc-dsl [:sequence [:parallel [:final {:keys [:荣耀]}]] [:final {:keys []}]]))))

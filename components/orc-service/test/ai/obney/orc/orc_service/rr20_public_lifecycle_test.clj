@@ -36,7 +36,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
+            [ai.obney.orc.orc-service.core.logic :as logic]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.llm.interface :as llm]
@@ -45,16 +45,11 @@
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
             [ai.obney.orc.ontology.core.todo-processors]
-            [ai.obney.orc.ontology.core.harvest :as harvest]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]))
 
-;; -----------------------------------------------------------------------------
-;; Tree A — FAILS Phase-2 for real. Reused verbatim (a `:code` leaf whose
-;; `:fn` throws) from recursive_rlm_test's T2-Hardening-A / rlm_tree_executor_
-;; test's failing-node pattern; quoted per RR-6's durable-source discipline.
-;; -----------------------------------------------------------------------------
 (def ^:private tree-a
   '[:sequence
     [:code {:reads []
@@ -63,14 +58,6 @@
             :fn (fn [_] (throw (ex-info "intentional RR-20 fault" {})))}]
     [:final {:keys [:produced]}]])
 
-;; The repair — a GENUINELY DIFFERENT SHAPE from tree-a (two :code leaves,
-;; not one), because `rlm-fingerprint/fingerprint` deliberately normalizes
-;; away `:fn` BODY content (content, not structure) — two trees that differ
-;; ONLY in what their :fn throws-vs-returns would collide on the SAME
-;; fingerprint, which is wrong for this fixture (A and B must be
-;; distinguishable shapes, exactly as the propagated RR-20 suite's own
-;; tree-a/tree-b fixtures differ in node count/:reads/:writes, not merely
-;; in :fn content).
 (def ^:private tree-b
   '[:sequence
     [:code {:reads []
@@ -154,8 +141,6 @@
             researcher-id (:id (first (filter #(= "researcher" (:name %))
                                               (sheet/get-nodes-for-sheet ctx sheet-id))))
             tick-id (random-uuid)]
-        ;; Pre-classify the campaign's REAL occurrence — known BEFORE
-        ;; execution because :tick-id is caller-suppliable on sheet/execute.
         (classify! ctx sheet-id tick-id researcher-id class-id)
         (capture-floor! ctx class-id "implement: produce a value, repairing on failure")
         (Thread/sleep 150)
@@ -174,17 +159,11 @@
                           (throw (ex-info "RR-20 public-lifecycle fixture exceeded three turns" {}))))]
           (let [result (sheet/execute ctx sheet-id {} :tick-id tick-id :timeout-ms 30000)]
 
-            ;; ---------------------------------------------------------------
-            ;; Public boundary: the campaign finalizes successfully.
-            ;; ---------------------------------------------------------------
             (is (= :success (:status result)) (pr-str result))
             (is (= "repaired-value" (get-in result [:outputs :produced])) (pr-str result))
             (is (= tick-id (:trace-id result)))
             (is (= 3 @calls))
 
-            ;; ---------------------------------------------------------------
-            ;; 1. Two REAL :sheet/rlm-tree-execution-completed bookends.
-            ;; ---------------------------------------------------------------
             (is (h/settle-until!
                  #(= 2 (count (filter (fn [e] (and (= :sheet/rlm-tree-execution-completed
                                                         (:event/type e))
@@ -195,8 +174,8 @@
                  :timeout-ms 10000)
                 "both Phase-2 bookends landed, attributed to this campaign's occurrence")
             (let [all-events (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx)}))
-                  fp-a (rlm-fingerprint/fingerprint tree-a)
-                  fp-b (rlm-fingerprint/fingerprint tree-b)
+                  fp-a (logic/fingerprint tree-a)
+                  fp-b (logic/fingerprint tree-b)
                   bookend-a (bookend-for all-events fp-a)
                   bookend-b (bookend-for all-events fp-b)]
               (is (some? bookend-a) "tree A's bookend exists")
@@ -208,11 +187,6 @@
               (is (= sheet-id (:source-sheet-id bookend-a) (:source-sheet-id bookend-b)))
               (is (= tick-id (:source-tick-id bookend-a) (:source-tick-id bookend-b)))
 
-              ;; -------------------------------------------------------------
-              ;; 2. RecordedTreesCarryTheirShape: both iteration records
-              ;;    carry a non-empty :tree-fingerprint when a tree was
-              ;;    recorded.
-              ;; -------------------------------------------------------------
               (let [records (rm/get-researcher-iteration-records ctx sheet-id tick-id researcher-id)
                     tree-records (filter :emitted-tree-recorded? records)]
                 (is (>= (count tree-records) 2)
@@ -223,9 +197,6 @@
                 (is (= #{fp-a fp-b} (into #{} (map :tree-fingerprint tree-records)))
                     "the iteration records carry BOTH shapes"))
 
-              ;; -------------------------------------------------------------
-              ;; 3. Exactly one RR-19 occurrence, :verdict :success.
-              ;; -------------------------------------------------------------
               (is (h/settle-until!
                    #(= 1 (count (filter (fn [e] (and (= :ontology/tree-class-occurrence-recorded
                                                           (:event/type e))
@@ -245,11 +216,6 @@
                 (is (= :success (:verdict (first occurrences))))
                 (is (= class-id (:assigned-tree-id (first occurrences)))))
 
-              ;; -------------------------------------------------------------
-              ;; 4. The claim set: B is :strength (exact source,
-              ;;    :verdict-corroborations 1); A is :weakness (exact
-              ;;    source); neither touched the other.
-              ;; -------------------------------------------------------------
               (is (h/settle-until!
                    #(let [claims (ontology/get-claims ctx :tree-class class-id)
                           b-claim (first (filter (fn [c] (= (pr-str tree-b) (:recommendation c))) claims))]
@@ -271,12 +237,8 @@
                 (is (not= (:claim-id a-claim) (:claim-id b-claim))
                     "distinct claims — neither displaced the other"))
 
-              ;; -------------------------------------------------------------
-              ;; 5 & 6. harvest-body offers B's exact source; the assembled
-              ;; strength entry for B carries :verdict-corroborations 1.
-              ;; -------------------------------------------------------------
               (let [desc (ontology/get-description ctx :tree-class class-id)
-                    body (harvest/harvest-body desc 12)
+                    body (ontology-queries/harvest-body desc 12)
                     b-entry (first (filter #(= (pr-str tree-b) (:recommended-pattern %))
                                            (:strengths desc)))]
                 (is (= (pr-str tree-b) (:recommended-pattern body))

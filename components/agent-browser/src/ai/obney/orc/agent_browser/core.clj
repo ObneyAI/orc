@@ -52,19 +52,16 @@
     :error   string (if failed)}"
   [& args]
   (u/trace ::run-command {:args args :config *browser-config*}
-    (let [;; Build session args (prepended to command for parallel browsing)
+    (let [
           session-args (when-let [session (:session *browser-config*)]
                          ["--session" session])
-          ;; Build environment variables for agent-browser
           env (cond-> {}
                 (:headed *browser-config*)
                 (assoc "AGENT_BROWSER_HEADED" "true")
 
                 (:slow-mo *browser-config*)
                 (assoc "AGENT_BROWSER_SLOW_MO" (str (:slow-mo *browser-config*))))
-          ;; Merge with current environment
           full-env (merge (into {} (System/getenv)) env)
-          ;; Execute command with session args prepended
           all-args (concat session-args (map str args))
           result (apply shell/sh "agent-browser"
                         (concat all-args [:env full-env]))]
@@ -241,9 +238,6 @@
     (and (:success result)
          (str/includes? (:output result) "true"))))
 
-;; ============================================================================
-;; Find Elements (Semantic Locators)
-;; ============================================================================
 
 (defn find-by-role
   "Find element by accessibility role.
@@ -361,7 +355,6 @@
         (let [parsed (json/parse-string (:output result) true)]
           (assoc result :box parsed))
         (catch Exception _
-          ;; If not JSON, try to parse simple format
           result))
       result)))
 
@@ -375,7 +368,6 @@
       {:x (+ (:x parsed 0) (/ (:width parsed 100) 2))
        :y (+ (:y parsed 0) (/ (:height parsed 50) 2))})
     (catch Exception _
-      ;; Fallback to reasonable defaults
       {:x 500 :y 300})))
 
 (defn press-and-hold
@@ -387,16 +379,14 @@
    Example:
    (press-and-hold \"@e123\" 2500)  ;; hold for 2.5 seconds"
   [selector duration-ms]
-  (let [;; First, hover to move mouse to element
+  (let [
         hover-result (run-command "hover" selector)]
     (if (:success hover-result)
       (do
-        ;; Press, hold, release
         (mouse-down :left)
         (Thread/sleep duration-ms)
         (mouse-up :left)
         {:success true :held-ms duration-ms :selector selector})
-      ;; Hover failed
       {:success false
        :error "Could not hover on element"
        :selector selector})))
@@ -511,9 +501,6 @@
        (wait wait-ms))
      click-result)))
 
-;; ============================================================================
-;; Headed Mode Macros (Bot Detection Bypass)
-;; ============================================================================
 
 (defmacro with-headed-browser
   "Execute browser commands with headed (visible) browser.

@@ -147,3 +147,20 @@ Located in `development/bench/documents/`:
 - Model output is non-deterministic — exact tree structures may vary between runs (timings stay within 1.5x).
 - Token usage varies more than wall-clock time; budget at least ~$0.10–$0.50 per full suite run depending on model selection.
 
+
+### Archived May 2026 benchmark captures
+
+Nine historical EDN result and trace files are stored byte-for-byte in the
+[May capture archive](archives/2026-05-benchmark-captures.tar.gz). The
+[SHA-256 manifest](archives/2026-05-benchmark-captures.sha256) lists their
+original repository-relative paths. Three captured traces end mid-form. The
+archive preserves those original bytes for inspection.
+
+To reproduce a historical summary, restore the captures into a separate
+checkout at its repository root, then run the benchmark's existing summary
+command there.
+
+```sh
+tar -xzf development/bench/archives/2026-05-benchmark-captures.tar.gz
+shasum -a 256 -c development/bench/archives/2026-05-benchmark-captures.sha256
+```

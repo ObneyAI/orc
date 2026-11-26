@@ -22,7 +22,7 @@
             [ai.obney.grain.control-plane.interface :as control-plane]
             [ai.obney.grain.periodic-task.interface :as pt]
 
-            ;; ORC components (side-effect registration)
+            ;; --- Component registration ---
             [ai.obney.orc.orc-service.interface]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.gepa.interface]

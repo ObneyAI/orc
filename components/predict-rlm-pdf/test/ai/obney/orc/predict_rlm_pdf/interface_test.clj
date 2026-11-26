@@ -1,11 +1,11 @@
 (ns ai.obney.orc.predict-rlm-pdf.interface-test
+  "PDF fixtures are from predict-rlm under the MIT license. See
+   development/bench/predict_rlm_comparison/references/predict-rlm/LICENSE."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.java.io :as io]
             [ai.obney.orc.predict-rlm-pdf.interface :as pdf])
   (:import [java.util Base64]))
 
-;; Fixtures copied from predict-rlm under MIT license.
-;; See development/bench/predict-rlm-comparison/references/predict-rlm/LICENSE.
 (def single-page-pdf
   (.getPath (io/resource "fixtures/sample-invoice.pdf")))
 
@@ -13,7 +13,6 @@
   (.getPath (io/resource "fixtures/sample-employment-agreement.pdf")))
 
 (def ^:private png-signature
-  ;; PNG file magic bytes: 89 50 4E 47 0D 0A 1A 0A
   (byte-array [(unchecked-byte 0x89)
                (unchecked-byte 0x50)
                (unchecked-byte 0x4E)
@@ -29,7 +28,6 @@
                (for [i (range 8)]
                  (= (aget bs i) (aget png-signature i))))))
 
-;; Sanity check on the fixtures themselves before exercising the interface
 (deftest fixtures-are-loadable
   (testing "fixture PDF resources exist and are non-empty"
     (is (some? single-page-pdf) "single-page fixture must resolve")
@@ -74,7 +72,6 @@
     (let [pages (pdf/extract-pages-as-text single-page-pdf)
           text  (first pages)]
       (is (= 1 (count pages)))
-      ;; The acme invoice sample mentions "Acme" and an invoice number prefix.
       (is (.contains ^String text "Acme")
           "page text should contain 'Acme'"))))
 

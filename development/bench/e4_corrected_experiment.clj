@@ -20,15 +20,11 @@
      clojure -M:dev -m e4-corrected-experiment"
   (:require [runner]
             [ai.obney.orc.ontology.interface :as ont]
-            [ai.obney.orc.ontology.core.task-classifier :as tc]
-            [ai.obney.orc.ontology.core.reranker :as reranker]
             [ai.obney.orc.orc-service.core.todo-processors :as otp]
             [ai.obney.orc.colbert.interface :as colbert]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
-;; ============================================================================
-;; Ids — parents + derived children (must match e3_children_verify.clj exactly)
-;; ============================================================================
 (def parent-name-by-id
   {#uuid "8ad38e72-05e4-3201-bac7-3ed9c54a2791" "Research"
    #uuid "abe10f3b-ab49-3916-ae30-0ca7abfcad96" "Extraction"
@@ -62,13 +58,9 @@
 (defn child-id? [id] (contains? child-id->name id))
 (defn display-name [id]
   (or (parent-name-by-id id) (child-id->name id)
-      ;; Defensive: an OOD structural classify-task can return an empty/nil
-      ;; :assigned-tree-id (no structural match) — render it without crashing the
-      ;; OOD force-fit verdict on (subs "" 0 8). Harness display only.
       (let [s (str id)]
         (if (str/blank? s) "OTHER/<none>" (str "OTHER/" (subs s 0 (min 8 (count s))))))))
 
-;; The expected child per child-targeted task (for margin computation).
 (def task->expected-child
   {"wire-dependency"    (derive-child-id "code-edit-dependency-wiring" transformation)
    "perf-tune"          (derive-child-id "performance-optimization" transformation)
@@ -76,9 +68,6 @@
    "debug-failing-test" (derive-child-id "bug-diagnosis" investigation)
    "rename-symbol"      (derive-child-id "rename-move-symbol" code-building)})
 
-;; ============================================================================
-;; Task sets (instructions identical to E1 / E3 so before/after compares clean)
-;; ============================================================================
 (def child-targeted-tasks
   [["wire-dependency"   "Add the cheshire JSON dependency to deps.edn and use it in the export writer to serialize the report map to a .json file."]
    ["perf-tune"         "The report-rendering endpoint is slow on large inputs; profile it and optimize the hot path so a 10k-row report renders under 500ms without changing the output."]
@@ -86,7 +75,6 @@
    ["debug-failing-test" "Debug why the integration test `checkout-flow-test` fails intermittently with a nil cart-id and make it deterministic."]
    ["rename-symbol"     "Rename the function `calc` to `compute-tax` across the billing namespace and update every caller, including the test files."]])
 
-;; non-child coding tasks — should ride the PARENT (Code-building), NOT a child
 (def non-child-coding-tasks
   [["add-function"      "Add a new function `summarize-line-items` to the report namespace that aggregates each invoice's line items into a per-category subtotal and returns a sorted vector."]
    ["refactor"          "Refactor the order service to extract a pure pricing helper from the request handler, preserving existing behavior and keeping all current tests green."]
@@ -98,7 +86,7 @@
    ["ood-recipe"        "Suggest a vegetarian dinner menu for eight guests with a wine pairing for each course and a shopping list."]])
 
 (defn build-sig [instruction]
-  (tc/build-task-signature {:instruction instruction
+  (ontology-logic/build-task-signature {:instruction instruction
                             :reads [:user-message :active-plan :workspace-root]
                             :writes [:assistant-response]
                             :mcp-tools ["shell/exec" "fs/read" "fs/list"]}))
@@ -135,11 +123,8 @@
   (let [collected (atom {})]
     (try
       (runner/start!)
-      (let [ctx (deref (var-get (requiring-resolve 'runner/system-state)))]
+      (let [ctx (runner/current-context)]
 
-        ;; ==================================================================
-        ;; 0. RULE OUT THE HARNESS FIRST (non-negotiable)
-        ;; ==================================================================
         (println "\n############ 0. RULE-OUT-HARNESS ############")
         (let [idxs (filter #(= "ontology-descriptions" (:index-name %)) (colbert/list-indexes ctx))]
           (println "ontology-descriptions indexes built:" (count idxs))
@@ -147,8 +132,6 @@
             (println "  index doc-count:" (or (:document-count i) (:doc-count i) (:count i) "?"))))
         (println "reindex-state:" (pr-str (ont/get-reindex-state ctx)))
 
-        ;; Prove EACH pool returns non-zero hits with sane scores AND the
-        ;; right granularity stamped on every returned result.
         (println "\n--- POOL PROBE: :tree-fingerprint (the structural axis) ---")
         (let [tf (ont/search-descriptions ctx
                    {:query (build-sig "Implement a function from a typed spec: write the executable Clojure code.")
@@ -189,9 +172,6 @@
                    " fallback?=" (:rerank-fallback? pt)
                    " #top-candidates=" (count (:top-candidates pt))))
 
-        ;; ==================================================================
-        ;; Helper that runs BOTH classifiers + records everything per task
-        ;; ==================================================================
         (let [run-task!
               (fn [label instruction]
                 (let [bres (classify-behaviors-one ctx instruction)
@@ -219,31 +199,19 @@
                     (when (seq (:reasoning b)) (println "        reasoning:" (subs (:reasoning b) 0 (min 220 (count (:reasoning b)))))))
                   rec))]
 
-          ;; ================================================================
-          ;; 1+3. CHILD-TARGETED TASKS — deepening margins (child vs parent)
-          ;; ================================================================
           (println "\n\n############ 1. CHILD-TARGETED TASKS (deepening margin) ############")
           (doseq [[label instruction] child-targeted-tasks] (run-task! label instruction))
 
-          ;; ================================================================
-          ;; 2. NON-CHILD CODING TASKS — should ride the PARENT, not a child
-          ;; ================================================================
           (println "\n\n############ 2. NON-CHILD CODING TASKS (anti-overfit: ride parent) ############")
           (doseq [[label instruction] non-child-coding-tasks] (run-task! label instruction))
 
-          ;; ================================================================
-          ;; 5. OOD TASKS — must NOT force-fit a coding child
-          ;; ================================================================
           (println "\n\n############ 5. OOD TASKS (force-fit guard) ############")
           (doseq [[label instruction] ood-tasks] (run-task! label instruction))
 
-          ;; ================================================================
-          ;; 4b. FALLBACK-MINT measurement (induced fault ONLY at rerank!)
-          ;; ================================================================
           (println "\n\n############ 4b. UNDER FALLBACK: induced reranker failure (ColBERT search+index REAL) ############")
           (println "Fault injected ONLY at reranker/rerank! (throw). ColBERT search + index stay real.")
           (let [fallback-recs (atom {})]
-            (with-redefs [reranker/rerank! (fn [& _] (throw (ex-info "induced reranker failure (E4 fallback measurement)" {})))]
+            (with-redefs [ontology-logic/reranker-rerank! (fn [& _] (throw (ex-info "induced reranker failure (E4 fallback measurement)" {})))]
               (doseq [[label instruction] (concat child-targeted-tasks ood-tasks)]
                 (let [bres (classify-behaviors-one ctx instruction)
                       bs (:behaviors bres)
@@ -260,10 +228,8 @@
                                    (display-name (:behavior-id top)) (:rerank-source top)
                                    (:was-fresh-mint? top) (count bs)
                                    (boolean (seq (filter #(child-id? (:behavior-id %)) bs))))))))
-            ;; Render the REAL R-Inject prepend under fallback for one in-domain
-            ;; task and read the caution lines back (assert from rendered output).
             (println "\n--- RENDERED R-INJECT PREPEND under fallback (perf-tune) — caution lines? ---")
-            (with-redefs [reranker/rerank! (fn [& _] (throw (ex-info "induced reranker failure (E4 fallback measurement)" {})))]
+            (with-redefs [ontology-logic/reranker-rerank! (fn [& _] (throw (ex-info "induced reranker failure (E4 fallback measurement)" {})))]
               (let [instruction (second (second child-targeted-tasks))
                     bres (classify-behaviors-one ctx instruction)
                     tres (classify-task-one ctx instruction)
@@ -279,7 +245,7 @@
                                                   :rerank-fallback? (boolean (:rerank-fallback? tres))}
                                      :behavioral {:behaviors (vec (:behaviors bres))
                                                   :rerank-fallback? (boolean (:rerank-fallback? bres))}}}}
-                    apply-r05 (requiring-resolve 'ai.obney.orc.orc-service.core.todo-processors/apply-r05-classifier-context)
+                    apply-r05 #'otp/apply-r05-classifier-context
                     rendered (apply-r05 node (assoc ctx :sheet-id (random-uuid)))
                     prepend (:instruction rendered)
                     caution-lines (->> (str/split-lines prepend)
@@ -295,9 +261,6 @@
                          " mint-invite-present-under-fallback? =" (boolean (seq mint-invite-lines)))))
             (reset! collected (assoc @collected ::fallback @fallback-recs)))
 
-          ;; ================================================================
-          ;; SUMMARY TABLES (the deliverable)
-          ;; ================================================================
           (let [recs @collected]
             (println "\n\n================ SUMMARY: DEEPENING MARGINS (child vs parent) ================")
             (println (format "%-20s %-30s %-8s %-6s | %-16s %-8s %-6s | %-8s %s"

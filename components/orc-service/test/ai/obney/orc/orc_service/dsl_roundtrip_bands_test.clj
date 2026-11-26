@@ -4,7 +4,8 @@
    decision by any public round trip."
   (:require [clojure.test :refer [deftest is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.dsl :as dsl]))
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def ^:private fields [:executor :reads :writes :bands-from :instruction])
 
@@ -15,24 +16,24 @@
                     :reads [:evidence :rubric]
                     :writes [:band]
                     :bands-from :rubric}
-          definition (dsl/workflow "banded-decision-roundtrip"
-                       (dsl/blackboard
+          definition (service-logic/workflow "banded-decision-roundtrip"
+                       (service-logic/dsl-blackboard
                         {:evidence :string
                          :rubric [:map [:bands [:map-of :int :string]]]
                          :band :int})
-                       (dsl/llm-decision "grade"
+                       (service-logic/llm-decision "grade"
                          :instruction "Grade the evidence."
                          :reads [:evidence :rubric]
                          :bands-from :rubric
                          :writes [:band]))
-          source-id (dsl/build-workflow! ctx definition)
-          exported (dsl/export-sheet ctx source-id)
-          dsl-code (dsl/export-to-dsl exported)
-          regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
+          source-id (service-commands/build-workflow! ctx definition)
+          exported (service-commands/export-sheet ctx source-id)
+          dsl-code (service-logic/export-to-dsl exported)
+          regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.interface)]
                         (eval (read-string dsl-code)))
-          imported-id (dsl/import-sheet
+          imported-id (service-commands/import-sheet
                        ctx (assoc-in exported [:sheet :name] "banded-decision-imported"))
-          imported-node (:nodes (dsl/export-sheet ctx imported-id))]
+          imported-node (:nodes (service-commands/export-sheet ctx imported-id))]
       (is (= expected (select-keys (:nodes exported) fields)))
       (is (= expected (select-keys (:root-node regenerated) fields)))
       (is (= expected (select-keys imported-node fields)))

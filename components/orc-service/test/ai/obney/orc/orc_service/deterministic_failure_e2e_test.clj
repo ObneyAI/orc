@@ -1,10 +1,10 @@
 (ns ai.obney.orc.orc-service.deterministic-failure-e2e-test
   "Deterministic end-to-end coverage for failure and partial-result semantics."
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]))
 
 (defn fail-selected [{:keys [inputs]}]
   (let [item (:item inputs)]
@@ -371,7 +371,7 @@
             result (sheet/execute ctx (sheet/build-workflow! ctx workflow) {}
                                   :tick-id tick-id :timeout-ms 35)
             events (h/read-tick-events ctx tick-id)
-            replayed (runtime/durable-terminal-result ctx tick-id)]
+            replayed (service-commands/durable-terminal-result ctx tick-id)]
         (is (= :timeout (:status result)))
         (is (not (contains? result :outputs)))
         (is (= :timeout (:status replayed)))

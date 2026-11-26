@@ -1,5 +1,6 @@
-{:paths ["src" "resources"]
- :deps {orc/llm {:local/root "../llm"}
+{:paths ["src" "resources" "test-support"]
+ :deps {orc/integrations {:local/root "../integrations"}
+        orc/llm {:local/root "../llm"}
         com.brunobonacci/mulog {:mvn/version "0.9.0"}
         com.taoensso/nippy {:mvn/version "3.6.0"}
         org.babashka/sci {:mvn/version "0.8.43"}

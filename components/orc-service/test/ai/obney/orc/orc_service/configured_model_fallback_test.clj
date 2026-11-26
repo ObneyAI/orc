@@ -183,7 +183,6 @@
           (doseq [id ["MAP-A" "MAP-B"]]
             (is (= ["fixture/first" "fixture/second" "fixture/third"] (models id)))
             (is (= 1 (count (set (map :inputs (filter #(= id (get-in % [:inputs :request :item-id])) @(:requests server))))))))
-          ;; Exact completed candidate receipt is idempotent at its command boundary.
           (let [event (first (transitions success))
                 before (count @(:requests server))
                 command (merge (select-keys event [:sheet-id :tick-id :node-id :node-start-id

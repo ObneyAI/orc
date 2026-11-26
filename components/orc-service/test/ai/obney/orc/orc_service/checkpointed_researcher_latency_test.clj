@@ -2,7 +2,7 @@
   "Deterministic engine-only latency measurements for the checkpoint boundary."
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (defn- percentile [samples percentile]
   (let [ordered (vec (sort samples))
@@ -34,8 +34,8 @@
           {:researcher-ownership-epoch 1
            :claim-researcher-effect! (fn [_] {:command-result/events []})
            :complete-researcher-effect! (fn [_] {:command-result/events []})}
-          run-plain #(executor/execute-repl-researcher-rlm plain-node {} :test {})
-          run-checkpoint #(executor/execute-repl-researcher-rlm
+          run-plain #(service-processors/execute-repl-researcher-rlm plain-node {} :test {})
+          run-checkpoint #(service-processors/execute-repl-researcher-rlm
                            checkpoint-node {} :test checkpoint-context)]
       (with-redefs [llm/predict
                     (fn [_ _ _ _]

@@ -3,157 +3,135 @@
 
    This namespace loads all core modules for side-effect registration
    and re-exports the public API."
-  (:require ;; Load core namespaces for side-effect registration of commands/queries
-            [ai.obney.orc.orc-service.core.commands]
-            [ai.obney.orc.orc-service.core.provider-observations :as provider-observations]
-            [ai.obney.orc.orc-service.core.queries]
-            [ai.obney.orc.orc-service.core.todo-processors]
-            [ai.obney.orc.orc-service.core.periodic-tasks]
-            [ai.obney.orc.orc-service.core.recovery-scan :as recovery-scan]
-            ;; Load schemas for registration
-            [ai.obney.orc.orc-service.interface.schemas]
-            ;; Re-export from interface sub-namespaces
-            [ai.obney.orc.orc-service.interface.read-models :as rm]
-            ;; Runtime for synchronous execution
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
-            ;; Live execution streaming
-            [ai.obney.orc.orc-service.core.streaming :as streaming]
-            [ai.obney.orc.orc-service.core.telemetry-exporter :as telemetry-exporter]
-            [ai.obney.orc.orc-service.interface.stream-schemas :as stream-schemas]
-            ;; DSL for workflow building
-            [ai.obney.orc.orc-service.core.dsl :as dsl]
-            [ai.obney.orc.orc-service.core.family-usage :as family-usage]
-            [ai.obney.orc.orc-service.core.execution-family :as execution-family]
-            ;; Resolving blackboard values from the canonical write log
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
-            ;; WS-2a: the orc block-signal primitive (opaque payload)
-            [ai.obney.orc.orc-service.core.block :as block]
-            ;; Shape, not values — the profile lifecycle events record instead
-            ;; of a blackboard value
-            [ai.obney.orc.orc-service.core.profile :as profile]
-            [ai.obney.orc.orc-service.core.judge-definition :as judge-definition]))
+  (:refer-clojure :exclude [sequence])
+  (:require [ai.obney.orc.orc-service.core.commands :as commands]
+            [ai.obney.orc.orc-service.core.logic :as logic]
+            [ai.obney.orc.orc-service.core.periodic-tasks :as periodic]
+            [ai.obney.orc.orc-service.core.queries :as queries]
+            [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.todo-processors :as processors]
+            [ai.obney.orc.orc-service.interface.projections :as projections]
+            [ai.obney.orc.orc-service.interface.schemas :as schemas]
+            [ai.obney.orc.orc-service.interface.stream-schemas :as stream-schemas]))
 
 (def max-alert-window
   "The largest trailing window a judge alert may watch (the outcomes a node
    version's performance keeps in order)."
-  judge-definition/max-alert-window)
+  logic/max-alert-window)
 
 ;; =============================================================================
 ;; Read Models
 ;; =============================================================================
 
-;; =============================================================================
-;; WS-2a — Block signal primitive (engine)
-;;
-;; A harness raises (block! opaque-payload) from a leaf when a turn must pause
-;; (e.g. a gated tool call needs permission). The engine recognizes it via
-;; blocking-condition?, completes the node/tick :blocked (so the parent deref
-;; returns immediately), and propagates :blocked + the payload to the caller's
-;; result. orc NEVER interprets the payload — orc-sessions owns its meaning.
-;; =============================================================================
-(def block! block/block!)
-(def blocking-condition? block/blocking-condition?)
-(def block-payload block/block-payload)
+(def block! logic/block!)
 
-;; Failure-isolated durable-event export
-(def start-telemetry-exporter! telemetry-exporter/start!)
-(def telemetry-exporter-stats telemetry-exporter/stats)
-(def stop-telemetry-exporter! telemetry-exporter/stop!)
+(def blocking-condition? logic/blocking-condition?)
 
-;; =============================================================================
-;; Value shape profiling
-;;
-;; What stays useful about a value once the value itself lives in the write
-;; log. Exported so a CONSUMER of these events can reduce an OLD-shape payload
-;; to the same shape the emitter records today, rather than inventing a second
-;; vocabulary for it (CC-21b).
-;; =============================================================================
-(def profile-value profile/profile-value)
-(def profile-values profile/profile-values)
+(def block-payload logic/block-payload)
 
-;; Sheet functions
-(def get-sheet rm/get-sheet)
-(def get-sheets-all rm/get-sheets-all)
-(def get-sheet-by-name rm/get-sheet-by-name)
+(def start-telemetry-exporter! logic/start!)
 
-;; Node functions
-(def get-node rm/get-node)
-(def get-nodes-for-sheet rm/get-nodes-for-sheet)
-(def get-nodes-by-id rm/get-nodes-by-id)
-(def get-root-node rm/get-root-node)
-(def get-children rm/get-children)
-(def get-descendants rm/get-descendants)
+(def telemetry-exporter-stats logic/stats)
 
-;; Blackboard functions
-(def get-blackboard-for-sheet rm/get-blackboard-for-sheet)
-(def get-blackboard-by-key rm/get-blackboard-by-key)
+(def stop-telemetry-exporter! logic/stop!)
 
-;; Judge functions (Gap-1: per-event evaluator runtime reads these)
-(def get-judges rm/get-judges)
-(def get-judge rm/get-judge)
+(def profile-value logic/profile-value)
 
-;; Family usage: provider usage of an execution plus all its descendants.
-(def get-family-usage family-usage/get-family-usage)
+(def profile-values logic/profile-values)
 
-;; Execution family: every node execution of an execution and of every nested
-;; child execution, in durable completion order, with resolved values.
-(def get-execution-family execution-family/get-execution-family)
+(def get-sheet projections/get-sheet)
 
-;; Tick functions
-(def get-tick rm/get-tick)
+(def get-sheets-all projections/get-sheets-all)
+
+(def get-sheet-by-name projections/get-sheet-by-name)
+
+(def get-node projections/get-node)
+
+(def get-nodes-for-sheet projections/get-nodes-for-sheet)
+
+(def get-nodes-by-id projections/get-nodes-by-id)
+
+(def get-root-node projections/get-root-node)
+
+(def get-children projections/get-children)
+
+(def get-descendants projections/get-descendants)
+
+(def get-blackboard-for-sheet projections/get-blackboard-for-sheet)
+
+(def get-blackboard-by-key projections/get-blackboard-by-key)
+
+(def get-judges projections/get-judges)
+
+(def get-judge projections/get-judge)
+
+(def get-family-usage rm/get-family-usage)
+
+(def get-execution-family rm/get-execution-family)
+
+(def get-tick projections/get-tick)
+
 (def assessment-origin
   "The durable assessment origin ({:assessment-id uuid}) of a tick, or nil when
    the tick is not work done for an assessment. Inherited by every child run."
-  rm/assessment-origin)
+  projections/assessment-origin)
+
 (def get-tick-execution-context
   "The execution context a snapshot-based tick runs under ({:nodes-by-id
    :version-number :instruction-overrides ...}), or nil for a snapshot-less tick."
-  rm/get-tick-execution-context)
-(def get-researcher-campaign rm/get-researcher-campaign)
-(def get-researcher-iteration-records rm/get-researcher-iteration-records)
-(def get-researcher-effect-claims rm/get-researcher-effect-claims)
-(def get-provider-call-reservations rm/get-provider-call-reservations)
+  projections/get-tick-execution-context)
 
-;; Version functions
-(def get-versions-for-sheet rm/get-versions-for-sheet)
-(def get-version rm/get-version)
-(def get-latest-version rm/get-latest-version)
-(def get-stash rm/get-stash)
+(def get-researcher-campaign projections/get-researcher-campaign)
 
-;; Tree metadata functions
-(def get-tree-metadata rm/get-tree-metadata)
-(def get-all-tree-metadata rm/get-all-tree-metadata)
-(def find-trees-by-problem-type rm/find-trees-by-problem-type)
+(def get-researcher-iteration-records projections/get-researcher-iteration-records)
 
-;; Rolling metrics functions
-(def get-node-rolling-metrics rm/get-node-rolling-metrics)
-(def get-tree-rolling-metrics rm/get-tree-rolling-metrics)
-;; C-2a-2: cross-sheet rolling metrics for the Living Description system.
-(def get-node-type-metrics rm/get-node-type-metrics)
-(def get-tree-fingerprint-metrics rm/get-tree-fingerprint-metrics)
+(def get-researcher-effect-claims projections/get-researcher-effect-claims)
 
-;; =============================================================================
-;; Value log — resolving blackboard VALUES from the write log
-;;
-;; :sheet/execution-value-written is the canonical record of every blackboard
-;; write; lifecycle and trace events record only shape (:write-keys, :read-keys,
-;; profiles). These turn those events back into values, with the attribution
-;; needed to answer "what did THIS node execution write" rather than "what does
-;; this key hold now" — the two differ whenever a key is written more than once
-;; or a map-each runs the same child node against several items.
-;; =============================================================================
+(def get-provider-call-reservations projections/get-provider-call-reservations)
 
-(def value-log-exec-context value-log/exec-context)
-(def value-log-execution-key value-log/execution-key)
-(def value-log-engine-key? value-log/engine-key?)
-(def value-log-tick-started-event value-log/tick-started-event)
-(def value-log-tick-seeds value-log/tick-seeds)
-(def value-log-writes-for value-log/writes-for)
-(def value-log-latest-values value-log/latest-values)
-(def value-log-input-seeds-by-iteration value-log/input-seeds-by-iteration)
-(def value-log-read-tick-events value-log/read-tick-events)
-(def value-log-resolve-reads value-log/resolve-reads)
-(def value-log-resolve-writes value-log/resolve-writes)
+(def get-versions-for-sheet projections/get-versions-for-sheet)
+
+(def get-version projections/get-version)
+
+(def get-latest-version projections/get-latest-version)
+
+(def get-stash projections/get-stash)
+
+(def get-tree-metadata projections/get-tree-metadata)
+
+(def get-all-tree-metadata projections/get-all-tree-metadata)
+
+(def find-trees-by-problem-type projections/find-trees-by-problem-type)
+
+(def get-node-rolling-metrics projections/get-node-rolling-metrics)
+
+(def get-tree-rolling-metrics projections/get-tree-rolling-metrics)
+
+(def get-node-type-metrics projections/get-node-type-metrics)
+
+(def get-tree-fingerprint-metrics projections/get-tree-fingerprint-metrics)
+
+(def value-log-exec-context logic/exec-context)
+
+(def value-log-execution-key logic/execution-key)
+
+(def value-log-engine-key? logic/engine-key?)
+
+(def value-log-tick-started-event rm/tick-started-event)
+
+(def value-log-tick-seeds rm/tick-seeds)
+
+(def value-log-writes-for logic/writes-for)
+
+(def value-log-latest-values logic/latest-values)
+
+(def value-log-input-seeds-by-iteration logic/input-seeds-by-iteration)
+
+(def value-log-read-tick-events rm/read-tick-events)
+
+(def value-log-resolve-reads rm/resolve-reads)
+
+(def value-log-resolve-writes rm/resolve-writes)
 
 ;; =============================================================================
 ;; Synchronous Execution
@@ -195,7 +173,7 @@
    Example:
      (sheet/execute ctx sheet-id {\"student-id\" student-id} :timeout-ms 60000)
      (sheet/execute ctx sheet-id inputs :use-version 2)  ;; Execute specific version"
-  runtime/execute)
+  commands/execute)
 
 (def get-execution-result
   "Read a terminal execution result from durable tenant-scoped events.
@@ -204,12 +182,12 @@
    original status, trace ID, canonical outputs and output sources, and the
    executed version when recorded. This operation does not start execution,
    register a completion waiter, resume work, or append events."
-  runtime/durable-terminal-result)
+  commands/durable-terminal-result)
 
 (def resume-in-progress!
   "Resume abandoned leaf, delegate, and researcher frontiers after processors
    restart against the same durable event store. Repeated calls are idempotent."
-  runtime/resume-in-progress!)
+  processors/resume-in-progress!)
 
 (def register-recovery-scan-context-fn!
   "Let the periodic recovery scan decide before it writes. `f` maps a tenant id
@@ -217,11 +195,7 @@
    nil. With it, a scan records its trigger only when a start is abandoned (or
    the state cannot be read); without it the scan records every beat as before.
    Returns a no-arg function that removes the registration."
-  recovery-scan/register-context-fn!)
-
-;; =============================================================================
-;; Live Streaming (ephemeral observation layer — see docs/STREAMING.md)
-;; =============================================================================
+  logic/register-context-fn!)
 
 (def subscribe-execution
   "Subscribe to the live event stream for a tick-id and every child tick
@@ -235,7 +209,7 @@
    the consumer fell behind the sliding buffer and lost events (everything
    durable is recoverable from the event store by [:tick tick-id]).
    See interface.stream-schemas/stream-envelope for the full taxonomy."
-  streaming/subscribe-execution)
+  processors/subscribe-execution)
 
 (def execute-stream
   "Non-blocking streamed execution: subscribe + dispatch in one call.
@@ -247,7 +221,7 @@
        :result   <promise of the exact `execute` return map>}
 
    Accepts every `execute` option plus :include-values? :buffer :ttl-ms."
-  streaming/execute-stream)
+  processors/execute-stream)
 
 (def cancel!
   "Cancel a running tick and any known child ticks. Best-effort: the engine
@@ -258,7 +232,7 @@
    streams end with :tick-cancelled then :stream-closed {:reason :cancelled}.
 
    (cancel! context tick-id) => {:cancelled [tick-ids]} | anomaly map"
-  streaming/cancel!)
+  processors/cancel!)
 
 (def stream-envelope-schema
   "Malli schema (multi-dispatch on :orc.stream/type) for every envelope a
@@ -269,66 +243,62 @@
 ;; Workflow DSL
 ;; =============================================================================
 
-;; Node builders
-(def llm dsl/llm)
-(def code dsl/code)
-(def tool dsl/tool)
-(def condition dsl/condition)
-(def llm-condition dsl/llm-condition)
-(def llm-decision dsl/llm-decision)
-(def sequence dsl/sequence)
-(def fallback dsl/fallback)
-(def parallel dsl/parallel)
-(def map-each dsl/map-each)
-(def repl-researcher dsl/repl-researcher)
-(def delegate dsl/delegate)
+(def llm logic/llm)
 
-;; Schema builder
-(def blackboard dsl/blackboard)
+(def code logic/code)
 
-;; Judges builder
-(def judges dsl/judges)
+(def tool logic/tool)
 
-;; Workflow definition
-(def workflow dsl/workflow)
+(def condition logic/condition)
 
-;; Build functions
-(def build-workflow! dsl/build-workflow!)
-(def build-workflow!! dsl/build-workflow!!)
+(def llm-condition logic/llm-condition)
 
-;; Utilities
-(def print-tree dsl/print-tree)
-(def describe-workflow dsl/describe-workflow)
+(def llm-decision logic/llm-decision)
 
-;; Export/Import
-(def export-sheet dsl/export-sheet)
-(def export-to-dsl dsl/export-to-dsl)
-(def save-sheet-as-dsl! dsl/save-sheet-as-dsl!)
-(def import-sheet dsl/import-sheet)
-(def save-sheet! dsl/save-sheet!)
-(def load-sheet! dsl/load-sheet!)
-(def save-all-sheets! dsl/save-all-sheets!)
-(def load-all-sheets! dsl/load-all-sheets!)
+(def sequence logic/sequence)
 
-;; =============================================================================
-;; GEPA Integration (Native Clojure - no Python required)
-;; =============================================================================
+(def fallback logic/fallback)
 
-;; GEPA prompt optimization is available via the native Clojure implementation:
-;;
-;;   (require '[ai.obney.orc.gepa.interface :as gepa])
-;;   (gepa/optimize! ctx
-;;     {:sheet-id sheet-id
-;;      :trainset trainset
-;;      :valset valset
-;;      :metric-fn (gepa/make-exact-match-metric "answer")
-;;      :config {:max-metric-calls 50}
-;;      :block? true})
-;;
-;; See: components/gepa/
-;; See: development/src/gepa_training_demo.clj for full examples
+(def parallel logic/parallel)
 
-;; Exact provider attempt observations via authorized registered commands/queries.
-(def start-provider-attempt! provider-observations/start-provider-attempt!)
-(def complete-provider-attempt! provider-observations/complete-provider-attempt!)
-(def provider-attempts provider-observations/provider-attempts)
+(def map-each logic/map-each)
+
+(def repl-researcher logic/repl-researcher)
+
+(def delegate logic/delegate)
+
+(def blackboard logic/dsl-blackboard)
+
+(def judges logic/dsl-judges)
+
+(def workflow logic/workflow)
+
+(def build-workflow! commands/build-workflow!)
+
+(def build-workflow!! commands/build-workflow!!)
+
+(def print-tree logic/print-tree)
+
+(def describe-workflow logic/describe-workflow)
+
+(def export-sheet commands/export-sheet)
+
+(def export-to-dsl logic/export-to-dsl)
+
+(def save-sheet-as-dsl! commands/save-sheet-as-dsl!)
+
+(def import-sheet commands/import-sheet)
+
+(def save-sheet! commands/save-sheet!)
+
+(def load-sheet! commands/load-sheet!)
+
+(def save-all-sheets! commands/save-all-sheets!)
+
+(def load-all-sheets! commands/load-all-sheets!)
+
+(def start-provider-attempt! processors/start-provider-attempt!)
+
+(def complete-provider-attempt! processors/complete-provider-attempt!)
+
+(def provider-attempts commands/provider-attempts)

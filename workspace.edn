@@ -14,10 +14,10 @@
             ;; from trying to load its cross-component tests on a deliberately
             ;; minimal package classpath.
             "orc-service" {:test {:include ["orc-service"]}}
-            "orc-evaluation" {:test {:include ["evaluation"]}}
-            "orc-gepa" {:test {:include ["gepa"]}}
+            "orc-evaluation" {:test {:include ["evaluation-service"]}}
+            "orc-gepa" {:test {:include ["gepa-service"]}}
             "orc-mcp-sheet-builder" {:test {:include ["mcp-sheet-builder"]}}
-            "orc-ontology" {:test {:include ["ontology"]}}
+            "orc-ontology" {:test {:include ["ontology-service"]}}
             ;; LMDB-NATIVE-HARNESS-CRASH: colbert's brick tests moved OUT of
             ;; the `orc` project and INTO their own `orc-colbert` project.
             ;;
@@ -45,5 +45,5 @@
             ;; invocation mode (solo `project:X`, or a composite mode that
             ;; touches both projects in one JVM) — never duplicated, and
             ;; never sharing a classloader with `orc`'s suite.
-            "orc" {:test {:exclude ["colbert"]}}
-            "orc-colbert" {:test {:include ["colbert"]}}}}
+            "orc" {:test {:exclude ["colbert-service"]}}
+            "orc-colbert" {:test {:include ["colbert-service"]}}}}

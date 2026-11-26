@@ -4,11 +4,11 @@
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.llm.interface :as llm]
             [litellm.router :as router]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- classified-as [expected failure]
   (is (= expected (llm/transport-timeout? failure)) "Public LLM classifier")
-  (is (= expected (executor/transport-timeout? failure)) "Executor uses the same classifier"))
+  (is (= expected (service-logic/transport-timeout? failure)) "Executor uses the same classifier"))
 
 (deftest durable-provider-markers-and-normalized-timeouts-need-no-cause
   (doseq [data [{:timeout-kind :provider}
@@ -30,7 +30,6 @@
                  :provider-evidence {:transport {:type :litellm/invalid-request}}}
                 {:provider-evidence {:transport {:type :litellm/invalid-request}}}]]
     (testing (pr-str data)
-      ;; The stale marker and nested raw deadline cannot override the category.
       (classified-as false (ex-info "Controlled conflict" (assoc data :timeout-kind :provider)
                                     (java.net.http.HttpTimeoutException. "controlled"))))))
 

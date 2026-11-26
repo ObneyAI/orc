@@ -1,9 +1,9 @@
 (ns ai.obney.orc.orc-service.partition-identity-test
   "Regression tests for sheet-local entity identities in partitioned read models."
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- create-sheet! [ctx name]
   (-> (h/run-and-apply! ctx (h/make-create-sheet-command :name name))
@@ -16,9 +16,6 @@
             sheet-b (create-sheet! ctx "String sheet")]
         (h/run-and-apply! ctx
                           (h/make-declare-key-command sheet-a :shared [:vector :string]))
-        ;; Warm the first partition before adding the colliding name. This
-        ;; exercises Grain's incremental single-partition path as well as the
-        ;; initial projection path used by normal workflow builds.
         (is (= [:vector :string]
                (get-in (rm/get-blackboard-by-key ctx sheet-a) [:shared :schema])))
 
@@ -32,7 +29,7 @@
         (is (= [:vector :string]
                (get-in (rm/get-blackboard-by-key ctx sheet-a) [:shared :schema])))
         (is (= [:vector :string]
-               (get-in (executor/build-module
+               (get-in (service-logic/build-module
                         {:name "structured-writer" :reads [] :writes [:shared]}
                         (rm/get-blackboard-by-key ctx sheet-a))
                        [:outputs 0 :spec])))

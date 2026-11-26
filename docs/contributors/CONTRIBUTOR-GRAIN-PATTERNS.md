@@ -174,7 +174,7 @@ Read models are defined with `defreadmodel` from
   [state event] (things* state event))
 ```
 
-State is a flat map: `{entity-id entity-data, ...}`. Increment `:version` when the reducer logic changes to bust the cache.
+State is a flat map: `{entity-id entity-data, ...}`. The repository lint requires literal `:version 1`. Plan cache invalidation when reducer semantics change. For an existing deployment, use the [projection-cache upgrade procedure](../../README.md#upgrading-existing-installations).
 
 **Partitioned read models** (for large datasets):
 ```clojure

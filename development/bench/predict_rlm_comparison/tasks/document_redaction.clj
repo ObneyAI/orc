@@ -42,7 +42,6 @@
   "development/bench/predict_rlm_comparison/references/predict-rlm/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf")
 
 (def ^:private criteria
-  ;; Verbatim from predict-rlm examples/document_redaction/run.py CRITERIA.
   "Redact all personally identifiable information (PII), including:
 
 1. **Names** — Full names of individuals (not company or organization names)
@@ -55,22 +54,6 @@
 Added to this, redact any dates found in the document, in any format.")
 
 (def ^:private instruction
-  ;; Port-cleanup notes (see references/.../document_redaction/signature.py.txt
-  ;; for the original verbatim source):
-  ;;
-  ;; predict-rlm's signature docstring is a Python/pymupdf procedural recipe
-  ;; ("survey docs, inspect each page visually, apply redactions, verify by
-  ;; re-rendering, save PDFs"). It conflates the end-goal — produce a complete,
-  ;; correctly-categorized RedactionResult — with predict-rlm's specific
-  ;; pymupdf-based output workflow. Keeping it verbatim would inject pymupdf
-  ;; tool nouns and PDF-rewriting steps into our prompt that don't apply to
-  ;; our text-mode redaction variant.
-  ;;
-  ;; Port principle: keep the end-goal and quality bar verbatim; strip the
-  ;; pymupdf-specific output workflow and the "step 1/2/3/4/5/6" procedural
-  ;; framing. Do not add tree-shape hints. The model still sees the verbatim
-  ;; criteria below as task input and the verbatim adversarial-completeness
-  ;; quality requirement.
   "Redact sensitive information from the provided document(s) based on the
    redaction criteria.
 
@@ -139,18 +122,8 @@ Added to this, redact any dates found in the document, in any format.")
   {:name "Document Redaction (predict-rlm port)"
    :slug "document-redaction"
    :pattern "Multi-page PII identification (vision LLM per page) + deterministic apply (code node)"
-   ;; Apples-to-apples model setup matching predict-rlm:
-   ;;   main LM:   openai/gpt-5.4
-   ;;   sub-LM:    openai/gpt-5.1-chat
    :model "openai/gpt-5.4"
    :sub-model "openai/gpt-5.1-chat"
-   ;; NOTE: NOT setting :available-code-nodes here. When present, the framework
-   ;; adds a separate llm module input field for the catalog, which changes
-   ;; the request shape enough that gpt-5.4 returns :code nil from llm's
-   ;; text-mode parser (reproducible: with any non-empty :available-code-nodes,
-   ;; including a 1-line catalog, gpt-5.4 produces 1K+ completion tokens but
-   ;; llm extracts nil). Until that framework parsing issue is fixed,
-   ;; affordances are embedded directly into the task instruction string below.
    :instruction (str instruction
                      "\n\n## Available pre-built code-node functions\n\n"
                      redact/available-code-nodes)
@@ -183,7 +156,6 @@ Added to this, redact any dates found in the document, in any format.")
     "Trace JSONL should contain at least one sub-LLM call with an image_url content block (per-page vision identification)."
     "Compare per-category coverage against predict-rlm's published targets in references/predict-rlm/document_redaction/sample/output/output.md."]
    :predict-rlm-reported
-   ;; From references/predict-rlm/document_redaction/sample/output/output.md.
    {:total-redactions 89
     :pages 6
     :categories ["address" "date" "email" "financial_info" "government_id"

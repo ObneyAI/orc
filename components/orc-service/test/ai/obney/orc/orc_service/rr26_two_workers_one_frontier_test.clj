@@ -13,7 +13,6 @@
    claim is fenced by the durable frontier."
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.test-helpers :as h]
@@ -21,7 +20,8 @@
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.time.interface :as time]
-            [cognitect.anomalies :as anom]))
+            [cognitect.anomalies :as anom]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]))
 
 (defn- iteration-commit-command
   [sheet-id tick-id node-id resume-state iteration-record]
@@ -124,9 +124,6 @@
                               (do
                                 (swap! claim-attempts inc)
                                 (.countDown ready)
-                                ;; Deterministic barrier: neither worker appends
-                                ;; its claim until both have decided to claim.
-                                ;; Bounded so a missing partner cannot hang the run.
                                 (deref release 5000 nil)
                                 (process-command command-ctx))
                               (process-command command-ctx)))]
@@ -141,7 +138,7 @@
                     "both workers receive the one start and reach the frontier claim")
                 (deliver release true)
                 (is (h/settle-until!
-                     #(some? (runtime/durable-terminal-result ctx tick-id))
+                     #(some? (service-commands/durable-terminal-result ctx tick-id))
                      :timeout-ms 7000)
                     "the winner finishes the campaign")
                 (let [events (h/read-tick-events ctx tick-id)
@@ -154,9 +151,7 @@
                       completions (for-node :sheet/node-execution-completed)
                       records (rm/get-researcher-iteration-records
                                ctx sheet-id tick-id researcher-id)
-                      result (runtime/durable-terminal-result ctx tick-id)
-                      ;; The loser's late write: a checkpoint carrying the epoch
-                      ;; it tried to claim, after the winner's terminal fact.
+                      result (service-commands/durable-terminal-result ctx tick-id)
                       late-write
                       (h/run-and-apply!
                        ctx

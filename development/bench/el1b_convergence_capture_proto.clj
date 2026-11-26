@@ -31,21 +31,16 @@
      OPENROUTER_API_KEY=... \\
      clojure -M:dev -m el1b-convergence-capture-proto"
   (:require [runner]
+            [ai.obney.ontology.core.graph :as graph]
             [ai.obney.orc.ontology.interface :as ont]
-            [ai.obney.orc.ontology.core.task-classifier :as tc]
             [ai.obney.orc.ontology.core.todo-processors :as ont-tp]
             [ai.obney.orc.ontology.core.read-models :as rm]
-            [ai.obney.orc.ontology.core.graph :as graph]
             [ai.obney.orc.colbert.interface :as colbert]
             [ai.obney.grain.command-processor-v2.interface :as cp]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]))
 
-;; ---------------------------------------------------------------------------
-;; Two VARIANT tasks of ONE emergent specialization: "wire a JSON serialization
-;; dependency into an export writer". Variant A is recorded as a tree-class;
-;; variant B is the convergence target — it must NOT scatter a fresh uuid.
-;; A DISTINCT task (rename-symbol) is the over-merge guard: it must NOT bundle.
-;; ---------------------------------------------------------------------------
 (def variant-a-class-id #uuid "deadbeef-1b00-4000-8000-0000000000a1")
 
 (def variant-a-body
@@ -65,26 +60,15 @@
    :version 1
    :consolidated-from-event-count 3})
 
-;; Variant A's instruction (the E4 "wire-dependency" verbatim — same task the gate uses).
 (def variant-a-instruction
   "Add the cheshire JSON dependency to deps.edn and use it in the export writer to serialize the report map to a .json file.")
 
-;; Variant B: SAME specialization (dependency-wiring + serialization), but a
-;; DIFFERENT serialization target (EDN, not JSON) + different framing so the
-;; reranker rates it a true VARIANT (related but below the 0.7 hard MATCH
-;; threshold) rather than a clean match — that is the scatter case EL-1b
-;; must converge without a fresh random-uuid.
 (def variant-b-instruction
   "Pull in a serialization helper dependency and update the project's exporter component so it persists the accumulated results to disk in a portable serialized format for later reload.")
 
-;; A DISTINCT task — the over-merge guard. Must classify :novel and NOT bundle to A.
 (def distinct-instruction
   "Rename the function `calc` to `compute-tax` across the billing namespace and update every caller, including the test files.")
 
-;; ---------------------------------------------------------------------------
-;; A one-off junk class for Part 2 (the evidence gate). Distinct domain so it
-;; can't accidentally bundle. Recorded once (total=1) -> must be filtered.
-;; ---------------------------------------------------------------------------
 (def oneoff-class-id #uuid "deadbeef-1b00-4000-8000-0000000000b1")
 (def oneoff-body
   {:summary (str "Task class for generating a vegetarian dinner menu for eight "
@@ -106,7 +90,7 @@
        "task's structural shape and inputs/outputs."))
 
 (defn build-sig [instruction]
-  (tc/build-task-signature {:instruction instruction
+  (ontology-logic/build-task-signature {:instruction instruction
                             :reads [:user-message :active-plan :workspace-root]
                             :writes [:assistant-response]
                             :mcp-tools ["shell/exec" "fs/read" "fs/list"]}))
@@ -125,9 +109,6 @@
             :target-id id
             :body body})))
 
-;; Tick a tree-class's consolidation counter by emitting :ontology/task-classified
-;; events (the real accrual path — assign-task-class -> task-classified ->
-;; consolidation-delta-counters bumps [:tree-class id] :total).
 (defn tick-class! [ctx id n]
   (dotimes [_ n]
     (cp/process-command
@@ -144,37 +125,18 @@
               :reasoning "proto tick"
               :was-fresh-mint? false}))))
 
-;; ===========================================================================
-;; The CANDIDATE bundle probe under prototype — MIRRORS what will land in
-;; task_classifier.clj. Fuses reranker-fitness + raw ColBERT score + a
-;; shape-match boost via RRF (graph/compute-rrf-scores), restricted to
-;; :tree-class candidates, and returns the top fused candidate if it clears
-;; the bundle threshold.
-;; ===========================================================================
-;; NOTE (root cause found in run 1): pure rank-based RRF (graph/compute-rrf-scores)
-;; CANNOT gate a bundle — it uses ranks only, so the top :tree-class candidate
-;; always lands at fused ~= 1/(60+1)+1/(60+1) ~= 0.0328 whether it's a true
-;; variant or junk. RRF is a FUSION ranker, not an absolute-similarity gate. The
-;; bundle DECISION needs absolute magnitude. So: use RRF to FUSE+RANK the
-;; signals (pick the single best :tree-class candidate across signals), then gate
-;; that winner on its ABSOLUTE reranker fitness (the calibrated 0..1 intent-fit
-;; the LLM reranker produces, which already reads avoid-when via EL-2) AND a
-;; corroborating ColBERT semantic floor.
 (defn bundle-probe
   "Pick the best :tree-class candidate (RRF-fused rank across intent+semantic
    signals), then gate on absolute fitness >= `fit-gate` AND semantic >= `sem-gate`.
    Returns {:bundle-to id :fit :sem :fused-rank-score} when it bundles, else nil."
   [reranked raw fit-gate sem-gate]
   (let [tree-class? (fn [c] (= :tree-class (-> c :document-metadata :granularity)))
-        ;; absolute signals keyed by class id
         fit-by-id (into {} (keep (fn [c] (when-let [id (cand-class-id c)]
                                            (when (tree-class? c) [id (or (:fitness-score c) 0.0)])))
                                  reranked))
         sem-by-id (into {} (keep (fn [c] (when-let [id (cand-class-id c)]
                                            (when (tree-class? c) [id (or (:score c) 0.0)])))
                                  raw))
-        ;; RRF fuses the two ranked signal-lists to choose the single best
-        ;; candidate (the FUSION primitive's correct role).
         intent-batch (mapv (fn [[id s]] {:uri id :score s}) fit-by-id)
         semantic-batch (mapv (fn [[id s]] {:uri id :score s}) sem-by-id)
         batches (filterv seq [intent-batch semantic-batch])
@@ -191,15 +153,12 @@
     (println "FATAL: OPENROUTER_API_KEY not set") (System/exit 1))
   (try
     (runner/start!)
-    (let [ctx (deref (var-get (requiring-resolve 'runner/system-state)))
+    (let [ctx (runner/current-context)
           sig-a (build-sig variant-a-instruction)
           sig-b (build-sig variant-b-instruction)
           sig-distinct (build-sig distinct-instruction)
           sig-oneoff (build-sig oneoff-instruction)]
 
-      ;; ================================================================
-      ;; 0. RULE OUT THE HARNESS FIRST
-      ;; ================================================================
       (println "\n############ 0. RULE-OUT-HARNESS ############")
       (let [idxs (filter #(= "ontology-descriptions" (:index-name %)) (colbert/list-indexes ctx))]
         (println "ontology-descriptions indexes built:" (count idxs)))
@@ -209,23 +168,15 @@
         (println ":tree-fingerprint hits:" (count tf)
                  " all-tf? =" (and (seq tf) (every? #(= :tree-fingerprint (-> % :document-metadata :granularity)) tf))))
 
-      ;; ================================================================
-      ;; 1. RECORD variant A as a :tree-class + rebuild index
-      ;; ================================================================
       (println "\n############ 1. RECORD variant-A class + rebuild ############")
       (let [r (record-class! ctx variant-a-class-id variant-a-body)]
         (println "record A events:" (count (:command-result/events r)) " error:" (pr-str (:command-result/error r))))
-      ;; Tick A past the gate so it is a retrievable candidate (Part 2 interplay:
-      ;; Part 1 convergence only makes sense for an ALREADY-recurring class).
       (tick-class! ctx variant-a-class-id 12)
       (Thread/sleep 400)
       (println "A consolidation total:" (rm/get-consolidation-total ctx :tree-class variant-a-class-id))
       (ont-tp/force-rebuild! ctx)
       (Thread/sleep 1200)
 
-      ;; ================================================================
-      ;; 2. PART 1 — variant B today SCATTERS; the probe converges it
-      ;; ================================================================
       (println "\n############ 2. PART 1: variant-B convergence ############")
       (let [b-result (ont/classify-task ctx {:task-signature sig-b :threshold 0.7 :walk-down? false})]
         (println "variant-B classify-task TODAY: outcome=" (:outcome b-result)
@@ -234,7 +185,6 @@
                  " bundled-to-A? =" (= variant-a-class-id (:assigned-tree-id b-result))
                  "  <-- expect outcome=:novel, mint?=true, bundled-to-A?=false (SCATTER)"))
 
-      ;; The probe inputs: the reranked two-axis candidates + the raw (no rerank).
       (let [reranked (ont/search-descriptions ctx
                        {:query sig-b :granularity #{:tree-fingerprint :tree-class}
                         :rerank-with-intent classifier-intent :k 5})
@@ -259,9 +209,6 @@
                                            (if (= variant-a-class-id (:bundle-to p)) "  <== A (CONVERGED)" ""))
                                  "no-bundle (mint fresh)"))))))
 
-      ;; ================================================================
-      ;; 3. OVER-MERGE GUARD — a DISTINCT :novel task must NOT bundle to A
-      ;; ================================================================
       (println "\n############ 3. OVER-MERGE GUARD: distinct task ############")
       (let [reranked (ont/search-descriptions ctx
                        {:query sig-distinct :granularity #{:tree-fingerprint :tree-class}
@@ -281,12 +228,9 @@
                              (if p (format "BUNDLE-TO %s (fit=%.3f sem=%.3f)" (some-> (:bundle-to p) str (subs 0 8)) (:fit p) (:sem p)) "no-bundle (mint fresh)")
                              (if (and p (= variant-a-class-id (:bundle-to p))) "  !!! OVER-MERGE TO A" ""))))))
 
-      ;; ================================================================
-      ;; 4. PART 2 — evidence-gate: one-off filtered, recurrence surfaces
-      ;; ================================================================
       (println "\n############ 4. PART 2: evidence gate ############")
       (record-class! ctx oneoff-class-id oneoff-body)
-      (tick-class! ctx oneoff-class-id 1) ;; one-off: total=1
+      (tick-class! ctx oneoff-class-id 1)
       (Thread/sleep 300)
       (ont-tp/force-rebuild! ctx)
       (Thread/sleep 1200)
@@ -296,8 +240,6 @@
                   {:query sig-oneoff :granularity #{:tree-fingerprint :tree-class} :k 30})
             present? (boolean (some #(= oneoff-class-id (cand-class-id %)) raw))
             in-filter-band? (and (pos? total-before) (< total-before gate))
-            ;; End-to-end through the REAL classify-task with the gate: the
-            ;; filtered one-off must NOT appear in its surfaced candidate set.
             pt (ont/classify-task ctx {:task-signature sig-oneoff :threshold 0.7
                                        :retrieval-gate gate :walk-down? false})
             in-classify-candidates? (boolean (some #(= oneoff-class-id (cand-class-id %))
@@ -309,8 +251,7 @@
         (println "  classify-task surfaced one-off in candidates? =" in-classify-candidates?
                  "  <-- expect FALSE (FILTERED end-to-end)"
                  " | classify outcome=" (:outcome pt) " assigned=" (some-> (:assigned-tree-id pt) str (subs 0 8))))
-      ;; Recur it past the gate.
-      (tick-class! ctx oneoff-class-id 6) ;; total now 7 >= gate 5
+      (tick-class! ctx oneoff-class-id 6)
       (Thread/sleep 300)
       (let [gate 5
             total-after (rm/get-consolidation-total ctx :tree-class oneoff-class-id)

@@ -34,11 +34,9 @@
             [ai.obney.orc.orc-service.core.todo-processors :as tp]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.test-helpers :as th]
-            [ai.obney.orc.ontology.interface :as ontology]))
+            [ai.obney.orc.ontology.interface :as ontology]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-;; =============================================================================
-;; Fixtures — real text from a real recorded render
-;; =============================================================================
 
 (def ^:private coding-class-weaknesses
   "The real weakness claims on the coding tree-class, verbatim from the W2
@@ -148,10 +146,6 @@
 ;; =============================================================================
 ;; Independent reconstruction of the claim spans
 ;; =============================================================================
-;;
-;; Deliberately NOT calling the render's private helpers: an expectation
-;; computed by the code under test proves nothing. These reproduce the two
-;; documented formats from their specifications.
 
 (def ^:private weakness-section-header
   "Weaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n")
@@ -265,18 +259,13 @@
               (str "claim span occurs more than once — the reconstruction is ambiguous: "
                    (pr-str (subs span 0 (min 70 (count span))))))
           (str (subs s 0 i) (subs s (+ i (count span)))))
-      ;; Unchanged rather than nil, so a missing span fails the equality
-      ;; assertion below instead of throwing partway through the reduce.
       s)))
 
-;; =============================================================================
-;; RED #1 — the claim-only holdout is OFF by default
-;; =============================================================================
 
 (deftest claim-holdout-is-off-by-default
   (testing "the shipped default suppresses no claim"
-    (is (false? (:enabled? tp/*claim-holdout*)))
-    (is (zero? (:fraction tp/*claim-holdout*))))
+    (is (false? (:enabled? service-logic/*claim-holdout*)))
+    (is (zero? (:fraction service-logic/*claim-holdout*))))
 
   (testing "with no configuration at all, every claim still reaches the prompt"
     (let [f (fixture)
@@ -285,21 +274,15 @@
       (is (str/includes? block (rendered-weakness-section coding-class-weaknesses)))
       (is (str/includes? block (summary-claim-sentence coding-class-weaknesses))))))
 
-;; =============================================================================
-;; RED #2 — THE ACCEPTANCE TEST: the arms differ by EXACTLY the claim spans
-;; =============================================================================
 
 (deftest claim-only-holdout-differs-from-treatment-by-exactly-the-claim-spans
   (let [f (fixture)
         on (render f {})
         off (render f {:claim-holdout {:enabled? true :fraction 1.0}})
-        ;; Every claim-derived span, reconstructed from the FIXTURE bodies —
-        ;; not read out of the render.
-        spans [;; the rendered weakness sections, one per body that has claims
+        spans [
                (rendered-weakness-section coding-class-weaknesses)
                (rendered-weakness-section instruction-class-weaknesses)
                (rendered-weakness-section behavioral-weaknesses)
-               ;; the SAME claims a second time, inside the quoted `:summary`
                (summary-claim-sentence coding-class-weaknesses)
                (summary-claim-sentence behavioral-weaknesses)]
         reconstructed (reduce remove-span-once on spans)]
@@ -345,24 +328,6 @@
         (is (str/includes? off kept)
             (str "control arm dropped non-claim content: " kept))))))
 
-;; =============================================================================
-;; RED #2b — the candidate HEADER is not arm-dependent
-;; =============================================================================
-;;
-;; `derive-seed-name` scans the summary for a stative verb and names the
-;; candidate from the text before it. A verb can sit INSIDE a claim: when a
-;; body's only claims are weaknesses, assemble-summary puts the
-;; `Known weaknesses:` sentence FIRST, and the derived name is taken out of it.
-;; Deriving the name from the STRIPPED summary would therefore let the holdout
-;; move a candidate's header — content that is not the claim — and the arm
-;; would not be clean. So the name is derived from the ORIGINAL summary on both
-;; arms, and this pins it on the shape that discriminates.
-;;
-;; Known residual, deliberately not "fixed": on this shape the header echoes a
-;; FRAGMENT of the claim, identically on both arms. It cannot confound the
-;; contrast (the bytes are the same either way), but the control prompt is
-;; claim-EQUAL there rather than claim-FREE. Removing it would mean changing
-;; what the treated arm renders, which is out of bounds for a control.
 
 (def ^:private weakness-first-body
   "A body whose ONLY claims are weaknesses — so its assembled `:summary` opens
@@ -414,16 +379,9 @@
           "the claim's trait text does not survive"))
 
     (testing "the residual, named honestly: the header echo is present on BOTH arms"
-      ;; derive-seed-name took the name out of the leading claim sentence, so
-      ;; the header carries the fragment "Known weaknesses: the pipeline" —
-      ;; identically on both arms, hence harmless to the contrast. Recorded as
-      ;; a characterization, not an endorsement.
       (is (str/includes? on "Known weaknesses: the pipeline"))
       (is (str/includes? off "Known weaknesses: the pipeline")))))
 
-;; =============================================================================
-;; RED #3 — the arm is recorded, so the analysis can tell the rows apart
-;; =============================================================================
 
 (deftest claim-only-holdout-is-stamped-on-the-injection-record
   (th/with-test-context [ctx]
@@ -455,9 +413,6 @@
         (testing "and it names the claim control it was compared against"
           (is (= "r-inject/no-claim-injection" (:baseline-policy-id control))))))))
 
-;; =============================================================================
-;; RED #4 — the existing all-or-nothing holdout is unchanged
-;; =============================================================================
 
 (deftest injection-holdout-semantics-are-untouched
   (testing "the all-or-nothing holdout still suppresses the WHOLE block"
@@ -481,16 +436,13 @@
                              :claim-holdout {:enabled? true :fraction 1.0})))
         (is (= :holdout (:arm (rm/get-injection-record ctx sheet-id tick-id (:id (:node f))))))))))
 
-;; =============================================================================
-;; RED #5 — the claim holdout is a real randomized holdout, seam and all
-;; =============================================================================
 
 (deftest claim-holdout-uses-the-assignment-seam-with-its-own-occurrence-salt
   (let [seen (atom [])
         f (fixture)
         node-id (:id (:node f))]
-    (binding [tp/*claim-holdout* {:enabled? true :fraction 0.25}
-              tp/*holdout-assignment* (fn [occurrence fraction]
+    (binding [service-logic/*claim-holdout* {:enabled? true :fraction 0.25}
+              service-logic/*holdout-assignment* (fn [occurrence fraction]
                                         (swap! seen conj [occurrence fraction])
                                         true)]
       (render f {:sheet-id :s :tick-id :t}))
@@ -505,17 +457,9 @@
       (is (not (str/includes? (render f {:claim-holdout {:enabled? true :fraction 1.0}})
                               sp3-claim-trait))))
     (testing "process-wide, via the var"
-      ;; NOTE: `binding` works HERE because the render runs on this thread.
-      ;; In the live app it does not — see the var's docstring.
-      (binding [tp/*claim-holdout* {:enabled? true :fraction 1.0}]
+      (binding [service-logic/*claim-holdout* {:enabled? true :fraction 1.0}]
         (is (not (str/includes? (render f {}) sp3-claim-trait)))))))
 
-;; =============================================================================
-;; RED #6 — :turn-id on the injection record
-;; =============================================================================
-;;
-;; Without it, a turn is joined to its injection by wall-clock window. That
-;; join is not wrong-proof, and W2 had to do exactly it.
 
 (deftest injection-record-carries-the-turn-id-when-the-render-context-has-one
   (th/with-test-context [ctx]
@@ -531,11 +475,6 @@
           (is (= turn-id (:turn-id record))))))))
 
 (deftest turn-id-reaches-the-record-from-the-real-tick-tool-context
-  ;; The unit tests above prove the RECORD carries whatever turn-id the render
-  ;; context has. This proves the EMIT SITE puts one there: a real tick command
-  ;; carrying the host's opaque :tool-context, a real execution-context read
-  ;; model, the real repl-researcher handler, and the record read back from the
-  ;; projection.
   (th/with-test-context [ctx]
     (let [sheet-id (-> (th/run-and-apply! ctx (th/make-create-sheet-command :name "W2P1"))
                        :command-result/events first :sheet-id)
@@ -563,17 +502,7 @@
         (is (= turn-id (:turn-id (:tool-context (rm/get-tick-execution-context ctx tick-id))))
             "the opaque :tool-context crosses the command -> event -> read-model boundary"))
 
-      ;; No provider: the researcher fails fast with "No ORC LLM provider
-      ;; configured" and makes NO model call. The render and its record happen
-      ;; before that, which is exactly the part under test.
-      ;;
-      ;; The handler returns as soon as it has spawned its future, so the
-      ;; with-redefs MUST stay open until the record lands — otherwise the
-      ;; stubs are torn down before the wedge runs and the REAL classifier
-      ;; executes inside the future. (It did, the first time I wrote this. The
-      ;; test still passed, which is exactly why the harness needs checking
-      ;; separately from the work.)
-      (binding [tp/*default-llm-provider* nil]
+      (binding [service-logic/*default-llm-provider* nil]
         (with-redefs [ontology/classify-task
                       (fn [_ _] {:assigned-tree-id classified-tree-id :confidence 0.85
                                  :top-candidates [{:content "corpus pattern"
@@ -610,8 +539,6 @@
                   "joined to the turn directly — no wall-clock window needed"))
 
             (testing "the stubs were still in force when the future ran"
-              ;; Guards the harness, not the work: a torn-down stub would leave
-              ;; the REAL classifier's fresh-minted class here instead.
               (is (= classified-tree-id (:task-class record)))
               (is (= [(str classified-tree-id)]
                      (mapv :candidate-id (:candidates record)))))))))))

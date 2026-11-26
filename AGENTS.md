@@ -40,15 +40,16 @@ Route work as follows:
 The normal spec-first loop is:
 
 1. Gather intent with `elicit`, or update the relevant spec with `tend`.
-2. Run `allium check specs`; resolve new structural diagnostics and explicitly
-   track or justify any accepted diagnostics.
+2. Refresh the pinned standalone graph spec using the [coverage ledger](specs/COVERAGE.md#ontology-extraction-ownership-18-september-2026).
+   Run `allium check specs target/ontology-spec`. Resolve new structural
+   diagnostics and explicitly track or justify any accepted diagnostics.
 3. Use `propagate` to derive integration or end-to-end tests.
 4. Run new tests before implementation and confirm that they fail for the
    missing behavior. A test that is already green may be covered or vacuous and
    must be investigated.
 5. Implement the behavior through the normal public boundaries.
 6. Run the relevant tests, then use `weed` to compare spec and code.
-7. Run `allium check specs` and `allium analyse specs` and repeat until the spec,
+7. Run `allium check specs target/ontology-spec` and `allium analyse specs target/ontology-spec` and repeat until the spec,
    tests, and implementation agree with no unresolved questions.
 
 For code-first reconciliation, use `distill`, review intended versus accidental
@@ -78,6 +79,9 @@ domain; document and justify exclusions in the ledger.
 
 ## Verification
 
+Install the staged pre-commit checks with `./scripts/install-hooks.sh`. See
+[Pre-commit lints](README.md#pre-commit-lints) for the full-index rules and base review procedure.
+
 Use the smallest relevant test command while iterating, then broaden verification
 in proportion to the change:
 
@@ -85,8 +89,8 @@ in proportion to the change:
 clojure -M:poly test                    # changed bricks
 clojure -M:poly test brick:orc-service  # one brick
 clojure -M:poly test :all-bricks        # all bricks
-allium check specs                      # structural specification checks
-allium analyse specs                    # process and invariant analysis
+allium check specs target/ontology-spec # structural specification checks
+allium analyse specs target/ontology-spec # process and invariant analysis
 git diff --check                        # patch hygiene
 ```
 
@@ -117,6 +121,9 @@ their UUIDv7 IDs and timestamps atomically during append. Callers must not suppl
 `:event/id` or `:event/timestamp`. Every direct v3 event-store read or append
 must include `:tenant-id`. Commands and queries exposed through adapters are deny-by-default
 and therefore require an explicit `:authorized?` predicate.
+
+Name each brick that owns Grain declarations with the `-service` suffix. Its
+public interface namespace can retain its established name.
 
 Use public component interfaces across Polylith boundaries. Production code is
 under `components/{component}/src/ai/obney/orc/`; tests live in the corresponding

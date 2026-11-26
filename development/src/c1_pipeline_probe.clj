@@ -44,11 +44,6 @@
             [ai.obney.orc.ontology.interface.schemas]
             [clojure.pprint :as pp]))
 
-;; =============================================================================
-;; Task-class UUIDs — the C-1 seed key for the document-analysis benchmark.
-;; This is the only one used in the probe; the full seed file will add UUIDs
-;; for risk-analysis, contract-comparison, legal-issue-detection, document-analysis.
-;; =============================================================================
 
 (def document-analysis-task-class-id
   "Stable UUID identifying the document-analysis benchmark task class.
@@ -56,9 +51,6 @@
    them when a repl-researcher node is configured for this task class."
   #uuid "00000000-c1c1-4001-b001-d0c0a0a0a0a1")
 
-;; =============================================================================
-;; Test context (in-memory event store + cache + processors)
-;; =============================================================================
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -92,16 +84,6 @@
         (doseq [c (.listFiles f)] (.delete c))
         (.delete f)))))
 
-;; =============================================================================
-;; The hand-authored principle for the probe — a tree-design principle
-;; about bounding map-each concurrency on chunked-extraction tasks.
-;;
-;; Fits the existing record-tree-strength schema:
-;;   :action-taken = {:type :target :reason}
-;;     :type   → the named pattern URI suffix
-;;     :target → the tree-DSL snippet (the schema accepts :any)
-;;     :reason → the rationale
-;; =============================================================================
 
 (def bounded-map-each-principle
   {:command/name :ontology/record-tree-strength
@@ -134,7 +116,6 @@
       (println "ontology pipeline (record-tree-strength → get-tree-profile →")
       (println "format-context-for-llm) to inject an RLM-domain principle.\n")
 
-      ;; STEP 1 — Write the principle via existing command
       (println "--- STEP 1: Authoring principle via :ontology/record-tree-strength ---")
       (let [cmd-result (cp/process-command
                          (assoc ctx :command bounded-map-each-principle))]
@@ -144,9 +125,8 @@
           (println "  Body keys:" (vec (keys (dissoc e :event/type :event/id :event/timestamp
                                                      :event/tags))))))
 
-      (Thread/sleep 200)  ;; let read model catch up
+      (Thread/sleep 200)
 
-      ;; STEP 2 — Read profile via existing read model
       (println "\n--- STEP 2: Reading back via ontology/get-tree-profile ---")
       (let [profile (ontology/get-tree-profile ctx document-analysis-task-class-id)]
         (println "Profile keys:" (vec (keys profile)))
@@ -155,7 +135,6 @@
         (println "Profile :weaknesses:")
         (pp/pprint (:weaknesses profile))
 
-        ;; STEP 3 — Build ontology context via existing helper
         (println "\n--- STEP 3: build-ontology-context ---")
         (let [oc (ontology/build-ontology-context ctx
                                                   {:problem-type "problem:Extraction"
@@ -168,7 +147,6 @@
             (println "  First recommended-pattern:")
             (pp/pprint (first (:recommended-patterns oc))))
 
-          ;; STEP 4 — Format for LLM injection
           (println "\n--- STEP 4: format-context-for-llm ---")
           (let [formatted (ontology/format-context-for-llm oc
                                                             {:include #{:patterns :failures}
@@ -179,7 +157,6 @@
             (println "=== END ===")
             (println "\nLength:" (count (or formatted "")) "chars")
 
-            ;; STEP 5 — Try build-actionable-context too (the SELF-LEARNING-MANUAL fn)
             (println "\n--- STEP 5: build-actionable-context (SELF-LEARNING-MANUAL fn) ---")
             (let [actionable (ontology/build-actionable-context ctx
                                                                 document-analysis-task-class-id
@@ -200,5 +177,5 @@
       (println "  (c) Format is WRONG for RLM → build parallel build-rlm-principles-section")
       (finally (stop-context ctx)))))
 
-(comment
+#_(do
   (run!))

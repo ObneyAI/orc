@@ -90,6 +90,35 @@ Applications using ORC provide:
 
 See [runtime setup](docs/GETTING-STARTED.md#wiring-a-context) for multi-instance deployment requirements.
 
+### Upgrading existing installations
+
+For this layout migration, start the new process with a fresh projection cache
+and the same tenant-scoped event store. Grain keys cached projections by model
+name, version and scope. ORC's read models now use version 1, so reusing an old
+version-1 cache could return state computed by a previous reducer. Keep the old
+cache available for rollback. Stop the old processors before starting the new
+ones and verify the rebuilt state through the public queries.
+
+The ontology package now persists graph contributions through the pinned standalone graph library. Pre-extraction graph events and source registries require a source rebuild or an explicit transformation into current contributions before the new graph queries can serve them. Preserve the source records during migration. [Ontology migration](docs/ONTOLOGY-EXTRACTION.md)
+
+Consumers that require `ai.obney.orc.orc-service.interface.read-models` should
+use `ai.obney.orc.orc-service.interface.projections`. The corresponding replacement
+for `ai.obney.orc.orc-service.interface.todo-processors` is
+`ai.obney.orc.orc-service.interface.processor-registration`.
+
+Blackboard values must now round-trip through ORC’s built-in event and file
+codecs, even when a custom Malli predicate accepts a broader type. Convert
+records, lazy sequences, and live JVM objects to plain data before writing them.
+Maps, vectors, lists and sets are checked recursively, including map keys and
+metadata. Supported scalars include strings, keywords, symbols, booleans,
+characters, ordinary numeric types, UUIDs, dates, instants, offset timestamps,
+URIs and unflagged regex patterns. The codecs also support primitive boolean,
+byte, int, long, float and double arrays. Convert boxed bytes to integers and
+zoned timestamps to instants or offset timestamps. Inspect rejected writes
+through the usual trace query. An unsupported value is represented by
+`{:orc.rejection/reason :unsupported-durable-type :orc.rejection/type "<class>"}`.
+Ordinary schema-invalid values retain their original data as evidence.
+
 ## Pick your package
 
 Choose a package for the capabilities you need; its dependencies are included.
@@ -308,6 +337,52 @@ git clone git@github.com:ObneyAI/orc.git && cd orc
 # Start nREPL (includes JVM flags for LMDB)
 ./scripts/nrepl.sh
 ```
+
+### Pre-commit lints
+
+Install Babashka (`bb`), then run these commands from the repository root.
+
+```sh
+./scripts/install-hooks.sh     # enable the hook for this checkout
+git hook run pre-commit        # check the full staged snapshot and base review
+./scripts/lint.sh              # run source checks on the working tree
+```
+
+Every commit checks the full Git index under the lint roots. Existing violations
+block unrelated commits too. The hook stops at the first failing lint. Each
+rule in `scripts/lint.sh` also runs independently with `bb scripts/lint_<name>.bb`.
+The source checks need neither a running ORC system nor an event store.
+
+| Check | Enforced rule |
+|---|---|
+| Comments | Clojure source, including tests and tooling, allows docstrings and framed section headers. Other code comments and `(comment …)` forms fail. Reader discards are allowed only under `development/`. |
+| Dependencies and declarations | References to `requiring-resolve` and forward `declare` forms fail, including in tests and optional integrations. |
+| SQL deletion | Literal SQL `DELETE FROM` statements fail for every table. The check covers Clojure strings, constant string concatenation, SQL files and scripts. |
+| Service layout | Each Grain primitive has one canonical file in its owning service. Examples include `core/todo_processors.clj` and the required `interface/schemas.clj`. Tests can declare fixtures. |
+| Logic and views | Backend helpers belong in `core/logic.clj`. Grain-bound orchestration belongs in canonical handlers. Public interfaces may forward calls. Grain runtime references in logic fail, with an exception for `event-store-v3.interface/->event`. A service with presentation code has one `views.clj` in its service namespace. |
+| Read models and schemas | Explicit read-model versions and literal subscription versions must be 1. Registered schema literals are checked for `:any`. ORC has no grandfathered schema slots. |
+
+#### Service ownership and base review
+
+Grain declarations belong to five service bricks: `orc-service`, `colbert-service`,
+`evaluation-service`, `gepa-service` and `ontology-service`. Use the suffixed
+brick names in local roots and Polylith selectors (for example, `brick:gepa-service`).
+Existing public Clojure namespaces, package project names and persisted event IDs
+retain their original names. If a proposed service fails the allowlist, check the existing owners'
+specifications and public interfaces. Place the behavior with its owner. If ownership
+is unclear, ask a human to decide. Changing the allowlist requires explicit human approval.
+
+Every staged change under `bases/` requires human review, including moves,
+deletions and mode changes. Review `git diff --cached -- bases/` and identify
+why the change belongs in base wiring or infrastructure. If a base change is
+necessary, show the reviewer the patch and the fingerprint emitted by
+`bb scripts/lint_base_changes.bb check`. After the reviewer explicitly approves
+that proposal, record their name and rationale with
+`bb scripts/lint_base_changes.bb approve FINGERPRINT 'Reviewer' 'Rationale'`.
+The receipt is local to the worktree and covers that staged base patch and parent commit.
+
+The [component REPL examples](development/REPL-EXAMPLES.md) preserve the
+interactive examples extracted during this migration.
 
 ### Running Tests
 

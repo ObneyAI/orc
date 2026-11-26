@@ -84,7 +84,7 @@ grounds its answer. Nothing about the rest of your tree changes.
 ;; full access to the event store via ctx.
 (defn fetch-memory
   [{:keys [inputs ctx]}]
-  (let [{:keys [results]} (ontology/hybrid-search (:event-store ctx)
+  (let [{:keys [results]} (ontology/hybrid-search ctx
                             {:query-text  (:question inputs)
                              :ontology-id (:memory-id inputs)   ;; scope to ONE memory
                              :limit 5})
@@ -131,22 +131,19 @@ queries to keep them isolated — for example:
 - a **domain taxonomy** (your product categories, your risk codes).
 
 ```clojure
-(ontology/hybrid-search (:event-store ctx)
+(ontology/hybrid-search ctx
   {:query-text "refund policy for enterprise plans"
    :ontology-id document-corpus-id      ;; search ONLY the docs
    :limit 5})
 
 ;; Or union across several memories at once:
-(ontology/hybrid-search (:event-store ctx)
+(ontology/hybrid-search ctx
   {:query-text "what does this user usually ask about?"
    :ontology-ids [user-memory-id document-corpus-id]
    :limit 5})
 ```
 
-> **Known limitation:** the pure graph-BFS path (`expand-concept-neighborhood`) is **not**
-> scoped by `ontology-id` on `main` (the embedding and ColBERT signals are). Use the embedding
-> signal for isolated results today. See [Known issues](#known-issues) for the full detail and
-> the in-progress fix.
+Supply `:seed-uris` for graph traversal and `:query-text` for embedding or indexed retrieval. The selected ontology IDs scope the stored concepts for all enabled signals. [Searching a stored graph](#searching-a-stored-graph)
 
 ### Step 5 — The failure/success/problem taxonomy is just ONE application
 
@@ -202,7 +199,7 @@ Given CSV, JSON, SQL, or plain text, the builder uses ORC behavior trees to LLM-
 ;; => {:ontology-id #uuid "..." :total-concepts 42 :total-triples 180 ...}
 ```
 
-**`ontology-id` isolation**: each call returns a fresh `:ontology-id` UUID. All events for that graph are tagged with that UUID. Multiple graphs coexist in one event store — pass `:ontology-id` to scoped queries to isolate results. See [Known issues](#known-issues) below for the current BFS scoping limitation.
+**`ontology-id` isolation**: each call returns a fresh `:ontology-id` UUID. All events for that graph are tagged with that UUID. Multiple graphs coexist in one event store — pass `:ontology-id` to scoped queries to isolate results. The same scope applies to traversal, embeddings and ColBERT hits. [Searching a stored graph](#searching-a-stored-graph)
 
 **Tenant isolation is an outer boundary.** Every evolutionary public query reads
 with `:tenant-id` from `ctx`; equal ontology, source, or URI identifiers in a
@@ -217,9 +214,7 @@ aggregate statistics:
 ;;     :latest-build {...}}
 ```
 
-Keep `:tenant-id` on every production context. Omitting it requests the event
-store's unscoped/default behavior and should be reserved for explicitly
-single-tenant deployments and administrative tooling.
+Supply `:tenant-id` on every graph and evolutionary context, including in single-tenant deployments.
 
 Model-derived source extractions and Living Description versions retain model
 provenance (trace identity, resolved model or models, call evidence, and usage
@@ -247,57 +242,13 @@ The ontology component enables:
 
 ## Architecture
 
-```
-                    ┌─────────────────────────────────────────┐
-                    │         ONTOLOGY COMPONENT              │
-                    ├─────────────────────────────────────────┤
-    Commands ──────►│  commands.clj                           │
-                    │    - :ontology/initialize-static-ontology│
-                    │    - :ontology/create-ontology          │
-                    │    - :ontology/create-concept           │
-                    │    - :ontology/update-concept           │
-                    │    - :ontology/create-relationship      │
-                    │    - :ontology/record-tree-strength      │
-                    │    - :ontology/record-tree-weakness      │
-                    │    - :ontology/record-problem-mapping    │
-                    │    - :ontology/classify-evaluation       │
-                    │    - :ontology/embed-concept (Phase 4)   │
-                    │    - :ontology/embed-concepts-batch      │
-                    ├─────────────────────────────────────────┤
-                    │  Events → Event Store                   │
-                    │    - :ontology/concept-created          │
-                    │    - :ontology/tree-strength-recorded   │
-                    │    - :ontology/tree-weakness-recorded   │
-                    │    - :ontology/node-pattern-learned     │
-                    │    - :ontology/concept-embedded (Phase 4)│
-                    │    - :ontology/tree-profile-embedded    │
-                    ├─────────────────────────────────────────┤
-                    │  Read Models (Projections)              │
-                    │    - ontologies* → lifecycle state      │
-                    │    - concepts* → URI→Concept graph      │
-                    │    - tree-profiles* → Strengths/Weak    │
-                    │    - node-experiences* → Patterns       │
-                    │    - concept-embeddings* → Vectors      │
-                    ├─────────────────────────────────────────┤
-    Queries ◄──────│  queries.clj + retrieval.clj            │
-                    │    - :ontology/get-concepts             │
-                    │    - :ontology/get-tree-profile         │
-                    │    - :ontology/find-similar-trees       │
-                    │    - :ontology/export-ttl               │
-                    │    - :ontology/hybrid-search (Phase 4)  │
-                    │    - :ontology/semantic-search          │
-                    └─────────────────────────────────────────┘
-                               │
-                               ▼
-                    ┌─────────────────────────────────────────┐
-                    │         embedding.clj (Phase 4)         │
-                    │    - DJL model loading (HuggingFace)    │
-                    │    - embed-text → 384-dim vectors       │
-                    │    - cosine-similarity                  │
-                    │    - detect-embeddable-fields           │
-                    │    - search-concepts-by-embedding       │
-                    └─────────────────────────────────────────┘
-```
+| Owner | Durable operations | Observable state |
+|---|---|---|
+| Standalone `ai.obney/ontology` library | Validate graph mutations and source contributions, apply predicate and revision policy, resolve canonical concept identity and export RDF | Tenant-scoped ontologies, concepts, relationships, source versions, canonical mappings and revision snapshots |
+| ORC `ontology-service` | Coordinate source extraction, initialize vocabulary, classify executions, consolidate evidence, record claims and harvest reusable behaviors | Build history, learned descriptions, classification and tree behavior views |
+| ORC retrieval adapters | Embed text, search a selected graph, combine graph/embedding signals with optional ColBERT results | Ranked results retaining stored concept and ontology identities |
+
+Each accepted source becomes a committed contribution. An interrupted multi-source build can retain earlier contributions, and retries use committed source versions. Existing deployments rebuilding ORC projections also need to handle the separate graph format change. [Graph format and migration](ONTOLOGY-EXTRACTION.md)
 
 ## Quick Start
 
@@ -457,9 +408,7 @@ The ontology component enables:
 | `update-concept!` | Update explicit descriptive fields without changing URI identity |
 | `create-relationship!` | Add a validated edge between existing tenant-visible endpoints |
 
-These wrappers return generated IDs and `:events`, and pass Grain anomalies through
-unchanged. Supply and retry the same `:command/id` when the calling process needs
-crash-safe reconciliation.
+These operations return durable identities and the graph revision on success, or a categorized anomaly on failure. Reuse the same `:request-id` and payload to recover the original result after an interrupted call. [Retry and recovery](#retry-and-recovery-semantics)
 
 ### Serialization
 
@@ -495,18 +444,7 @@ crash-safe reconciliation.
 
 ### Concept Events
 
-```clojure
-:ontology/concept-created
-[:map
- [:ontology-id :uuid]
- [:concept-id :uuid]
- [:uri :string]                    ;; "failure:Hallucination"
- [:label :string]
- [:description :string]
- [:scope [:enum :failure :success :problem :node-type :custom]]
- [:broader {:optional true} [:vector :string]]
- [:indicators {:optional true} [:vector :string]]]
-```
+The standalone graph library owns `:ontology/concept-created` and projects its tenant-scoped graph state. Consumers can query by ontology ID and URI or export a revision snapshot. [Graph format and ownership](ONTOLOGY-EXTRACTION.md)
 
 ### Tree Profile Events
 
@@ -848,7 +786,7 @@ Search multiple ontology scopes simultaneously using parallel branches:
   (let [evaluation (:evaluation inputs)
         feedback (get-in evaluation [:dimensions 0 :feedback])
         ;; Semantic search for similar failures
-        matches (ontology/semantic-search-concepts event-store feedback
+        matches (ontology/semantic-search-concepts ctx feedback
                   :scope :failure :limit 5)]
     {:failure-matches matches}))
 
@@ -1599,7 +1537,7 @@ Semantic similarity search using embeddings:
 
 ```clojure
 ;; Requires embeddings to be generated first
-(ontology/semantic-search-concepts event-store
+(ontology/semantic-search-concepts ctx
   "the model made up facts that weren't in the source"
   :scope :failure
   :limit 10
@@ -1623,7 +1561,7 @@ Semantic similarity search using embeddings:
 Combines graph structure + semantic similarity via Reciprocal Rank Fusion:
 
 ```clojure
-(ontology/hybrid-search event-store
+(ontology/hybrid-search ctx
   {:seed-uris ["failure:Grounding"]     ;; Starting points for graph BFS
    :query-text "made up facts"          ;; Text for embedding search
    :scope :failure
@@ -1942,22 +1880,19 @@ Query examples:
 ## File Structure
 
 ```
-components/ontology/
+components/ontology-service/
 ├── deps.edn
 └── src/ai/obney/orc/ontology/
-    ├── interface.clj              ;; Public API
-    ├── interface/schemas.clj      ;; Malli schemas
+    ├── interface.clj
+    ├── interface/
+    │   ├── evolutionary.clj        Ingestion and evolution API
+    │   └── schemas.clj             Malli schemas
     └── core/
-        ├── static_ontology.clj    ;; Static concept definitions
-        ├── read_models.clj        ;; Event projections (incl. learned-rules)
-        ├── commands.clj           ;; Command handlers (incl. self-learning)
-        ├── queries.clj            ;; Query handlers
-        ├── serialization.clj      ;; TTL export
-        ├── classifier.clj         ;; Evaluation classification
-        ├── graph.clj              ;; BFS, RRF, temporal (Phase 3)
-        ├── retrieval.clj          ;; Few-shot, hybrid, self-learning retrieval
-        ├── rule_extraction.clj    ;; Rule extraction workflow (Self-Learning)
-        └── embedding.clj          ;; DJL embeddings, schema analysis (Phase 4)
+        ├── logic.clj               Graph algorithms, retrieval and extraction helpers
+        ├── read_models.clj         Event projections
+        ├── commands.clj            Command handlers
+        ├── queries.clj             Queries and projection reads
+        └── todo_processors.clj     Event-driven side effects
 ```
 
 ## Phase 3: Graph Traversal & Few-Shot Retrieval
@@ -2281,7 +2216,7 @@ Search concepts using embedding similarity:
 
 ```clojure
 ;; Search failure concepts by semantic similarity
-(ontology/semantic-search-concepts event-store
+(ontology/semantic-search-concepts ctx
   "model made up facts that weren't true"
   :scope :failure
   :limit 5
@@ -2311,7 +2246,7 @@ Search concepts using embedding similarity:
 Combine graph-based BFS with embedding similarity using RRF fusion:
 
 ```clojure
-(ontology/hybrid-search event-store
+(ontology/hybrid-search ctx
   {:seed-uris ["failure:Grounding"]           ;; Starting points for graph BFS
    :query-text "model hallucinated facts"     ;; Text for embedding search
    :scope :failure
@@ -2489,7 +2424,7 @@ concepts with a shared URI keep their own labels and ranks.
 
 ### `tree-fingerprint` is structural — instruction variants collapse
 
-**Source:** `components/orc-service/src/ai/obney/orc/orc_service/core/rlm_fingerprint.clj:30-50`
+**Source:** [Fingerprint implementation](../components/orc-service/src/ai/obney/orc/orc_service/core/logic.clj)
 
 The fingerprint replaces every `:instruction` string with the canonical placeholder `:fingerprint/instruction` before hashing. Two `:repl-researcher` nodes with the same tree shape but different instruction content hash to the **same fingerprint**.
 
@@ -2513,5 +2448,4 @@ occurrence). See [SELF-IMPROVING-LOOP.md § How novelty is handled](SELF-IMPROVI
 
 ### Coming soon
 
-- **BFS scoping fix (S02)**: implemented in `feature/ontology-architecture` — merges to `main` when that branch lands.
 - **Subbehavior-specialist evolutionary builder**: hierarchical seed authoring tooling for specialist sub-tree ontologies (designed; not yet built).

@@ -58,7 +58,22 @@
                       completions (filter #(and (= :sheet/node-execution-completed (:event/type %)) (= :success (:status %))) all)]
                   (is (not= (:pid manifest) (:pid recovered)))
                   (is (= (:source-origins manifest) (:source-origins recovered)))
-                  (is (= 9 (count (:source-origins recovered))))
+                  (is (= #{"core/agent_runtime.clj"
+                           "core/block.clj"
+                           "core/commands.clj"
+                           "core/execution_budget.clj"
+                           "core/logic.clj"
+                           "core/periodic_tasks.clj"
+                           "core/queries.clj"
+                           "core/read_models.clj"
+                           "core/todo_processors.clj"
+                           "interface/agent_runtime.clj"
+                           "interface/processor_registration.clj"
+                           "interface/projections.clj"
+                           "interface/schemas.clj"
+                           "interface/stream_schemas.clj"
+                           "interface.clj"}
+                         (set (keys (:source-origins recovered)))))
                   (is (= 1 (count resumed)))
                   (is (= (:event/id original-start) (:resumed-from-event-id (first resumed))))
                   (is (= (:tick manifest) (:tick-id (first resumed))))

@@ -15,15 +15,14 @@
    2,713-event production dump; tasks are the real consolidator inference
    signature and the real classifier task signature. Real encoder, real
    MaxSim, real domain-penalty scorer. Prints its N."
-  (:require [clojure.edn :as edn]
+  (:require [ai.obney.orc.colbert.core.logic :as logic]
+            [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.java.io :as io]
             [time-literals.read-write]
-            [ai.obney.orc.colbert.core.encoder :as encoder]
-            [ai.obney.orc.colbert.core.model-store :as model-store]
-            [ai.obney.orc.colbert.core.operations :as operations]
-            [ai.obney.orc.ontology.core.consolidator]
-            [ai.obney.orc.ontology.core.domain-penalty :as dp]))
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (def corpus-path
   "The P-E production dump (2,713 events, 2026-07-30 -> 2026-08-03). Override
@@ -79,7 +78,7 @@
   "A rerank-fn pinned to a specific maximum_query_tokens."
   [limit]
   (fn [{:keys [query documents]}]
-    (operations/rerank {} {:query query :documents documents
+    (logic/rerank {} {:query query :documents documents
                            :maximum-query-tokens limit})))
 
 (defn contrast-run
@@ -88,18 +87,17 @@
    usage and pool spread."
   [limit task candidates]
   (let [rerank (rerank-at limit)
-        batch (dp/batch-colbert-scorer {} dp/default-penalty-config rerank nil)
+        batch (ontology-logic/batch-colbert-scorer {} ontology-logic/default-penalty-config rerank nil)
         lookup (batch candidates task)
         rows (mapv (fn [c] (let [{:keys [cos-avoid cos-good]} (lookup c)]
                              {:cos-avoid cos-avoid :cos-good cos-good
                               :contrast (- cos-avoid cos-good)
-                              :penalty (dp/domain-penalty cos-avoid cos-good
-                                                          dp/default-penalty-config)}))
+                              :penalty (ontology-logic/domain-penalty cos-avoid cos-good
+                                                          ontology-logic/default-penalty-config)}))
                    candidates)
-        ;; RAW MaxSim over the same distinct guard set (ceiling + spread).
         docs (vec (distinct (remove str/blank?
-                                    (concat (mapcat dp/avoid-strings candidates)
-                                            (mapcat dp/legacy-positive-strings candidates)))))
+                                    (concat (mapcat ontology-logic/avoid-strings candidates)
+                                            (mapcat ontology-logic/legacy-positive-strings candidates)))))
         raw (rerank {:query task :documents docs})
         scores (mapv :score raw)]
     {:limit limit
@@ -122,7 +120,7 @@
   (println "    cos-good  " (fmt (:cos-good r)))
   (println "    contrast  " (fmt (:contrast r)))
   (println (format "    penalty fires (margin %.3f): %d/%d"
-                   (double (:margin dp/default-penalty-config))
+                   (double (:margin ontology-logic/default-penalty-config))
                    (:penalty-fires r) (:candidates r)))
   (println (format "    top-1 raw MaxSim %.3f = %.4f of ceiling %d"
                    (double (:top-1-raw r)) (double (:top-1-fraction-of-ceiling r)) (:limit r)))
@@ -134,7 +132,7 @@
    UNRELATED document as a fraction of the ceiling. The higher this floor, the
    less dynamic range remains for real signal."
   [limit query related unrelated]
-  (let [r (operations/rerank {} {:query query :documents [related unrelated]
+  (let [r (logic/rerank {} {:query query :documents [related unrelated]
                                  :maximum-query-tokens limit})
         by (into {} (map (juxt :content :score)) r)]
     {:limit limit
@@ -148,22 +146,20 @@
 (defn -main [& args]
   (time-literals.read-write/print-time-literals-clj!)
   (let [limits (if (seq args) (mapv parse-long args) [32 464])
-        enc (encoder/get-encoder (model-store/resolve-model-dir))
+        enc (logic/get-encoder (logic/resolve-model-dir))
         evs (edn/read-string {:readers time-literals.read-write/tags} (slurp corpus-path))
-        build-parent-sig @#'ai.obney.orc.ontology.core.consolidator/build-parent-inference-signature
+        build-parent-sig @#'ontology-logic/build-parent-inference-signature
         bodies (->> evs
                     (filter #(= :ontology/tree-description-updated (:event/type %)))
                     (keep :body)
                     (filter #(seq (:avoid-when %)))
                     (filter #(seq (:strengths %))))
         _ (println "REAL description bodies with BOTH avoid + strengths:" (count bodies))
-        ;; Distinct by summary so the pool is 20 distinct concepts, not 20
-        ;; re-consolidations of the same one.
         distinct-bodies (vec (vals (into {} (map (juxt :summary identity)) bodies)))
         _ (println "DISTINCT by summary:" (count distinct-bodies))
         candidates (mapv body->candidate (take candidate-sample-size distinct-bodies))
         task (build-parent-sig (first distinct-bodies))
-        task-tokens (count (encoder/encode-ids enc task))]
+        task-tokens (count (logic/encode-ids enc task))]
 
     (println)
     (println "=== N ===")
@@ -211,7 +207,7 @@
                                                      (:event/type %)))
                                            (keep :body)))]
       (doseq [limit limits]
-        (let [reports (mapv #(operations/query-truncation {} {:query % :maximum-query-tokens limit}) sigs)
+        (let [reports (mapv #(logic/query-truncation {} {:query % :maximum-query-tokens limit}) sigs)
               t (count (filter :query-truncated? reports))]
           (println (format "    limit %3d: %d/%d truncated (%.1f%%)"
                            limit t (count reports)
@@ -221,12 +217,12 @@
     (println "=== LATENCY (one rerank call over the guard pool, warm encoder) ===")
     (doseq [limit limits]
       (let [docs (vec (distinct (remove str/blank?
-                                        (concat (mapcat dp/avoid-strings candidates)
-                                                (mapcat dp/legacy-positive-strings candidates)))))
-            _ (operations/rerank {} {:query task :documents (vec (take 3 docs))
+                                        (concat (mapcat ontology-logic/avoid-strings candidates)
+                                                (mapcat ontology-logic/legacy-positive-strings candidates)))))
+            _ (logic/rerank {} {:query task :documents (vec (take 3 docs))
                                      :maximum-query-tokens limit})
             t0 (System/nanoTime)
-            _ (operations/rerank {} {:query task :documents docs :maximum-query-tokens limit})
+            _ (logic/rerank {} {:query task :documents docs :maximum-query-tokens limit})
             ms (/ (- (System/nanoTime) t0) 1e6)]
         (println (format "    limit %3d: %.0f ms for %d documents" limit ms (count docs)))))
     (System/exit 0)))

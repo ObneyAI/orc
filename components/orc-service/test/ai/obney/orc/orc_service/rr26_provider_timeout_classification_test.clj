@@ -20,11 +20,11 @@
    Classification is by exception TYPE and cause chain, never by message text."
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- campaign
   [name]
@@ -36,8 +36,6 @@
       :max-iterations 3
       :rlm {:checkpointed? true
             :iteration-retry {:max-attempts 2}
-            ;; Deliberately generous: ORC's own bounded-call deadline must NOT be
-            ;; the thing that fires. Only the transport's own timeout does.
             :timeouts {:provider-ms 30000
                        :iteration-ms 60000
                        :campaign-ms 120000}})))
@@ -109,14 +107,14 @@
             (is (every? #(= 30000 %) @seen)
                 (str "the transport gets the configured :provider-ms unchanged, got " (pr-str @seen))))))))
   (testing "ORC's own deadline is strictly earlier, and degrades proportionally on tiny budgets"
-    (is (< (executor/provider-classification-deadline-ms 30000) 30000))
-    (is (= (- 30000 executor/provider-classification-lead-ms)
-           (executor/provider-classification-deadline-ms 30000)))
-    (is (< (executor/provider-classification-deadline-ms 1200) 1200))
-    (is (= 1080 (executor/provider-classification-deadline-ms 1200))
+    (is (< (service-logic/provider-classification-deadline-ms 30000) 30000))
+    (is (= (- 30000 service-logic/provider-classification-lead-ms)
+           (service-logic/provider-classification-deadline-ms 30000)))
+    (is (< (service-logic/provider-classification-deadline-ms 1200) 1200))
+    (is (= 1080 (service-logic/provider-classification-deadline-ms 1200))
         "the lead is capped at a tenth of the budget")
-    (is (= 14 (executor/provider-classification-deadline-ms 15))
+    (is (= 14 (service-logic/provider-classification-deadline-ms 15))
         "a deliberately tiny deadline shrinks proportionally, never to zero")
-    (is (pos? (executor/provider-classification-deadline-ms 1)))
-    (is (= 0 (executor/provider-classification-deadline-ms 0))
+    (is (pos? (service-logic/provider-classification-deadline-ms 1)))
+    (is (= 0 (service-logic/provider-classification-deadline-ms 0))
         "a non-positive budget is left alone for the caller's own zero check")))

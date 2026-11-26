@@ -10,18 +10,16 @@
    Loss model: each subscription's :seq is strictly monotonic. A gap means
    the consumer fell behind a sliding buffer and lost events; everything
    durable is recoverable from the event store by [:tick tick-id] tags."
-  (:require [ai.obney.orc.orc-service.interface.schemas :as schemas]))
+  (:require [ai.obney.orc.orc-service.core.logic :as logic]
+            [ai.obney.orc.orc-service.interface.schemas :as schemas]))
 
-;; A value that may have been size-capped by the hub (~16KB printed).
-;; Oversized values are replaced by the truncation marker map; the raw
-;; value remains in the durable event.
 (def maybe-truncated
   [:or
    [:map
     [:orc.stream/truncated [:= true]]
     [:preview :string]
     [:full-size :int]]
-   :any])
+   logic/durable-value])
 
 (def usage
   [:map
@@ -56,134 +54,107 @@
    [:node-type {:optional true} :keyword]
    [:map-each {:optional true} map-each-context]])
 
-(defn- envelope [type-kw & entries]
-  (into [:map
-         [:orc.stream/type [:= type-kw]]
-         [:seq :int]
-         [:ts timestamp]
-         [:tick-id :uuid]
-         [:root-tick-id :uuid]
-         [:sheet-id {:optional true} :uuid]
-         [:node-id {:optional true} :uuid]
-         [:node-name {:optional true} :string]
-         [:node-type {:optional true} :keyword]
-         [:map-each {:optional true} map-each-context]]
-        entries))
-
 (def stream-envelope
   "Dispatch-by-type schema for everything a subscription delivers."
   [:multi {:dispatch :orc.stream/type}
 
-   ;; --- Tick lifecycle -------------------------------------------------
+   ;; --- Tick lifecycle ---
    [:tick-started
-    (envelope :tick-started
+    (logic/stream-envelope-schema base-envelope :tick-started
               [:iteration {:optional true} :int]
               [:parent-tick-id {:optional true} :uuid]
               [:input-keys {:optional true} [:vector :keyword]])]
 
    [:tick-completed
-    (envelope :tick-completed
+    (logic/stream-envelope-schema base-envelope :tick-completed
               [:status [:enum :success :failure :tree-generated :partial :timeout]]
-              [:outputs {:optional true} [:map-of :any maybe-truncated]]
+              [:outputs {:optional true} [:map-of [:or :keyword :string] maybe-truncated]]
               [:error {:optional true} :string])]
 
-   [:tick-cancelled (envelope :tick-cancelled)]
+   [:tick-cancelled (logic/stream-envelope-schema base-envelope :tick-cancelled)]
 
    [:child-tick-linked
-    (envelope :child-tick-linked
+    (logic/stream-envelope-schema base-envelope :child-tick-linked
               [:parent-tick-id :uuid]
               [:child-tick-id :uuid])]
 
-   ;; --- Node lifecycle / progress / incremental results -----------------
-   [:node-started (envelope :node-started)]
+   ;; --- Node lifecycle / progress / incremental results ---
+   [:node-started (logic/stream-envelope-schema base-envelope :node-started)]
 
    [:node-completed
-    (envelope :node-completed
+    (logic/stream-envelope-schema base-envelope :node-completed
               [:status [:enum :success :failure :running :tree-generated :partial :timeout]]
-              [:writes {:optional true} [:map-of :any maybe-truncated]]
+              [:writes {:optional true} [:map-of [:or :keyword :string] maybe-truncated]]
               [:usage {:optional true} usage]
               [:duration-ms {:optional true} :int]
               [:error {:optional true} :string]
               [:completion-kind {:optional true} [:enum :tree-iteration :terminal]])]
 
    [:progress
-    (envelope :progress
+    (logic/stream-envelope-schema base-envelope :progress
               [:kind [:enum :sequence :map-each]]
               [:index :int]
               [:total :int])]
 
-   ;; --- RLM (repl-researcher) live visibility ---------------------------
    [:rlm-iteration-started
-    (envelope :rlm-iteration-started
+    (logic/stream-envelope-schema base-envelope :rlm-iteration-started
               [:iteration :int]
               [:max-iterations {:optional true} :int])]
 
    [:rlm-iteration-recorded
-    (envelope :rlm-iteration-recorded
+    (logic/stream-envelope-schema base-envelope :rlm-iteration-recorded
               [:iteration-index [:and :int [:>= 0]]]
               [:attempt-ordinal [:and :int [:>= 0]]]
               [:iteration-record schemas/researcher-iteration-record])]
 
    [:rlm-code-generated
-    (envelope :rlm-code-generated
+    (logic/stream-envelope-schema base-envelope :rlm-code-generated
               [:iteration :int]
               [:code maybe-truncated]
               [:reasoning {:optional true} maybe-truncated])]
 
    [:rlm-sandbox-completed
-    (envelope :rlm-sandbox-completed
+    (logic/stream-envelope-schema base-envelope :rlm-sandbox-completed
               [:iteration :int]
               [:result {:optional true} maybe-truncated]
               [:stdout {:optional true} maybe-truncated]
               [:error {:optional true} :string]
-              ;; keys are model-chosen via (store! k v) — usually keywords,
-              ;; but the sandbox accepts any key type
-              [:vars-created {:optional true} [:vector :any]]
+              [:vars-created {:optional true} [:vector [:or :keyword :symbol :string]]]
               [:final? {:optional true} :boolean])]
 
    [:rlm-tree-generated
-    (envelope :rlm-tree-generated
+    (logic/stream-envelope-schema base-envelope :rlm-tree-generated
               [:raw-dsl maybe-truncated])]
 
    [:rlm-phase2-started
-    (envelope :rlm-phase2-started
+    (logic/stream-envelope-schema base-envelope :rlm-phase2-started
               [:child-tick-id :uuid]
               [:iteration {:optional true} :int])]
 
    [:rlm-phase2-completed
-    (envelope :rlm-phase2-completed
+    (logic/stream-envelope-schema base-envelope :rlm-phase2-completed
               [:child-tick-id :uuid]
               [:status :keyword]
               [:duration-ms {:optional true} :int]
               [:error {:optional true} :string])]
 
-   ;; --- Stage 2: LLM token streaming ------------------------------------
-   ;; Progressive per-field snapshots from a streaming :ai leaf. Idempotent
-   ;; for UIs: each event carries the full text-so-far per output field.
    [:llm-fields
-    (envelope :llm-fields
-              ;; values are usually strings (text-so-far) but reassembled
-              ;; nested output schemas can yield maps/vectors
-              [:fields [:map-of :keyword :any]]
-              ;; retry attempt (0-based): a new attempt for the same node
-              ;; means the previous partial output was abandoned — reset
-              ;; accumulation
+    (logic/stream-envelope-schema base-envelope :llm-fields
+              [:fields logic/workflow-values]
               [:attempt {:optional true} :int]
               [:final? {:optional true} :boolean])]
 
-   ;; Raw text deltas (opt-in, debug-grade — includes structured-output
-   ;; field markers).
    [:llm-raw-delta
-    (envelope :llm-raw-delta
+    (logic/stream-envelope-schema base-envelope :llm-raw-delta
               [:text :string]
               [:attempt {:optional true} :int])]
 
-   ;; --- Errors / terminal ------------------------------------------------
+   ;; --- Errors / terminal ---
    [:error
-    (envelope :error
+    (logic/stream-envelope-schema base-envelope :error
               [:error :string]
               [:source {:optional true} :keyword])]
 
    [:stream-closed
-    (envelope :stream-closed
+    (logic/stream-envelope-schema base-envelope :stream-closed
               [:reason [:enum :completed :cancelled :timeout :ttl :closed-by-consumer]])]])

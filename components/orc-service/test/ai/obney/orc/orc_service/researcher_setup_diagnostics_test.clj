@@ -6,8 +6,8 @@
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as orc]
-            [ai.obney.orc.orc-service.core.executor :as executor]
-            [ai.obney.orc.orc-service.test-helpers :as h])
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic])
   (:import [com.sun.net.httpserver HttpServer HttpHandler] [java.net InetSocketAddress]
            [java.util.concurrent Executors TimeUnit]))
 (def last-proofs (atom []))
@@ -79,15 +79,13 @@
                                    (:cognitect.anomalies/category r))
                             (let [r (cond-> r omit-explanation? (dissoc :error/explain))]
                               (reset! refusal r)
-                              ;; Only augment the REAL schema refusal. These synthetic
-                              ;; unrelated fields must never enter model-visible diagnostics.
                               (assoc r :raw-command {:auth canary} :authorization canary
                                      :source-values [canary] :unrelated-handler-data (Object.)))
                             r)))]
                        (orc/execute ctx sheet {:source "source-1"} :tick-id tick :timeout-ms 120000 :max-ticks 1 :llm-call-budget 4))
               events (h/read-all-events ctx)
               claims (orc/get-researcher-effect-claims ctx sheet tick node-id)
-              outcomes (mapv #(executor/decode-checkpoint-value [] (:result %))
+              outcomes (mapv #(service-logic/decode-checkpoint-value [] (:result %))
                              (filter #(and (= :generated-child (:kind %)) (= :completed (:status %))) claims))
               refused (first (filter :preflight-rejected? outcomes))
               diagnostic (:setup-diagnostic refused)
