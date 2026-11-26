@@ -14,17 +14,18 @@
    RLM principle injection in C-1."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.dsl :as dsl]
-            [ai.obney.orc.orc-service.core.read-models :as rm]))
+            [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (deftest repl-researcher-context-propagates-through-build
   (testing "A repl-researcher node configured with :context has that :context
             visible on the runtime node config after build-workflow"
     (h/with-test-context [ctx]
       (let [task-class-id #uuid "00000000-c1c1-4001-b001-d0c0a0a0a0a1"
-            wf (dsl/workflow "rlm-context-wiring"
-                 (dsl/blackboard {:document :string :summary :string})
-                 (dsl/repl-researcher "researcher"
+            wf (service-logic/workflow "rlm-context-wiring"
+                 (service-logic/dsl-blackboard {:document :string :summary :string})
+                 (service-logic/repl-researcher "researcher"
                    :model "google/gemini-2.5-flash"
                    :instruction "Summarize the document."
                    :reads [:document]
@@ -35,7 +36,7 @@
                              :self-learning? true
                              :include-patterns true
                              :include-failures true}))
-            sheet-id (dsl/build-workflow! ctx wf)
+            sheet-id (service-commands/build-workflow! ctx wf)
             nodes (rm/get-nodes-for-sheet ctx sheet-id)
             researcher (some (fn [n] (when (= :repl-researcher (:type n)) n))
                              nodes)]

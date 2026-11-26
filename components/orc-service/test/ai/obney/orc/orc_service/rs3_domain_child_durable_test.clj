@@ -23,7 +23,6 @@
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
-            [ai.obney.orc.ontology.core.task-classifier :as tc]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.interface.schemas :as sheet-schemas]
@@ -33,11 +32,10 @@
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.kv-store.interface :as kv]
-            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]))
+            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]))
 
-;; =============================================================================
-;; Test context — mirrors cc6/el3/cc23's exact sync pattern
-;; =============================================================================
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -80,10 +78,6 @@
 
 (defn- tree-class-uri [id] (str "tree-class:" id))
 
-;; =============================================================================
-;; Typed :tree-class candidate — RS-1's domain verdict already joined, exactly
-;; as rs2_domain_child_classifier_test's `tree-class-candidate` shapes it.
-;; =============================================================================
 
 (defn- tree-class-candidate
   [id fitness & {:keys [domain-coverage domain-label domain-reasoning]}]
@@ -103,13 +97,9 @@
    filters (get-consolidation-total* -> 0)."
   [candidate & body]
   `(with-redefs [ontology/search-descriptions (fn [_# _#] [~candidate])
-                 tc/get-consolidation-total* (fn [_# _# _#] 0)]
+                 ontology-queries/get-consolidation-total* (fn [_# _# _#] 0)]
      ~@body))
 
-;; =============================================================================
-;; CYCLE 4 — a :tree-class match with no children and a :partial verdict
-;; mints a domain child, durably, through the live wedge.
-;; =============================================================================
 
 (deftest partial-verdict-no-children-mints-domain-child-durably
   (testing "after the wedge runs: a classified event carrying :assigned-via
@@ -156,11 +146,6 @@
               (is (= :tree-class (:scope (first embedded))))
               (is (seq (:embedding (first embedded))))))
           (testing "the claim"
-            ;; CV-A item 5: this is a GENUINE tenant-wide family birth (no
-            ;; legacy children existed under class-id) — the merge judge ran
-            ;; (default :new) and the wedge records the rich three-claim
-            ;; self-description instead of the legacy single
-            ;; :representative-use capture.
             (let [claims (ontology/get-claims ctx :tree-class child-id)]
               (is (= 2 (count claims))
                   "CV-A: a genuine family birth records capability + representative-use + guard")
@@ -173,11 +158,6 @@
             (is (= "marathon-training-plan"
                    (:label (ontology/get-concept-by-uri ctx (tree-class-uri child-id)))))))))))
 
-;; =============================================================================
-;; CYCLE 5 — the SAME task again lands on the SAME child (LandOnDomainChild),
-;; no second mint, no second claim (DomainChildIdentityIsStable durably
-;; proven).
-;; =============================================================================
 
 (deftest same-task-again-lands-on-existing-child-no-second-mint
   (testing "recurrence: the same task classified again yields
@@ -203,10 +183,6 @@
               n2 (assoc (node) :id (random-uuid))
               tick-2-ctx (assoc ctx :tick-id (random-uuid)
                                 :domain-merge-fn (fn [_ _] {:kind :same :family first-child-id}))]
-          ;; A SECOND child under the SAME parent with the SAME judged label —
-          ;; once a class has children, the coverage verdict is not consulted
-          ;; (D7b); the judged label decides. Same label, judge says :same ->
-          ;; lands on the existing child.
           (with-domain-candidate candidate
             (tp/maybe-auto-classify-and-set-context n2 tick-2-ctx))
           (let [classified (events-of ctx :ontology/task-classified)
@@ -221,17 +197,9 @@
             (is (= "marathon-training-plan" (:domain-label second-classified))
                 "a landing records the landed child's label")
             (is (false? (:was-fresh-mint? second-classified)))
-            ;; CV-A item 5: the FIRST classification's mint went through the
-            ;; genuine tenant-wide birth (3 claims, see the durable claim
-            ;; assertion above); no landing ever writes a claim.
             (is (= 2 (count (ontology/get-claims ctx :tree-class first-child-id)))
                 "still exactly one claim on the child — no second capture")))))))
 
-;; =============================================================================
-;; CYCLE 5b (inspection) — a DIFFERENT judged label under a parent that
-;; already has a child mints a SIBLING (MintSiblingDomainChild): a second
-;; mint event, a second edge, a second claim; the first child untouched.
-;; =============================================================================
 
 (deftest different-label-under-a-parent-with-a-child-mints-a-sibling
   (testing "with one child present the verdict is not consulted (D7b); a new
@@ -243,8 +211,6 @@
                               :domain-coverage :partial
                               :domain-label "Marathon Training Plan"
                               :domain-reasoning "Shares subject matter but not the output kind.")
-            ;; A `covered` verdict — irrelevant once a child exists; the
-            ;; label decides.
             second-candidate (tree-class-candidate class-id 0.95
                                :domain-coverage :covered
                                :domain-label "Ketogenic Meal Plan"
@@ -253,13 +219,9 @@
             n2 (assoc (node) :id (random-uuid))]
         (with-domain-candidate first-candidate
           (tp/maybe-auto-classify-and-set-context n1 ctx))
-        ;; The judge itself is a live model call; this test declares its
-        ;; verdict and records what it was shown. The neighbourhood is REAL:
-        ;; the first family, born with its description and embedding, must be
-        ;; among the candidates the judge sees.
         (let [judge-calls (atom [])]
         (with-domain-candidate second-candidate
-          (with-redefs-fn {(requiring-resolve 'ai.obney.orc.ontology.core.task-classifier/merge-family!*)
+          (with-redefs-fn {#'ontology-logic/merge-family!*
                            (fn [_ q] (swap! judge-calls conj q) {:kind :new :reasoning "different subject matter"})}
             #(tp/maybe-auto-classify-and-set-context n2 (assoc ctx :tick-id (random-uuid)))))
         (let [classified (events-of ctx :ontology/task-classified)
@@ -271,7 +233,6 @@
           (is (= 1 (count @judge-calls)) "the judge is asked once for the second family")
           (is (= [first-child] (mapv :id (:candidates (first @judge-calls))))
               "the real neighbourhood shows the judge the first family, found by its birth embedding")
-          ;; ADR 0007: a second family under a shape is a judged family birth
           (is (= :mint-domain-child (:assigned-via second-event)))
           (is (= :new (get-in second-event [:merge-verdict :kind])))
           (is (= class-id (:parent-tree-id second-event)))
@@ -286,19 +247,10 @@
               "both children hang under the parent")
           (is (= "ketogenic-meal-plan"
                  (:label (ontology/get-concept-by-uri ctx (tree-class-uri second-child)))))
-          ;; CV-A item 5: first-child was the GENUINE first mint under
-          ;; class-id (no legacy children yet) -> the tenant-wide merge path
-          ;; ran -> 3 birth claims. second-child is the LEGACY per-parent
-          ;; sibling mint (children now present under class-id, D7b's own
-          ;; mechanism, no merge judge) -> unchanged, 1 claim.
           (is (= 2 (count (ontology/get-claims ctx :tree-class first-child))))
           (is (= 2 (count (ontology/get-claims ctx :tree-class second-child)))
               "the second family is born described, like the first")))))))
 
-;; =============================================================================
-;; CYCLE 6 — an :unknown verdict yields the structural assignment plus a
-;; deferral event naming the domain axis; no child, no edge, no claim.
-;; =============================================================================
 
 (deftest unknown-verdict-defers-domain-axis-no-child-minted
   (testing "an :unknown domain verdict on a childless class: the structural
@@ -337,18 +289,6 @@
             (is (= 0 (count (ontology/get-claims ctx :tree-class class-id)))
                 "no representative-use claim recorded")))))))
 
-;; =============================================================================
-;; CYCLES 7-8 (inspection) — the CHECKPOINTED path. A checkpointed researcher
-;; campaign (the public default) never dispatches the wedge's effects one by
-;; one: `run-or-defer-classification-effect!` STAGES them on the context's
-;; :classification-effects atom and the processor publishes them through ONE
-;; atomic `:sheet/commit-researcher-classification` under the campaign
-;; epoch (RR-9). That commit interprets effects by :command/name, so the
-;; domain-child mint and the domain-axis deferral RS-3 added must be commands
-;; the commit knows how to prepare and bind — else every domain mint on the
-;; default path throws "Unsupported or invalid researcher classification
-;; effect" and every domain deferral is refused as a second outcome.
-;; =============================================================================
 
 (defn- stage-through-wedge!
   "Run the live wedge with the checkpointed campaign's staging seam set, and
@@ -555,11 +495,6 @@
       (is (not (valid? [landing birth-capture]))
           "a landing never carries a claim-deltas effect — nothing was minted, so nothing wrote one"))))
 
-;; =============================================================================
-;; CV-A item 1 — cross-parent tenant-wide landing, live through the wedge:
-;; no concept created for the second task, :parent-tree-id names the
-;; family's OWN (first) parent, never the second task's top-1 shape.
-;; =============================================================================
 
 (deftest cross-parent-landing-records-no-concept-and-carries-the-familys-own-parent
   (testing "a family already exists (minted under shape A); a LATER task

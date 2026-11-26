@@ -25,10 +25,10 @@ This document captures the comprehensive vision for evolving ORC (behavior tree 
 
 | Item | Was | Now |
 |------|-----|-----|
-| **GEPA optimization loop** — Reflection LLM, instruction proposals, Pareto frontier | ~~NOT built~~ | **Shipped** — see [GEPA-GUIDE.md](GEPA-GUIDE.md), `components/gepa/` |
+| **GEPA optimization loop** — Reflection LLM, instruction proposals, Pareto frontier | ~~NOT built~~ | **Shipped** — see [GEPA-GUIDE.md](GEPA-GUIDE.md), `components/gepa-service/` |
 | **Rolling average monitoring** — automatic metric tracking | ~~NOT built~~ | **Shipped** — `get-node-rolling-metrics`, `get-tree-rolling-metrics` in `orc-service`; auto-threshold alerts and training triggers remain forward-looking |
-| **Tree self-description** — trees describe what they can solve | ~~NOT built~~ | **Shipped** — see [LIVING-DESCRIPTIONS.md](LIVING-DESCRIPTIONS.md), `components/ontology/` |
-| **Tree library/ontology** — searchable library of proven trees | ~~NOT built~~ | **Shipped** — see [ONTOLOGY.md](ONTOLOGY.md), `components/ontology/` (tree profiles, semantic search, RRF + ColBERT hybrid retrieval) |
+| **Tree self-description** — trees describe what they can solve | ~~NOT built~~ | **Shipped** — see [LIVING-DESCRIPTIONS.md](LIVING-DESCRIPTIONS.md), `components/ontology-service/` |
+| **Tree library/ontology** — searchable library of proven trees | ~~NOT built~~ | **Shipped** — see [ONTOLOGY.md](ONTOLOGY.md), `components/ontology-service/` (tree profiles, semantic search, RRF + ColBERT hybrid retrieval) |
 | **Restart-safe execution and telemetry isolation** | NOT in the original roadmap | **Shipped** — durable frontier recovery plus bounded, failure-isolated telemetry export; see [ORC-SERVICE-GUIDE.md](ORC-SERVICE-GUIDE.md) |
 | **Operational GEPA publication** | NOT in the original roadmap | **Shipped** — interrupted-run resume and explicit version-pinned winner application; see [GEPA-GUIDE.md](GEPA-GUIDE.md) |
 | **Stable ColBERT deployment aliases** | NOT in the original roadmap | **Shipped** — atomic index activation and alias-based search; see [COLBERT-INTEGRATION.md](COLBERT-INTEGRATION.md) |

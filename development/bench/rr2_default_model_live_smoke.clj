@@ -48,9 +48,8 @@
    REPL instead of a one-shot process if you want to pick this apart."
   (:require [runner]
             [ai.obney.orc.ontology.interface :as ontology]
-            [ai.obney.orc.ontology.core.reranker :as reranker]))
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
-(defn- system-ctx [] @@(resolve 'runner/system-state))
 
 (def ^:private probe-query
   "Classify a software-engineering task: analyze a contract for legal risks and obligations.")
@@ -80,10 +79,10 @@
 
 (defn run! []
   (println "\n========== RR-2 LIVE default-model smoke check ==========")
-  (println "Default model under test:" reranker/default-model)
+  (println "Default model under test:" ontology-logic/default-model)
   (println "Starting REAL system (builds real ColBERT ontology-descriptions index)...")
   (runner/start!)
-  (let [ctx (system-ctx)]
+  (let [ctx (runner/current-context)]
     (try
       (println "\n--- 1. DEFAULT MODEL (no :model override — exercises (or model default-model)) ---")
       (let [default-results (ontology/search-descriptions ctx
@@ -103,7 +102,7 @@
                                (assert-valid-reranked-result! "override" override-results))]
 
           (println "\n========== RESULT ==========")
-          (println (str "  Default-model  (" reranker/default-model ") valid ranking? =") default-ok?)
+          (println (str "  Default-model  (" ontology-logic/default-model ") valid ranking? =") default-ok?)
           (println "  Override-model (google/gemini-2.5-flash)  valid ranking? =" override-ok?)
           (println "============================\n")
           {:default-ok? default-ok? :override-ok? override-ok?

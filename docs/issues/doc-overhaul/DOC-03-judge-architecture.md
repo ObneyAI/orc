@@ -10,7 +10,7 @@ This is the doc that makes building a custom judge approachable and correct.
 2. `components/evaluation/src/ai/obney/orc/evaluation/core/rubrics.clj` — full file
 3. `components/evaluation/src/ai/obney/orc/evaluation/core/judges.clj` — full file
 4. `docs/EVALUATION-COMPONENT.md` — the existing reference (to avoid duplication)
-5. `components/gepa/src/ai/obney/orc/gepa/core/metrics.clj` — how GEPA consumes judge output
+5. `components/gepa-service/src/ai/obney/orc/gepa/core/logic.clj` — how GEPA consumes judge output
 6. `components/evaluation/src/ai/obney/orc/evaluation/core/judge_runtime.clj` — the two deployment modes
 7. `docs/prd/orc-documentation-overhaul.md`
 

@@ -407,7 +407,7 @@ same. This is safe to call on every application start.
 >
 > | Layer | Component | Python required |
 > |-------|-----------|:---------------:|
-> | 1 | `evaluation` | No |
+> | 1 | `evaluation-service` | No |
 >
 > One component added on top of Layer 0. No Python, no ontology, no DJL.
 > See [COMPONENT-MAP.md](COMPONENT-MAP.md) — Layer 1.
@@ -419,7 +419,7 @@ But is the output grounded in the actual contract text? Does it cover all the
 required provisions? Without judges, you can check manually or not at all. At
 scale, you need automation.
 
-Judges grade what a node did. A **judge** is a behaviour (an ordinary workflow) that grades one completed execution of a node, an **assessment subject**, against a **rubric** of described bands. Each judgment is recorded durably as an **assessment** that ends scored, failed or ungradable. A judge does not change how your tree runs: the node finishes and returns what it always returned, and the assessment is requested when the node completes and judged afterwards. Every block marked `;; docs-example: <id>` below is run by `components/evaluation/test/ai/obney/orc/evaluation/docs_examples_test.clj`.
+Judges grade what a node did. A **judge** is a behaviour (an ordinary workflow) that grades one completed execution of a node, an **assessment subject**, against a **rubric** of described bands. Each judgment is recorded durably as an **assessment** that ends scored, failed or ungradable. A judge does not change how your tree runs: the node finishes and returns what it always returned, and the assessment is requested when the node completes and judged afterwards. Every block marked `;; docs-example: <id>` below is run by `components/evaluation-service/test/ai/obney/orc/evaluation/docs_examples_test.clj`.
 
 ### Declaring and attaching judges
 
@@ -488,7 +488,7 @@ The retained synchronous judge function runs a judge directly on a trace map. It
 ;; docs-example: synchronous-functions
 (defn mock-grounding-check []
   (judges/with-mock-llm
-    (judges/evaluate-single
+    (evaluation/evaluate-single
      :grounding
      {:inputs {:context "FAQ: The gym is open Monday to Friday, 6am to 10pm."}
       :response "The gym is open Monday to Friday."
@@ -509,7 +509,7 @@ Rubrics and bands, custom judges, evidence, purposes and performance alerts are 
 >
 > | Layer | Component | Python required |
 > |-------|-----------|:---------------:|
-> | 1 | `evaluation` | No |
+> | 1 | `evaluation-service` | No |
 >
 > Same component as Phase 2. No new deps.
 > See [COMPONENT-MAP.md](COMPONENT-MAP.md) — Layer 1.
@@ -718,7 +718,7 @@ Build the judge sheet, then declare it on the workflow:
 (def sheet-id (orc/build-workflow! ctx contract-analysis-custom-judge))
 ```
 
-The custom judge runtime (`judge_runtime.clj:invoke-custom-judge`) sub-executes
+The custom judge runtime (`invoke-custom-judge` in `core/todo_processors.clj`) sub-executes
 your sheet with:
 
 ```clojure
@@ -752,8 +752,8 @@ That doc also covers:
 | Phase | Capability | Component | Layer | Python |
 |-------|-----------|-----------|-------|:------:|
 | 1 | Core behavior tree + event-sourced execution | `orc-service` | 0 | No |
-| 2 | LLM-as-judge (grounding, completeness, etc.) | `evaluation` | 1 | No |
-| 3 | Custom scale + custom judge workflows | `evaluation` | 1 | No |
+| 2 | LLM-as-judge (grounding, completeness, etc.) | `evaluation-service` | 1 | No |
+| 3 | Custom scale + custom judge workflows | `evaluation-service` | 1 | No |
 
 Phases 4–6 (prompt optimization with GEPA, live streaming, and the
 self-improving loop) are documented in the companion guide.
@@ -766,10 +766,10 @@ self-improving loop) are documented in the companion guide.
 >
 > | Layer | Component | Python required |
 > |-------|-----------|:---------------:|
-> | 3 | `gepa` + `evaluation` | No |
+> | 3 | `gepa-service` + `evaluation-service` | No |
 >
 > Two components added on top of Layers 0–1. No Python, no ontology, no DJL.
-> Source-verified: `components/gepa/deps.edn` lists only `mulog` + `orc/evaluation`.
+> Source-verified: `components/gepa-service/deps.edn` lists only `mulog` + `orc/evaluation`.
 > See [COMPONENT-MAP.md](COMPONENT-MAP.md) — Layer 3.
 
 ### GEPA vs. `:auto-classify?` — two orthogonal actuators
@@ -881,7 +881,7 @@ input map for one execution — just the blackboard inputs your tree reads:
      :block?     true}))
 ```
 
-**Result shape** (source-verified from `gepa/interface.clj:157-162`):
+The result includes the optimization status and the winning candidate. [GEPA interface](../components/gepa-service/src/ai/obney/orc/gepa/interface.clj)
 
 ```clojure
 ;; => {:optimization-id  #uuid "..."
@@ -905,11 +905,11 @@ seed it back into the next GEPA run to inherit via `:inherit-from-previous true`
 
 > | Layer | Component | Adds Python | Heavy JVM |
 > |-------|-----------|:-----------:|:---------:|
-> | 3 | `gepa` + `evaluation` | No | No |
+> | 3 | `gepa-service` + `evaluation-service` | No | No |
 >
-> `gepa/deps.edn` depends on `evaluation` and `mulog` — zero `ontology` dep, zero Python
-> (source-verified: `components/gepa/deps.edn`). Pareto selection and reflective mutation
-> run entirely in the JVM.
+> GEPA uses the engine, evaluation, the LLM adapter, the integration registry
+> and mulog. Pareto selection and reflective mutation run on the JVM.
+> [GEPA dependencies](../components/gepa-service/deps.edn)
 >
 > For how judge feedback threads back into the mutation prompt and for the full
 > mutation loop internals, see [JUDGE-ARCHITECTURE.md](JUDGE-ARCHITECTURE.md) —
@@ -923,7 +923,7 @@ seed it back into the next GEPA run to inherit via `:inherit-from-previous true`
 >
 > | Layer | Component | Python required |
 > |-------|-----------|:---------------:|
-> | 4 / 6 | `ontology` (DJL) | No |
+> | 4 / 6 | `ontology-service` (DJL) | No |
 >
 > One component. DJL (JVM neural-net framework) downloads `all-MiniLM-L6-v2` (~22 MB)
 > on first use and loads it into the JVM — no Python process. First call warms the model;
@@ -1032,9 +1032,9 @@ the cached model.
 ;; => 384
 ```
 
-**Source-verified**: `embedding.clj:27-28` defines `default-model-id = "sentence-transformers/all-MiniLM-L6-v2"`
-and `default-dimensions = 384`. The `embed-text` return type is `[:vector :double]`
-(float[] from DJL is coerced to doubles by `(mapv double ...)` at `embedding.clj:167`).
+The default `sentence-transformers/all-MiniLM-L6-v2` model produces a 384-dimensional
+embedding. `embed-text` returns its coordinates as a vector of doubles.
+[Ontology interface](../components/ontology-service/src/ai/obney/orc/ontology/interface.clj)
 
 Swap the model for any HuggingFace sentence-transformer that DJL supports:
 
@@ -1138,7 +1138,7 @@ Default when omitted: `#{:graph :embedding :colbert}`.
 
 > | Layer | Component | Adds Python | Heavy JVM |
 > |-------|-----------|:-----------:|:---------:|
-> | 4 / 6 | `ontology` | No | DJL downloads model on first use (~22 MB, cached) |
+> | 4 / 6 | `ontology-service` | No | DJL downloads model on first use (~22 MB, cached) |
 >
 > The JVM download is one-time. DJL manages the PyTorch engine natively — no Python
 > process is spawned. `ontology/close-all-embedding-models!` releases model memory
@@ -1152,7 +1152,7 @@ Default when omitted: `#{:graph :embedding :colbert}`.
 >
 > | Layer | Component | DJL required |
 > |-------|-----------|:------------:|
-> | 7 | `orc-service` + `evaluation` + `ontology` + `colbert` | **Yes** |
+> | 7 | `orc-service` + `evaluation-service` + `ontology-service` + `colbert-service` | **Yes** |
 >
 > The loop's retrieval runs entirely on the JVM: the `colbert` component runs its
 > encoder checkpoint on DJL OnnxRuntime for late-interaction re-ranking and index
@@ -1387,7 +1387,7 @@ surfaced references (it *informs*, it does not gate).
 
 > | Layer | Component | DJL | Notes |
 > |-------|-----------|:---:|-------|
-> | 7 | `ontology` + `colbert` | **Yes** | `colbert` runs its encoder on DJL OnnxRuntime (pure JVM; one-time model download) |
+> | 7 | `ontology-service` + `colbert-service` | **Yes** | `colbert-service` runs its encoder on DJL OnnxRuntime (pure JVM; one-time model download) |
 >
 > **Setup required before the loop runs:**
 > 1. `(ontology/seed-baseline-corpus! ctx)` — once on first start
@@ -1405,11 +1405,11 @@ surfaced references (it *informs*, it does not gate).
 | Phase | Capability | Component(s) | Layer | DJL |
 |-------|-----------|-------------|-------|:---:|
 | 1 | Core behavior tree + event-sourced execution | `orc-service` | 0 | No |
-| 2 | LLM-as-judge (grounding, completeness, etc.) | `evaluation` | 1 | No |
-| 3 | Custom scale + custom judge workflows | `evaluation` | 1 | No |
-| 4 | GEPA — evolutionary instruction optimization | `gepa` + `evaluation` | 3 | No |
-| 5 | Ontology — general-purpose semantic memory | `ontology` (DJL) | 4 / 6 | **Yes** |
-| 6 | Self-improving loop — corpus-driven tree design | `ontology` + `colbert` | 7 | **Yes** |
+| 2 | LLM-as-judge (grounding, completeness, etc.) | `evaluation-service` | 1 | No |
+| 3 | Custom scale + custom judge workflows | `evaluation-service` | 1 | No |
+| 4 | GEPA — evolutionary instruction optimization | `gepa-service` + `evaluation-service` | 3 | No |
+| 5 | Ontology — general-purpose semantic memory | `ontology-service` (DJL) | 4 / 6 | **Yes** |
+| 6 | Self-improving loop — corpus-driven tree design | `ontology-service` + `colbert-service` | 7 | **Yes** |
 
 ---
 

@@ -26,16 +26,18 @@
    Mock judges are NEVER used. Real OpenRouter, real bench."
   (:require [ai.obney.orc.evaluation.interface]
             [ai.obney.orc.evaluation.interface.schemas]
-            [ai.obney.orc.evaluation.core.judge-runtime :as jr]
+            [ai.obney.orc.evaluation.core.judge-runtime]
             [ai.obney.orc.ontology.interface :as ontology]
-            [ai.obney.orc.ontology.core.consolidator]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [com.brunobonacci.mulog :as u]
             [runner]
-            [legal-issue-detection :as task]))
+            [legal-issue-detection :as task]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (defn- inspect-events [ctx]
   (let [tree-generated (into [] (es/read (:event-store ctx)
@@ -51,7 +53,6 @@
         llm-events (filter #(contains? #{"grounding" "reasoning"
                                           "completeness" "instruction-following"}
                                         (:judge-name %)) judges)
-        ;; Repl-researcher terminal completions only
         repl-terminal-completions
         (filter (fn [c]
                   (let [node (orc/get-node ctx (:sheet-id c) (:node-id c))]
@@ -73,7 +74,7 @@
   (println "============================================================")
   (u/start-publisher! {:type :console})
   (runner/start!)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))]
+  (let [ctx (runner/current-context)]
     (try
       (cp/process-command
         (assoc ctx :command
@@ -85,9 +86,6 @@
 
       (println "\n--- Single legal-issue-detection run ---")
       (runner/run! task/task)
-      ;; Poll up to 90s for judges to settle (parallel futures should
-      ;; complete much faster, but the model's Phase 1 may produce
-      ;; multiple trees so multiple processors fire in cascade).
       (loop [waited 0]
         (let [n-judges (count (into [] (es/read (:event-store ctx)
                                                  {:types #{:judge/score-emitted}
@@ -96,7 +94,6 @@
                                                 {:types #{:rlm/tree-generated}
                                                  :tenant-id (:tenant-id ctx)})))]
           (cond
-            ;; Expect at minimum: 5 from terminal + 1 per tree-generated
             (and (pos? n-trees) (>= n-judges (+ 5 n-trees)))
             (println "  → judges settled. trees:" n-trees ", judges:" n-judges
                      ", waited:" waited "ms")
@@ -108,7 +105,7 @@
             (do (Thread/sleep 2000) (recur (+ waited 2000))))))
 
       (let [stats (inspect-events ctx)
-            pre-gap7b-expectation 5            ;; only terminal heuristic-structural
+            pre-gap7b-expectation 5
             gap7b-expectation (+ 5 (:tree-generated-count stats))
             heuristic-improved? (> (:heuristic-structural-count stats) 1)
             llm-judges-still-fire? (= 4 (count (:llm-judges-per-name stats)))
@@ -142,6 +139,6 @@
       (finally
         (runner/stop!)))))
 
-(comment
+#_(do
   (require '[gap7b-live-verify :as v])
   (v/verify!))

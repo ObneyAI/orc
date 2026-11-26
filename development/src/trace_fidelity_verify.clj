@@ -18,9 +18,9 @@
      :node-traces-missing-exec-context 0
      :nil-node-type           small (round 2: 8 of 250; not chased down)
      :map-each-item-collisions 0    (round 2: 94 of 154 misattributed)"
-  (:require [ai.obney.grain.event-store-v3.interface :as es]
-            [ai.obney.orc.orc-service.core.profile :as profile]
-            [ai.obney.orc.evaluation.core.trace-extraction :as tx]))
+  (:require [ai.obney.orc.evaluation.core.queries :as eval-queries]
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.orc-service.core.logic :as logic]))
 
 (def ^:private map-each-index-key
   :ai.obney.orc.orc-service.core.todo-processors/map-each-index)
@@ -33,7 +33,7 @@
   [ctx]
   (let [traces (read-type ctx :sheet/execution-traced)]
     (for [t traces
-          :let [io (tx/tick-node-io ctx (:trace-id t) (:node-traces t))]
+          :let [io (eval-queries/tick-node-io ctx (:trace-id t) (:node-traces t))]
           nt (:node-traces t)]
       {:trace-id (:trace-id t)
        :nt nt
@@ -64,8 +64,6 @@
   [ctx]
   (let [rs (vec (rows ctx))
         completions (read-type ctx :sheet/node-execution-completed)
-        ;; A node's DECLARED reads, from the sheet definition. Needed to tell
-        ;; "this leaf read nothing" (fine) from "this leaf's reads were lost".
         declared-reads (reduce (fn [acc e] (assoc acc (:node-id e) (:reads e)))
                                {}
                                (read-type ctx :sheet/node-io-set))
@@ -76,44 +74,34 @@
      :node-traces (count rs)
      :completions (count completions)
 
-     ;; F1 — reads captured at all.
-     ;; Counted against DECLARED reads: a leaf with no :reads correctly has
-     ;; no :read-keys, so a bare "leaf without read-keys" count over-reports.
      :nodes-declaring-reads (count (filter #(seq (get declared-reads (:node-id (:nt %)))) rs))
      :reading-nodes-missing-read-keys
      (count (filter #(and (seq (get declared-reads (:node-id (:nt %))))
                           (empty? (:read-keys (:nt %))))
                     rs))
 
-     ;; F3 — every execution addressable
      :node-traces-missing-exec-context
      (count (remove #(contains? (:nt %) :exec-context) rs))
 
-     ;; F2a — nothing silently dropped
      :unresolved-reads
      (reduce + (for [r rs]
                  (count (remove #(contains? (:inputs (:io r)) %)
                                 (:read-keys (:nt r))))))
 
-     ;; The profile oracle — a LOWER bound, blind when the wrong value
-     ;; happens to share a shape. Use with :map-each-item-collisions.
      :input-profile-mismatch
      (count (remove #(= (:input-profile (:nt %))
-                        (profile/profile-values (:inputs (:io %))))
+                        (logic/profile-values (:inputs (:io %))))
                     reading))
      :output-profile-mismatch
      (count (remove #(= (:output-profile (:nt %))
-                        (profile/profile-values (:outputs (:io %))))
+                        (logic/profile-values (:outputs (:io %))))
                     writing))
 
-     ;; F2b — shape-blind check on iteration identity
      :map-each-item-collisions (reduce + 0 (map :collisions collisions))
      :map-each-collision-detail collisions
 
-     ;; Pre-existing, unrelated to the fidelity work
      :nil-node-type (count (filter #(nil? (:node-type %)) completions))
 
-     ;; Storage discipline should be untouched by any of this
      :completions-with-inlined-writes
      (count (filter #(seq (:writes %)) completions))
      :completions-with-simple-keyword-inputs

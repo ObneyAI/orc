@@ -40,7 +40,6 @@
                      {:path (str (.getRequestURI exchange)) :body body
                       :fixture-auth? (= (str "Bearer " fixture/fixture-token)
                                         (.getFirst (.getRequestHeaders exchange) "Authorization"))})
-              ;; A response marker makes the unsafe direct-transport detector falsifiable.
               (fixture/reply! exchange 429 "application/json"
                               (json/generate-string {:error {:message fixture/fixture-token}})))
             (catch Throwable e
@@ -62,7 +61,6 @@
                     :as :json-string-keys :timeout 10000})
     {:unexpected-success? true}
     (catch Throwable e
-      ;; Never retain the raw error data, message, body or cause.
       {:exception-class (.getName (class e))
        :status (:status (ex-data e))
        :type (:type (ex-data e))

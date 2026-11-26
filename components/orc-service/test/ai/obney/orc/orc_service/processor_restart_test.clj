@@ -11,7 +11,6 @@
   {:answer (:question inputs)})
 
 (deftest processor-restart-retains-executable-context
-  ;; Register the public evaluator runtime explicitly, independent of test order.
   (require 'ai.obney.orc.evaluation.interface)
   (testing "restart respects polling and pubsub lifecycle handles without model calls"
     (h/with-async-test-context [ctx]

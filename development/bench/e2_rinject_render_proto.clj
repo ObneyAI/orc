@@ -22,8 +22,6 @@
             [ai.obney.orc.colbert.interface :as colbert]
             [ai.obney.orc.ontology.interface :as ont]))
 
-;; An above-threshold coding task (E1 showed add-function matches a broad
-;; parent >= 0.6) and an OOD task that should fall through / mint.
 (def coding-task
   "Add a new function `summarize-line-items` to the report namespace that aggregates each invoice's line items into a per-category subtotal and returns a sorted vector.")
 
@@ -38,7 +36,6 @@
    :reads [:user-message :active-plan :workspace-root]
    :writes [:assistant-response]
    :mcp-tools ["shell/exec" "fs/read" "fs/list"]
-   ;; The wedge only fires for an auto-classify rlm node with no :context.
    :rlm {:auto-classify? true}})
 
 (defn render-for [ctx label instruction]
@@ -48,7 +45,6 @@
   (let [sheet-id (random-uuid)
         wedge-ctx (assoc ctx :sheet-id sheet-id :tick-id (random-uuid))
         node (make-node instruction)
-        ;; REAL wedge: classify-task + classify-behaviors + command dispatch.
         classified (tp/maybe-auto-classify-and-set-context node wedge-ctx)
         payload (get-in classified [:context :r05-classifier])
         rendered (tp/apply-r05-classifier-context classified wedge-ctx)
@@ -82,8 +78,7 @@
     (println "FATAL: OPENROUTER_API_KEY not set") (System/exit 1))
   (try
     (runner/start!)
-    (let [ctx (deref (var-get (requiring-resolve 'runner/system-state)))]
-      ;; rule out the harness first
+    (let [ctx (runner/current-context)]
       (println "\n--- HARNESS SANITY ---")
       (let [idxs (filter #(= "ontology-descriptions" (:index-name %))
                          (colbert/list-indexes ctx))]

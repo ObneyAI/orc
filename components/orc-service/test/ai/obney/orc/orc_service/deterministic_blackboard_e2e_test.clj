@@ -3,10 +3,13 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.schema-util.interface :as schema-util]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.fressian-util.interface :as fressian]
+            [malli.core :as m]
+            [taoensso.nippy :as nippy]
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
 (defonce ^:private calls (atom []))
 
@@ -105,8 +108,8 @@
         (is (= ["v1" "v2"] [(:value projected-v1) (:value projected-v2)]))
         (is (= ["v1" "v2"] [(get-in result-v1 [:outputs :observed])
                               (get-in result-v2 [:outputs :observed])]))
-        (is (= "v1" (value-log/resolve-source ctx (:tenant-id ctx) (read-source result-v1))))
-        (is (= "v2" (value-log/resolve-source ctx (:tenant-id ctx) (read-source result-v2))))
+        (is (= "v1" (service-read-models/resolve-source ctx (:tenant-id ctx) (read-source result-v1))))
+        (is (= "v2" (service-read-models/resolve-source ctx (:tenant-id ctx) (read-source result-v2))))
         (is (not= (read-source result-v1) (read-source result-v2)))))))
 
 (deftest det-e2e-051-undeclared-read
@@ -184,3 +187,58 @@
                                    :result)))))))
         (finally
           (reset! schema-util/registry* registry-before))))))
+
+(defn unsupported-nested-output [_]
+  {:number {:nested [(Object.)]}})
+
+(deftest durable-draft-values-cross-both-storage-codecs
+  (let [sheet-id (random-uuid)
+        valid? #(m/validate :sheet/set-key-value
+                            (h/make-set-key-value-command sheet-id :draft %))
+        values [nil false true "text" \x 'answer :answer 1 3/7 1M
+                (random-uuid) (java.util.Date. 0) java.time.Instant/EPOCH
+                (java.time.OffsetDateTime/parse "2026-01-01T00:00:00Z")
+                (java.net.URI. "urn:orc:test") {:input [#{:value} (list 1N)]}]]
+    (doseq [value values]
+      (is (valid? value))
+      (is (= value (fressian/decode (fressian/encode value))))
+      (is (= value (nippy/thaw (nippy/freeze value)))))
+    (doseq [value [(byte-array [1 2]) (int-array [1 2]) (boolean-array [true])]]
+      (is (valid? value))
+      (is (= (vec value) (vec (fressian/decode (fressian/encode value)))))
+      (is (= (vec value) (vec (nippy/thaw (nippy/freeze value))))))
+    (let [unrealized (lazy-seq (throw (ex-info "unexpected realization" {})))]
+      (doseq [value [(byte 1) (Object.) (fn [] :runtime) (atom :runtime) unrealized
+                     {(Object.) :nested-key} (with-meta [] {:runtime (Object.)})
+                     (java.util.regex.Pattern/compile "text" java.util.regex.Pattern/CASE_INSENSITIVE)]]
+        (is (false? (valid? value)))))))
+
+(deftest durable-workflow-values
+  (h/with-async-test-context [ctx]
+    (let [definition (sheet/workflow "durable-workflow-values"
+                       (sheet/blackboard {:number [:not :string] :draft [:not :string]})
+                       (sheet/code "producer" :fn (fq "unsupported-nested-output") :writes [:number]))
+          sheet-id (sheet/build-workflow! ctx definition)
+          valid {:flags #{:a :b} :values (list nil true [42 1/3])}
+          _ (h/run-command ctx (h/make-set-key-value-command sheet-id :draft valid))
+          refused (h/run-command ctx (h/make-set-key-value-command sheet-id :draft {:nested (Object.)}))
+          result (sheet/execute ctx sheet-id {})
+          events (events-for-tick ctx (:trace-id result))
+          rejected (some #(when (= :sheet/execution-value-rejected (:event/type %)) %) events)
+          trace-query (h/make-get-trace-query (:trace-id result))
+          _ (is (h/settle-until! #(some? (get-in (h/run-query ctx trace-query) [:query/result :trace]))))
+          trace (get-in (h/run-query ctx trace-query) [:query/result :trace])
+          node-trace (first (:node-traces trace))
+          detail (:query/result (h/run-query ctx {:query/name :sheet/node-trace-detail
+                                                   :trace-id (:trace-id result)
+                                                   :trace-instance-id (:trace-instance-id node-trace)}))
+          diagnostic {:orc.rejection/reason :unsupported-durable-type
+                      :orc.rejection/type "java.lang.Object"}]
+      (is (some? (:cognitect.anomalies/category refused)))
+      (is (= valid (:value (:draft (sheet/get-blackboard-by-key ctx sheet-id)))))
+      (is (= :failure (:status result)))
+      (is (= diagnostic (:value rejected)))
+      (is (= {:number diagnostic} (:rejected-outputs detail)))
+      (is (not-any? #(and (= :sheet/execution-value-written (:event/type %))
+                          (= (:node-id rejected) (:node-id %))
+                          (= :number (:key %))) events)))))

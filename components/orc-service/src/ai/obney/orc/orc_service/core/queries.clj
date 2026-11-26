@@ -3,105 +3,35 @@
 
    Fat Query Model: One query per screen, each returns all data needed.
    All queries return {:query/result ...} on success."
-  (:require [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.trace-time :as trace-time]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
-            [ai.obney.orc.orc-service.core.value-storage :as value-storage]
-            [ai.obney.orc.orc-service.core.tree-layout :as layout]
-            [ai.obney.grain.event-store-v3.interface :as es]
-            [ai.obney.grain.time.interface :as time]
+  (:require [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.query-processor.interface :refer [defquery]]
-            [clojure.set]
-            [cognitect.anomalies :as anom]))
+            [ai.obney.grain.read-model-processor-v2.interface :as rmp]
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.commands :as commands]
+            [ai.obney.orc.orc-service.core.logic :as logic]
+            [ai.obney.orc.orc-service.core.read-models :as rm]))
 
-;; =============================================================================
-;; Auth Predicate
-;; =============================================================================
+(defquery :sheet model-candidate-history {:authorized? logic/model-call-journal-authorized?} [ctx]
+  {:query/result (vec (:entries (rmp/project ctx :sheet/model-candidate-ledger
+                                            {:tags #{[:tick (get-in ctx [:query :tick-id])]}})))})
 
-(defn authenticated?
-  "Authorization predicate - checks if auth-claims are present in context."
+(defquery :sheet provider-attempts
+  {:authorized? logic/provider-observations-authorized?}
   [ctx]
-  (some? (:auth-claims ctx)))
-
-;; =============================================================================
-;; Snapshot Parsing Helpers (for published mode display)
-;; =============================================================================
-
-(defn- flatten-node-tree
-  "Convert nested tree structure back to flat list of nodes.
-   Preserves existing IDs if present, otherwise generates new ones.
-   Returns {:nodes-by-id {...} :root-id uuid}."
-  ([tree-node] (flatten-node-tree tree-node nil (atom {})))
-  ([tree-node parent-id nodes-atom]
-   (when tree-node
-     (let [node-id (or (:id tree-node) (random-uuid))
-           children (:children tree-node)
-           child-results (mapv #(flatten-node-tree % node-id nodes-atom) children)
-           children-ids (vec (keep :node-id child-results))
-           base-node {:id node-id
-                      :type (:type tree-node)
-                      :name (:name tree-node)
-                      :status :idle
-                      :parent-id parent-id
-                      :children-ids children-ids}
-           node (cond-> base-node
-                  ;; Leaf fields
-                  (:executor tree-node) (assoc :executor (:executor tree-node))
-                  (:model tree-node) (assoc :model (:model tree-node))
-                  (:fn tree-node) (assoc :fn (:fn tree-node))
-                  (:instruction tree-node) (assoc :instruction (:instruction tree-node))
-                  (seq (:reads tree-node)) (assoc :reads (:reads tree-node))
-                  (seq (:writes tree-node)) (assoc :writes (:writes tree-node))
-                  (:retry tree-node) (assoc :retry (:retry tree-node))
-                  (= :decision (:executor tree-node))
-                  (merge (cond-> {}
-                           (:options-from tree-node) (assoc :options-from (:options-from tree-node))
-                           (:bands-from tree-node) (assoc :bands-from (:bands-from tree-node))
-                           (:min-confidence tree-node) (assoc :min-confidence (:min-confidence tree-node))
-                           (some? (:abstain tree-node)) (assoc :abstain (:abstain tree-node))
-                           (:options tree-node) (assoc :options (:options tree-node))))
-                  ;; Condition fields
-                  (:check tree-node) (assoc :check (:check tree-node))
-                  (:on-fail tree-node) (assoc :on-fail (:on-fail tree-node))
-                  ;; Parallel fields
-                  (:success-policy tree-node) (assoc :success-policy (:success-policy tree-node))
-                  (:failure-policy tree-node) (assoc :failure-policy (:failure-policy tree-node))
-                  ;; Map-each fields
-                  (:source-key tree-node) (assoc :source-key (:source-key tree-node))
-                  (:item-key tree-node) (assoc :item-key (:item-key tree-node))
-                  (:output-key tree-node) (assoc :output-key (:output-key tree-node))
-                  (:max-concurrency tree-node) (assoc :max-concurrency (:max-concurrency tree-node))
-                  (some? (:preserve-failures? tree-node)) (assoc :preserve-failures? (:preserve-failures? tree-node)))]
-       (swap! nodes-atom assoc node-id node)
-       {:node-id node-id :nodes-atom nodes-atom}))))
-
-(defn- snapshot->nodes
-  "Convert a snapshot's nested tree to a flat list of nodes."
-  [snapshot]
-  (if-let [tree (:nodes snapshot)]
-    (let [nodes-atom (atom {})
-          result (flatten-node-tree tree nil nodes-atom)
-          nodes-by-id @nodes-atom]
-      {:nodes (vec (vals nodes-by-id))
-       :nodes-by-id nodes-by-id
-       :root-id (:node-id result)})
-    {:nodes [] :nodes-by-id {} :root-id nil}))
-
-(defn- snapshot->blackboard
-  "Convert a snapshot's blackboard-schema to a blackboard list."
-  [snapshot]
-  (mapv (fn [[k schema]]
-          {:key k
-           :schema schema
-           :value nil})  ;; Published snapshots don't store runtime values
-        (:blackboard-schema snapshot)))
-
-;; =============================================================================
-;; Sheets List Screen (/sheets)
-;; =============================================================================
+  (if-not (some? (:tenant-id ctx))
+    (logic/provider-observations-rejected :cognitect.anomalies/forbidden "Provider observation tenant is required")
+    (let [{:keys [tick-id node-start-id invocation-id]} (:query ctx)]
+      (if-not (commands/canonical-start ctx tick-id node-start-id)
+        (logic/provider-observations-rejected :cognitect.anomalies/not-found "Canonical node start is not present for this tenant and tick")
+        (let [{:keys [order by-id]} (rmp/project ctx :sheet/provider-attempt-ledger
+                                               {:tags #{[:provider-node-start node-start-id]}})]
+          {:query/result (into [] (comp (map by-id)
+                                        (filter #(and (= tick-id (:tick-id %))
+                                                      (or (nil? invocation-id)
+                                                          (= invocation-id (:invocation-id %)))))) order)})))))
 
 (defquery :sheet sheets-list-screen
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Fat query for sheets list screen.
    Returns all sheets with basic metadata."
   [{:keys [event-store] :as ctx}]
@@ -110,12 +40,8 @@
      {:sheets (vec sheets)
       :total (count sheets)}}))
 
-;; =============================================================================
-;; Sheet View Screen (/sheet?sheet-id=...)
-;; =============================================================================
-
 (defquery :sheet sheet-view-screen
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Fat query for sheet view screen.
    Returns sheet metadata, all nodes, blackboard, layout, current tick, and version info.
    When execution-mode is :published, returns the published snapshot's nodes/blackboard."
@@ -123,24 +49,20 @@
     :keys [event-store] :as ctx}]
   (let [sheet (rm/get-sheet ctx sheet-id)]
     (if-not sheet
-      {::anom/category ::anom/not-found
-       ::anom/message "Sheet not found"}
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message "Sheet not found"}
       (let [execution-mode (or (:execution-mode sheet) :draft)
             published-version (:published-version sheet)
-            ;; Determine if we should show published snapshot
             use-published? (and (= :published execution-mode) published-version)
-            ;; Get the data source based on mode
             {:keys [nodes nodes-by-id blackboard root-id]}
             (if use-published?
-              ;; Load from published snapshot
               (let [version (rm/get-version ctx sheet-id published-version)
                     snapshot (:snapshot version)
-                    parsed (snapshot->nodes snapshot)]
+                    parsed (logic/snapshot->nodes snapshot)]
                 {:nodes (:nodes parsed)
                  :nodes-by-id (:nodes-by-id parsed)
-                 :blackboard (snapshot->blackboard snapshot)
+                 :blackboard (logic/snapshot->blackboard snapshot)
                  :root-id (:root-id parsed)})
-              ;; Load from draft (current state)
               (let [draft-nodes (rm/get-nodes-for-sheet ctx sheet-id)
                     draft-nodes-by-id (into {} (map (juxt :id identity) draft-nodes))]
                 {:nodes draft-nodes
@@ -149,21 +71,18 @@
                  :root-id (:root-node-id sheet)}))
             root-node (when root-id (get nodes-by-id root-id))
             tree-layout (if root-node
-                          (layout/compute-layout root-node nodes-by-id)
+                          (logic/compute-layout root-node nodes-by-id)
                           [])
             current-tick (rm/get-current-tick ctx sheet-id)
-            ;; Get in-progress execution context if there's an active tick
             execution-context (when current-tick
                                (rm/get-execution-context ctx (:id current-tick)))
             version-info {:published-version published-version
                           :draft-dirty? (boolean (:draft-dirty? sheet))
                           :execution-mode execution-mode
                           :has-stash? (boolean (:has-stash? sheet))}
-            ;; Update sheet's root-node-id to match the data source
             sheet-for-response (if (and use-published? root-id)
                                  (assoc sheet :root-node-id root-id)
                                  sheet)
-            ;; Build progress info from execution context
             progress-info (when execution-context
                            {:current-node-id (:current-node-id execution-context)
                             :nodes-in-progress (vec (:nodes-in-progress execution-context))
@@ -178,74 +97,15 @@
            current-tick (assoc :tick current-tick)
            progress-info (assoc :progress progress-info))}))))
 
-;; =============================================================================
-;; Export Sheet Query
-;; =============================================================================
-
-(defn- build-node-tree
-  "Convert flat nodes map to nested tree structure for export.
-   Preserves original node IDs for accurate structural diffing."
-  [nodes-by-id root-id]
-  (when root-id
-    (let [node (get nodes-by-id root-id)]
-      (when node
-        (cond-> {:id (:id node)
-                 :type (:type node)
-                 :name (:name node)}
-          ;; Leaf-specific fields
-          (= :leaf (:type node))
-          (merge (cond-> {}
-                   (:executor node) (assoc :executor (:executor node))
-                   (:model node) (assoc :model (:model node))
-                   (:fn node) (assoc :fn (:fn node))
-                   (:instruction node) (assoc :instruction (:instruction node))
-                   (seq (:reads node)) (assoc :reads (:reads node))
-                   (seq (:writes node)) (assoc :writes (:writes node))
-                   (:retry node) (assoc :retry (:retry node))
-                   (= :decision (:executor node))
-                   (merge (cond-> {}
-                            (:options-from node) (assoc :options-from (:options-from node))
-                            (:bands-from node) (assoc :bands-from (:bands-from node))
-                            (:min-confidence node) (assoc :min-confidence (:min-confidence node))
-                            (some? (:abstain node)) (assoc :abstain (:abstain node))
-                            (:options node) (assoc :options (:options node))))))
-          ;; Condition-specific
-          (= :condition (:type node))
-          (merge (cond-> {}
-                   (:check node) (assoc :check (:check node))
-                   (:on-fail node) (assoc :on-fail (:on-fail node))))
-          ;; LLM-condition-specific
-          (= :llm-condition (:type node))
-          (merge (cond-> {}
-                   (:instruction node) (assoc :instruction (:instruction node))
-                   (seq (:reads node)) (assoc :reads (:reads node))
-                   (:model node) (assoc :model (:model node))))
-          ;; Parallel-specific
-          (= :parallel (:type node))
-          (merge {:success-policy (or (:success-policy node) :all)
-                  :failure-policy (or (:failure-policy node) :any)})
-          ;; Map-each-specific
-          (= :map-each (:type node))
-          (merge (cond-> {}
-                   (:source-key node) (assoc :source-key (:source-key node))
-                   (:item-key node) (assoc :item-key (:item-key node))
-                   (:output-key node) (assoc :output-key (:output-key node))
-                   (:max-concurrency node) (assoc :max-concurrency (:max-concurrency node))
-                   (some? (:preserve-failures? node)) (assoc :preserve-failures? (:preserve-failures? node))))
-          ;; Children for composite nodes
-          (seq (:children-ids node))
-          (assoc :children
-                 (vec (keep #(build-node-tree nodes-by-id %) (:children-ids node)))))))))
-
 (defquery :sheet export-sheet
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Export a sheet as a portable EDN structure for download/backup."
   [{{:keys [sheet-id]} :query
     :keys [event-store] :as ctx}]
   (let [sheet (rm/get-sheet ctx sheet-id)]
     (if-not sheet
-      {::anom/category ::anom/not-found
-       ::anom/message "Sheet not found"}
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message "Sheet not found"}
       (let [nodes (rm/get-nodes-by-id ctx sheet-id)
             blackboard (rm/get-blackboard-for-sheet ctx sheet-id)]
         {:query/result
@@ -256,21 +116,21 @@
           :blackboard-schema (into {}
                                    (map (fn [bb] [(:key bb) (:schema bb)])
                                         blackboard))
-          :nodes (build-node-tree nodes (:root-node-id sheet))}}))))
+          :nodes (logic/queries-build-node-tree nodes (:root-node-id sheet))}}))))
 
 ;; =============================================================================
 ;; Versioning Queries
 ;; =============================================================================
 
 (defquery :sheet version-history
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Get all published versions for a sheet."
   [{{:keys [sheet-id]} :query
     :keys [event-store] :as ctx}]
   (let [sheet (rm/get-sheet ctx sheet-id)]
     (if-not sheet
-      {::anom/category ::anom/not-found
-       ::anom/message "Sheet not found"}
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message "Sheet not found"}
       (let [versions (rm/get-versions-for-sheet ctx sheet-id)]
         {:query/result
          {:versions (vec versions)
@@ -279,48 +139,32 @@
           :has-stash? (boolean (:has-stash? sheet))}}))))
 
 (defquery :sheet get-version
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Get a specific published version by version number."
   [{{:keys [sheet-id version-number]} :query
     :keys [event-store] :as ctx}]
   (let [version (rm/get-version ctx sheet-id version-number)]
     (if-not version
-      {::anom/category ::anom/not-found
-       ::anom/message (str "Version " version-number " not found")}
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message (str "Version " version-number " not found")}
       {:query/result
        {:version version}})))
 
 (defquery :sheet get-stash
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Get the stashed draft for a sheet, if any."
   [{{:keys [sheet-id]} :query
     :keys [event-store] :as ctx}]
   (let [sheet (rm/get-sheet ctx sheet-id)]
     (if-not sheet
-      {::anom/category ::anom/not-found
-       ::anom/message "Sheet not found"}
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message "Sheet not found"}
       (let [stash (rm/get-stash ctx sheet-id)]
         {:query/result
          {:stash stash}}))))
 
-;; =============================================================================
-;; Execution Traces
-;; =============================================================================
-
-(defn- compare-traces-ascending [a b]
-  (let [by-time (trace-time/compare-timestamps (:started-at a) (:started-at b))]
-    (if (zero? by-time)
-      (compare (str (:trace-id a)) (str (:trace-id b)))
-      by-time)))
-
-(defn- compare-traces-descending [a b]
-  (let [by-time (trace-time/compare-timestamps (:started-at b) (:started-at a))]
-    (if (zero? by-time)
-      (compare (str (:trace-id a)) (str (:trace-id b)))
-      by-time)))
-
 (defquery :sheet get-trace
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Get a single execution trace by ID.
 
    Node traces carry the SHAPE of each node's I/O — :read-keys, :write-keys
@@ -331,41 +175,35 @@
     :keys [event-store] :as ctx}]
   (let [trace (rm/get-trace ctx trace-id)]
     (if-not trace
-      {::anom/category ::anom/not-found
-       ::anom/message "Trace not found"}
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message "Trace not found"}
       {:query/result {:trace trace}})))
 
-(defn- trace-family-summary [trace]
-  (cond-> (select-keys (assoc trace :node-count (count (:node-traces trace)))
-                       [:trace-id :sheet-id :correlation-id :root-trace-id :child-trace-ids
-                        :status :started-at :duration-ms :node-count])
-    (:parent-trace-id trace) (assoc :parent-trace-id (:parent-trace-id trace))))
-
 (defquery :sheet get-trace-family
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Get the stored traces belonging to the same root execution as trace-id."
   [{{:keys [trace-id]} :query :as ctx}]
   (if-let [trace (rm/get-trace ctx trace-id)]
     (let [root-trace-id (:root-trace-id trace)
           traces (->> (rm/get-all-traces ctx)
                       (filter #(= root-trace-id (:root-trace-id %)))
-                      (sort compare-traces-ascending)
-                      (mapv trace-family-summary))]
+                      (sort logic/compare-traces-ascending)
+                      (mapv logic/trace-family-summary))]
       {:query/result {:root-trace-id root-trace-id
                       :traces traces}})
-    {::anom/category ::anom/not-found
-     ::anom/message "Trace not found"}))
+    {:cognitect.anomalies/category :cognitect.anomalies/not-found
+     :cognitect.anomalies/message "Trace not found"}))
 
 (defquery :sheet get-correlated-traces
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Get every stored trace belonging to one caller-defined operation.
 
    Correlation spans independent root executions; :families preserves the
    structural root/delegate grouping used by get-trace-family."
   [{{:keys [correlation-id]} :query :as ctx}]
   (let [traces (->> (rm/get-traces-for-correlation ctx correlation-id)
-                    (sort compare-traces-ascending)
-                    (mapv trace-family-summary))
+                    (sort logic/compare-traces-ascending)
+                    (mapv logic/trace-family-summary))
         families (->> traces
                       (group-by :root-trace-id)
                       (map (fn [[root-trace-id family-traces]]
@@ -379,7 +217,7 @@
                     :families families}}))
 
 (defquery :sheet get-traces
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Get execution traces for a sheet with optional filtering.
 
    Query params:
@@ -393,68 +231,31 @@
     :keys [event-store] :as ctx}]
   (let [sheet (rm/get-sheet ctx sheet-id)]
     (if-not sheet
-      {::anom/category ::anom/not-found
-       ::anom/message "Sheet not found"}
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message "Sheet not found"}
       (let [all-traces (rm/get-traces-for-sheet ctx sheet-id)
-            ;; Apply filters
             filtered (cond->> all-traces
-                       ;; Filter by version (nil matches nil, number matches number)
                        (some? version-number)
                        (filter #(= version-number (:version-number %)))
 
-                       ;; Filter by status
                        status
                        (filter #(= status (:status %)))
 
-                       ;; Filter by node involvement
                        node-id
                        (filter #(some (fn [nt] (= node-id (:node-id nt)))
                                       (:node-traces %)))
 
-                       ;; Filter by time (since should be an Instant or compatible)
                        since
-                       (filter #(pos? (trace-time/compare-timestamps
+                       (filter #(pos? (logic/compare-timestamps
                                       (:started-at %) since))))
-            ;; Sort by started-at descending (most recent first)
-            sorted (sort compare-traces-descending filtered)
-            ;; Apply limit
+            sorted (sort logic/compare-traces-descending filtered)
             limited (take (or limit 100) sorted)]
         {:query/result
          {:traces (vec limited)
           :total (count filtered)}}))))
 
-(defn- instant->str
-  "Convert an Instant or OffsetDateTime to ISO string for Transit serialization."
-  [t]
-  (trace-time/canonical-string t))
-
-(defn- serialize-node-trace
-  "Serialize a node trace for Transit, converting timestamps."
-  [nt]
-  (-> nt
-      (update :started-at instant->str)
-      (update :completed-at instant->str)))
-
-(defn- serialize-node-trace-summary
-  "Serialize a node trace summary (without inputs/outputs) for Transit."
-  [nt]
-  (-> nt
-      (dissoc :inputs :outputs)
-      (update :started-at instant->str)
-      (update :completed-at instant->str)))
-
-(defn- serialize-trace
-  "Serialize a full trace for Transit, converting all timestamps.
-   Uses summary node-traces (no inputs/outputs) to keep payload small."
-  [trace]
-  (when trace
-    (-> trace
-        (update :started-at instant->str)
-        (update :completed-at instant->str)
-        (update :node-traces #(mapv serialize-node-trace-summary %)))))
-
 (defquery :sheet runs-screen
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Fat query for the /runs screen.
    Returns trace summaries for list + optionally full trace detail.
 
@@ -464,14 +265,13 @@
      :limit - Optional. Max traces in list (default 100)."
   [{{:keys [trace-id status limit]} :query
     :keys [event-store] :as ctx}]
-  (let [;; Get all traces for list (summaries only)
+  (let [
         all-traces (rm/get-all-traces ctx)
         sheets-map (rm/get-sheets-name-map ctx)
 
-        ;; Filter and transform to summaries
         filtered (cond->> all-traces
                    status (filter #(= status (:status %))))
-        sorted (sort compare-traces-descending filtered)
+        sorted (sort logic/compare-traces-descending filtered)
         limited (take (or limit 100) sorted)
         summaries (mapv (fn [t]
                           (cond-> {:trace-id (:trace-id t)
@@ -480,23 +280,22 @@
                                    :child-trace-ids (:child-trace-ids t)
                                    :sheet-name (get sheets-map (:sheet-id t) "Unknown")
                                    :status (:status t)
-                                   :started-at (instant->str (:started-at t))
+                                   :started-at (logic/instant->str (:started-at t))
                                    :duration-ms (:duration-ms t)
                                    :node-count (count (:node-traces t))}
                             (:parent-trace-id t) (assoc :parent-trace-id (:parent-trace-id t))
                             (:version-number t) (assoc :version-number (:version-number t))))
                         limited)
 
-        ;; Get full trace if requested
         selected-trace (when trace-id
-                         (serialize-trace (rm/get-trace ctx trace-id)))]
+                         (logic/serialize-trace (rm/get-trace ctx trace-id)))]
     {:query/result
      {:traces summaries
       :total (count filtered)
       :selected-trace selected-trace}}))
 
 (defquery :sheet node-trace-detail
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Fetch inputs/outputs for a specific node trace on demand.
 
    The trace stores only the SHAPE of each node's I/O (:read-keys,
@@ -516,15 +315,15 @@
         node-trace (some #(when (= (:trace-instance-id %) trace-instance-id) %)
                          (:node-traces trace))]
     (if node-trace
-      (let [tick-events (value-storage/hydrate-events
+      (let [tick-events (logic/hydrate-events
                          ctx
                          (into [] (es/read event-store
                                            {:tags #{[:tick trace-id]}
                                             :tenant-id (:tenant-id ctx)})))
             node-id (:node-id node-trace)
-            execution-key [node-id (value-log/exec-context (:exec-context node-trace))]
+            execution-key [node-id (logic/exec-context (:exec-context node-trace))]
             completed (some #(when (and (= :sheet/node-execution-completed (:event/type %))
-                                        (= execution-key (value-log/execution-key %)))
+                                        (= execution-key (logic/execution-key %)))
                                %)
                             tick-events)]
         {:query/result
@@ -533,29 +332,27 @@
           :trace-instance-id trace-instance-id
           :exec-context (:exec-context node-trace)
           :inputs (when completed
-                    (not-empty (value-log/resolve-reads ctx
+                    (not-empty (rm/resolve-reads ctx
                                                         (:tenant-id ctx)
                                                         trace-id completed)))
           :outputs (or (:writes completed)
                        (when completed
-                         (not-empty (value-log/resolve-writes ctx
+                         (not-empty (rm/resolve-writes ctx
                                                               (:tenant-id ctx)
                                                               trace-id completed))))
           :rejected-outputs (when completed
                               (not-empty
-                               (value-log/rejected-writes-for tick-events completed)))
+                               (logic/rejected-writes-for tick-events completed)))
           :failure-kind (:failure-kind completed)
           :condition-answer (:condition-answer completed)
           :decision (:decision completed)
           :provider-evidence (:provider-evidence completed)}
-         ;; ModelLeafRecordsResolvedModel: each present only when recorded, so
-         ;; an absent configured or reported model reads as absent.
          (select-keys completed [:model :requested-model :resolved-model]))})
-      {::anom/category ::anom/not-found
-       ::anom/message (str "Node trace not found: " trace-instance-id)})))
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message (str "Node trace not found: " trace-instance-id)})))
 
 (defquery :sheet run-detail-screen
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Fat query for the /runs/detail screen.
    Returns full trace data for a single run.
 
@@ -567,102 +364,13 @@
         sheets-map (rm/get-sheets-name-map ctx)]
     (if trace
       {:query/result
-       {:trace (-> (serialize-trace trace)
+       {:trace (-> (logic/serialize-trace trace)
                    (assoc :sheet-name (get sheets-map (:sheet-id trace) "Unknown")))}}
-      {::anom/category ::anom/not-found
-       ::anom/message (str "Trace not found: " trace-id)})))
-
-;; =============================================================================
-;; Structural Diff
-;; =============================================================================
-
-(defn- flatten-tree-with-paths
-  "Flatten a nested snapshot tree to a map of {node-id {:node ... :path [...]}}."
-  ([tree] (flatten-tree-with-paths tree []))
-  ([tree path]
-   (when tree
-     (let [node-id (:id tree)
-           node-name (:name tree)
-           current-path (conj path node-name)
-           children (or (:children tree) [])
-           ;; Recursively flatten children
-           child-results (mapcat #(flatten-tree-with-paths % current-path) children)]
-       (cons {node-id {:node tree :path current-path}}
-             child-results)))))
-
-(defn- diff-node-fields
-  "Compare two nodes and return a list of changes."
-  [from-node to-node]
-  (let [fields-to-compare [:type :name :executor :model :instruction :fn
-                           :options-from :bands-from :min-confidence :abstain
-                           :reads :writes :check :on-fail
-                           :success-policy :failure-policy
-                           :source-key :item-key :output-key :max-concurrency
-                           :preserve-failures?]]
-    (for [field fields-to-compare
-          :let [from-val (get from-node field)
-                to-val (get to-node field)]
-          :when (not= from-val to-val)]
-      {:field field
-       :old from-val
-       :new to-val})))
-
-(defn- diff-node-trees
-  "Compute structural diff between two node trees."
-  [from-tree to-tree]
-  (let [;; Flatten both trees
-        from-flat (into {} (flatten-tree-with-paths from-tree))
-        to-flat (into {} (flatten-tree-with-paths to-tree))
-        from-ids (set (keys from-flat))
-        to-ids (set (keys to-flat))
-        ;; Compute set differences
-        added-ids (clojure.set/difference to-ids from-ids)
-        removed-ids (clojure.set/difference from-ids to-ids)
-        common-ids (clojure.set/intersection from-ids to-ids)]
-    {:added-nodes (mapv (fn [id]
-                          (let [{:keys [node path]} (get to-flat id)]
-                            {:id id
-                             :name (:name node)
-                             :type (:type node)
-                             :path path}))
-                        added-ids)
-     :removed-nodes (mapv (fn [id]
-                            (let [{:keys [node path]} (get from-flat id)]
-                              {:id id
-                               :name (:name node)
-                               :type (:type node)
-                               :path path}))
-                          removed-ids)
-     :modified-nodes (vec (for [id common-ids
-                                :let [from-entry (get from-flat id)
-                                      to-entry (get to-flat id)
-                                      changes (diff-node-fields (:node from-entry) (:node to-entry))]
-                                :when (seq changes)]
-                            {:id id
-                             :name (:name (:node to-entry))
-                             :path (:path to-entry)
-                             :changes (vec changes)}))}))
-
-(defn- diff-blackboard-schemas
-  "Compute diff between two blackboard schemas."
-  [from-schema to-schema]
-  (let [from-keys (set (keys from-schema))
-        to-keys (set (keys to-schema))
-        added-keys (clojure.set/difference to-keys from-keys)
-        removed-keys (clojure.set/difference from-keys to-keys)
-        common-keys (clojure.set/intersection from-keys to-keys)]
-    {:added (vec added-keys)
-     :removed (vec removed-keys)
-     :modified (vec (for [k common-keys
-                          :let [from-val (get from-schema k)
-                                to-val (get to-schema k)]
-                          :when (not= from-val to-val)]
-                      {:key k
-                       :old-schema from-val
-                       :new-schema to-val}))}))
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message (str "Trace not found: " trace-id)})))
 
 (defquery :sheet diff-versions
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Compare two published versions and return structural differences.
 
    Returns:
@@ -675,16 +383,16 @@
         v2 (when sheet (rm/get-version ctx sheet-id to-version))]
     (cond
       (not sheet)
-      {::anom/category ::anom/not-found
-       ::anom/message "Sheet not found"}
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message "Sheet not found"}
 
       (not v1)
-      {::anom/category ::anom/not-found
-       ::anom/message (str "Version " from-version " not found")}
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message (str "Version " from-version " not found")}
 
       (not v2)
-      {::anom/category ::anom/not-found
-       ::anom/message (str "Version " to-version " not found")}
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message (str "Version " to-version " not found")}
 
       :else
       (let [from-snapshot (:snapshot v1)
@@ -692,55 +400,12 @@
         {:query/result
          {:from-version from-version
           :to-version to-version
-          :node-diff (diff-node-trees (:nodes from-snapshot) (:nodes to-snapshot))
-          :blackboard-diff (diff-blackboard-schemas (:blackboard-schema from-snapshot)
+          :node-diff (logic/diff-node-trees (:nodes from-snapshot) (:nodes to-snapshot))
+          :blackboard-diff (logic/diff-blackboard-schemas (:blackboard-schema from-snapshot)
                                                      (:blackboard-schema to-snapshot))}}))))
 
-;; =============================================================================
-;; Node Statistics
-;; =============================================================================
-
-(defn- percentile
-  "Calculate the nth percentile from a sorted list of values."
-  [sorted-values n]
-  (when (seq sorted-values)
-    (let [idx (int (* (/ n 100.0) (dec (count sorted-values))))]
-      (nth sorted-values (min idx (dec (count sorted-values)))))))
-
-(defn- top-errors
-  "Get the top N most common errors."
-  [traces n]
-  (->> traces
-       (keep :error)
-       (frequencies)
-       (sort-by val >)
-       (take n)
-       (mapv (fn [[msg cnt]] {:message msg :count cnt}))))
-
-(defn- compute-node-stats
-  "Compute statistics for a single node from its traces."
-  [node-id traces]
-  (when (seq traces)
-    (let [first-trace (first traces)
-          durations (sort (keep :duration-ms traces))
-          statuses (frequencies (map :status traces))
-          total (count traces)
-          success-count (get statuses :success 0)]
-      {:node-id node-id
-       :node-name (:node-name first-trace)
-       :node-type (:node-type first-trace)
-       :execution-count total
-       :success-count success-count
-       :failure-count (get statuses :failure 0)
-       :success-rate (if (pos? total) (double (/ success-count total)) 0.0)
-       :avg-duration-ms (when (seq durations)
-                          (double (/ (reduce + durations) (count durations))))
-       :p50-duration-ms (percentile durations 50)
-       :p95-duration-ms (percentile durations 95)
-       :common-errors (top-errors traces 5)})))
-
 (defquery :sheet node-stats
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Get aggregated execution statistics per node.
 
    Query params:
@@ -752,29 +417,24 @@
     :keys [event-store] :as ctx}]
   (let [sheet (rm/get-sheet ctx sheet-id)]
     (if-not sheet
-      {::anom/category ::anom/not-found
-       ::anom/message "Sheet not found"}
-      (let [;; Get all traces for this sheet
+      {:cognitect.anomalies/category :cognitect.anomalies/not-found
+       :cognitect.anomalies/message "Sheet not found"}
+      (let [
             all-traces (rm/get-traces-for-sheet ctx sheet-id)
-            ;; Apply filters
             filtered-traces (cond->> all-traces
                               version-number
                               (filter #(= version-number (:version-number %)))
 
                               since
-                              (filter #(pos? (trace-time/compare-timestamps
+                              (filter #(pos? (logic/compare-timestamps
                                              (:started-at %) since))))
-            ;; Flatten all node traces from filtered traces
             all-node-traces (mapcat :node-traces filtered-traces)
-            ;; Group by node-id
             by-node (group-by :node-id all-node-traces)
-            ;; Filter to requested nodes if specified
             by-node (if (seq node-ids)
                       (select-keys by-node (set node-ids))
                       by-node)
-            ;; Compute stats per node
             stats (keep (fn [[node-id traces]]
-                          (compute-node-stats node-id traces))
+                          (logic/compute-node-stats node-id traces))
                         by-node)]
         {:query/result
          {:stats (vec (sort-by :success-rate stats))
@@ -785,7 +445,7 @@
 ;; =============================================================================
 
 (defquery :sheet active-executions-screen
-  {:authorized? authenticated?}
+  {:authorized? logic/queries-authenticated?}
   "Fat query for the /executions active executions dashboard.
    Returns all currently running executions across all sheets.
 
@@ -795,7 +455,6 @@
   [{:keys [event-store] :as ctx}]
   (let [active-execs (rm/get-all-active-executions ctx)
         sheets-map (rm/get-sheets-name-map ctx)
-        ;; Enrich each execution with sheet name and node info
         enriched (mapv (fn [exec]
                          (let [sheet-id (:sheet-id exec)
                                nodes-by-id (when (:current-node-id exec)

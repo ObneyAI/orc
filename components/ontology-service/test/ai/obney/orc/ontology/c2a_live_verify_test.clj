@@ -1,0 +1,208 @@
+(ns ai.obney.orc.ontology.c2a-live-verify-test
+  "Tests for the C-2a live-verify orchestrator
+   (ai.obney.orc.ontology.test-support.c2a-live-verify).
+
+   The orchestrator runs three scenarios:
+     A — 3-run regression (control → failure-burst → recovery)
+     B — Seed-executability spot-check
+     C — Retrieval-quality probe (deferred until C-2b)
+
+   These tests verify orchestration with a fake LLM (`with-redefs` on
+   llm/predict). The REAL-LLM live-verify gate runs the same code
+   against gemini-3-flash-preview with `OPENROUTER_API_KEY` set."
+  (:require [clojure.test :refer [deftest testing is]]
+            [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.ontology.test-support.c2a-live-verify :as live-verify]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
+
+
+(defn- with-faked-llm
+  "Run f with llm/predict stubbed to return a minimal well-formed
+   description body. The fake mirrors what the consolidator's structured
+   output expects (six writes keys)."
+  [f]
+  (with-redefs [llm/predict
+                (fn [_provider module _inputs _options]
+                  (let [output-fields (:outputs module)
+                        declared (set (map :name output-fields))
+                        entities-spec (:spec (some #(when (= :entities (:name %)) %)
+                                                   output-fields))
+                        description {:capabilities ["x"]
+                             :strengths [{:trait "fake-strength"
+                                          :good-when "ctx"
+                                          :recommended-pattern "[:llm {:reads [:x] :writes [:y]}]"
+                                          :confidence 0.8
+                                          :evidence-count 5
+                                          :first-observed-at "2026-05-26T00:00:00Z"
+                                          :last-reinforced-at "2026-05-26T00:00:00Z"}]
+                             :weaknesses []
+                             :representative-uses ["x"]
+                             :avoid-when ["x"]
+                             :summary "Fake summary."}
+                        entity-value (cond
+                                       (= :string entities-spec) "FixtureEntity"
+                                       (and (vector? entities-spec)
+                                            (#{:vector :sequential} (first entities-spec))
+                                            (= :string (last entities-spec)))
+                                       ["FixtureEntity"]
+                                       :else
+                                       [{:name "FixtureEntity"
+                                         :source_columns ["fixture"]
+                                         :description "Schema-valid fixture entity"}])
+                        outputs (cond
+                                  (contains? declared :entities)
+                                  {:entities entity-value}
+                                  (contains? declared :capabilities) description
+                                  :else (into {} (map (fn [k] [k "fixture"]) declared)))]
+                  {:outputs outputs
+                   :usage {:total-tokens 100}
+                   :model "fake"}))]
+    (f)))
+
+(deftest live-verify-runs-without-crashing
+  (testing "c2a-live-verify/run! returns a structured result map with three scenario keys"
+    (with-faked-llm
+      (fn []
+        (let [result (live-verify/run! {:scenario-b-sample-indices [0]
+                                         :skip-edn-save? true})]
+          (is (map? result)
+              "run! returns a map")
+          (is (contains? result :scenario-a)
+              "Result map contains :scenario-a")
+          (is (contains? result :scenario-b)
+              "Result map contains :scenario-b")
+          (is (contains? result :scenario-c)
+              "Result map contains :scenario-c"))))))
+
+
+
+(defn- with-faked-tree-llm-success
+  "Like with-faked-llm but tolerates the tree-executor's :llm leaves
+   calling llm/predict with any inputs and returning :status :success
+   from the executor. The executor wraps llm and judges success based
+   on whether outputs were produced — so we return any non-nil :outputs
+   keyed by what the LLM was asked to write."
+  [f]
+  (with-redefs [llm/predict
+                (fn [_provider module _inputs _options]
+                  (let [output-fields (or (:outputs module) [])
+                        outputs (into {} (map (fn [{:keys [name spec]}]
+                                                [name (if (and (= :entities name)
+                                                               (vector? spec)
+                                                               (#{:vector :sequential} (first spec)))
+                                                        [(str "stubbed-" (clojure.core/name name))]
+                                                        (str "stubbed-" (clojure.core/name name)))])
+                                              output-fields))]
+                    {:outputs outputs
+                     :usage {:total-tokens 50}
+                     :model "fake"}))]
+    (f)))
+
+(deftest scenario-b-picks-sampled-seeds-and-reports-each
+  (testing "Scenario B picks the configured sample of seeds, attempts each, and reports per-seed status"
+    (with-faked-tree-llm-success
+      (fn []
+        (let [result (live-verify/run! {:scenario-b-sample-indices [0 1]
+                                         :skip-edn-save? true
+                                         :register-llm-provider? false
+                                         :scenario-a-event-counts {:control 1 :failure 1 :recovery 1}})]
+          (let [b (:scenario-b result)]
+            (is (boolean? (:passed? b))
+                ":scenario-b has a :passed? boolean")
+            (is (= 2 (count (:results b)))
+                "Two seeds attempted (matching the configured sample-indices)")
+            (is (every? :seed-id (:results b))
+                "Each per-seed result records its seed-id")
+            (is (every? #(contains? % :status) (:results b))
+                "Each per-seed result records a :status")))))))
+
+
+
+
+(deftest edn-records-saved-when-skip-edn-save-false
+  (testing "When :skip-edn-save? false, the orchestrator writes per-scenario EDN files containing the structured pass/fail summary"
+    (with-faked-tree-llm-success
+      (fn []
+        (let [tmp-dir (str "/tmp/c2a-live-verify-edn-test-" (random-uuid))]
+          (try
+            (.mkdirs (java.io.File. tmp-dir))
+            (live-verify/run! {:scenario-b-sample-indices [0]
+                               :skip-edn-save? false
+                               :edn-dir tmp-dir
+                               :register-llm-provider? false
+                               :scenario-a-event-counts {:control 1 :failure 1 :recovery 1}})
+            (let [files (->> (.listFiles (java.io.File. tmp-dir))
+                              (map #(.getName %))
+                              (filter #(re-matches #"c2a-live-verify-.*\.edn" %)))]
+              (is (>= (count files) 2)
+                  "At least two EDN files written (scenario-a + scenario-b)")
+              (doseq [fname files]
+                (let [content (slurp (str tmp-dir "/" fname))
+                      parsed (try (clojure.core/read-string content)
+                                  (catch Exception _ ::unparseable))]
+                  (is (not= ::unparseable parsed)
+                      (str "EDN file " fname " is parseable"))
+                  (is (map? parsed)
+                      (str "EDN file " fname " parses to a map")))))
+            (finally
+              (doseq [f (.listFiles (java.io.File. tmp-dir))]
+                (.delete f))
+              (.delete (java.io.File. tmp-dir)))))))))
+
+(deftest scenario-c-is-deferred-pending-c-2b
+  (testing "Scenario C is marked deferred with a reason mentioning C-2b"
+    (with-faked-llm
+      (fn []
+        (let [result (live-verify/run! {:scenario-b-sample-indices []
+                                         :skip-edn-save? true
+                                         :register-llm-provider? false
+                                         :scenario-a-event-counts {:control 1 :failure 1 :recovery 1}})
+              c (:scenario-c result)]
+          (is (= true (:deferred? c))
+              "Scenario C reports :deferred? true")
+          (is (string? (:reason c))
+              "Scenario C carries a :reason string")
+          (is (re-find #"C-2b" (:reason c))
+              ":reason mentions C-2b (the slice that unblocks Scenario C)"))))))
+
+(deftest scenario-b-handles-broken-seed-gracefully
+  (testing "If a seed's snippet errors during transform, the per-seed status is :error and :passed? overall is false"
+    (with-faked-tree-llm-success
+      (fn []
+        (with-redefs [service-logic/rlm-dsl->orc-dsl
+                      (fn [_tree] (throw (ex-info "Simulated broken seed" {:reason :test-injection})))]
+          (let [result (live-verify/run! {:scenario-b-sample-indices [0]
+                                           :skip-edn-save? true
+                                           :register-llm-provider? false
+                                           :scenario-a-event-counts {:control 1 :failure 1 :recovery 1}})
+                b (:scenario-b result)
+                seed-result (first (:results b))]
+            (is (= false (:passed? b))
+                "Overall :scenario-b :passed? is false when any seed errored")
+            (is (= :error (:status seed-result))
+                "Broken seed reports :status :error")
+            (is (string? (:error seed-result))
+                "Broken seed records the error message")
+            (is (re-find #"Simulated broken seed" (:error seed-result))
+                "Error message surfaces the underlying cause")))))))
+
+(deftest scenario-a-reports-three-phases-with-bodies
+  (testing "After running Scenario A, the result has three phases each with a captured description body"
+    (with-faked-llm
+      (fn []
+        (let [result (live-verify/run! {:scenario-b-sample-indices []
+                                         :skip-edn-save? true
+                                         :register-llm-provider? false
+                                         :scenario-a-event-counts {:control 2 :failure 1 :recovery 2}})]
+          (let [a (:scenario-a result)]
+            (is (boolean? (:passed? a))
+                ":scenario-a has a :passed? boolean")
+            (is (= 3 (count (:phases a)))
+                ":scenario-a has three phases (X, Y, Z)")
+            (let [phase-labels (mapv :phase (:phases a))]
+              (is (= [:x :y :z] phase-labels)
+                  "Phases are in order: X (control), Y (failure-burst), Z (recovery)"))
+            (let [bodies (mapv :body (:phases a))]
+              (is (every? some? bodies)
+                  (str "Each phase captures a description body: "
+                       (pr-str (:phases a)))))))))))

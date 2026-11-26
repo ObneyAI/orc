@@ -23,8 +23,6 @@
 ;; Schema Conversion
 ;; ============================================================================
 
-(declare convert-schema)
-
 (defn- specificity-error
   [message schema]
   (throw (ex-info (str message "; provide the most specific schema possible for the value's intent")
@@ -35,14 +33,10 @@
   [malli-schema description]
   (if (and description (string? description) (seq description))
     (if (vector? malli-schema)
-      ;; Schema is already a vector, add props
       (let [[type & rest] malli-schema]
         (if (and (seq rest) (map? (first rest)))
-          ;; Already has props map
           (into [type (assoc (first rest) :description description)] (rest rest))
-          ;; No props map, add one
           (into [type {:description description}] rest)))
-      ;; Schema is a keyword, wrap it
       [malli-schema {:description description}])
     malli-schema))
 
@@ -57,27 +51,25 @@
 
 (defn- convert-array
   "Convert a JSON Schema array to Malli."
-  [{:strs [items description] :as schema}]
+  [convert-child {:strs [items description] :as schema}]
   (let [item-schema (if items
-                      (convert-schema items)
+                      (convert-child items)
                       (specificity-error "JSON array schema does not specify its items" schema))]
     (add-description [:vector item-schema] description)))
 
 (defn- convert-object
   "Convert a JSON Schema object to Malli."
-  [{:strs [properties required description additionalProperties] :as schema}]
+  [convert-child {:strs [properties required description additionalProperties] :as schema}]
   (if (and (not properties) additionalProperties)
-    ;; Map type (additionalProperties without specific properties)
     (let [value-schema (if (map? additionalProperties)
-                         (convert-schema additionalProperties)
+                         (convert-child additionalProperties)
                          (specificity-error "JSON object additionalProperties has no value schema" schema))]
       (add-description [:map-of :string value-schema] description))
-    ;; Regular object with properties
     (let [_ (when (empty? properties)
               (specificity-error "JSON object schema does not specify properties" schema))
           required-set (set (or required []))
           prop-schemas (for [[prop-name prop-schema] properties
-                             :let [converted (convert-schema prop-schema)
+                             :let [converted (convert-child prop-schema)
                                    is-required (contains? required-set prop-name)]]
                          (if is-required
                            [(keyword prop-name) converted]
@@ -97,13 +89,12 @@
   [{:strs [type] :as json-schema}]
   (when json-schema
     (case type
-      "object" (convert-object json-schema)
-      "array" (convert-array json-schema)
+      "object" (convert-object convert-schema json-schema)
+      "array" (convert-array convert-schema json-schema)
       ("string" "number" "integer" "boolean" "null") (convert-primitive json-schema)
-      ;; Default: try to infer from structure
       (cond
-        (contains? json-schema "properties") (convert-object json-schema)
-        (contains? json-schema "items") (convert-array json-schema)
+        (contains? json-schema "properties") (convert-object convert-schema json-schema)
+        (contains? json-schema "items") (convert-array convert-schema json-schema)
         (contains? json-schema "enum") (convert-primitive json-schema)
         :else (specificity-error "JSON Schema is structurally unconstrained" json-schema)))))
 
@@ -167,21 +158,3 @@
                        outputSchema))))))
    {}
    tools))
-
-(comment
-  ;; Example conversions
-  (json-schema->malli
-   {"type" "object"
-    "properties" {"query" {"type" "string" "description" "Search query"}
-                  "limit" {"type" "integer" "default" 10}}
-    "required" ["query"]})
-  ;; => [:map
-  ;;     [:query [:string {:description "Search query"}]]
-  ;;     [:limit {:optional true} :int]]
-
-  (json-schema->malli
-   {"type" "array"
-    "items" {"type" "string"}
-    "description" "List of keywords"})
-  ;; => [:vector {:description "List of keywords"} :string]
-  )

@@ -9,17 +9,17 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [ai.obney.grain.pubsub.interface :as pubsub]
-            [ai.obney.orc.orc-service.core.streaming :as streaming]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (use-fixtures :each
   (fn [f]
-    (streaming/reset-all!)
+    (service-logic/reset-all!)
     (try
       (f)
       (finally
-        (streaming/reset-all!)))))
+        (service-logic/reset-all!)))))
 
 (defn- take-until
   [events-ch pred timeout-ms]
@@ -56,8 +56,7 @@
                    (get-in ctx [:event-store :config :event-pubsub]))
             recorded-thread-name (atom nil)
             subs-covering-var
-            (ns-resolve 'ai.obney.orc.orc-service.core.streaming
-                        'subs-covering)
+            #'service-logic/subs-covering
             real-subs-covering @subs-covering-var]
         (with-redefs-fn
           {subs-covering-var
@@ -93,18 +92,13 @@
             tap-entered (promise)
             release-tap (promise)
             subs-covering-var
-            (ns-resolve 'ai.obney.orc.orc-service.core.streaming
-                        'subs-covering)
+            #'service-logic/subs-covering
             real-subs-covering @subs-covering-var]
         (with-redefs-fn
           {subs-covering-var
            (fn [tick-id]
              (when (= tick-id target-tick-id)
                (deliver tap-entered true)
-               ;; Bounded even though this is deliberately a blocking
-               ;; probe: an unbounded deref on a shared thread is exactly
-               ;; the hazard this slice exists to eliminate (see
-               ;; .rr-durable-notes/WEDGE-ROOT-CAUSE.md §5).
                (deref release-tap 10000 ::timed-out))
              (real-subs-covering tick-id))}
           (fn []
@@ -119,8 +113,6 @@
               (is (= true (deref tap-entered 3000 ::not-entered))
                   "the tap loop is observably blocked inside subs-covering")
 
-              ;; (a) No dispatch-pool thread is executing the tap loop while
-              ;; it is held blocked.
               (let [dispatch-threads-with-tap-frame
                     (into []
                           (comp
@@ -136,7 +128,6 @@
                 (is (empty? dispatch-threads-with-tap-frame)
                     (pr-str {:dispatch-threads-with-tap-frame dispatch-threads-with-tap-frame})))
 
-              ;; (b) A workflow executes to completion while the tap is held.
               (let [sheet-id-2 (sheet/build-workflow! ctx (small-deterministic-workflow))
                     result (sheet/execute ctx sheet-id-2 {:input "x"} :timeout-ms 5000)]
                 (is (= :success (:status result)) (pr-str result)))

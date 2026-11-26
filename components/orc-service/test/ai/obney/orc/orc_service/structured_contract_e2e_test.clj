@@ -90,8 +90,6 @@
                           [:string {:description "A known answer is required."}])]
     (is (= :failure (:status result)))
     (is (= :failure (:status completion)))
-    ;; Failed completion diagnostics retain the actual supplied value. They are
-    ;; not accepted domain writes: assert the canonical write stream below.
     (is (contains? writes :answer))
     (is (nil? (:answer writes)))
     (is (empty? (filter #(and (= :sheet/execution-value-written (:event/type %))

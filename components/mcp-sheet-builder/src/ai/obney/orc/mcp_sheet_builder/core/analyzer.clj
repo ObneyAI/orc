@@ -105,7 +105,7 @@
      :input-schema inputSchema
      :output-schema outputSchema
      :malli-input malli-input
-     :malli-output nil  ;; MCP tools rarely define output schemas
+     :malli-output nil
      :idempotent? (idempotent? capabilities)}))
 
 (defn analyze-tools
@@ -138,20 +138,3 @@
     {:patterns base-patterns
      :creative creative-budget
      :total (+ base-patterns creative-budget)}))
-
-(comment
-  ;; Example analysis
-  (analyze-tool {:name "searchLangfuseDocs"
-                 :description "Semantic search over Langfuse docs"
-                 :inputSchema {"type" "object"
-                               "properties" {"query" {"type" "string"}}}})
-  ;; => {:name "searchLangfuseDocs"
-  ;;     :description "Semantic search over Langfuse docs"
-  ;;     :capabilities #{:search}
-  ;;     :category :data-access
-  ;;     :malli-input [:map [:query :string]]
-  ;;     :idempotent? true}
-
-  (exploration-budget 15)
-  ;; => {:patterns 10, :creative 5, :total 15}
-  )

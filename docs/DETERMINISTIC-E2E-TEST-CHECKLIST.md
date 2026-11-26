@@ -5,6 +5,8 @@ documentation audit. These tests exercise real ORC workflow construction,
 execution, event processing, projections, and public queries without asserting
 LLM response quality.
 
+- [x] DURABLE-WORKFLOW-VALUES. Submit a non-durable nested code output through a workflow, verify failure with no canonical write, and read its type and reason through node trace detail. Check that a direct draft write cannot replace a durable value with a non-durable object.
+
 Status convention:
 
 - `[ ]` not implemented or not yet verified end to end
@@ -268,7 +270,7 @@ that verifies the stated observable results.
   as optimisable components, and a candidate instruction patched in for evaluation reaches the
   decision's and the model-backed condition's provider call (it previously never reached a
   condition). gepa `EveryModelInstructionIsAComponent`. Verified by
-  `components/gepa/.../decision_instructions_test.clj` (3 tests).
+  `components/gepa-service/.../decision_instructions_test.clj` (3 tests).
 - [x] **DET-E2E-309 — REAL-model end-to-end decision + tool runtime.** One workflow under the
   `ORC_OPENROUTER_E2E_TESTS` gate: a native decision model (Jev, selected per node by `:model`)
   routes; the lookup branch calls a contract-enforced tool leaf and delegates a summary to a
@@ -337,6 +339,7 @@ that verifies the stated observable results.
 
 - [x] **DET-E2E-073 — Command → event → projection.** A real code-only build and execution verifies that every scoped mutation event has a registered passing Malli schema and reconstructs sheet, nodes, blackboard, and durable trace through public queries.
 - [x] **DET-E2E-074 — Projection replay.** Clean reductions of the complete event stream through the production sheet, node, blackboard, and trace reducers exactly match their live public query results.
+- [x] **Researcher effect claims across the version-1 cache migration.** Three JVMs opened the same tenant's SQLite history of ten Grain events. The old LMDB contained the historical version-1 subscription's `:claimed` status and version 2's `:indeterminate` status for the same attempt. With a fresh LMDB, the public version-1 projection recovered `:indeterminate` and resolving ownership epoch 2. Reopening the original cache verified both partition checksums and all event IDs.
 - [x] **DET-E2E-075 — Attached judge assesses with evaluation disabled.** An explicitly attached heuristic structural judge produces exactly one score while Living Description evaluation remains disabled; only the default researcher judges are opt-in.
 - [x] **DET-E2E-076 — Deterministic structural judge.** A known sequence → map-each → final tree emits the exact 0.5 structural score, two perfect dimensions, and the same projected judge-score entry.
 - [x] **DET-E2E-077 — Multiple deterministic judges.** A throwing custom code judge is isolated while its sibling heuristic judge emits the sole valid score and the host execution remains successful.
@@ -917,7 +920,7 @@ Implementation briefs: docs/issues/gepa-recovery/. Existing GEPA-RESULT checks c
 
 ## GEPA reflection from the parent's training minibatch
 
-Source: `components/gepa/test/ai/obney/orc/gepa/parent_minibatch_reflection_test.clj`, plus the wired
+Source: `components/gepa-service/test/ai/obney/orc/gepa/parent_minibatch_reflection_test.clj`, plus the wired
 `feedback_path_test.clj` and `output_path_test.clj` (distinct training and validation sets). Contract
 `ReflectiveInstructionProposer` (`ReflectionFromTheParentsTrainingMinibatch`, `FailureFocusedReflection`),
 `ParetoPopulationSelection.StrictMutationAcceptance`, rules `ReflectOnTheParentsMinibatch` and
@@ -1276,7 +1279,7 @@ proves transport and recovery, not unscripted semantic quality.
 
 ## GEPA component rotation, reflection prompt template and reflection token budget
 
-Source: `components/gepa/test/ai/obney/orc/gepa/rotation_prompt_budget_test.clj`.
+Source: `components/gepa-service/test/ai/obney/orc/gepa/rotation_prompt_budget_test.clj`.
 
 - [ ] GEPA-ROTATE-1: Successive rounds of one parent rotate through its components in a stable order; a round skipped for a perfect parent does not advance the rotation; a redelivered round keeps its recorded component; a child continues from its parent's pointer while an unrelated candidate starts at the first component.
 - [ ] GEPA-PROMPT-1: A template string reaches every component's proposer prompt; a map reaches its component while another component gets the default; a template missing a placeholder is refused at start, before any evaluation; the template is used after `resume!`.

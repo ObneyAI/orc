@@ -18,8 +18,8 @@
   (:require [runner]
             [clojure.string :as str]
             [ai.obney.orc.ontology.interface :as ont]
-            [ai.obney.orc.ontology.core.task-classifier :as tc]
-            [ai.obney.orc.ontology.core.domain-penalty :as dp]))
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]))
 
 (def names
   {#uuid "bf47c816-2833-320e-9fbd-6ae109275ab0" "Code-building(PARENT-correct)"
@@ -35,7 +35,7 @@
   "Refactor the order service to extract a pure pricing helper from the request handler, preserving existing behavior and keeping all current tests green.")
 
 (defn build-sig [instruction]
-  (tc/build-task-signature {:instruction instruction
+  (ontology-logic/build-task-signature {:instruction instruction
                             :reads [:user-message :active-plan :workspace-root]
                             :writes [:assistant-response]
                             :mcp-tools ["shell/exec" "fs/read" "fs/list"]}))
@@ -49,36 +49,32 @@
   (when-not (System/getenv "OPENROUTER_API_KEY")
     (println "FATAL: OPENROUTER_API_KEY not set") (System/exit 1))
   (runner/start!)
-  (let [;; allow knob overrides on the CLI: scale margin cap
+  (let [
         [scale margin cap] (map #(when % (Double/parseDouble %)) (take 3 args))
-        cfg (cond-> (assoc dp/default-penalty-config :scorer :colbert)
+        cfg (cond-> (assoc ontology-logic/default-penalty-config :scorer :colbert)
               scale (assoc :penalty-scale scale)
               margin (assoc :margin margin)
               cap (assoc :penalty-cap cap))
-        ctx (deref (var-get (requiring-resolve 'runner/system-state)))
+        ctx (runner/current-context)
         sig (build-sig refactor-instruction)
-        enrich (requiring-resolve 'ai.obney.orc.ontology.interface/enrich-candidate-evidence)
-        normalize (requiring-resolve 'ai.obney.orc.ontology.interface/normalize-search-result)
-        latest-idx (requiring-resolve 'ai.obney.orc.ontology.interface/latest-ontology-descriptions-index)
-        colbert-fn (requiring-resolve 'ai.obney.orc.ontology.interface/colbert-fn)
+        enrich #'ontology-queries/enrich-candidate-evidence
+        normalize #'ontology-logic/normalize-search-result
+        latest-idx #'ontology-logic/latest-ontology-descriptions-index
+        colbert-fn #'ontology-logic/colbert-fn
         idx (latest-idx ctx)
         colbert-search (colbert-fn (symbol "search"))
         raw (mapv normalize (colbert-search ctx {:query sig :index-id (:index-id idx) :k 20}))
         beh (filterv #(= "behavioral-subtree"
                          (let [g (-> % :document-metadata :granularity)]
                            (if (keyword? g) (name g) (str g)))) raw)
-        ;; enrich (EL-2) + stamp a starting :fitness-score = the ColBERT retrieval
-        ;; score (proxy for the LLM fitness; the penalty multiplies whatever
-        ;; fitness arrives) so we can show orig->final + re-rank deterministically.
         enriched (mapv (fn [c] (assoc (@enrich ctx c) :fitness-score (:score c))) beh)
-        ;; THE PRODUCTION SEAM: build the :colbert scorer + run the real pass.
-        scorer (dp/make-scorer ctx cfg)
+        scorer (ontology-logic/make-scorer ctx cfg)
         scored (mapv (fn [c]
-                       (let [{:keys [cos-avoid cos-good penalty]} (dp/score-candidate c sig scorer cfg)]
+                       (let [{:keys [cos-avoid cos-good penalty]} (ontology-logic/score-candidate c sig scorer cfg)]
                          (assoc c :cos-avoid cos-avoid :cos-good cos-good :penalty penalty
-                                :final (dp/apply-penalty (:fitness-score c) penalty))))
+                                :final (ontology-logic/apply-penalty (:fitness-score c) penalty))))
                      enriched)
-        penalized (dp/penalize-candidates ctx enriched sig cfg scorer)]
+        penalized (ontology-logic/penalize-candidates ctx enriched sig cfg scorer)]
     (println "\n=== EL-5 PROTOTYPE: refactor/extract-helper case (REAL ColBERT MaxSim, normalized) ===")
     (println "config:" (select-keys cfg [:scorer :penalty-scale :margin :penalty-cap :colbert-norm]))
     (println (format "candidates (behavioral-subtree): %d" (count enriched)))
@@ -93,11 +89,6 @@
     (doseq [[i c] (map-indexed vector penalized)]
       (println (format "  #%d  %-42s final-fitness=%.4f penalty=%.3f"
                        (inc i) (label-for c) (double (or (:fitness-score c) 0.0)) (:domain-penalty c))))
-    ;; NB: this proto isolates the DETERMINISTIC penalty layer using the ColBERT
-    ;; RETRIEVAL score as a fitness proxy (NOT the LLM reranker fitness), so the
-    ;; absolute #1 here is not the LLM's ordering — the load-bearing signal is
-    ;; that the rename force-fit is PENALIZED and DEMOTED. (The live rate probe,
-    ;; el2_inspect_rate, runs the real LLM fitness and shows Code-building #1.)
     (let [rename-pos (first (keep-indexed (fn [i c] (when (str/includes? (label-for c) "rename") (inc i))) penalized))
           rename (first (filter #(str/includes? (label-for %) "rename") scored))
           top (label-for (first penalized))]

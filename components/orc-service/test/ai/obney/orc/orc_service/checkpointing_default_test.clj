@@ -3,11 +3,11 @@
             [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-sqlite-v3.interface]
-            [ai.obney.orc.llm.interface :as llm]))
+            [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]))
 
 (def ^:private nondeterministic-event-keys
   #{:event/id :event/timestamp
@@ -186,10 +186,10 @@
               (let [scan (sheet/resume-in-progress! reopened)]
                 (is (= 1 (count (filter :resumed? scan))) (pr-str scan)))
               (is (h/settle-until!
-                   #(some? (runtime/durable-terminal-result reopened tick-id))
+                   #(some? (service-commands/durable-terminal-result reopened tick-id))
                    :timeout-ms 15000)
                   "the reopened runtime reaches a durable terminal result")
-              (let [result (runtime/durable-terminal-result reopened tick-id)
+              (let [result (service-commands/durable-terminal-result reopened tick-id)
                     records (rm/get-researcher-iteration-records
                              reopened sheet-id tick-id researcher-id)
                     events (into []

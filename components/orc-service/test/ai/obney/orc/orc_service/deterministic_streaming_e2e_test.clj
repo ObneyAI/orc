@@ -6,13 +6,13 @@
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.streaming :as streaming]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (use-fixtures :each
   (fn [f]
-    (streaming/reset-all!)
-    (try (f) (finally (streaming/reset-all!)))))
+    (service-logic/reset-all!)
+    (try (f) (finally (service-logic/reset-all!)))))
 
 (defn identity-value [{:keys [inputs]}]
   {:output (:input inputs)})
@@ -130,10 +130,6 @@
             durable-start-index (.indexOf durable-types :sheet/tree-tick-started)
             durable-first-node-index (.indexOf durable-types :sheet/node-execution-started)]
         (is (= :success (:status execution)))
-        ;; Durable event types reach the ephemeral router through independent
-        ;; tap loops, so cross-type stream arrival order is intentionally not a
-        ;; lifecycle-ordering contract. Presence is proved in the stream; the
-        ;; strict lifecycle order is proved at the durable boundary.
         (is (= 1 (count root-starts)))
         (is (and (<= 0 durable-start-index)
                  (< durable-start-index durable-first-node-index))
@@ -382,7 +378,7 @@
                                                                [:tick-id :sheet-id :status
                                                                 :parent-tick-id :root-tick-id])]))
                                cancelled)
-                    replayed-ticks (reduce rm/ticks* {} events)
+                    replayed-ticks (reduce service-logic/ticks* {} events)
                     replayed (into {} (map (fn [tick-id]
                                              [tick-id (select-keys (get replayed-ticks tick-id)
                                                                    [:tick-id :sheet-id :status

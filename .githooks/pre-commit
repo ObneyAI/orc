@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+repository=$(pwd)
+
+if ! git cat-file -e :scripts/lint.sh 2>/dev/null; then
+    echo 'The staged index must include scripts/lint.sh and its lint scripts.' >&2
+    exit 1
+fi
+
+# Export the index so partially staged files are checked as they will be committed.
+# Limit the snapshot to the lint scripts and their source roots.
+snapshot=$(mktemp -d "${TMPDIR:-/tmp}/orc-pre-commit.XXXXXX")
+trap 'rm -rf "$snapshot"' 0
+trap 'exit 1' HUP INT TERM
+mkdir -p "$snapshot/components" "$snapshot/bases" "$snapshot/projects" "$snapshot/development" "$snapshot/scripts" "$snapshot/localstack-init"
+git ls-files --cached -z -- components bases projects development scripts localstack-init qa > "$snapshot/index-files"
+git checkout-index --prefix="$snapshot/" --stdin -z < "$snapshot/index-files"
+
+echo "Running repository lints against staged content..."
+sh "$snapshot/scripts/lint.sh"
+bb "$snapshot/scripts/lint_base_changes.bb" check "$repository"

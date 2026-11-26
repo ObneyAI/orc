@@ -47,8 +47,6 @@
     (throw (ex-info "Fixture HTTP workers did not join" {}))))
 
 (defn start-capacity-provider! [on-entry]
-  ;; Exactly the five original store! operations; no final!, sixth reply or
-  ;; alternate workflow is supplied by this fixture.
   (let [codes ["(store! :one 1)" "(store! :two 2)" "(store! :three 3)"
                "(store! :four 4)" "(store! :five 5)"]
         requests (atom []) responses (atom []) errors (atom [])

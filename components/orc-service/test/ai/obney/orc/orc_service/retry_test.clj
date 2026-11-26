@@ -3,7 +3,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Test State
@@ -39,14 +39,14 @@
 (deftest get-backoff-test
   (testing "returns correct backoff for each attempt"
     (let [config {:backoff-ms [100 500 2000]}]
-      (is (= 100 (executor/get-backoff config 0)))
-      (is (= 500 (executor/get-backoff config 1)))
-      (is (= 2000 (executor/get-backoff config 2)))))
+      (is (= 100 (service-logic/get-backoff config 0)))
+      (is (= 500 (service-logic/get-backoff config 1)))
+      (is (= 2000 (service-logic/get-backoff config 2)))))
 
   (testing "returns last backoff for attempts beyond array"
     (let [config {:backoff-ms [100 500]}]
-      (is (= 500 (executor/get-backoff config 5)))
-      (is (= 500 (executor/get-backoff config 10))))))
+      (is (= 500 (service-logic/get-backoff config 5)))
+      (is (= 500 (service-logic/get-backoff config 10))))))
 
 ;; =============================================================================
 ;; execute-with-retry Tests
@@ -55,7 +55,7 @@
 (deftest execute-with-retry-success-test
   (testing "returns result on immediate success without retry"
     (reset-attempts!)
-    (let [result (executor/execute-with-retry
+    (let [result (service-logic/execute-with-retry
                    (fn [] {:status :success :outputs {:x 1}})
                    {:max-attempts 3})]
       (is (= :success (:status result)))
@@ -64,7 +64,7 @@
 (deftest execute-with-retry-eventual-success-test
   (testing "retries until success"
     (reset-attempts!)
-    (let [result (executor/execute-with-retry
+    (let [result (service-logic/execute-with-retry
                    (fn []
                      (let [n (swap! attempt-counter inc)]
                        (if (< n 3)
@@ -78,7 +78,7 @@
 (deftest execute-with-retry-max-attempts-test
   (testing "stops after max-attempts and returns failure"
     (reset-attempts!)
-    (let [result (executor/execute-with-retry
+    (let [result (service-logic/execute-with-retry
                    (fn []
                      (swap! attempt-counter inc)
                      {:status :failure :error "always fails"})
@@ -181,12 +181,10 @@
           (h/run-and-apply! ctx (h/make-set-node-executor-command sheet-id leaf-id :code
                                   :fn "ai.obney.orc.orc-service.retry-test/flaky-fn"))
           (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-id [] [:result]))
-          ;; 100ms + 200ms = 300ms minimum for 2 retries
           (h/run-and-apply! ctx (h/make-set-node-retry-command sheet-id leaf-id 5 [100 200]))
 
           (let [start-time (System/currentTimeMillis)
                 result (sheet/execute ctx sheet-id {})
                 duration (- (System/currentTimeMillis) start-time)]
             (is (= :success (:status result)))
-            ;; Should take at least 300ms due to backoff (100ms + 200ms)
             (is (>= duration 250))))))))

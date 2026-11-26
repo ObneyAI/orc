@@ -100,10 +100,6 @@
      Clojure code.")
 
 (defn- load-inputs []
-  ;; Text-mode extraction (PDFBox) — same approach as document_analysis.
-  ;; predict-rlm's run uses vision (45 pages, ~5.5min, 173K tokens).
-  ;; Our path: extract text per page so the model can :map-each / read
-  ;; pages without triggering vision routing limitations.
   {:contract-a-pages (vec (pdf/extract-pages-as-text contract-a-path))
    :contract-b-pages (vec (pdf/extract-pages-as-text contract-b-path))})
 
@@ -137,7 +133,6 @@
     "Sections only in v3.1.1 (additions) flagged"
     "Sections only in v2.0 (removals) flagged if any"
     ":significance classifications reasonable"]
-   ;; predict-rlm publishes Run Stats in their comparison-report.md
    :predict-rlm-reported {:main-lm-calls 4 :sub-lm-calls 80
                           :input-tokens 120927 :output-tokens 52130
                           :total-tokens 173057

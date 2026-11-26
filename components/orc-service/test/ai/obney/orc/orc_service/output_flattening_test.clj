@@ -10,23 +10,23 @@
    individual fields rather than generating a complete JSON object."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Helper to access private functions for testing
 ;; =============================================================================
 
 (def ^:private flatten-output-schema
-  #'ai.obney.orc.orc-service.core.executor/flatten-output-schema)
+  #'service-logic/flatten-output-schema)
 
 (def ^:private reassemble-flattened-outputs
-  #'ai.obney.orc.orc-service.core.executor/reassemble-flattened-outputs)
+  #'service-logic/reassemble-flattened-outputs)
 
 (def ^:private map-schema?
-  #'ai.obney.orc.orc-service.core.executor/map-schema?)
+  #'service-logic/map-schema?)
 
 (def ^:private map-of-schema?
-  #'ai.obney.orc.orc-service.core.executor/map-of-schema?)
+  #'service-logic/map-of-schema?)
 
 ;; =============================================================================
 ;; Schema Detection Tests
@@ -61,27 +61,22 @@
     (let [schema [:map [:score :double] [:reasoning :string] [:keyFactors [:vector :string]]]
           result (flatten-output-schema :academic-score schema)]
 
-      ;; Should produce 3 separate fields
       (is (= 3 (count result)))
 
-      ;; Check each flattened field
       (let [score-field (first (filter #(= :score (:name %)) result))
             reasoning-field (first (filter #(= :reasoning (:name %)) result))
             factors-field (first (filter #(= :keyFactors (:name %)) result))]
 
-        ;; Score field
         (is (= :score (:name score-field)))
         (is (= :academic-score (:original-key score-field)))
         (is (= "score" (:nested-key score-field)))
         (is (= :double (:spec score-field)))
 
-        ;; Reasoning field
         (is (= :reasoning (:name reasoning-field)))
         (is (= :academic-score (:original-key reasoning-field)))
         (is (= "reasoning" (:nested-key reasoning-field)))
         (is (= :string (:spec reasoning-field)))
 
-        ;; KeyFactors field
         (is (= :keyFactors (:name factors-field)))
         (is (= :academic-score (:original-key factors-field)))
         (is (= "keyFactors" (:nested-key factors-field)))
@@ -99,13 +94,11 @@
 (deftest flatten-output-schema-map-of-test
   (testing "[:map-of ...] schema is NOT flattened (no defined field names)"
     (let [result (flatten-output-schema :personalization [:map-of :keyword :string])]
-      ;; Should return single field, not flattened
       (is (= 1 (count result)))
       (is (= :personalization (:name (first result))))
       (is (= :personalization (:original-key (first result))))
       (is (nil? (:nested-key (first result))))
       (is (= [:map-of :keyword :string] (:spec (first result))))
-      ;; Should have JSON guidance in description
       (is (str/includes? (:description (first result)) "JSON object")))))
 
 (deftest flatten-output-schema-optional-fields-test
@@ -172,11 +165,9 @@
                           :keyFactors {:original-key :academic-score :nested-key "keyFactors"}}
           result (reassemble-flattened-outputs raw-outputs output-mapping)]
 
-      ;; Should produce single key with nested map
       (is (= 1 (count result)))
       (is (contains? result :academic-score))
 
-      ;; Check nested values
       (let [nested (get result :academic-score)]
         (is (= 0.85 (:score nested)))
         (is (= "Strong academic match" (:reasoning nested)))
@@ -190,7 +181,6 @@
                           :answer {:original-key :response :nested-key nil}}
           result (reassemble-flattened-outputs raw-outputs output-mapping)]
 
-      ;; Should produce two separate keys (not nested)
       (is (= 2 (count result)))
       (is (= 0.8 (get result :rating)))
       (is (= "The answer is 42" (get result :response))))))
@@ -205,7 +195,6 @@
                           :summary {:original-key :summary :nested-key nil}}
           result (reassemble-flattened-outputs raw-outputs output-mapping)]
 
-      ;; Should have nested evaluation and flat summary
       (is (= 2 (count result)))
       (is (map? (get result :evaluation)))
       (is (= 0.9 (get-in result [:evaluation :score])))
@@ -232,14 +221,12 @@
                                                [:reasoning :string]]
                                       :value nil
                                       :version 0}}
-          module (executor/build-module node blackboard)]
+          module (service-logic/build-module node blackboard)]
 
-      ;; Check outputs are flattened
       (is (= 2 (count (:outputs module))))
       (is (some #(= :score (:name %)) (:outputs module)))
       (is (some #(= :reasoning (:name %)) (:outputs module)))
 
-      ;; Check output-mapping exists
       (is (contains? module :output-mapping))
       (is (= :score-result (get-in module [:output-mapping :score :original-key])))
       (is (= "score" (get-in module [:output-mapping :score :nested-key])))
@@ -260,9 +247,8 @@
                                 :schema :string
                                 :value nil
                                 :version 0}}
-          module (executor/build-module node blackboard)]
+          module (service-logic/build-module node blackboard)]
 
-      ;; Should have single output
       (is (= 1 (count (:outputs module))))
       (is (= :answer (:name (first (:outputs module)))))
       (is (nil? (get-in module [:output-mapping :answer :nested-key]))))))
@@ -275,7 +261,7 @@
                 :writes [:missing-output]}
           blackboard {:present {:key :present :schema :string :value "x"}}
           error (try
-                  (executor/build-module node blackboard)
+                  (service-logic/build-module node blackboard)
                   nil
                   (catch clojure.lang.ExceptionInfo e e))]
       (is (some? error))
@@ -284,9 +270,6 @@
       (is (= [:missing-output] (:missing-writes (ex-data error))))
       (is (= [:present] (:blackboard-keys (ex-data error)))))))
 
-;; =============================================================================
-;; Warning Test for [:map-of ...] schemas
-;; =============================================================================
 
 (deftest map-of-schema-warning-test
   (testing "build-module warns when using [:map-of ...] schema"
@@ -302,11 +285,9 @@
                                 :schema [:map-of :keyword :string]
                                 :value nil
                                 :version 0}}
-          ;; Capture stdout to check for warning
           output (with-out-str
-                   (executor/build-module node blackboard))]
+                   (service-logic/build-module node blackboard))]
 
-      ;; Should print warning about map-of schema
       (is (str/includes? output "[WARN]"))
       (is (str/includes? output "[:map-of ...]"))
       (is (str/includes? output "loose-schema-node")))))
@@ -318,7 +299,6 @@
 (deftest empty-map-schema-test
   (testing "handles empty [:map] schema"
     (let [result (flatten-output-schema :empty [:map])]
-      ;; Empty map should produce empty flattened fields
       (is (= 0 (count result))))))
 
 (deftest deeply-nested-schema-test
@@ -327,8 +307,6 @@
                   [:outer :string]
                   [:nested [:map [:inner :int]]]]
           result (flatten-output-schema :data schema)]
-      ;; Should flatten to 2 fields: :outer and :nested
-      ;; The nested [:map] becomes the spec for :nested, not further flattened
       (is (= 2 (count result)))
       (let [nested-field (first (filter #(= :nested (:name %)) result))]
         (is (= [:map [:inner :int]] (:spec nested-field)))))))

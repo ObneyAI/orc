@@ -12,12 +12,13 @@
      summary     = nil OR {:total :succeeded :failed :failure-indices :failure-reasons}
      output      = successes-only vector (per Q3 — no inline failure markers)"
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.orc-service.core.todo-processors :as tp]))
+            [ai.obney.orc.orc-service.core.todo-processors :as tp]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (deftest empty-input-classifies-as-success
   (testing "empty results + zero items → :success, no summary, empty output"
     (let [[status summary output]
-          (tp/classify-map-each-outcome {:results [] :item-count 0})]
+          (service-logic/classify-map-each-outcome {:results [] :item-count 0})]
       (is (= :success status))
       (is (nil? summary))
       (is (= [] output)))))
@@ -25,7 +26,7 @@
 (deftest all-success-classifies-as-success-with-full-output
   (testing "3 successful results → :success, no summary, output is full vector"
     (let [[status summary output]
-          (tp/classify-map-each-outcome
+          (service-logic/classify-map-each-outcome
             {:results ["alpha" "beta" "gamma"]
              :item-count 3})]
       (is (= :success status))
@@ -34,18 +35,14 @@
 
 (deftest mixed-success-and-failure-classifies-as-partial
   (testing "5 items, 2 failures at indices 1 and 3 → :partial, summary with indices+reasons, output is successes-only"
-    (let [results [;; index 0 — success
+    (let [results [
                    "first-result"
-                   ;; index 1 — failure
                    {:__status :failure :__error "LLM timeout" :__original "chunk-1"}
-                   ;; index 2 — success
                    "third-result"
-                   ;; index 3 — failure
                    {:__status :failure :__error "Rate limit" :__original "chunk-3"}
-                   ;; index 4 — success
                    "fifth-result"]
           [status summary output]
-          (tp/classify-map-each-outcome
+          (service-logic/classify-map-each-outcome
             {:results results :item-count 5})]
       (is (= :partial status))
       (is (some? summary))
@@ -63,7 +60,7 @@
                    {:__status :failure :__error "Err B" :__original "y"}
                    {:__status :failure :__error "Err C" :__original "z"}]
           [status summary output]
-          (tp/classify-map-each-outcome
+          (service-logic/classify-map-each-outcome
             {:results results :item-count 3})]
       (is (= :failure status))
       (is (some? summary))

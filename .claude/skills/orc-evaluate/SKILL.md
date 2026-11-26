@@ -8,7 +8,7 @@ description: Attach judges to ORC workflow nodes, read their assessments, and wa
 Grade what a node did, record the grade durably, and watch how each version of a node performs. Read `docs/EVALUATION-COMPONENT.md` for the reference and `docs/JUDGE-ARCHITECTURE.md` for the design.
 
 Every code block marked `;; docs-example: <id>` below is run by
-`components/evaluation/test/ai/obney/orc/evaluation/docs_examples_test.clj`, which also fails if a block
+`components/evaluation-service/test/ai/obney/orc/evaluation/docs_examples_test.clj`, which also fails if a block
 differs from the tested code.
 
 ## Require

@@ -1,0 +1,402 @@
+(ns ai.obney.orc.colbert.interface
+  "Pure-JVM ColBERT signal (ADR 0002).
+
+   Late-interaction retrieval on the JVM: the answerai-colbert-small-v1
+   encoder checkpoint runs on DJL OnnxRuntime + HuggingFace tokenizers,
+   scoring with exact MaxSim. No Python process anywhere.
+
+   ## Key Capabilities
+
+   | Capability | Description | Use Case |
+   |------------|-------------|----------|
+   | Late-Interaction Retrieval | Token-level matching | Better semantic matching than single-vector embeddings |
+   | Three-Signal Hybrid Search | Graph BFS + embeddings + ColBERT via RRF | Comprehensive retrieval (ontology `hybrid-search`) |
+   | Reranking | In-memory rerank without index | Candidate selection, domain-penalty scoring |
+
+   ## Usage Example
+
+   ```clojure
+   ;; Create an index (writes a versioned index artifact on disk)
+   (def index-id
+     (colbert/create-index! ctx
+       {:collection [\"Doc 1 text...\" \"Doc 2 text...\"]
+        :document-ids [\"doc1\" \"doc2\"]
+        :index-name \"my-docs\"}))
+
+   ;; Search
+   (colbert/search ctx
+     {:query \"What is machine learning?\"
+      :index-id index-id
+      :k 5})
+
+   ;; Rerank candidates (no index required)
+   (colbert/rerank ctx
+     {:query \"AI systems\"
+      :documents [\"Deep learning\" \"Weather\" \"ML algorithms\"]
+      :k 2})
+   ```
+
+   ## Event Sourcing
+
+   Index lifecycle and search/rerank audit events go to the event store:
+   :colbert/index-created (full source data — the index artifact is derived
+   data, always rebuildable), :colbert/index-deleted, :colbert/search-performed,
+   :colbert/rerank-performed."
+  (:require [ai.obney.orc.colbert.core.commands :as commands]
+            [ai.obney.orc.colbert.core.logic :as logic]
+            [ai.obney.orc.colbert.core.queries :as queries]
+            [ai.obney.orc.colbert.core.read-models :as read-models]
+            [ai.obney.orc.colbert.interface.schemas]
+            [ai.obney.orc.integrations.interface :as integrations]))
+
+;; =============================================================================
+;; Index Operations
+;; =============================================================================
+
+(defn create-index!
+  "Create a ColBERT index from documents — pure JVM, no Python process.
+
+   Args:
+     ctx - Context map containing :event-store
+     opts - Options map:
+       :collection         - Vector of document strings (required)
+       :index-name         - Name for the index (required)
+       :document-ids       - Vector of unique IDs (auto-generated if nil)
+       :document-metadatas - Vector of metadata maps (optional)
+       :model-name         - Recorded in the event (default: the encoder
+                             checkpoint actually used)
+       :split-documents?   - Auto-split long docs (default: true)
+       :max-document-length - Chunk size in tokens (default: 256)
+       :maximum-query-tokens - IndexConfiguration.maximum_query_tokens: the
+                             per-query row count searches of this index build,
+                             and its MaxSim ceiling (default: the configured
+                             limit). Recorded on :colbert/index-created and
+                             honoured by every later search of this index.
+
+   Writes the versioned index artifact under the index root (default
+   `.orc-colbert-indexes/` relative to cwd; override via
+   `-Dcolbert.index.root`). Returns a map with :index-id and :index-path.
+   Event emission (:colbert/index-created, with full source data for
+   rebuild) is handled by the :colbert/create-index defcommand."
+  [ctx opts]
+  (logic/create-index! ctx opts))
+
+(defn delete-index!
+  "Mark an index as deleted.
+
+   This is a soft delete - the source data remains in the event store.
+   Routes through the command processor for proper CQRS event emission."
+  [ctx index-id]
+  (commands/delete-index! ctx index-id))
+
+(defn activate-index!
+  "Atomically activate a fully readable index under a stable alias."
+  [ctx alias index-id]
+  (commands/activate-index! ctx alias index-id))
+
+(defn get-active-index
+  "Return the event-sourced active pointer and resolved index for an alias."
+  [ctx alias]
+  (read-models/get-active-index ctx alias))
+
+(defn search-active
+  "Search exactly one atomic snapshot of a stable active-index alias."
+  [ctx opts]
+  (queries/search-active ctx opts))
+
+;; =============================================================================
+;; Search Operations
+;; =============================================================================
+
+(defn search
+  "Search indexed corpus using ColBERT late-interaction — pure JVM: read the
+   index artifact (in-memory cached per canonical path), encode the query
+   once, exact MaxSim against every passage, aggregate passages to documents
+   by max passage score.
+
+   Args:
+     ctx - Context map containing :event-store
+     opts - Options map:
+       :query    - Search query string (required)
+       :index-id - Index UUID (required)
+       :k        - Number of results (default: 10)
+
+   Returns (snake_case keys):
+     [{:content \"...\" :score 30.87 :rank 1 :document_id \"...\"
+       :document_metadata {...}}]
+
+   The returned vector carries the query-truncation report as METADATA under
+   :query-truncation (see `query-truncation`) — the caller-visible signal on
+   this non-command path. Values are untouched."
+  [ctx opts]
+  (queries/search ctx opts))
+
+(defn maximum-query-tokens
+  "`IndexConfiguration.maximum_query_tokens` — the per-query row count the
+   encoder builds, and therefore the MaxSim ceiling. Resolution order:
+   explicit argument, then -Dcolbert.query.max-tokens, then the shipped
+   default, then the checkpoint's own query_maxlen."
+  ([] (logic/maximum-query-tokens))
+  ([explicit] (logic/maximum-query-tokens explicit)))
+
+(defn query-truncation
+  "Is this query longer than the limit, and by how much?
+   (specs/colbert.allium `invariant OverlongQueriesTruncateVisibly`.)
+
+   A query over the limit is TRUNCATED, not rejected — the excess word-piece
+   tokens are discarded and retrieval proceeds against the prefix. A retrieval
+   key can never be matched against text the encoder never saw, so callers need
+   to be able to tell. Search and rerank stamp this same report on their audit
+   events (:colbert/search-performed / :colbert/rerank-performed) and return it
+   under :query-truncation.
+
+   Args:
+     ctx  - Context map
+     opts - {:query <string>
+             :maximum-query-tokens <int, optional — defaults to the configured
+                                    limit>}
+
+   Returns {:query-token-count :maximum-query-tokens :query-truncated?
+            :discarded-token-count}. Tokenizer-only — no ONNX inference."
+  [ctx opts]
+  (logic/query-truncation ctx opts))
+
+(defn rerank
+  "Rerank documents in-memory (no index required).
+
+   Encodes query and documents with the JVM encoder and scores them with
+   exact MaxSim. Useful for reranking candidates from other retrieval
+   methods; also the default scorer for the ontology classifier's
+   contrastive domain penalty.
+
+   Args:
+     ctx - Context map (event-store optional for audit)
+     opts - Options map:
+       :query     - Query string (required)
+       :documents - Vector of document strings to rerank (required)
+       :k         - Number of results (default: all documents)
+       :maximum-query-tokens - Override the query row count / MaxSim ceiling
+                               for this call (default: the configured limit)
+
+   Returns:
+     [{:content \"...\" :score 30.87 :rank 1}]
+
+   The returned vector carries the query-truncation report as METADATA under
+   :query-truncation (see `query-truncation`). Values are untouched."
+  [ctx opts]
+  (logic/rerank ctx opts))
+
+;; =============================================================================
+;; Score Normalization
+;; =============================================================================
+
+(defn normalize-colbert-score
+  "Normalize ColBERT score to 0-1 range.
+
+   The default ceiling is the theoretical MaxSim bound, which IS the configured
+   `IndexConfiguration.maximum_query_tokens`: that many MASK-expanded query
+   rows, each unit-normed, so MaxSim <= maximum_query_tokens. It was written as
+   a literal 32.0 while the limit was the checkpoint's own query_maxlen; CC-17
+   made the limit configuration, so the ceiling is DERIVED (see
+   `maximum-query-tokens` / logic/maxsim-ceiling).
+
+   ⚠ THAT DEFAULT IS THE PROCESS DEFAULT, NOT THIS SCORE'S CEILING (CC-25).
+   CC-17 made the limit PER-INDEX, so a score produced by a search of an index
+   configured away from the process default has a different ceiling — above it
+   every score clamps to 1.0 and relative order is destroyed
+   (`invariant.BoundedNormalization`), below it the scale silently compresses.
+   When you hold a result COLLECTION from search / search-batch / rerank, pass
+   `:max-score (results-maxsim-ceiling results)` or just call
+   `normalize-results-to-ceiling`, which reads the limit off the encoding that
+   actually ran.
+
+   CC-27 closed the last consumer that fell into this: the ontology
+   domain-penalty's explicit :linear/:sigmoid configs now thread the producing
+   call's ceiling (`results-maxsim-ceiling` via the resolver seam) instead of
+   flowing `:max-score nil` into the process default. The fallback itself is
+   now LOUD — with no :max-score (or an explicit nil) this fn mulogs
+   `normalize-score-process-default-fallback` with the score and the ceiling
+   it used, because after CC-25/CC-27 reaching the default means no encoding
+   identity existed for the score at all.
+
+   This normalizes raw scores for RRF fusion with other retrieval signals
+   (graph BFS, embeddings). NB: MASK query expansion gives even unrelated pairs
+   a high floor — score-CONTRAST consumers should normalize relative to the
+   scores in the same call (see normalize-result-scores and the ontology
+   domain-penalty's :batch-relative method) rather than against the fixed
+   ceiling.
+
+   Args:
+     score - Raw ColBERT score (typically ~[0, maximum_query_tokens])
+     opts - Options map:
+       :max-score - Maximum expected score for normalization (default: the
+                    derived ceiling; an explicit nil also falls back to it)
+       :method - Normalization method: :linear, :sigmoid (default: :linear)
+
+   Returns:
+     Normalized score in [0, 1] range"
+  [score & opts]
+  (apply logic/normalize-colbert-score score opts))
+
+(defn normalize-result-scores
+  "Normalize scores for a batch of ColBERT results.
+
+   Uses the maximum score in the batch as the normalization factor,
+   ensuring relative rankings are preserved.
+
+   Args:
+     results - Vector of result maps with :score key
+     opts - Options map:
+       :min-score-threshold - Minimum normalized score to keep (default: 0.0)
+
+   Returns:
+     Results with normalized scores in [0, 1] range"
+  [results & opts]
+  (apply logic/normalize-result-scores results opts))
+
+(defn results-maxsim-ceiling
+  "The MaxSim ceiling OF THE ENCODING THAT PRODUCED `results` (CC-25) — i.e.
+   the `maximum_query_tokens` reported by that very encode call, read off the
+   truncation metadata search / search-batch / rerank stamp on the collection.
+
+   This is the number `normalize-colbert-score`'s :max-score wants whenever the
+   scores came from a real retrieval call. Falls back (loudly, via mulog) to the
+   process default only when the collection carries no report.
+
+   Args:
+     results - A result collection from search / search-batch / rerank
+
+   Returns:
+     The ceiling as a double"
+  ^double [results]
+  (logic/results-maxsim-ceiling results))
+
+(defn normalize-results-to-ceiling
+  "Fixed-ceiling normalization of a search/rerank result collection against the
+   ceiling of the encoding that produced it (CC-25).
+
+   Use this instead of mapping `normalize-colbert-score` over a collection:
+   `invariant.BoundedNormalization` (scores in [0,1], relative order preserved)
+   then holds for ANY legal per-index `maximum_query_tokens`, not just for
+   indexes that happen to sit at the process default. Use
+   `normalize-result-scores` instead when you want batch-RELATIVE contrast
+   within a single call rather than a cross-call-comparable scale.
+
+   The truncation metadata is carried through.
+
+   Args:
+     results - Vector of result maps with :score key
+     opts - Options map:
+       :max-score - Explicit ceiling override (default: the collection's own
+                    encoding ceiling)
+       :method    - :linear (default) or :sigmoid
+
+   Returns:
+     Results with :score in [0, 1] and the raw value on :raw-score"
+  [results & opts]
+  (apply logic/normalize-results-to-ceiling results opts))
+
+;; =============================================================================
+;; Hybrid Search Integration
+;; =============================================================================
+
+(defn search-for-rrf
+  "Search ColBERT index and return results formatted for RRF fusion.
+
+   This is the primary integration point for ontology hybrid-search.
+   Returns results in the format expected by graph/merge-batches.
+
+   Args:
+     ctx - Context map containing :event-store
+     opts - Options map:
+       :query         - Search query (required)
+       :index-id      - ColBERT index UUID (required)
+       :k             - Number of results (default: 20)
+       :normalize?    - Whether to normalize scores to [0,1] (default: true)
+       :weight        - Score weight multiplier (default: 1.0)
+
+   Returns:
+     Vector of {:uri :score} compatible with RRF merge-batches"
+  [ctx opts]
+  (queries/search-for-rrf ctx opts))
+
+(defn search-batch
+  "Batch-search a ColBERT index for many queries with the index artifact
+   loaded ONCE (pure JVM). Returns a vector of result-lists aligned to
+   `:queries`, each shaped like `search`'s output.
+
+   Args:
+     ctx - Context map containing :event-store
+     opts - Options map:
+       :queries  - Vector of query strings (required)
+       :index-id - Index UUID (required)
+       :k        - Results per query (default: 10)"
+  [ctx opts]
+  (queries/search-batch ctx opts))
+
+(defn search-for-rrf-batch
+  "Batched `search-for-rrf`: ONE index load for all queries (pure JVM).
+   Returns a vector aligned to `:queries`, each a vector of {:uri :score} for RRF
+   fusion. The batched integration point for ontology hybrid-search over a whole
+   transcript.
+
+   Args:
+     ctx - Context map containing :event-store
+     opts - Options map:
+       :queries    - Vector of query strings (required)
+       :index-id   - ColBERT index UUID (required)
+       :k          - Results per query (default: 20)
+       :normalize? - Normalize scores to [0,1] (default: true)
+       :weight     - Score weight multiplier (default: 1.0)"
+  [ctx opts]
+  (queries/search-for-rrf-batch ctx opts))
+
+;; =============================================================================
+;; Query Helpers
+;; =============================================================================
+
+(defn list-indexes
+  "List all indexes."
+  [ctx & opts]
+  (apply read-models/list-indexes ctx opts))
+
+;; =============================================================================
+;; Event Types Export
+;; =============================================================================
+
+(def colbert-event-types read-models/colbert-event-types)
+
+;; =============================================================================
+;; Encoder Lifecycle
+;; =============================================================================
+
+(defn stop-bridge!
+  "Release the JVM ColBERT encoders (DJL model + tokenizer handles).
+
+   Historically this stopped the Python bridge subprocess; the signal is
+   pure JVM now (ADR 0002), so teardown means closing the loaded encoders.
+   Safe to call when nothing is loaded. Call during application shutdown or
+   bench teardown."
+  []
+  (logic/close-all-encoders!))
+
+(integrations/register-capabilities!
+ :colbert
+ {:create-index! #'create-index!
+  :delete-index! #'delete-index!
+  :activate-index! #'activate-index!
+  :get-active-index #'get-active-index
+  :search-active #'search-active
+  :search #'search
+  :maximum-query-tokens #'maximum-query-tokens
+  :query-truncation #'query-truncation
+  :rerank #'rerank
+  :normalize-colbert-score #'normalize-colbert-score
+  :normalize-result-scores #'normalize-result-scores
+  :results-maxsim-ceiling #'results-maxsim-ceiling
+  :normalize-results-to-ceiling #'normalize-results-to-ceiling
+  :search-for-rrf #'search-for-rrf
+  :search-batch #'search-batch
+  :search-for-rrf-batch #'search-for-rrf-batch
+  :list-indexes #'list-indexes
+  :stop-bridge! #'stop-bridge!})

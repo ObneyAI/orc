@@ -42,7 +42,7 @@
                                   :fn "search-fn"
                                   :reads [:query]
                                   :writes [:result])))
-                 :blackboard {:result :string}}  ;; Missing :query
+                 :blackboard {:result :string}}
           result (v/validate-sheet sheet)]
       (is (not (:valid? result)))
       (is (seq (:errors result))))))
@@ -55,7 +55,7 @@
                                   :fn "search-fn"
                                   :reads [:query]
                                   :writes [:result])))
-                 :blackboard {:query :string}}  ;; Missing :result
+                 :blackboard {:query :string}}
           result (v/validate-sheet sheet)]
       (is (not (:valid? result)))
       (is (seq (:errors result))))))
@@ -162,7 +162,6 @@
     (let [sheet {:workflow nil
                  :blackboard {}}
           result (v/validate-sheet sheet)]
-      ;; Should not crash
       (is (map? result)))))
 
 (deftest validate-sheet-nil-blackboard
@@ -170,5 +169,4 @@
     (let [sheet {:workflow '(sheet/workflow "test")
                  :blackboard nil}
           result (v/validate-sheet sheet)]
-      ;; Should not crash
       (is (map? result)))))

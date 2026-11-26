@@ -40,7 +40,7 @@ Here is the whole arc, from the tree you already have to an instruction you didn
 
 You don't restructure anything. GEPA optimizes the instruction **in place**: it walks your tree, finds every `:llm` node, and reads each node's `:instruction` keyed by the node's `:name`. That set of `{node-name -> instruction}` strings becomes the **seed candidate** GEPA starts mutating from. At evaluation time GEPA patches its candidate instruction back onto the node *by name*, runs the tree, and never modifies your saved sheet.
 
-> Verified in source: `gepa/core/todo_processors.clj` `extract-workflow-instructions` (collects `{node-name -> instruction}` from `:llm` / `:ai` / `:llm-condition` nodes) and `orc-service .../core/todo_processors.clj` `apply-instruction-override` (re-applies a candidate instruction when its key matches the node's `:name`).
+> Verified in source: `gepa/core/logic.clj` `extract-workflow-instructions` (collects `{node-name -> instruction}` from `:llm` / `:ai` / `:llm-condition` nodes) and `orc-service .../core/todo_processors.clj` `apply-instruction-override` (re-applies a candidate instruction when its key matches the node's `:name`).
 
 So the only requirement to make a node optimizable is that it has a stable `:name` — which `"draft-reply"` already has. GEPA will vary *that node's* `"Write a reply to the support ticket."`. You do **not** move the instruction into the blackboard, and you do **not** touch `:reads`.
 
@@ -194,40 +194,18 @@ Each run only sees the `:llm` nodes in *its* sheet (`extract-workflow-instructio
 ---
 
 > **GEPA is independent of ontology and `:auto-classify?`.**
-> - `components/gepa/deps.edn` lists only two ORC deps: `mulog` and `orc/evaluation`. No ontology, no ColBERT.
+> - `components/gepa-service/deps.edn` lists the optimizer’s direct dependencies, including the evaluation service that supplies judge metrics.
 > - GEPA optimizes instruction strings inside static `orc/llm` nodes. `:auto-classify?` shapes RLM tree design (see [RLM-GUIDE.md](RLM-GUIDE.md)). They are orthogonal — neither requires the other.
 >
 > For a hands-on walkthrough, see [GETTING-STARTED.md](GETTING-STARTED.md) Phase 4.
 
-```edn
-{:paths ["src" "resources"]
- :deps {com.brunobonacci/mulog {:mvn/version "0.9.0"}
-        ;; gepa's make-judge-metric runs the tier-1 evaluation judges as the
-        ;; real GEPA metric (grounding/instruction-following/reasoning/
-        ;; completeness), so it depends on the evaluation component.
-        orc/evaluation {:local/root "../evaluation"}}
- :aliases {:test {:extra-paths ["test"]
-                  :extra-deps {}}}}
-```
-
----
-
 ## GEPA is independent of ontology and Living Descriptions
 
-GEPA ships as its own Polylith component (`components/gepa`) with zero ontology and zero ColBERT dependencies. `components/gepa/deps.edn` verbatim:
-
-```edn
-{:paths ["src" "resources"]
- :deps {com.brunobonacci/mulog {:mvn/version "0.9.0"}
-        ;; gepa's make-judge-metric runs the tier-1 evaluation judges as the
-        ;; real GEPA metric (grounding/instruction-following/reasoning/
-        ;; completeness), so it depends on the evaluation component.
-        orc/evaluation {:local/root "../evaluation"}}
- :aliases {:test {:extra-paths ["test"]
-                  :extra-deps {}}}}
-```
-
-Two deps: `mulog` (structured logging) and `orc/evaluation` (the tier-1 judges that score candidates). No model download, no ontology component, no ColBERT. Pareto selection and reflective mutation run entirely in the JVM as native Clojure.
+The `gepa-service` brick depends on `evaluation-service` for judge metrics,
+`orc-service` for workflow execution, `llm` for model calls, `integrations`
+for package discovery, and `mulog` for structured logging. Pareto selection
+and reflective mutation run on the JVM. Users can install the standalone GEPA
+package without ontology or ColBERT. [Component dependencies](../components/gepa-service/deps.edn)
 
 **Orthogonal to `:auto-classify?`.** GEPA and `:auto-classify?` are independent actuators that solve different problems:
 
@@ -425,7 +403,7 @@ ORC Sheet execution + Evaluation Judges
 
 ### 1. Public API (`gepa.interface`)
 
-**File:** `components/gepa/src/ai/obney/orc/gepa/interface.clj`
+**File:** `components/gepa-service/src/ai/obney/orc/gepa/interface.clj`
 
 Require it as:
 
@@ -624,10 +602,10 @@ The shipped implementation is **native Clojure**. All optimization logic runs in
 
 | File | Role |
 |------|------|
-| `components/gepa/core/todo_processors.clj` | Optimization state machine (Pareto, mutation loop) |
-| `components/gepa/core/metrics.clj` | `make-judge-metric` — judge-backed scoring with parallel futures |
-| `components/gepa/core/proposer.clj` | Reflective mutation — the single proposer LLM call per generation |
-| `components/gepa/core/reflection.clj` | `ReflectiveExample` triplet formatting |
+| `components/gepa-service/core/todo_processors.clj` | Optimization state machine (Pareto, mutation loop) |
+| `components/gepa-service/core/metrics.clj` | `make-judge-metric` — judge-backed scoring with parallel futures |
+| `components/gepa-service/core/proposer.clj` | Reflective mutation — the single proposer LLM call per generation |
+| `components/gepa-service/core/reflection.clj` | `ReflectiveExample` triplet formatting |
 
 > The full optimization loop — Pareto selection, reflective mutation, common-ancestor merge, and cross-run inheritance — is implemented natively in Clojure and stored as Grain events, so every step is observable on the event stream.
 
@@ -638,7 +616,7 @@ calls.
 
 ### 3. Evaluation Judges
 
-**File:** `components/evaluation/src/ai/obney/orc/evaluation/core/judges.clj`
+**File:** `components/evaluation-service/src/ai/obney/orc/evaluation/core/logic.clj`
 
 GEPA's judge metric calls the built-in judge **functions** directly. It does not request, read or write assessments, so a judge's purposes and rubric declaration do not apply to it, and nothing GEPA scores is recorded as an assessment. Four judges evaluate LLM outputs:
 
@@ -666,7 +644,7 @@ The defaults apply when `:judges` is a bare set or `true`; a weight map you pass
 
 GEPA optimizes the `:instruction` you already wrote — **in place**. Before each run it walks the target sheet, collects every `:llm` node's `:instruction` keyed by node `:name` (the seed candidate), mutates those strings, and patches a candidate's instruction back onto the matching node *by name* at execution time. Your saved sheet is never modified.
 
-> Source: `extract-workflow-instructions` (`gepa/core/todo_processors.clj`) builds `{node-name -> instruction}` from `:llm` / `:ai` / `:llm-condition` nodes; `apply-instruction-override` (`orc-service .../core/todo_processors.clj`) re-applies a candidate's string when its key equals the node's `:name`.
+> Source: `extract-workflow-instructions` (`gepa/core/logic.clj`) builds `{node-name -> instruction}` from `:llm` / `:ai` / `:llm-condition` nodes; `apply-instruction-override` (`orc-service .../core/todo_processors.clj`) re-applies a candidate's string when its key equals the node's `:name`.
 
 The only requirements:
 
@@ -869,7 +847,7 @@ Each judge is an LLM-as-judge that evaluates trace data:
 
 ### Judge Rubrics (decoupled criteria × stance × discrete Scale)
 
-The rubrics of the judge functions GEPA calls are defined in `evaluation/core/rubrics.clj` and resolved via `get-tier1-rubric`. (Judges attached to workflow nodes declare their own rubric instead; see [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#rubrics-and-bands).) Each rubric keeps three concerns **decoupled**:
+The rubrics of the judge functions GEPA calls are defined in `evaluation/core/logic.clj` and resolved via `get-tier1-rubric`. (Judges attached to workflow nodes declare their own rubric instead; see [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#rubrics-and-bands).) Each rubric keeps three concerns **decoupled**:
 - **criteria** — *what* to evaluate;
 - **stance** — *how to behave* (an adversarial reviewer persona);
 - **scale** — *how to score* (a first-class discrete **1–5 `Scale`** with explicit per-level bands, mapped deterministically to `[0,1]`; 1→0.0 … 5→1.0).
@@ -885,7 +863,7 @@ The judge **reasons before it scores** (field order forces `:reasoning` + eviden
 1: Ungrounded / fabricated — contradicts the source or nearly all claims are inventions.
 ```
 
-> The old single-string soft-0–1 `*_RUBRIC` defs survive in `rubrics.clj` for legacy retrospective paths only. Full detail: [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#retained-synchronous-functions).
+> The old single-string soft-0–1 `*_RUBRIC` defs survive in `logic.clj` for legacy retrospective paths only. Full detail: [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#retained-synchronous-functions).
 
 ### Using Judges Directly
 
@@ -895,7 +873,7 @@ The judge **reasons before it scores** (field order forces `:reasoning` + eviden
 ;; docs-example: synchronous-functions
 (defn mock-grounding-check []
   (judges/with-mock-llm
-    (judges/evaluate-single
+    (evaluation/evaluate-single
      :grounding
      {:inputs {:context "FAQ: The gym is open Monday to Friday, 6am to 10pm."}
       :response "The gym is open Monday to Friday."
@@ -1082,7 +1060,7 @@ A healthy run returns `:status :completed`, a numeric `:best-score`, and a `:bes
 
 Unit tests for GEPA integration are available in:
 
-**File:** `components/orc-service/test/ai/obney/workshop/orc_service/gepa_integration_test.clj`
+**File:** `components/orc-service/test/ai/obney/orc/orc_service/gepa_integration_test.clj`
 
 ### Test Context Setup
 

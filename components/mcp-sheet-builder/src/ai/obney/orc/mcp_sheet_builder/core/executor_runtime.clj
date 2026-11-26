@@ -94,7 +94,6 @@
         ns-sym (symbol (str "mcp.executors.dynamic.t" ns-suffix))
         fn-name (str "call-" (gen/sanitize-name tool-name))]
 
-    ;; Check if already loaded
     (if (and (not force?)
              (contains? @executor-registry tool-id))
       (do
@@ -103,33 +102,25 @@
          :namespace (get-in @executor-registry [tool-id :namespace])
          :fn (get-in @executor-registry [tool-id :fn])})
       (try
-        ;; Verify integrity if checksum provided
         (when checksum
           (gen/verify-checksum source-code checksum))
 
         (u/log ::loading-executor :tool-id tool-id :tool-name tool-name :namespace ns-sym)
 
-        ;; Create isolated namespace
         (create-executor-namespace! ns-sym)
 
-        ;; Setup requires (skip - they're in the generated namespace code)
-        ;; The requires are evaluated as part of the namespace declaration
 
-        ;; Evaluate the source code
         (evaluate-source-code! ns-sym source-code)
 
-        ;; Resolve the executor function
         (let [executor-fn (resolve-executor-fn ns-sym fn-name)]
           (if executor-fn
             (do
-              ;; Cache in registry
               (swap! executor-registry assoc tool-id
                      {:fn executor-fn
                       :namespace ns-sym
                       :tool-name tool-name
                       :source-code source-code})
 
-              ;; Update name index
               (swap! name->id-index assoc tool-name tool-id)
 
               (u/log ::executor-loaded :tool-id tool-id :tool-name tool-name :fn fn-name)
@@ -151,11 +142,9 @@
   "Unload an executor from the registry and remove its namespace."
   [tool-id]
   (when-let [{:keys [namespace tool-name]} (get @executor-registry tool-id)]
-    ;; Remove from registries
     (swap! executor-registry dissoc tool-id)
     (swap! name->id-index dissoc tool-name)
 
-    ;; Remove namespace
     (try
       (remove-ns namespace)
       (catch Exception _))
@@ -200,25 +189,20 @@
    Returns the executor function or nil if not found."
   [identifier]
   (cond
-    ;; UUID lookup
     (uuid? identifier)
     (get-in @executor-registry [identifier :fn])
 
-    ;; String lookup
     (string? identifier)
     (or
-     ;; Try tool name lookup
      (when-let [tool-id (get @name->id-index identifier)]
        (get-in @executor-registry [tool-id :fn]))
 
-     ;; Try qualified name resolution
      (when (str/includes? identifier "/")
        (let [[ns-str fn-str] (str/split identifier #"/")]
          (when-let [ns (find-ns (symbol ns-str))]
            (when-let [var (ns-resolve ns (symbol fn-str))]
              @var))))
 
-     ;; Try looking up in registry by matching namespace
      (some (fn [[_ {:keys [fn namespace]}]]
              (when (str/ends-with? (str namespace) (first (str/split identifier #"/")))
                fn))
@@ -261,34 +245,3 @@
   []
   {:loaded-count (count @executor-registry)
    :tool-names (keys @name->id-index)})
-
-(comment
-  ;; Example usage:
-
-  ;; Generate and load an executor
-  (require '[ai.obney.orc.mcp-sheet-builder.core.executor-generator :as gen])
-
-  (def sample-tool
-    {:name "searchLangfuseDocs"
-     :inputSchema {"type" "object"
-                   "properties" {"query" {"type" "string"}}
-                   "required" ["query"]}})
-
-  (def exec-def (gen/build-executor-definition sample-tool))
-
-  (load-executor! (:tool-id exec-def)
-                  (:tool-name exec-def)
-                  (:source-code exec-def)
-                  (:namespace-requires exec-def)
-                  :checksum (:checksum exec-def))
-
-  ;; Resolve and call
-  (def exec-fn (get-executor "searchLangfuseDocs"))
-  (exec-fn {:inputs {:query "test"} :context {}})
-
-  ;; List loaded executors
-  (list-loaded-executors)
-
-  ;; Clear for testing
-  (clear-registry!)
-  )

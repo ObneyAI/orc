@@ -7,8 +7,7 @@
    - Data flows through a shared blackboard
    - Nodes return status: success, failure, or running"
   (:require [ai.obney.grain.schema-util.interface :refer [defschemas]]
-            [ai.obney.orc.orc-service.core.iteration-evidence :as iteration-evidence]
-            [ai.obney.orc.orc-service.core.researcher-resume-state :as researcher-resume-state]))
+            [ai.obney.orc.orc-service.core.logic :as logic]))
 
 ;; =============================================================================
 ;; Domain Enums
@@ -17,6 +16,79 @@
 (def node-type
   "Behavior tree node types"
   [:enum :leaf :sequence :fallback :condition :llm-condition :parallel :map-each :repl-researcher :delegate])
+
+(def parallel-success-policy [:enum :all :any :majority])
+
+(def parallel-failure-policy [:enum :all :any])
+
+(def emitted-dsl
+  [:and [:fn #(or (vector? %) (list? %))]
+   [:cat [:or :keyword :symbol] [:* logic/durable-value]]])
+
+(def trace-timestamp
+  "Live store timestamps and the serialized strings in historical trace projections."
+  [:or :string inst? :time/instant :time/offset-date-time :time/zoned-date-time])
+
+(def malli-definition
+  [:fn {:error/message "expected a Malli schema"} logic/valid-malli-schema?])
+
+(def exported-node
+  [:schema {:registry {::exported-node
+                       [:map [:id :uuid] [:name :string] [:type node-type]
+                        [:children {:optional true} [:vector [:ref ::exported-node]]]]}}
+   [:ref ::exported-node]])
+
+(def diff-node
+  [:map [:id :uuid] [:name :string] [:type node-type] [:path [:vector :string]]])
+
+(def value-profile
+  [:map [:type [:enum :string :map :vector :other]]
+   [:length [:int {:min 0}]]
+   [:word-count {:optional true} [:int {:min 0}]]
+   [:line-count {:optional true} [:int {:min 0}]]])
+
+(def stored-node-trace
+  "Early execution traces identified nodes before per-instance trace IDs existed."
+  [:or ::node-trace
+   [:and logic/durable-value
+    [:map [:node-id :uuid] [:node-type node-type]
+     [:status [:enum :success :failure :running :partial :timeout :blocked]]
+     [:started-at trace-timestamp] [:completed-at {:optional true} trace-timestamp]]
+    [:fn #(not (contains? % :trace-instance-id))]]])
+
+(def historical-iteration
+  [:and logic/durable-value
+   [:map [:code [:maybe :string]]
+    [:stdout {:optional true} [:maybe :string]]
+    [:reasoning {:optional true} [:maybe :string]]
+    [:result {:optional true} logic/durable-value]]])
+
+(def traced-iteration
+  [:and logic/durable-value
+   [:or [:map [:iteration [:int {:min 1}]]]
+    [:map [:iteration-index [:int {:min 0}]] [:attempt-ordinal [:int {:min 0}]]]]
+   [:map [:iteration {:optional true} [:int {:min 1}]]
+    [:iteration-index {:optional true} [:int {:min 0}]]
+    [:attempt-ordinal {:optional true} [:int {:min 0}]]
+    [:status {:optional true} [:enum :success :failure :timeout :blocked]]
+    [:code {:optional true} [:maybe :string]]]])
+
+(def researcher-event
+  [:map
+   [:type [:enum :checkpoint :yield :resume :action-completed :effect-claimed :effect-completed :effect-indeterminate]]
+   [:at trace-timestamp]
+   [:iteration {:optional true} [:maybe [:int {:min 0}]]]
+   [:kind {:optional true} [:enum :provider :tool :generated-child :behavior-mint]]
+   [:action-id {:optional true} :string]
+   [:action-kind {:optional true} :keyword]
+   [:logical-action-id {:optional true} :string]
+   [:attempt-id {:optional true} :string]
+   [:logical-action-identity {:optional true} :string]
+   [:attempt-identity {:optional true} :string]])
+
+(def modified-node
+  [:map [:id :uuid] [:name :string] [:path [:vector :string]]
+   [:changes [:vector [:map [:field :keyword] [:old logic/durable-value] [:new logic/durable-value]]]]])
 
 (def judge-rubric-schema
   "A judge's declared rubric: what it grades (criterion, optional stance), the
@@ -32,30 +104,20 @@
   "A judge definition. Models resolve like any ORC model node: a declared model
    id or a registered provider name, else the runtime provider."
   [:map
-   [:type :keyword] ;; :grounding, :completeness, :instruction-following, :reasoning, :custom
+   [:type :keyword]
    [:criteria {:optional true} :string]
-   ;; Weight for aggregation. The Gap-8 composite-score normalizer accepts ANY
-   ;; non-negative number (integer or double) -- values are re-scaled per the
-   ;; share-remaining-mass policy. Negative weights are rejected because they
-   ;; are nonsensical for a probability mass.
    [:weight {:optional true} [:and number? [:>= 0.0]]]
    [:provider {:optional true} :keyword]
    [:model {:optional true} :string]
    [:timeout-ms {:optional true} :int]
    [:rubric {:optional true} judge-rubric-schema]
    [:purposes {:optional true} [:set [:enum :monitoring :learning]]]
-   ;; Default false: a completion whose status is :failure, :timeout or :blocked
-   ;; is recorded UNGRADABLE (:subject-failed), never judged. true judges failed
-   ;; completions like any other.
    [:assess-failures? {:optional true} :boolean]
-   ;; Opt-in threshold watching (`judge-definition/alert-error` validates the
-   ;; values): only a judge declaring an alert has its node versions' trailing
-   ;; window watched.
    [:alert {:optional true} [:map
                              [:below number?]
                              [:window :int]
                              [:min-coverage number?]]]
-   [:sheet-id {:optional true} :uuid]]) ;; For :custom type - reference to judge sheet
+   [:sheet-id {:optional true} :uuid]])
 
 (def executor-type
   "Executor types for leaf nodes"
@@ -71,15 +133,15 @@
   [:map {:closed true
          :description "Durable record of one model decision"}
    [:offered {:description "Every option id the model was offered, verbatim"}
-    [:vector :any]]
+    [:vector logic/durable-value]]
    [:answer {:optional true
              :description "The answer the provider returned (present when one was obtained)"}
-    :any]
+    logic/durable-value]
    [:abstained? {:description "True when the answer was set aside for the abstention option"}
     :boolean]
    [:set-aside {:optional true
                 :description "The answer that was set aside when abstained? is true"}
-    :any]
+    logic/durable-value]
    [:probabilities {:optional true
                     :description "Provider-reported probability per offered option id"}
     [:map-of :string number?]]
@@ -126,16 +188,9 @@
   [:enum :transport-failure :missing-forced-tool-call
    :tool-call-parsing-failed :schema-validation-failed
    :empty-provider-response :provider-finish-error
-   ;; The call named a provider that was never configured: nothing was sent, so
-   ;; this is distinct from a transport failure and says what to fix.
    :provider-not-configured
-   ;; Durable budget admission cannot safely reconstruct older call history.
-   ;; This rejects the request before transport, without provider evidence.
    :budget-history-unavailable
-   ;; Historical fallback work cannot infer an unretained effective profile.
    :model-plan-incompatible
-   ;; A banded decision whose most probable level is an exact tie: no band is
-   ;; selected (distinct from a malformed answer).
    :undecided])
 
 (def provider-transport-evidence
@@ -151,7 +206,6 @@
       :litellm/invalid-response :litellm/streaming-error :litellm/content-filter
       :litellm/internal-error :litellm/resource-exhausted]]
     [:http-status {:optional true} [:int {:min 100 :max 599}]]]
-   ;; Absent classification is omitted, never an empty or fabricated record.
    [:fn seq]])
 
 (def provider-failure-evidence
@@ -191,10 +245,6 @@
      [:map-of [:and :int [:>= 0]] [:and :int [:>= 0]]]]
     [:campaign-started-at-ms [:and :int [:>= 0]]]
     [:campaign-deadline-ms [:and :int [:>= 0]]]
-    ;; Additive within V2 so resume states written before RR-9 remain readable.
-    ;; New completed-quantum states carry both fields; a max-only state is
-    ;; admitted for rolling compatibility when an older writer cannot measure
-    ;; the current quantum but the command boundary preserves the prior max.
     [:observed-quantum-duration-ms {:optional true}
      [:and :int [:>= 0]]]
     [:max-observed-quantum-duration-ms {:optional true}
@@ -239,7 +289,7 @@
    [:max-observed-quantum-duration-ms {:optional true} [:and :int [:>= 0]]]]
    [:fn {:error/message
          "version-3 researcher resume state must match its full-snapshot or sandbox-delta shape"}
-    researcher-resume-state/valid-v3-shape?]])
+    logic/valid-v3-shape?]])
 
 (def researcher-iteration-record
   [:and
@@ -247,29 +297,23 @@
    [:iteration-index [:and :int [:>= 0]]]
    [:attempt-ordinal [:and :int [:>= 0]]]
    [:status [:enum :success :failure :timeout :blocked]]
-   [:block-reason {:optional true} :any]
-   ;; Optional only for RR-4 command compatibility: its public fixtures predate
-   ;; the RR-5 digest and the record has no version discriminator. Production
-   ;; checkpointed execution always supplies this lifecycle/evidence shape.
+   [:block-reason {:optional true} logic/durable-value]
    [:started-at {:optional true} :string]
    [:completed-at {:optional true} :string]
    [:duration-ms {:optional true} [:and :int [:>= 0]]]
    [:code {:optional true} [:maybe :string]]
    [:reasoning
     {:optional true}
-    [:maybe [:string {:max iteration-evidence/reasoning-max-chars}]]]
+    [:maybe [:string {:max logic/reasoning-max-chars}]]]
    [:generated-code-recorded? {:optional true} :boolean]
    [:emitted-tree-recorded? {:optional true} :boolean]
-   [:emitted-tree {:optional true} :any]
-   ;; Exact EDN source captured before compilation. The structured tree remains
-   ;; useful for projection/query consumers, but Fressian does not preserve
-   ;; list-vs-vector syntax; this string is the restart/re-emission authority.
+   [:emitted-tree {:optional true} emitted-dsl]
    [:emitted-tree-source {:optional true} :string]
    [:tree-fingerprint {:optional true} :string]
    [:error-class {:optional true} :string]
    [:error-excerpt
     {:optional true}
-    [:string {:max iteration-evidence/error-excerpt-max-chars}]]
+    [:string {:max logic/error-excerpt-max-chars}]]
    [:variable-delta
     {:optional true}
     [:map {:closed true}
@@ -302,12 +346,10 @@
       (= (= :blocked (:status record))
          (contains? record :block-reason)))]])
 
-;; Legacy field-type enum - kept for migration from old format
 (def field-type
   "Supported field types for blackboard values (legacy)"
   [:enum :text :number :yesno :list :document :image :table])
 
-;; Migration helper: convert legacy type to Malli schema
 (def legacy-type->malli
   "Maps legacy field types to Malli schemas"
   {:text :string
@@ -316,7 +358,7 @@
    :list [:vector :string]
    :document :string
    :image :string
-   :table [:vector [:map-of :string :any]]})
+   :table [:vector [:map-of :string ::durable-value]]})
 
 (def decorator-type
   "Decorator types that modify node behavior"
@@ -348,39 +390,37 @@
   "A typed field value for blackboard entries.
    Schema can be any valid Malli schema (keyword like :string, or vector like [:map ...])"
   [:map
-   [:schema :any]  ;; Malli schema EDN
-   [:value :any]])
+   [:schema malli-definition]
+   [:value logic/durable-value]])
 
 (def condition-check
   "A condition check definition for condition nodes"
   [:map
    [:key :keyword]
    [:op condition-op]
-   [:value {:optional true} :any]
+   [:value {:optional true} logic/durable-value]
    [:on-fail {:optional true} on-fail-behavior]])
 
 (def tool-contracts
   "Authoritative Malli contracts keyed by the exact bound tool name."
   [:map-of :string
    [:map {:closed true}
-    [:arguments {:optional true} :any]
-    [:result {:optional true} :any]
+    [:arguments {:optional true} malli-definition]
+    [:result {:optional true} malli-definition]
     [:checkpoint-safe? {:optional true} :boolean]]])
 
-;; =============================================================================
-;; Domain Schemas (for use in query results)
-;; =============================================================================
-
+(def execution-context
+  [:map {:closed true}
+      [:ai.obney.orc.orc-service.core.todo-processors/map-each-index {:optional true} [:and :int [:>= 0]]]
+      [:ai.obney.orc.orc-service.core.todo-processors/map-each-parent {:optional true} :uuid]
+      [:ai.obney.orc.orc-service.core.todo-processors/tick-iteration {:optional true} [:and :int [:>= 1]]]])
 
 (def ordinary-provider-reservation
   [:map
     [:admission-kind [:= :ordinary]]
     [:budget-sheet-id :uuid] [:budget-tick-id :uuid]
     [:sheet-id :uuid] [:tick-id :uuid] [:node-id :uuid] [:node-start-id :uuid]
-    [:exec-context [:map {:closed true}
-      [:ai.obney.orc.orc-service.core.todo-processors/map-each-index {:optional true} [:and :int [:>= 0]]]
-      [:ai.obney.orc.orc-service.core.todo-processors/map-each-parent {:optional true} :uuid]
-      [:ai.obney.orc.orc-service.core.todo-processors/tick-iteration {:optional true} [:and :int [:>= 1]]]]]
+    [:exec-context execution-context]
     [:candidate-index [:and :int [:>= 0]]] [:node-attempt [:and :int [:>= 1]]]
     [:logical-action-identity :string] [:invocation-identity :string]
     [:provider-attempt-ordinal [:and :int [:>= 0]]] [:reserved-at :string]])
@@ -445,13 +485,14 @@
    [:bindings [:map {:closed true}]]])
 
 (defschemas domain
-  {::sheet
+  {::durable-value logic/durable-value
+
+   ::sheet
    [:map
     [:id :uuid]
     [:name :string]
     [:root-node-id {:optional true} :uuid]
     [:created-at {:optional true} :string]
-    ;; Versioning fields
     [:draft-dirty? {:optional true} :boolean]
     [:published-version {:optional true} :int]
     [:execution-mode {:optional true} execution-mode]
@@ -474,65 +515,48 @@
                [:options {:optional true} [:map]]]]]
     [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]
     [:model-fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]
-    ;; Leaf-only fields
     [:instruction {:optional true} :string]
     [:reads [:vector :keyword]]
     [:writes [:vector :keyword]]
     [:decorators [:vector decorator]]
-    ;; Executor fields (for leaf nodes)
-    [:executor {:optional true} executor-type]     ;; :ai, :code, :tool
-    [:model {:optional true} :string]              ;; OpenRouter model ID (e.g., "google/gemini-2.5-flash")
-    ;; :decision executor only: read key holding run-time options, confidence
-    ;; floor and the abstention option written when the floor is not met.
+    [:executor {:optional true} executor-type]
+    [:model {:optional true} :string]
     [:options-from {:optional true} :keyword]
     [:bands-from {:optional true} :keyword]
     [:min-confidence {:optional true} :double]
-    [:abstain {:optional true} :any]
-    [:fn {:optional true} :string]                 ;; Fully-qualified fn symbol for :code executor
+    [:abstain {:optional true} logic/durable-value]
+    [:fn {:optional true} :string]
     [:recoverable-fn {:optional true} recoverable-fn]
-    [:tool {:optional true} :string]               ;; Authored tool name for :tool executor
-    [:tools {:optional true} [:vector :keyword]]   ;; Tools available to AI for :ai executor
-    [:options {:optional true} :map]               ;; Per-node executor/ORC LLM options
+    [:tool {:optional true} :string]
+    [:tools {:optional true} [:vector :keyword]]
+    [:options {:optional true} :map]
     [:retry {:optional true} [:map
                               [:max-attempts :int]
                               [:backoff-ms [:vector :int]]]]
-    ;; Condition-only fields
     [:check {:optional true} condition-check]
-    ;; Parallel-only fields
-    [:success-policy {:optional true} [:enum :all :any :majority]]
-    [:failure-policy {:optional true} [:enum :all :any]]
-    ;; Map-each-only fields
-    [:source-key {:optional true} :keyword]        ;; Blackboard key with list to iterate
-    [:item-key {:optional true} :keyword]          ;; Blackboard key for current item
-    [:output-key {:optional true} :keyword]        ;; Blackboard key for collected results
-    [:max-concurrency {:optional true} :int]       ;; Max parallel iterations (nil = sequential)
-    [:preserve-failures? {:optional true} :boolean] ;; Slice O: write aligned vector (keep failure markers) to :into
-    ;; Repl-researcher-only fields
-    [:mcp-tools {:optional true} [:vector :string]] ;; Available MCP tool names for research
-    [:tool-contracts {:optional true} tool-contracts] ;; tool name -> argument/result Malli schemas
-    ;; Opt-in hook: FQN of a (fn [blackboard context] -> call-tool-fn)
-    ;; that builds this node's tool-caller, threading per-execution
-    ;; context (identity/consent/confinement/routing) into tool calls.
-    ;; Absent -> the static (:call-tool-fn context) is used unchanged.
+    [:success-policy {:optional true} parallel-success-policy]
+    [:failure-policy {:optional true} parallel-failure-policy]
+    [:source-key {:optional true} :keyword]
+    [:item-key {:optional true} :keyword]
+    [:output-key {:optional true} :keyword]
+    [:max-concurrency {:optional true} :int]
+    [:preserve-failures? {:optional true} :boolean]
+    [:mcp-tools {:optional true} [:vector :string]]
+    [:tool-contracts {:optional true} tool-contracts]
     [:tool-caller-fn {:optional true} :string]
-    [:max-iterations {:optional true} :int]         ;; Max research iterations (default 10)
-    ;; D-003: total budget (Phase 1 + Phase 2) in ms. When set, takes precedence
-    ;; over the parent tick :options :timeout-ms and the 900_000ms hardcoded
-    ;; fallback. Phase 2 receives the remaining budget after Phase 1 completes.
+    [:max-iterations {:optional true} :int]
     [:timeout-ms {:optional true} :int]
-    ;; Delegate-only fields
-    [:target-sheet-id {:optional true} :uuid]       ;; Sheet to delegate execution to
-    [:delegate-timeout-ms {:optional true} [:and :int [:> 0]]] ;; Timeout for delegated execution
+    [:target-sheet-id {:optional true} :uuid]
+    [:delegate-timeout-ms {:optional true} [:and :int [:> 0]]]
     [:delegate-max-ticks {:optional true} [:and :int [:> 0]]]
-    [:inherit-ontology? {:optional true} :boolean]  ;; Share ontology context with target
-    ;; Execution tracking
+    [:inherit-ontology? {:optional true} :boolean]
     [:last-error {:optional true} :string]]
 
    ::blackboard-entry
    [:map
     [:key :keyword]
-    [:schema :any]  ;; Malli schema EDN (e.g., :string, [:map [:name :string]])
-    [:value {:optional true} :any]
+    [:schema malli-definition]
+    [:value {:optional true} logic/durable-value]
     [:version :int]]
 
    ::node-layout
@@ -547,23 +571,17 @@
     [:snapshot-id :uuid]
     [:sheet-id :uuid]
     [:version-number :int]
-    [:published-at :any]
+    [:published-at trace-timestamp]
     [:description {:optional true} :string]
-    [:snapshot :map]]  ;; Same structure as export-sheet result
+    [:snapshot :map]]
 
    ::stash
    [:map
     [:stash-id :uuid]
     [:sheet-id :uuid]
-    [:stashed-at :any]
+    [:stashed-at trace-timestamp]
     [:snapshot :map]]
 
-   ;; CC-13: one entry of the corpus content a render put in front of the
-   ;; model. `:version` is the version of the description body the content was
-   ;; read from — per-candidate, because corpus bodies move independently and
-   ;; "this turn saw candidate X at v4" is the granularity attribution needs.
-   ;; Ids are stringified: the classifier bridges target-ids through JSON, so
-   ;; a string is the only shape guaranteed present on both axes.
    ::injected-candidate
    [:map
     [:axis [:enum :structural :behavioral]]
@@ -593,27 +611,18 @@
     [:delegate-child-tick-id {:optional true} :uuid]
     [:delegate-child-status {:optional true} :keyword]
     [:completion-delivered? {:optional true} :boolean]
-    [:trace-instance-id :uuid]                    ;; Unique ID for this execution instance
-    [:parent-trace-instance-id {:optional true} :uuid]  ;; Links to parent's trace-instance-id
+    [:trace-instance-id :uuid]
+    [:parent-trace-instance-id {:optional true} :uuid]
     [:node-name :string]
     [:node-type node-type]
-    ;; The other axis. :node-type says what KIND of node it is (:leaf,
-    ;; :map-each, :repl-researcher …); :executor says how a LEAF runs
-    ;; (:ai, :code, :tool). Both are needed to answer "was this an LLM call?" —
-    ;; a leaf is :leaf either way. Absent on non-leaf nodes.
     [:executor {:optional true} executor-type]
-    [:parent-id {:optional true} :uuid]           ;; Parent node ID (for reference only)
-    [:path [:vector :string]]                     ;; Path from root e.g. ["root" "fallback-1" "task-a"]
-    [:child-index {:optional true} :int]          ;; Which child of parent (0-indexed)
-    ;; Internal map-each correlation context. Public consumers address one
-    ;; execution by :trace-instance-id; the service uses this context to join
-    ;; that instance back to its lifecycle and canonical value events.
+    [:parent-id {:optional true} :uuid]
+    [:path [:vector :string]]
+    [:child-index {:optional true} :int]
     [:exec-context {:optional true} :map]
-    ;; :blocked belongs here as much as it does on the enclosing tick's own
-    ;; status: a blocked node is durable, rejoinable evidence, not an absence.
     [:status [:enum :success :failure :running :partial :timeout :blocked]]
-    [:started-at :any]
-    [:completed-at {:optional true} :any]
+    [:started-at trace-timestamp]
+    [:completed-at {:optional true} trace-timestamp]
     [:duration-ms {:optional true} :int]
     [:provider-attempt {:optional true} :int]
     [:max-provider-attempts {:optional true} :int]
@@ -622,11 +631,8 @@
     [:provider-timeout-ms {:optional true} [:maybe :int]]
     [:execution-deadline-ms {:optional true} [:maybe :int]]
     [:execution-budget-remaining-ms {:optional true} [:maybe :int]]
-    ;; Shape, not values — the values are durable in this tick's
-    ;; :sheet/execution-value-written events. Fetch them with the
-    ;; :sheet/node-trace-detail query, which rehydrates on demand.
-    [:read-keys {:optional true} [:vector :keyword]]     ;; keys read
-    [:write-keys {:optional true} [:vector :keyword]]    ;; keys written
+    [:read-keys {:optional true} [:vector :keyword]]
+    [:write-keys {:optional true} [:vector :keyword]]
     [:missing-write-keys {:optional true} [:vector :keyword]]
     [:rejected-write-keys {:optional true} [:vector :keyword]]
     [:input-profile {:optional true} [:map-of :keyword :map]]
@@ -644,23 +650,20 @@
     [:correlation-id {:optional true} :uuid]
     [:root-trace-id :uuid]
     [:child-trace-ids [:vector :uuid]]
-    [:version-number {:optional true} :int]       ;; nil = draft execution
-    [:started-at :any]
-    [:completed-at :any]
+    [:version-number {:optional true} :int]
+    [:started-at trace-timestamp]
+    [:completed-at trace-timestamp]
     [:duration-ms :int]
     [:status [:enum :success :failure :timeout :partial :blocked]]
     [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
     [:consumed-ticks {:optional true} :int]
     [:terminal-reason {:optional true} :keyword]
-    ;; key -> size-profile, not key -> value. :input-snapshot profiles the
-    ;; keys the tick was given and did not write; :output-snapshot profiles
-    ;; the keys it wrote.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
     [:source-event-count {:optional true} [:and :int [:>= 0]]]
-    [:node-traces [:vector ::node-trace]]
-    [:researcher-iterations {:optional true} [:vector :any]]
-    [:researcher-events {:optional true} [:vector :any]]
+    [:node-traces [:vector stored-node-trace]]
+    [:researcher-iterations {:optional true} [:vector traced-iteration]]
+    [:researcher-events {:optional true} [:vector researcher-event]]
     [:error {:optional true} :string]]
 
    ;; -------------------------------------------------------------------------
@@ -672,120 +675,22 @@
     [:sheet-id :uuid]
     [:name :string]
     [:description {:optional true} :string]
-    ;; What problems this tree solves
-    [:problem-types [:vector :string]]            ;; e.g., ["problem:Classification"]
-    ;; What capabilities it has
-    [:capabilities [:vector :string]]             ;; e.g., ["validation-loop", "parallel-gathering"]
-    ;; What patterns it uses
-    [:patterns [:vector :string]]                 ;; e.g., ["success:ExplicitSchema"]
-    ;; Auto-extracted from structure
-    [:node-types [:vector :keyword]]              ;; e.g., [:llm :code :map-each]
+    [:problem-types [:vector :string]]
+    [:capabilities [:vector :string]]
+    [:patterns [:vector :string]]
+    [:node-types [:vector :keyword]]
     [:node-count :int]
     [:has-validation? :boolean]
     [:has-retry? :boolean]
     [:has-parallel? :boolean]
     [:has-map-each? :boolean]
-    ;; Updated over time
     [:execution-count {:optional true} :int]
     [:avg-score {:optional true} :double]
     [:last-executed {:optional true} :string]
     [:extracted-at :string]]})
 
-;; =============================================================================
-;; Command Schemas
-;; =============================================================================
-
-(def ^:private researcher-classification-outcome-command-names
-  #{:ontology/assign-task-class
-    :ontology/record-task-classification-deferral})
-
-(def ^:private domain-mint-assignment-vias
-  #{:mint-domain-child :mint-sibling-domain-child})
-
-(defn- domain-axis-deferral?
-  "RS-3: the domain-axis deferral recorded BESIDE a structural assignment
-   (the wedge's :domain-classification-deferral effect). It reuses the
-   deferral command with :fallback-source :domain-coverage, so by name it
-   looks like a second outcome — it is not; it is the domain axis of the
-   same outcome."
-  [effect]
-  (and (= :ontology/record-task-classification-deferral (:command/name effect))
-       (= :domain-coverage (:fallback-source effect))))
-
-(defn- valid-researcher-classification-commit?
-  [{:keys [sheet-id tick-id node-id ownership-epoch effects]}]
-  (let [outcomes
-        (filterv
-         #(and (contains? researcher-classification-outcome-command-names
-                          (:command/name %))
-               (not (domain-axis-deferral? %)))
-         effects)
-        outcome (first outcomes)
-        injections
-        (filterv #(= :sheet/record-injection (:command/name %)) effects)
-        convergence-captures
-        (filterv #(= :ontology/record-claim-deltas (:command/name %)) effects)
-        fresh-mint-assignment?
-        (and (= :ontology/assign-task-class (:command/name outcome))
-             (true? (:was-fresh-mint? outcome)))
-        convergence-capture (first convergence-captures)
-        ;; RS-3: the domain-child mint and the domain-axis deferral.
-        assignment? (= :ontology/assign-task-class (:command/name outcome))
-        domain-mint-assignment?
-        (and assignment?
-             (contains? domain-mint-assignment-vias (:assigned-via outcome)))
-        mints (filterv #(= :ontology/mint-domain-child (:command/name %)) effects)
-        mint (first mints)
-        domain-deferrals (filterv domain-axis-deferral? effects)
-        domain-deferral (first domain-deferrals)
-        ;; CV-A item 5: a genuine tenant-wide family birth (the outcome
-        ;; carries a :merge-verdict — the merge judge ran, never the legacy
-        ;; per-parent sibling mint) embeds the minted concept SYNCHRONOUSLY
-        ;; inside the SAME :ontology/mint-domain-child event batch (never a
-        ;; separate staged effect — a checkpointed commit prepares every
-        ;; effect from one pre-commit snapshot, so a second command could
-        ;; never read back a concept this same commit is creating). No
-        ;; :ontology/embed-concept effect is ever staged by this wedge.
-        bound-to-campaign?
-        (fn [effect]
-          (and (= sheet-id (:source-sheet-id effect))
-               (= tick-id (:source-tick-id effect))
-               (= node-id (:source-node-id effect))))]
-    (and (= 1 (count outcomes))
-         (bound-to-campaign? outcome)
-         (= ownership-epoch (:researcher-ownership-epoch outcome))
-         (<= (count injections) 1)
-         (every? #(and (= sheet-id (:sheet-id %))
-                       (= tick-id (:tick-id %))
-                       (= node-id (:node-id %)))
-                 injections)
-         (if fresh-mint-assignment?
-           (and (= 1 (count convergence-captures))
-                (= :tree-class (:granularity convergence-capture))
-                (= (:assigned-tree-id outcome)
-                   (:target-identifier convergence-capture)))
-           (empty? convergence-captures))
-         ;; A domain-mint assignment carries exactly one mint naming the same
-         ;; child (the concept + edge exist before the classification refers
-         ;; to them — MintDomainChild); any other outcome carries none.
-         (if domain-mint-assignment?
-           (and (= 1 (count mints))
-                (bound-to-campaign? mint)
-                (= (:assigned-tree-id outcome) (:child-tree-id mint)))
-           (empty? mints))
-         ;; At most one domain-axis deferral, only beside an assignment, bound
-         ;; to the same campaign epoch (DeferralIsVisible on the domain axis).
-         (<= (count domain-deferrals) 1)
-         (or (nil? domain-deferral)
-             (and assignment?
-                  (bound-to-campaign? domain-deferral)
-                  (= ownership-epoch
-                     (:researcher-ownership-epoch domain-deferral)))))))
-
 (defschemas commands
-  {;; -------------------------------------------------------------------------
-   ;; Sheet Commands
-   ;; -------------------------------------------------------------------------
+  {
 
    :sheet/create-sheet
    [:map
@@ -846,7 +751,7 @@
    [:map
     [:sheet-id :uuid]
     [:node-id :uuid]
-    [:context [:map-of :keyword :any]]]
+    [:context logic/workflow-values]]
 
    :sheet/set-node-io
    [:map
@@ -881,9 +786,7 @@
     [:options-from {:optional true} :keyword]
     [:bands-from {:optional true} :keyword]
     [:min-confidence {:optional true} :double]
-    [:abstain {:optional true} :any]
-    ;; Phase 4B: opt-in gated tool-caller builder FQN for :code nodes inside
-    ;; generated (Phase-2) trees. Mirrors the node-level :tool-caller-fn hook.
+    [:abstain {:optional true} logic/durable-value]
     [:tool-caller-fn {:optional true} :string]
     [:tool-contracts {:optional true} tool-contracts]]
 
@@ -910,8 +813,8 @@
    [:map
     [:sheet-id :uuid]
     [:node-id :uuid]
-    [:success-policy {:optional true} [:enum :all :any :majority]]
-    [:failure-policy {:optional true} [:enum :all :any]]]
+    [:success-policy {:optional true} parallel-success-policy]
+    [:failure-policy {:optional true} parallel-failure-policy]]
 
    :sheet/set-map-each-config
    [:map
@@ -935,14 +838,14 @@
    [:map
     [:sheet-id :uuid]
     [:node-id :uuid]
-    [:instruction :string]                              ;; Research goal/question
-    [:reads [:vector :keyword]]                         ;; Blackboard keys (metadata only shown to LLM)
-    [:writes [:vector :keyword]]                        ;; Output keys (final-answer, iterations, etc.)
-    [:mcp-tools [:vector :string]]                      ;; Available MCP tool names
-    [:tool-contracts {:optional true} tool-contracts]   ;; Authoritative bound tool contracts
-    [:tool-caller-fn {:optional true} :string]          ;; Consumer-scoped caller builder FQN
-    [:model {:optional true} :string]                   ;; OpenRouter model ID
-    [:max-iterations {:optional true} :int]             ;; Default 10
+    [:instruction :string]
+    [:reads [:vector :keyword]]
+    [:writes [:vector :keyword]]
+    [:mcp-tools [:vector :string]]
+    [:tool-contracts {:optional true} tool-contracts]
+    [:tool-caller-fn {:optional true} :string]
+    [:model {:optional true} :string]
+    [:max-iterations {:optional true} :int]
     [:rlm {:optional true}
      [:and
       [:or :boolean :map]
@@ -953,19 +856,19 @@
              (not (contains? rlm :sandbox-snapshot-interval))
              (let [interval (:sandbox-snapshot-interval rlm)]
                (and (integer? interval) (pos? interval)))))]]]
-    [:options {:optional true} :map]                    ;; Per-node executor/ORC LLM options
-    [:timeout-ms {:optional true} :int]]                ;; D-003: total Phase-1+Phase-2 budget
+    [:options {:optional true} :map]
+    [:timeout-ms {:optional true} :int]]
 
    :sheet/set-delegate-config
    [:map
     [:sheet-id :uuid]
     [:node-id :uuid]
-    [:target-sheet-id :uuid]                            ;; Sheet to delegate to
-    [:reads [:vector :keyword]]                         ;; Blackboard keys to pass as inputs
-    [:writes [:vector :keyword]]                        ;; Output keys to receive from target
-    [:timeout-ms {:optional true} [:and :int [:> 0]]]   ;; Timeout for delegated execution
+    [:target-sheet-id :uuid]
+    [:reads [:vector :keyword]]
+    [:writes [:vector :keyword]]
+    [:timeout-ms {:optional true} [:and :int [:> 0]]]
     [:max-ticks {:optional true} [:and :int [:> 0]]]
-    [:inherit-ontology? {:optional true} :boolean]]     ;; Share ontology context (default true)
+    [:inherit-ontology? {:optional true} :boolean]]
 
    ;; -------------------------------------------------------------------------
    ;; Blackboard Commands
@@ -975,19 +878,19 @@
    [:map
     [:sheet-id :uuid]
     [:key :keyword]
-    [:schema :any]]  ;; Malli schema EDN
+    [:schema malli-definition]]
 
    :sheet/update-key-schema
    [:map
     [:sheet-id :uuid]
     [:key :keyword]
-    [:schema :any]]  ;; New Malli schema EDN
+    [:schema malli-definition]]
 
    :sheet/set-key-value
    [:map
     [:sheet-id :uuid]
     [:key :keyword]
-    [:value :any]]
+    [:value logic/durable-value]]
 
    :sheet/delete-key
    [:map
@@ -1013,15 +916,13 @@
    [:map
     [:sheet-id :uuid]
     [:judge-name :string]
-    ;; The complete new definition (not a patch). Identical to the current
-    ;; definition is a conflict: it is not a new revision.
     [:judge-config judge-config-schema]]
 
    :sheet/set-node-judges
    [:map
     [:sheet-id :uuid]
     [:node-id :uuid]
-    [:judges [:vector :string]]]  ;; List of judge names defined in sheet/judges
+    [:judges [:vector :string]]]
 
    ;; -------------------------------------------------------------------------
    ;; Execution Commands
@@ -1031,20 +932,14 @@
    [:map
     [:sheet-id :uuid]
     [:tick-id {:optional true} :uuid]
-    ;; Lineage: tick that spawned this one (RLM Phase 2 trees, delegate
-    ;; nodes). Lets observers correlate a child-tick cascade to its root.
     [:parent-tick-id {:optional true} :uuid]
     [:correlation-id {:optional true} :uuid]
-    ;; Fields for async execution with isolated blackboard
     [:inputs {:optional true} :map]
-    ;; Canonical sources for inputs already durable in another tick.
     [:input-sources {:optional true} [:map-of :keyword
                                       [:map [:tick-id :uuid] [:event-id :uuid]]]]
     [:use-version {:optional true} :int]
     [:force-draft {:optional true} :boolean]
     [:options {:optional true} :map]
-    ;; G1 (ADR 0018): opaque per-tick tool context threaded to Phase-2 leaves.
-    ;; orc treats it as an opaque map; orc-sessions populates/consumes it.
     [:tool-context {:optional true} :map]]
 
    :sheet/tick-node
@@ -1052,7 +947,7 @@
     [:sheet-id :uuid]
     [:node-id :uuid]
     [:tick-id {:optional true} :uuid]
-    [:overrides {:optional true} [:map-of :keyword :any]]]
+    [:overrides {:optional true} logic/workflow-values]]
 
    :sheet/cancel-tick
    [:map
@@ -1067,21 +962,19 @@
    [:node-id :uuid]
    [:original-start-event-id :uuid]
     [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]
-    [:inputs [:map-of :keyword :any]]]
+    [:inputs logic/workflow-values]]
 
    :sheet/renew-node-execution-lease
    [:map
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    [:exec-context {:optional true} [:map-of :keyword :any]]
+    [:exec-context {:optional true} execution-context]
     [:start-event-id :uuid]
     [:lease-owner :uuid]
     [:lease-expires-at :string]]
 
    :sheet/checkpoint-researcher-iteration
-   ;; Preserve strict version-1 validation while admitting the split version-2
-   ;; write. A partial v2 command must not fall through to the legacy handler.
    [:or
     [:map
      [:sheet-id :uuid]
@@ -1089,7 +982,7 @@
      [:node-id :uuid]
      [:checkpoint :map]
      [:resume? {:optional true} :boolean]
-     [:inputs [:map-of :keyword :any]]]
+     [:inputs logic/workflow-values]]
     [:map
      [:sheet-id :uuid]
      [:tick-id :uuid]
@@ -1098,7 +991,7 @@
      [:iteration-record researcher-iteration-record]
      [:sandbox-snapshot-interval {:optional true} [:and :int [:> 0]]]
      [:resume? {:optional true} :boolean]
-     [:inputs [:map-of :keyword :any]]]]
+     [:inputs logic/workflow-values]]]
 
    :sheet/record-researcher-action
    [:map
@@ -1108,7 +1001,7 @@
     [:action-id :string]
     [:action-kind :keyword]
     [:iteration :int]
-    [:result :any]
+    [:result logic/durable-value]
     [:completed-at :string]]
 
    :sheet/claim-researcher-frontier
@@ -1155,7 +1048,7 @@
     [:logical-action-identity :string]
     [:attempt-identity :string]
     [:ownership-epoch [:and :int [:>= 1]]]
-    [:result :any]
+    [:result logic/durable-value]
     [:resolved-at :string]]
 
    :sheet/mark-researcher-effect-indeterminate
@@ -1168,7 +1061,6 @@
     [:ownership-epoch [:and :int [:>= 1]]]
     [:resolved-at :string]]
 
-   ;; Internal commands (issued by todo processors)
    :sheet/complete-node-execution
    [:map
     [:sheet-id :uuid]
@@ -1176,86 +1068,44 @@
     [:node-id :uuid]
     [:completion-id {:optional true} :uuid]
     [:researcher-ownership-epoch {:optional true} [:and :int [:>= 1]]]
-    ;; WS-2a: :blocked — a leaf raised the orc block signal (a gated tool call
-    ;; needs permission). The node completes (so the tick completes and the
-    ;; parent deref returns immediately) instead of the throwable escaping the
-    ;; future and hanging the Phase-2 budget.
     [:status [:enum :success :failure :tree-generated :partial :timeout :blocked]]
-    [:writes {:optional true} [:map-of :keyword :any]]
-    ;; Values rejected by blackboard schema validation. They are persisted as
-    ;; trace-only :sheet/execution-value-rejected events and never projected
-    ;; into canonical blackboard state.
+    [:writes {:optional true} logic/workflow-values]
     [:missing-write-keys {:optional true} [:vector :keyword]]
-    [:rejected-writes {:optional true} [:map-of :keyword :any]]
+    [:rejected-writes {:optional true} logic/workflow-values]
     [:write-sources {:optional true} [:map-of :keyword
                                       [:map [:tick-id :uuid] [:event-id :uuid]]]]
     [:write-references? {:optional true} :boolean]
-    ;; WS-2a: OPAQUE payload carried on a :blocked completion. orc never
-    ;; interprets it (orc-sessions owns its meaning — WS-2c). Optional/
-    ;; backward-compatible — present only on :blocked completions.
-    [:block-payload {:optional true} :any]
+    [:block-payload {:optional true} logic/durable-value]
     [:duration-ms {:optional true} :int]
     [:observed-quantum-duration-ms {:optional true}
      [:and :int [:>= 0]]]
     [:max-observed-quantum-duration-ms {:optional true}
      [:and :int [:>= 0]]]
-    ;; Execution context + the values this node READ. The read values are
-    ;; reduced to :read-keys + :input-profile before reaching the event.
-    [:inputs {:optional true} [:map-of :keyword :any]]
-    ;; {read-key -> :event/id of the write it resolved to}. Carried through
-    ;; onto the event so rehydration is exact rather than last-write-wins —
-    ;; see the :sheet/node-execution-completed event schema.
+    [:inputs {:optional true} logic/workflow-values]
     [:read-sources {:optional true} [:map-of :keyword
                                      [:map [:tick-id :uuid] [:event-id :uuid]]]]
-    ;; Verbatim raw LLM response text, present only on parse-failure
-    ;; completions (the model answered but no value could be extracted
-    ;; for declared writes). Persisted so (node-output <node-id>) can
-    ;; retrieve the full text post-hoc.
     [:raw-response {:optional true} :string]
-    ;; Model-backed condition: the boolean answer, present only when a valid
-    ;; answer was obtained (absent on provider failure).
     [:condition-answer {:optional true} :boolean]
     [:decision {:optional true} decision-record]
     [:failure-kind {:optional true} structured-failure-kind]
     [:provider-evidence {:optional true} provider-failure-evidence]
-    ;; Gap-7: carry through to the event body. See :completion-kind on
-    ;; :sheet/node-execution-completed.
     [:completion-kind {:optional true} [:enum :tree-iteration :terminal]]
-    ;; Optional per-node token usage from LLM calls. Universal — applies to
-    ;; any leaf node that calls an LLM, not just RLM Phase 2 contexts.
     [:usage {:optional true}
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
       [:total-tokens {:optional true} :int]
       [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
-    ;; The part of :usage this node spent itself. Present only when :usage
-    ;; also folds in generated child ticks (a repl-researcher's Phase-2
-    ;; tree), which record the same tokens on their own completions.
     [:own-usage {:optional true}
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
       [:total-tokens {:optional true} :int]
       [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
-    ;; Resolved provider model for durable LLM-call provenance. Present on
-    ;; every model-backed leaf completion; absent on deterministic leaves.
     [:model {:optional true} :string]
-    ;; ModelLeafRecordsResolvedModel: the model the node was configured with
-    ;; (absent when it runs on the provider's default) and the model the
-    ;; provider reported using (absent when none was reported, and on failures
-    ;; that carry no provider evidence). :model above is the resolved one when
-    ;; reported, else the configured one.
     [:requested-model {:optional true} :string]
     [:resolved-model {:optional true} :string]
-    ;; D-008: present when a map-each terminates in :partial or :failure.
     [:partial-summary {:optional true} partial-summary]
-    ;; C-2a-2: node-type keyword (:llm, :code, :map-each, :parallel, ...).
-    ;; Drives the per-node-type rolling-metrics aggregator without forcing
-    ;; the read-model to look up node-type via the sheets read-model.
-    ;; Optional for backwards compatibility — older callers / replayed
-    ;; events without this field are skipped by the per-node-type
-    ;; aggregator.
     [:node-type {:optional true} :keyword]]
 
    :sheet/fail-node-execution
@@ -1267,11 +1117,6 @@
     [:researcher-expected-frontier-epoch {:optional true} [:and :int [:>= 0]]]
     [:duration-ms {:optional true} :int]]
 
-   ;; Records an RLM-tree node completion. Emitted by execute-leaf-node
-   ;; alongside the generic complete-node-execution when an LLM call has
-   ;; usage. Produces a :sheet/rlm-tree-node-completed event with a
-   ;; precomputed node-path. Future fields (scores, feedback) get added
-   ;; by downstream judge work.
    :sheet/record-rlm-tree-node-completion
    [:map
     [:sheet-id :uuid]
@@ -1284,15 +1129,8 @@
       [:completion-tokens {:optional true} :int]
       [:total-tokens {:optional true} :int]
       [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
-    ;; Optional :input-profile keyed by node :reads — describes input
-    ;; characteristics so future judges/pattern-matchers can correlate
-    ;; outcomes to input shape.
     [:input-profile {:optional true} [:map-of :keyword :map]]]
 
-   ;; Bookend event for an RLM Phase 2 tree-execution. Emitted once when
-   ;; the tree-tick finishes (success or failure). Carries the full
-   ;; trajectory of events, total token usage, and a placeholder for
-   ;; task-fingerprint (filled by later issue 012 work).
    :sheet/record-rlm-tree-execution-completion
    [:map
     [:sheet-id :uuid]
@@ -1300,34 +1138,12 @@
     [:trajectory [:vector :map]]
     [:total-usage [:map]]
     [:task-fingerprint {:optional true} [:maybe :string]]
-    ;; C-2a-2: deterministic hash of canonical tree-raw S-expression.
-    ;; Stable across durable source serialization. Drives the per-
-    ;; tree-fingerprint rolling-metrics aggregator. Optional for
-    ;; backwards compatibility with replays of older events.
     [:tree-fingerprint {:optional true} [:maybe :string]]
-    ;; C-2a-2: tree-execution outcome. Required for the per-tree-
-    ;; fingerprint aggregator to count successes vs failures. Optional
-    ;; for backwards compatibility — older events without this field
-    ;; are skipped by the aggregator.
     [:status {:optional true} [:enum :success :failure :partial :timeout]]
-    ;; C-2a-2: wall-clock duration of Phase 2 execution. Optional for
-    ;; the same reason :status is.
     [:duration-ms {:optional true} :int]
-    ;; CV-2 (ADR 0017 decision 3): the emitted worked-DSL plus the SOURCE
-    ;; (host/classified) sheet-id. The post-emit
-    ;; enrichment processor uses source-sheet-id to resolve the tree-class
-    ;; (sheet->class join) and records generated-tree as the class's
-    ;; :recommended-pattern. Both optional/backward-compatible.
-    [:generated-tree {:optional true} [:maybe :any]]
+    [:generated-tree {:optional true} [:maybe emitted-dsl]]
     [:generated-tree-source {:optional true} [:maybe :string]]
     [:source-sheet-id {:optional true} [:maybe :uuid]]
-    ;; HP-2: the hosting TURN's tick. :source-sheet-id alone cannot attribute
-    ;; an execution to a classification occurrence — the host sheet is a
-    ;; STATIC workflow definition shared by every turn of a task-shape, so a
-    ;; sheet-only join either matches nothing (vs the ephemeral :sheet-id) or
-    ;; over-matches across classes. [source-sheet-id source-tick-id] is the
-    ;; per-occurrence identity, pairing with :ontology/task-classified's
-    ;; [:source-sheet-id :source-tick-id]. Optional/backward-compatible.
     [:source-tick-id {:optional true} [:maybe :uuid]]]
 
    ;; -------------------------------------------------------------------------
@@ -1360,18 +1176,15 @@
    :sheet/execute-version
    [:map
     [:sheet-id :uuid]
-    [:version-number :int]                        ;; Specific version to execute
-    [:inputs {:optional true} :map]]              ;; Input overrides
+    [:version-number :int]
+    [:inputs {:optional true} :map]]
 
    :sheet/batch-execute
    [:map
     [:sheet-id :uuid]
-    [:version-number {:optional true} :int]       ;; nil = draft
+    [:version-number {:optional true} :int]
     [:inputs [:vector :map]]]
 
-   ;; -------------------------------------------------------------------------
-   ;; System Commands (called internally via cp/process-command)
-   ;; -------------------------------------------------------------------------
 
    :sheet/emit-tick-started
    [:map
@@ -1394,20 +1207,19 @@
     [:root-trace-id :uuid]
     [:child-trace-ids [:vector :uuid]]
     [:version-number {:optional true} :int]
-    [:started-at :any]
-    [:completed-at :any]
+    [:started-at trace-timestamp]
+    [:completed-at trace-timestamp]
     [:duration-ms :int]
     [:status :keyword]
     [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
     [:consumed-ticks {:optional true} :int]
     [:terminal-reason {:optional true} :keyword]
-    ;; key -> size-profile, not key -> value. See ::execution-trace.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
     [:source-event-count {:optional true} [:and :int [:>= 0]]]
-    [:node-traces [:vector :any]]
-    [:researcher-iterations {:optional true} [:vector :any]]
-    [:researcher-events {:optional true} [:vector :any]]
+    [:node-traces [:vector stored-node-trace]]
+    [:researcher-iterations {:optional true} [:vector traced-iteration]]
+    [:researcher-events {:optional true} [:vector researcher-event]]
     [:error {:optional true} :string]]
 
    :sheet/refresh-execution-trace
@@ -1419,8 +1231,8 @@
     [:root-trace-id :uuid]
     [:child-trace-ids [:vector :uuid]]
     [:version-number {:optional true} :int]
-    [:started-at :any]
-    [:completed-at :any]
+    [:started-at trace-timestamp]
+    [:completed-at trace-timestamp]
     [:duration-ms :int]
     [:status :keyword]
     [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
@@ -1429,9 +1241,9 @@
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
     [:source-event-count [:and :int [:>= 0]]]
-    [:node-traces [:vector :any]]
-    [:researcher-iterations {:optional true} [:vector :any]]
-    [:researcher-events {:optional true} [:vector :any]]
+    [:node-traces [:vector stored-node-trace]]
+    [:researcher-iterations {:optional true} [:vector traced-iteration]]
+    [:researcher-events {:optional true} [:vector researcher-event]]
     [:error {:optional true} :string]]
 
    ;; -------------------------------------------------------------------------
@@ -1444,13 +1256,6 @@
     [:problem-types {:optional true} [:vector :string]]
     [:description {:optional true} :string]]
 
-   ;; -------------------------------------------------------------------------
-   ;; CC-13 — Injection Record
-   ;; -------------------------------------------------------------------------
-   ;;
-   ;; Dispatched in-process by the R-Inject render (todo-processors
-   ;; apply-r05-classifier-context). Body mirrors the event shape minus the
-   ;; auto-stamped :recorded-at.
 
    :sheet/record-injection
    [:map
@@ -1473,9 +1278,6 @@
     [:rendered-block {:optional true} :string]
     [:recorded-at {:optional true} :string]]
 
-   ;; RR-9: one internal atomic append for all durable facts produced while a
-   ;; checkpointed classification is prepared.  Effect command bodies remain
-   ;; internal data and are interpreted by the handler under the campaign CAS.
    :sheet/commit-researcher-classification
    [:and
     [:map
@@ -1487,16 +1289,14 @@
     [:fn
      {:error/message
       "classification commit requires one outcome bound to its sheet, tick, node, and epoch"}
-     valid-researcher-classification-commit?]]})
+     logic/valid-researcher-classification-commit?]]})
 
 ;; =============================================================================
 ;; Event Schemas
 ;; =============================================================================
 
 (defschemas events
-  {;; -------------------------------------------------------------------------
-   ;; Sheet Events
-   ;; -------------------------------------------------------------------------
+  {
 
    :sheet/sheet-created
    [:map
@@ -1568,8 +1368,8 @@
    [:map
     [:sheet-id :uuid]
     [:node-id :uuid]
-    [:context [:map-of :keyword :any]]
-    [:previous-context {:optional true} [:map-of :keyword :any]]]
+    [:context logic/workflow-values]
+    [:previous-context {:optional true} logic/workflow-values]]
 
    :sheet/node-io-set
    [:map
@@ -1608,8 +1408,7 @@
     [:options-from {:optional true} :keyword]
     [:bands-from {:optional true} :keyword]
     [:min-confidence {:optional true} :double]
-    [:abstain {:optional true} :any]
-    ;; Phase 4B: opt-in gated tool-caller builder FQN (see set-node-executor).
+    [:abstain {:optional true} logic/durable-value]
     [:tool-caller-fn {:optional true} :string]
     [:tool-contracts {:optional true} tool-contracts]
     [:previous-executor {:optional true} executor-type]
@@ -1648,10 +1447,10 @@
    [:map
     [:sheet-id :uuid]
     [:node-id :uuid]
-    [:success-policy {:optional true} [:enum :all :any :majority]]
-    [:failure-policy {:optional true} [:enum :all :any]]
-    [:previous-success-policy {:optional true} [:enum :all :any :majority]]
-    [:previous-failure-policy {:optional true} [:enum :all :any]]]
+    [:success-policy {:optional true} parallel-success-policy]
+    [:failure-policy {:optional true} parallel-failure-policy]
+    [:previous-success-policy {:optional true} parallel-success-policy]
+    [:previous-failure-policy {:optional true} parallel-failure-policy]]
 
    :sheet/map-each-config-set
    [:map
@@ -1692,7 +1491,7 @@
     [:max-iterations {:optional true} :int]
     [:rlm {:optional true} [:or :boolean :map]]
     [:options {:optional true} :map]
-    [:timeout-ms {:optional true} :int]                            ;; D-003
+    [:timeout-ms {:optional true} :int]
     [:previous-instruction {:optional true} :string]
     [:previous-reads {:optional true} [:vector :keyword]]
     [:previous-writes {:optional true} [:vector :keyword]]
@@ -1703,7 +1502,7 @@
     [:previous-max-iterations {:optional true} :int]
     [:previous-rlm {:optional true} [:or :boolean :map]]
     [:previous-options {:optional true} :map]
-    [:previous-timeout-ms {:optional true} :int]]                  ;; D-003
+    [:previous-timeout-ms {:optional true} :int]]
 
    :sheet/delegate-config-set
    [:map
@@ -1730,21 +1529,21 @@
    [:map
     [:sheet-id :uuid]
     [:key :keyword]
-    [:schema :any]]  ;; Malli schema EDN
+    [:schema malli-definition]]
 
    :sheet/key-schema-updated
    [:map
     [:sheet-id :uuid]
     [:key :keyword]
-    [:schema :any]
-    [:previous-schema {:optional true} :any]]
+    [:schema malli-definition]
+    [:previous-schema {:optional true} malli-definition]]
 
    :sheet/key-value-set
    [:map
     [:sheet-id :uuid]
     [:key :keyword]
-    [:value :any]
-    [:previous-value {:optional true} :any]
+    [:value logic/durable-value]
+    [:previous-value {:optional true} logic/durable-value]
     [:version :int]]
 
    :sheet/key-deleted
@@ -1761,7 +1560,6 @@
     [:sheet-id :uuid]
     [:judge-name :string]
     [:judge-config judge-config-schema]
-    ;; Always present on the new commands' events; absent on legacy events.
     [:revision-number {:optional true} :int]
     [:criteria-version {:optional true} :int]]
 
@@ -1791,19 +1589,14 @@
    [:map
     [:sheet-id :uuid]
     [:tick-id :uuid]
-    ;; Lineage: tick that spawned this one (RLM Phase 2 trees, delegate
-    ;; nodes). Absent for root ticks and on events from older versions.
     [:parent-tick-id {:optional true} :uuid]
     [:correlation-id {:optional true} :uuid]
     [:iteration {:optional true} :int]
-    ;; Fields for async execution with isolated blackboard
     [:seed-sources {:optional true} [:map-of :keyword
                                      [:map [:tick-id :uuid] [:event-id :uuid]]]]
     [:execution-snapshot {:optional true} :map]
     [:version-number {:optional true} :int]
     [:options {:optional true} :map]
-    ;; G1 (ADR 0018): opaque per-tick tool context, surfaced back at the leaf
-    ;; via the tick-execution-context read model. Absent for non-coding ticks.
     [:tool-context {:optional true} :map]]
 
    :sheet/node-execution-started
@@ -1811,17 +1604,9 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    [:inputs [:map-of :keyword :any]]
-    ;; Durable idempotency key for restart recovery. A resumed start points to
-    ;; the exact abandoned start it supersedes; repeat recovery scans therefore
-    ;; do not enqueue the same frontier twice.
+    [:inputs logic/workflow-values]
     [:resumed-from-event-id {:optional true} :uuid]
-    ;; Candidate ownership is carried only by a recovered checkpointed
-    ;; researcher start. Ordinary starts and leaf/delegate recovery omit it.
     [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]
-    ;; OwnedWorkIsNotAbandoned: a leaf or delegate start names the worker that
-    ;; owns it and when that ownership lapses unless renewed. Absent on
-    ;; historical starts, which recovery treats as an expired lease.
     [:lease-owner {:optional true} :uuid]
     [:lease-expires-at {:optional true} :string]]
 
@@ -1830,7 +1615,7 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    [:exec-context {:optional true} [:map-of :keyword :any]]
+    [:exec-context {:optional true} execution-context]
     [:start-event-id :uuid]
     [:lease-owner :uuid]
     [:lease-expires-at :string]]
@@ -1874,12 +1659,7 @@
     [:node-id :uuid]
     [:completion-id {:optional true} :uuid]
     [:researcher-ownership-epoch {:optional true} [:and :int [:>= 1]]]
-    ;; WS-2a: :blocked — see :sheet/complete-node-execution.
     [:status [:enum :success :failure :running :tree-generated :partial :timeout :blocked]]
-    ;; Shape, not values — the values are durable in this node's
-    ;; :sheet/execution-value-written events, which carry :node-id and
-    ;; :exec-context so they attribute to this exact node EXECUTION.
-    ;; Resolve them with core/value-log.
     [:write-keys {:optional true} [:vector :keyword]]
     [:write-profile {:optional true} [:map-of :keyword :map]]
     [:missing-write-keys {:optional true} [:vector :keyword]]
@@ -1889,46 +1669,27 @@
                                       [:map [:tick-id :uuid] [:event-id :uuid]]]]
     [:read-keys {:optional true} [:vector :keyword]]
     [:input-profile {:optional true} [:map-of :keyword :map]]
-    ;; {read-key -> :event/id of the write this node READ}. A key can be
-    ;; written several times in one tick, so resolving by key name alone
-    ;; yields the last write — possibly one made after this node finished.
-    ;; Absent for keys seeded into the tick rather than written during it,
-    ;; and inside a map-each iteration (see read-sources).
     [:read-sources {:optional true} [:map-of :keyword
                                      [:map [:tick-id :uuid] [:event-id :uuid]]]]
-    ;; Values inline ONLY when no write events were emitted for this
-    ;; completion (non-tick-scoped execution) — then this event is their
-    ;; only home. See complete-node-execution's externalize-writes?.
-    [:writes {:optional true} [:map-of :keyword :any]]
-    ;; WS-2a: OPAQUE block payload, present only on :blocked completions.
-    [:block-payload {:optional true} :any]
+    [:writes {:optional true} logic/workflow-values]
+    [:block-payload {:optional true} logic/durable-value]
     [:duration-ms {:optional true} :int]
     [:observed-quantum-duration-ms {:optional true}
      [:and :int [:>= 0]]]
     [:max-observed-quantum-duration-ms {:optional true}
      [:and :int [:>= 0]]]
-    ;; Retains ONLY namespaced execution-context keys (map-each correlation).
-    ;; Read VALUES live in :read-keys / :input-profile / :read-sources above.
-    [:inputs {:optional true} [:map-of :keyword :any]]
-    ;; Verbatim raw LLM response text, present only on parse-failure
-    ;; completions. Source for the (node-output <node-id>) drill-down
-    ;; when a failed LLM leaf has no successful writes to show.
+    [:inputs {:optional true} logic/workflow-values]
     [:raw-response {:optional true} :string]
-    ;; Model-backed condition: the boolean answer, present only when a valid
-    ;; answer was obtained (absent on provider failure).
     [:condition-answer {:optional true} :boolean]
     [:decision {:optional true} decision-record]
     [:failure-kind {:optional true} structured-failure-kind]
     [:provider-evidence {:optional true} provider-failure-evidence]
-    ;; Optional per-node token usage when the node was an LLM call.
     [:usage {:optional true}
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
       [:total-tokens {:optional true} :int]
       [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
-    ;; See :sheet/complete-node-execution :own-usage. Family-usage sums
-    ;; (or :own-usage :usage) so descendants are never counted twice.
     [:own-usage {:optional true}
      [:map
       [:prompt-tokens {:optional true} :int]
@@ -1936,37 +1697,17 @@
       [:total-tokens {:optional true} :int]
       [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     [:model {:optional true} :string]
-    ;; See :sheet/complete-node-execution :requested-model / :resolved-model.
     [:requested-model {:optional true} :string]
     [:resolved-model {:optional true} :string]
-    ;; D-008: present on map-each completion events when status is :partial or :failure.
     [:partial-summary {:optional true} partial-summary]
-    ;; C-2a-2: node-type keyword carried through from the command for the
-    ;; per-node-type rolling-metrics aggregator. Optional for backwards
-    ;; compatibility with old replayed events.
     [:node-type {:optional true} :keyword]
-    ;; Gap-7: distinguishes intermediate-tree-iteration completions of
-    ;; recursive repl-researcher nodes (where :generated-tree-raw is in
-    ;; :writes) from the terminal (final!) completion (where the
-    ;; synthesized task outputs are in :writes). Used by the judge
-    ;; runtime's resolver to route appropriate judges per kind.
-    ;; Optional — legacy / non-repl-researcher events omit it.
     [:completion-kind {:optional true} [:enum :tree-iteration :terminal]]]
 
-   ;; RLM-specific learning-signal event. Fires alongside the generic
-   ;; node-execution-completed when an LLM call completes inside an RLM
-   ;; Phase 2 tree. Carries a precomputed :node-path identifying the
-   ;; node's position in map-each iterations, plus :usage. Future
-   ;; iterations of this PRD's work (O03+) will extend this event with
-   ;; :input-profile, and downstream judge work will add :scores and
-   ;; :feedback. Kept distinct from the generic event so the RLM-specific
-   ;; fields don't pollute universal node lifecycle.
    :sheet/rlm-tree-node-completed
    [:map
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    ;; Structured path: [{:type :map-each :parent uuid :index N} ... {:type :leaf :node-id uuid}]
     [:node-path [:vector :map]]
     [:usage
      [:map
@@ -1974,47 +1715,23 @@
       [:completion-tokens {:optional true} :int]
       [:total-tokens {:optional true} :int]
       [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
-    ;; :input-profile keyed by :reads keys. Each value is
-    ;; {:length N :word-count N :line-count N}. Captures input shape
-    ;; so future judges can correlate quality outcomes to inputs.
     [:input-profile {:optional true} [:map-of :keyword :map]]
-    ;; Future-expansion placeholders documented for forward compatibility
     [:scores {:optional true} :map]
     [:feedback {:optional true} :string]]
 
-   ;; Bookend event emitted when a Phase 2 RLM tree-execution finishes.
    :sheet/rlm-tree-execution-completed
    [:map
     [:sheet-id :uuid]
     [:tick-id :uuid]
-    ;; Full event log for the tick — vec of {:event-type :timestamp
-    ;; :node-id (optional) ...}. Consistent with Grain "all events
-    ;; flow through the log" methodology.
     [:trajectory [:vector :map]]
-    ;; Aggregate usage at completion time.
     [:total-usage [:map]]
-    ;; Placeholder for task-fingerprint (filled by issue 012).
     [:task-fingerprint {:optional true} [:maybe :string]]
-    ;; C-2a-2: deterministic hash of canonical tree-raw S-expression.
-    ;; Drives per-tree-fingerprint rolling metrics. Optional for
-    ;; backwards compatibility with replayed older events.
     [:tree-fingerprint {:optional true} [:maybe :string]]
-    ;; C-2a-2: tree-execution outcome. Required for the per-tree-
-    ;; fingerprint aggregator to count successes vs failures.
     [:status {:optional true} [:enum :success :failure :partial :timeout]]
-    ;; C-2a-2: wall-clock duration of Phase 2 execution.
     [:duration-ms {:optional true} :int]
-    ;; CV-2 (ADR 0017 decision 3): emitted worked-DSL + source (host) sheet-id.
-    ;; Optional/backward-compatible — replayed older bookends carry neither.
-    [:generated-tree {:optional true} [:maybe :any]]
-    ;; Exact pre-compilation EDN text. Unlike :generated-tree, this preserves
-    ;; list syntax through codecs that decode every Java List as a vector.
+    [:generated-tree {:optional true} [:maybe emitted-dsl]]
     [:generated-tree-source {:optional true} [:maybe :string]]
     [:source-sheet-id {:optional true} [:maybe :uuid]]
-    ;; HP-2: the hosting TURN's tick — the per-occurrence half of the
-    ;; [source-sheet-id source-tick-id] execution<->classification linkage.
-    ;; Optional/backward-compatible — replayed older bookends lack it and
-    ;; simply don't participate in occurrence-scoped joins.
     [:source-tick-id {:optional true} [:maybe :uuid]]
     [:timestamp [:fn inst?]]]
 
@@ -2027,19 +1744,9 @@
     [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
     [:consumed-ticks {:optional true} :int]
     [:terminal-reason {:optional true} :keyword]
-    ;; D-008: :partial added so map-each can surface partial outcomes.
-    ;; D-003: :timeout added so RLM repl-researcher can surface Phase 2
-    ;; budget cancellation as a tree-level signal.
-    ;; WS-2a: :blocked — a leaf raised the orc block signal; the tree tick
-    ;; completes :blocked so the parent deref returns immediately.
     [:root-status [:enum :success :failure :running :tree-generated :partial :timeout :blocked]]
-    ;; The NAMES of the keys this tick wrote, not their values — those are
-    ;; durable in the tick's :sheet/execution-value-written events.
-    ;; runtime/execute's :outputs is rehydrated in deliver-execution-result;
-    ;; the live stream resolves them in streaming/normalize-durable.
     [:output-keys {:optional true} [:vector :keyword]]
-    ;; WS-2a: OPAQUE block payload, present only when :root-status is :blocked.
-    [:block-payload {:optional true} :any]
+    [:block-payload {:optional true} logic/durable-value]
     [:error {:optional true} :string]]
 
    :sheet/execution-value-written
@@ -2047,54 +1754,33 @@
     [:tick-id :uuid]
     [:sheet-id :uuid]
     [:key :keyword]
-    [:value {:optional true} :any]
+    [:value {:optional true} logic/durable-value]
     [:value-reference {:optional true}
      [:map
       [:file-id :string]
       [:byte-size :int]
       [:content-hash :string]
       [:format [:enum :nippy]]]]
-    [:value-profile {:optional true} :any]
-    ;; Stable pre-append identity used when another event in the same atomic
-    ;; command batch must reference this value.
+    [:value-profile {:optional true} value-profile]
     [:value-id {:optional true} :uuid]
-    ;; Attribution: which node execution produced this write. This is the
-    ;; canonical record of every blackboard value, so consumers that used to
-    ;; read values off :sheet/node-execution-completed :writes resolve them
-    ;; here instead — but only if they can tell WHICH node wrote them.
-    ;;
-    ;; :exec-context carries the map-each correlation keys, so the pair
-    ;; (:node-id, :exec-context) identifies one ITERATION, not just one node.
-    ;; Without it, N iterations of the same child node-id would be
-    ;; indistinguishable and each would resolve to whichever wrote last.
-    ;; Same key shape as node-execution-completed :inputs, so the existing
-    ;; trace-execution-key correlation applies unchanged.
     [:node-id {:optional true} :uuid]
     [:exec-context {:optional true} :map]
     [:tick-seed? {:optional true} :boolean]
-    ;; Direction. True when the write PROVIDES a value to the execution it
-    ;; names rather than being that execution's output — map-each item writes,
-    ;; which the parent emits before starting each child. A child commonly
-    ;; reads and writes the same item key, so attribution alone is ambiguous
-    ;; without it. See value-log/writes-by-execution vs
-    ;; value-log/input-seeds-by-iteration.
     [:input-seed? {:optional true} :boolean]]
 
-   ;; A leaf result that failed its declared blackboard schema. This event is
-   ;; durable diagnostic evidence only: no blackboard read model consumes it.
    :sheet/execution-value-rejected
    [:map
     [:tick-id :uuid]
     [:sheet-id :uuid]
     [:key :keyword]
-    [:value {:optional true} :any]
+    [:value {:optional true} logic/durable-value]
     [:value-reference {:optional true}
      [:map
       [:file-id :string]
       [:byte-size :int]
       [:content-hash :string]
       [:format [:enum :nippy]]]]
-    [:value-profile {:optional true} :any]
+    [:value-profile {:optional true} value-profile]
     [:value-id {:optional true} :uuid]
     [:node-id :uuid]
     [:exec-context {:optional true} :map]]
@@ -2183,20 +1869,19 @@
     [:root-trace-id :uuid]
     [:child-trace-ids [:vector :uuid]]
     [:version-number {:optional true} :int]
-    [:started-at :any]
-    [:completed-at :any]
+    [:started-at trace-timestamp]
+    [:completed-at trace-timestamp]
     [:duration-ms :int]
     [:status [:enum :success :failure :timeout :partial :blocked]]
     [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
     [:consumed-ticks {:optional true} :int]
     [:terminal-reason {:optional true} :keyword]
-    ;; key -> size-profile, not key -> value. See ::execution-trace.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
     [:source-event-count {:optional true} [:and :int [:>= 0]]]
-    [:node-traces [:vector :any]]                 ;; Vector of ::node-trace
-    [:researcher-iterations {:optional true} [:vector :any]]
-    [:researcher-events {:optional true} [:vector :any]]
+    [:node-traces [:vector stored-node-trace]]
+    [:researcher-iterations {:optional true} [:vector traced-iteration]]
+    [:researcher-events {:optional true} [:vector researcher-event]]
     [:error {:optional true} :string]]
 
    :sheet/execution-trace-refreshed
@@ -2208,8 +1893,8 @@
     [:root-trace-id :uuid]
     [:child-trace-ids [:vector :uuid]]
     [:version-number {:optional true} :int]
-    [:started-at :any]
-    [:completed-at :any]
+    [:started-at trace-timestamp]
+    [:completed-at trace-timestamp]
     [:duration-ms :int]
     [:status [:enum :success :failure :timeout :partial :blocked]]
     [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
@@ -2218,9 +1903,9 @@
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
     [:source-event-count [:and :int [:>= 0]]]
-    [:node-traces [:vector :any]]
-    [:researcher-iterations {:optional true} [:vector :any]]
-    [:researcher-events {:optional true} [:vector :any]]
+    [:node-traces [:vector stored-node-trace]]
+    [:researcher-iterations {:optional true} [:vector traced-iteration]]
+    [:researcher-events {:optional true} [:vector researcher-event]]
     [:error {:optional true} :string]]
 
    ;; -------------------------------------------------------------------------
@@ -2251,29 +1936,20 @@
    :sheet/tree-metadata-extracted
    [:map
     [:sheet-id :uuid]
-    [:metadata :any]]
+    [:metadata ::tree-metadata]]
 
-   ;; -------------------------------------------------------------------------
-   ;; RLM (Recursive Language Model) Events
-   ;; -------------------------------------------------------------------------
 
    :rlm/tree-generated
    [:map
     [:tree-id :uuid]
     [:execution-id :uuid]
-    [:raw-dsl :any]                              ;; S-expr literal from LLM (serializable)
-    [:source-edn {:optional true} :string]        ;; exact pre-compilation source
-    [:iteration-count {:optional true} :int]    ;; How many REPL iterations
+    [:raw-dsl emitted-dsl]
+    [:source-edn {:optional true} :string]
+    [:iteration-count {:optional true} :int]
     [:input-metadata {:optional true} [:map
                                        [:size :int]
                                        [:type :keyword]]]
     [:generated-at :string]
-    ;; Gap-7b: the repl-researcher node that emitted the tree. Without
-    ;; this, downstream evaluators (e.g. heuristic-structural via
-    ;; :rlm/tree-generated) must scan :sheet/node-execution-started
-    ;; events to find the host node, which is ambiguous when multiple
-    ;; nodes share the same tick (root + Phase 2 children). Optional
-    ;; for backwards compatibility with replayed events.
     [:node-id {:optional true} :uuid]
     [:sheet-id {:optional true} :uuid]]
 
@@ -2284,16 +1960,16 @@
     [:status [:enum :success :failure]]
     [:outputs {:optional true} :map]
     [:duration-ms :int]
-    [:node-traces {:optional true} [:vector :any]]
+    [:node-traces {:optional true} [:vector [:map [:node-id :uuid] [:status {:optional true} node-status]]]]
     [:error {:optional true} :string]]
 
    :rlm/tree-evaluated
    [:map
     [:tree-id :uuid]
     [:execution-id :uuid]
-    [:score :double]                             ;; 0.0 to 1.0
-    [:feedback :string]                          ;; Actionable feedback
-    [:dimensions {:optional true} [:vector       ;; Optional breakdown by dimension
+    [:score :double]
+    [:feedback :string]
+    [:dimensions {:optional true} [:vector
                                    [:map
                                     [:name :string]
                                     [:weight :double]
@@ -2301,15 +1977,10 @@
                                     [:feedback :string]]]]
     [:evaluated-at :string]]
 
-   ;; U10: Phase 1 researcher iteration capture. Emitted by the
-   ;; repl-researcher processor whenever the researcher ran at least
-   ;; one iteration — including direct-execution (no emit-tree!) runs.
-   ;; Lets observability tools query iteration history uniformly
-   ;; across execution modes.
    :rlm/researcher-iterations
    [:map
     [:execution-id :uuid]
-    [:iterations [:vector :any]]                 ;; Each: {:code :result :stdout :error :vars-created}
+    [:iterations [:vector historical-iteration]]
     [:iteration-count :int]
     [:emitted-at :string]]
 
@@ -2351,7 +2022,7 @@
     [:action-id :string]
     [:action-kind :keyword]
     [:iteration :int]
-    [:result :any]
+    [:result logic/durable-value]
     [:completed-at :string]]
 
    :rlm/researcher-frontier-claimed
@@ -2399,7 +2070,7 @@
     [:attempt-identity :string]
     [:ownership-epoch [:and :int [:>= 1]]]
     [:status [:= :completed]]
-    [:result :any]
+    [:result logic/durable-value]
     [:resolved-at :string]]
 
    :rlm/researcher-effect-indeterminate
@@ -2413,104 +2084,30 @@
     [:status [:= :indeterminate]]
     [:resolved-at :string]]
 
-   ;; -------------------------------------------------------------------------
-   ;; CC-13 — Injection Record (:intervention/* ledger, NARROW SUBSET)
-   ;; -------------------------------------------------------------------------
-   ;;
-   ;; One row per R-Inject RENDER OCCURRENCE: what corpus content was put in
-   ;; front of the model on this turn, at what version, and under which
-   ;; experimental arm. It replaces the unbounded /tmp sidecar the render used
-   ;; to write, and it is the measurement surface the deferred budget-governed
-   ;; render change needs — without it, a change to how much learned content is
-   ;; rendered can only be evaluated observationally.
-   ;;
-   ;; This is a DELIBERATE STRICT SUBSET of the full `:intervention/*` ledger
-   ;; documented in research-lessons-integration §6. Field names are taken
-   ;; verbatim from that schema wherever they overlap, so when the ledger is
-   ;; built this row WIDENS into it (add fields, add :intervention/type values)
-   ;; rather than being replaced. The deferred fields deliberately NOT
-   ;; populated yet — :judge-version, :retriever-version, :tree-definition-hash
-   ;; — have no versioned source in the engine today; a subset omits, it does
-   ;; not contradict.
    :intervention/injection-recorded
    [:map
-    ;; The ledger's type enum is (:pattern-injection | :instruction-override |
-    ;; :topology-candidate | :harvest-mint). R-Inject is the pattern-injection
-    ;; arm; widening adds the other three values, not a new field.
     [:intervention/type [:enum :pattern-injection]]
-    ;; Occurrence identity. [sheet-id tick-id] is the pair judge scores are
-    ;; keyed by (the SJ-1 lesson: a bare sheet-id join misattributes across
-    ;; turns); node-id names WHICH render within the tick.
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    ;; W2P-1: the HOST's turn identity, when the host has one (orc-sessions
-    ;; threads it on the opaque :tool-context). Present so an analysis joins a
-    ;; turn to its injection DIRECTLY; without it the only available join was a
-    ;; wall-clock window. Optional and host-shaped — orc does not mint turn ids
-    ;; and does not require them.
     [:turn-id {:optional true} [:maybe [:or :uuid :string]]]
-    ;; --- verbatim from the deferred ledger schema ---------------------------
-    ;; The PRIMARY candidate under test — the top-ranked structural candidate
-    ;; actually rendered. nil when the structural axis rendered nothing.
+    ;; --- verbatim from the deferred ledger schema ---
     [:candidate-id {:optional true} [:maybe :string]]
-    ;; The structural class the wedge assigned this task.
     [:task-class {:optional true} [:maybe :uuid]]
-    ;; The model the rendered prompt was destined for.
     [:model {:optional true} [:maybe :string]]
-    ;; SHA-256 of the rendered block: identifies WHICH injection this was
-    ;; without storing the block. Two turns that saw the same thing collapse
-    ;; to the same hash.
     [:prompt-content-hash {:optional true} [:maybe :string]]
-    ;; --- narrow-record additions (additive when the ledger widens) ----------
-    ;; The ledger's :candidate-id is ONE archive row per candidate (the ADAS
-    ;; shape); a pattern injection renders a SET. :candidate-id keeps its
-    ;; meaning (the primary) and this carries the whole set with per-candidate
-    ;; versions — "at what version" is per-candidate, not per-turn.
     [:candidates [:vector ::injected-candidate]]
-    ;; The treatment DOSE. This is precisely the quantity the deferred
-    ;; budget-governed render change moves, so it is the quantity an
-    ;; experiment regresses outcomes on.
     [:rendered-chars :int]
-    ;; Correlated-tracing keys (35dfbf56), so the row joins to OUTCOMES exactly
-    ;; the way the deferred ledger specifies. :root-trace-id is the ROOT tick of
-    ;; this tick's lineage — an RLM Phase-2 tree and a delegate node run in
-    ;; CHILD ticks, and a record that knew only its own tick would strand that
-    ;; injection from the run it belongs to.
     [:root-trace-id {:optional true} [:maybe :uuid]]
     [:correlation-id {:optional true} [:maybe :uuid]]
-    ;; --- the holdout, and the ledger fields that describe it ----------------
-    ;; :arm is a narrow-record ADDITION. The deferred ledger assumes a row
-    ;; exists only where an intervention FIRED; the holdout is precisely the
-    ;; case where it did not, so the realized arm has to be explicit rather
-    ;; than inferred from an absent field.
-    ;; W2P-1 adds :claim-holdout — the block rendered, but WITHOUT claim-derived
-    ;; content. It is a third realized arm, not a flavour of :holdout: the dose
-    ;; is non-zero and the row still carries a content hash, so an analysis that
-    ;; collapsed the two would compare unlike prompts.
     [:arm [:enum :treatment :holdout :claim-holdout]]
-    ;; Both VERBATIM from the deferred ledger schema. :baseline-policy-id names
-    ;; the control condition and is stamped on BOTH arms — a treated row that
-    ;; doesn't say what it was compared against is not analysable.
-    ;; :selection-propensity is P(treatment) for this turn: 1.0 when the
-    ;; holdout is off, which is the honest propensity for "everyone treated".
     [:baseline-policy-id :string]
     [:selection-propensity :double]
-    ;; Verbatim rendered block. Off by default (see
-    ;; todo-processors/*capture-rendered-block?*) so the standing engine pays
-    ;; no storage tax; a bench or experiment run turns it on. Absent on the
-    ;; holdout arm, where nothing was rendered.
     [:rendered-block {:optional true} :string]
     [:recorded-at :string]]})
 
-;; =============================================================================
-;; Query Schemas (Fat Query Model - one query per screen)
-;; =============================================================================
-
 (defschemas queries
-  {;; -------------------------------------------------------------------------
-   ;; Sheets List Screen (/sheets)
-   ;; -------------------------------------------------------------------------
+  {
 
    :sheet/sheets-list-screen
    [:map]
@@ -2520,9 +2117,6 @@
     [:sheets [:vector ::sheet]]
     [:total :int]]
 
-   ;; -------------------------------------------------------------------------
-   ;; Sheet View Screen (/sheet?sheet-id=...)
-   ;; -------------------------------------------------------------------------
 
    :sheet/sheet-view-screen
    [:map
@@ -2541,9 +2135,6 @@
       [:execution-mode execution-mode]
       [:has-stash? :boolean]]]]
 
-   ;; -------------------------------------------------------------------------
-   ;; Export Sheet (for download/backup)
-   ;; -------------------------------------------------------------------------
 
    :sheet/export-sheet
    [:map
@@ -2552,12 +2143,12 @@
    :sheet/export-sheet-result
    [:map
     [:version :int]
-    [:exported-at :any]
+    [:exported-at :string]
     [:sheet [:map
              [:name :string]
              [:id :uuid]]]
-    [:blackboard-schema [:map-of :keyword :any]]
-    [:nodes {:optional true} :any]]
+    [:blackboard-schema [:map-of :keyword malli-definition]]
+    [:nodes {:optional true} [:maybe exported-node]]]
 
    ;; -------------------------------------------------------------------------
    ;; Versioning Queries
@@ -2616,7 +2207,7 @@
     [:root-trace-id :uuid]
     [:child-trace-ids [:vector :uuid]]
     [:status [:enum :success :failure :timeout :partial :blocked]]
-    [:started-at :any]
+    [:started-at trace-timestamp]
     [:duration-ms :int]
     [:node-count :int]]
 
@@ -2643,10 +2234,10 @@
    :sheet/get-traces
    [:map
     [:sheet-id :uuid]
-    [:version-number {:optional true} :int]       ;; Filter by version
+    [:version-number {:optional true} :int]
     [:status {:optional true} [:enum :success :failure :timeout :partial :blocked]]
-    [:node-id {:optional true} :uuid]             ;; Filter by node involvement
-    [:since {:optional true} :any]                ;; Filter by time
+    [:node-id {:optional true} :uuid]
+    [:since {:optional true} trace-timestamp]
     [:limit {:optional true} :int]]
 
    :sheet/get-traces-result
@@ -2654,9 +2245,6 @@
     [:traces [:vector ::execution-trace]]
     [:total :int]]
 
-   ;; -------------------------------------------------------------------------
-   ;; Runs Screen Query (all traces across all sheets)
-   ;; -------------------------------------------------------------------------
 
    :sheet/runs-screen
    [:map
@@ -2670,7 +2258,6 @@
     [:total :int]
     [:selected-trace {:optional true} ::execution-trace]]
 
-   ;; Summary version of execution trace for list views
    ::execution-trace-summary
    [:map
     [:trace-id :uuid]
@@ -2680,12 +2267,11 @@
     [:child-trace-ids [:vector :uuid]]
     [:sheet-name :string]
     [:status [:enum :success :failure :timeout :partial :blocked]]
-    [:started-at :any]
+    [:started-at trace-timestamp]
     [:duration-ms :int]
     [:node-count :int]
     [:version-number {:optional true} :int]]
 
-   ;; On-demand node trace detail (inputs/outputs)
    :sheet/node-trace-detail
    [:map
     [:trace-id :uuid]
@@ -2703,12 +2289,10 @@
     [:condition-answer {:optional true} [:maybe :boolean]]
     [:decision {:optional true} [:maybe decision-record]]
     [:provider-evidence {:optional true} [:maybe provider-failure-evidence]]
-    ;; ModelLeafRecordsResolvedModel, from the node's completion event.
     [:model {:optional true} [:maybe :string]]
     [:requested-model {:optional true} [:maybe :string]]
     [:resolved-model {:optional true} [:maybe :string]]]
 
-   ;; Run Detail Screen Query (single trace with full data)
    :sheet/run-detail-screen
    [:map
     [:trace-id :uuid]]
@@ -2730,13 +2314,13 @@
    :sheet/diff-versions-result
    [:map
     [:node-diff [:map
-                 [:added-nodes [:vector :any]]
-                 [:removed-nodes [:vector :any]]
-                 [:modified-nodes [:vector :any]]]]
+                 [:added-nodes [:vector diff-node]]
+                 [:removed-nodes [:vector diff-node]]
+                 [:modified-nodes [:vector modified-node]]]]
     [:blackboard-diff [:map
                        [:added [:vector :keyword]]
                        [:removed [:vector :keyword]]
-                       [:modified [:vector :any]]]]]
+                       [:modified [:vector [:map [:key :keyword] [:old-schema malli-definition] [:new-schema malli-definition]]]]]]]
 
    ;; -------------------------------------------------------------------------
    ;; Node Statistics Query
@@ -2745,9 +2329,9 @@
    :sheet/node-stats
    [:map
     [:sheet-id :uuid]
-    [:version-number {:optional true} :int]       ;; Filter to specific version
-    [:since {:optional true} :any]                ;; Time window
-    [:node-ids {:optional true} [:vector :uuid]]] ;; Specific nodes, or all if nil
+    [:version-number {:optional true} :int]
+    [:since {:optional true} trace-timestamp]
+    [:node-ids {:optional true} [:vector :uuid]]]
 
    :sheet/node-stats-result
    [:map
@@ -2762,7 +2346,7 @@
                       [:avg-duration-ms {:optional true} :double]
                       [:p50-duration-ms {:optional true} :int]
                       [:p95-duration-ms {:optional true} :int]
-                      [:common-errors {:optional true} [:vector :any]]]]]
+                      [:common-errors {:optional true} [:vector [:map [:message :string] [:count [:int {:min 1}]]]]]]]]
     [:trace-count :int]]
 
    ;; -------------------------------------------------------------------------
@@ -2779,7 +2363,7 @@
                            [:sheet-id :uuid]
                            [:sheet-name :string]
                            [:status [:enum :running :completed]]
-                           [:started-at :any]
+                           [:started-at trace-timestamp]
                            [:current-node-id {:optional true} :uuid]
                            [:current-node-name {:optional true} :string]
                            [:current-node-type {:optional true} node-type]
@@ -2801,3 +2385,120 @@
    :sheet/versions     [:map-of :uuid [:map-of :int ::version-snapshot]]
    :sheet/stashes      [:map-of :uuid :map]
    :sheet/traces       [:map-of :uuid ::execution-trace]})
+
+(def model-selection-scope
+  [:tuple :uuid :uuid :uuid [:enum :node :prime :subcall] logic/workflow-values :string])
+
+(def model-outcome
+  [:and logic/durable-value
+   [:map [:status [:enum :success :failure :timeout :blocked :running :partial]]
+    [:usage {:optional true} [:maybe [:map-of :keyword number?]]]
+    [:outputs {:optional true} [:maybe logic/workflow-values]]
+    [:failure-kind {:optional true} [:maybe :keyword]]
+    [:error {:optional true} [:maybe :string]]]])
+
+(def model-request
+  [:and logic/durable-value
+   [:map [:phase [:enum :started :completed]] [:request-id :uuid]
+    [:candidate-index [:int {:min 0}]] [:attempt-ordinal [:int {:min 0}]]
+    [:provider {:optional true} [:maybe :keyword]] [:requested-model {:optional true} [:maybe :string]]
+    [:outcome {:optional true} model-outcome]]])
+
+(def model-candidate-entry
+  [:and logic/durable-value
+   [:map [:candidate-index [:int {:min 0}]]
+    [:status [:enum :success :failure :timeout :blocked :running :partial]]
+    [:advanced? :boolean]
+    [:outcome {:optional true} model-outcome]]])
+
+(defschemas model-call-commands
+  {:sheet/retain-model-plan (into [:map] (conj logic/model-call-owner-fields [:plan-scope-id :string] [:plan logic/schemas-retained-plan-schema]))
+   :sheet/claim-model-candidate (into [:map] (conj logic/model-call-owner-fields [:candidate-index [:int {:min 0}]]))
+   :sheet/record-model-request (into [:map] (conj logic/model-call-owner-fields [:request model-request]))
+   :sheet/record-model-candidate (into [:map] (conj logic/model-call-owner-fields [:entry model-candidate-entry]))
+   :sheet/expose-model-candidate-output (into [:map] (conj logic/model-call-owner-fields [:candidate-index [:int {:min 0}]]))
+   :sheet/select-model-candidate (into [:map] (conj logic/model-call-owner-fields [:candidate-index [:int {:min 0}]]))})
+
+(defschemas model-call-events
+  {:sheet/model-plan-retained (into [:map] (conj logic/model-call-owner-fields [:plan-scope-id :string] [:plan logic/schemas-retained-plan-schema]))
+   :sheet/model-candidate-claimed (into [:map] (conj logic/model-call-owner-fields [:candidate-index [:int {:min 0}]] [:selection-scope model-selection-scope]))
+   :sheet/model-request-recorded (into [:map] (conj logic/model-call-owner-fields [:request model-request] [:selection-scope model-selection-scope]))
+   :sheet/model-candidate-recorded (into [:map] (conj logic/model-call-owner-fields [:entry model-candidate-entry] [:selection-scope model-selection-scope]))
+   :sheet/model-candidate-output-exposed (into [:map] (conj logic/model-call-owner-fields [:candidate-index [:int {:min 0}]] [:selection-scope model-selection-scope]))
+   :sheet/model-candidate-selected (into [:map] (conj logic/model-call-owner-fields [:candidate-index [:int {:min 0}]] [:selection-scope model-selection-scope]))})
+
+(defschemas model-call-queries
+  {:sheet/model-candidate-history [:map [:tick-id :uuid]]
+   :sheet/model-candidate-history-result
+   [:vector (into [:map] (conj logic/model-call-owner-fields
+                              [:event/id :uuid]
+                              [:event/type [:enum :sheet/model-plan-retained :sheet/model-candidate-claimed
+                                            :sheet/model-request-recorded :sheet/model-candidate-recorded
+                                            :sheet/model-candidate-output-exposed :sheet/model-candidate-selected]]
+                              [:candidate-index {:optional true} [:int {:min 0}]]
+                              [:selection-scope {:optional true} model-selection-scope]
+                              [:plan {:optional true} logic/schemas-retained-plan-schema]
+                              [:entry {:optional true} model-candidate-entry]
+                              [:request {:optional true} model-request]))]})
+
+(defschemas authority-commands {:sheet/authorize-emitted-model-work (into [:map] logic/emitted-model-owner-fields)})
+
+(defschemas authority-events {:sheet/emitted-model-work-authorized (into [:map] logic/emitted-model-binding-fields)})
+
+(def provider-attempt-owner-fields [[:sheet-id :uuid] [:tick-id :uuid] [:node-id :uuid] [:node-start-id :uuid]
+                   [:exec-context logic/workflow-values] [:node-attempt [:int {:min 1}]]
+                   [:provider-attempt [:int {:min 1}]] [:invocation-id :uuid]
+                   [:candidate-index {:optional true} [:int {:min 0}]]
+                   [:requested-provider {:optional true} :keyword]
+                   [:requested-model {:optional true} [:maybe :string]]])
+
+(def provider-attempt-observation
+  [:map {:closed true}
+   [:provider :string]
+   [:response-id {:optional true} [:maybe :string]]
+   [:model {:optional true} [:maybe :string]]
+   [:usage {:optional true} [:maybe [:map-of [:or :keyword :string] logic/durable-value]]]
+   [:choices {:optional true}
+    [:vector [:map {:closed true}
+              [:index {:optional true} [:maybe :int]]
+              [:finish-reason {:optional true} [:maybe [:or :keyword :string]]]
+              [:reasoning-content {:optional true} [:maybe :string]]
+              [:reasoning-details {:optional true} [:maybe [:vector [:map-of [:or :keyword :string] logic/durable-value]]]]
+              [:refusal {:optional true} [:maybe :string]]]]]])
+
+(def provider-attempt-outcome
+  [:map {:closed true}
+   [:status [:enum :success :failure :timeout :cancelled]]
+   [:failure-kind {:optional true} :keyword]
+   [:provider-evidence {:optional true} provider-failure-evidence]
+   [:provider-observations {:optional true} provider-attempt-observation]])
+
+(defschemas provider-observation-commands
+  {:sheet/start-provider-attempt (into [:map] provider-attempt-owner-fields)
+   :sheet/complete-provider-attempt (into [:map] (conj provider-attempt-owner-fields [:outcome provider-attempt-outcome]))})
+
+(defschemas provider-observation-events
+  {:sheet/provider-attempt-started (into [:map] provider-attempt-owner-fields)
+   :sheet/provider-attempt-completed (into [:map] (conj provider-attempt-owner-fields [:outcome provider-attempt-outcome]))})
+
+(defschemas provider-observation-queries
+  {:sheet/provider-attempts [:map [:tick-id :uuid] [:node-start-id :uuid]
+                            [:invocation-id {:optional true} :uuid]]
+   :sheet/provider-attempts-result
+   [:vector (into [:map] (conj provider-attempt-owner-fields
+                              [:status [:enum :started :completed]]
+                              [:outcome {:optional true} provider-attempt-outcome]))]})
+
+(def retained-plan-schema logic/schemas-retained-plan-schema)
+
+(def retained-option-keys logic/schemas-retained-option-keys)
+
+(def model-call-owner-fields logic/model-call-owner-fields)
+
+(def emitted-model-owner-fields logic/emitted-model-owner-fields)
+
+(def durable-value logic/durable-value)
+
+(def workflow-values logic/workflow-values)
+
+(def emitted-model-binding-fields logic/emitted-model-binding-fields)

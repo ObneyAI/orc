@@ -4,11 +4,11 @@
             [clojure.string :as str]
             [cheshire.core :as json]
             [hato.client :as http]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as bt]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def entry-meaning "Evidence selected by the task (keep authored parentheses).")
 (def schema-meaning "Complete records with exact typed source identities.")
@@ -159,7 +159,7 @@
 
 (deftest legacy-and-direct-authored-description-controls
   (let [board {:reply {:schema [:string {:description "Authored meaning (string examples)."}]}}
-        spec (dissoc (executor/build-module {:name "control" :reads [] :writes [:reply]} board) :output-mapping)
+        spec (dissoc (service-logic/build-module {:name "control" :reads [] :writes [:reply]} board) :output-mapping)
         legacy-desc "Authored meaning (string examples). (string)"
         direct-desc "Caller owns this (list of object with {same: string, same: integer})."]
     (is (= legacy-desc (get-in spec [:outputs 0 :description])))
@@ -199,7 +199,7 @@
             (is (= direct-desc (get-in wire [:response_format :json_schema :schema :properties :reply :description])))))))))
 
 (deftest invalid-strict-output-is-still-rejected
-  (let [spec (dissoc (executor/build-module {:name "invalid" :reads [] :writes [:summary]}
+  (let [spec (dissoc (service-logic/build-module {:name "invalid" :reads [] :writes [:summary]}
                       {:summary {:schema contract}}) :output-mapping)]
     (llm/register-provider! :guidance-invalid {:provider :openrouter :model "fixture/guidance" :output-mode :json-schema :config {:api-key "fixture"}})
     (with-redefs [http/post (fn [_ _] (future {:status 200 :body

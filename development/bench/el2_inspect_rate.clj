@@ -10,7 +10,7 @@
    penalty composite. This is case (1) of the EL-5 four-case set. THROWAWAY."
   (:require [runner]
             [ai.obney.orc.ontology.interface :as ont]
-            [ai.obney.orc.ontology.core.task-classifier :as tc]))
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
 (def names
   {#uuid "bf47c816-2833-320e-9fbd-6ae109275ab0" "Code-building(PARENT-correct)"
@@ -23,7 +23,7 @@
 (defn nm [id] (get names id (str "other/" (when id (subs (str id) 0 8)))))
 
 (defn build-sig [instruction]
-  (tc/build-task-signature {:instruction instruction
+  (ontology-logic/build-task-signature {:instruction instruction
                             :reads [:user-message :active-plan :workspace-root]
                             :writes [:assistant-response]
                             :mcp-tools ["shell/exec" "fs/read" "fs/list"]}))
@@ -35,12 +35,10 @@
   (when-not (System/getenv "OPENROUTER_API_KEY")
     (println "FATAL: OPENROUTER_API_KEY not set") (System/exit 1))
   (runner/start!)
-  (let [;; optional CLI args: <scorer-keyword> <N>. Default :colbert (the EL-5
-        ;; default backend), N=10. Pass "embedding 10" to prove :embedding is
-        ;; live-selectable through the SAME apply-rerank path.
+  (let [
         scorer (some-> (first args) keyword)
         n-runs (or (some-> (second args) Integer/parseInt) 10)
-        base-ctx (deref (var-get (requiring-resolve 'runner/system-state)))
+        base-ctx (runner/current-context)
         ctx (if scorer
               (assoc base-ctx :domain-penalty-config {:scorer scorer})
               base-ctx)

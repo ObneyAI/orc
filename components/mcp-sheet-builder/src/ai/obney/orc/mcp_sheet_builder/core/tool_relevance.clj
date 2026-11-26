@@ -96,42 +96,33 @@
                             min-relevance 0.3
                             include-tools #{}
                             exclude-tools #{}}}]
-   (let [;; Normalize include/exclude to sets
+   (let [
          include-set (set include-tools)
          exclude-set (set exclude-tools)
 
-         ;; Score all tools
          scored-tools (score-all-tools tools user-intent)
 
-         ;; Apply exclusions first
          after-exclude (remove #(exclude-set (:name %)) scored-tools)
 
-         ;; Separate forced includes from normal selection
          forced-includes (filter #(include-set (:name %)) scored-tools)
          remaining-after-include (remove #(include-set (:name %)) after-exclude)
 
-         ;; Calculate how many slots left after forced includes
          slots-remaining (- max-tools (count forced-includes))
 
-         ;; Select top relevant tools (meeting threshold) for remaining slots
          auto-selected (->> remaining-after-include
                             (filter #(>= (:relevance %) min-relevance))
                             (take slots-remaining)
                             vec)
 
-         ;; Combine forced and auto-selected
          selected (vec (concat forced-includes auto-selected))
          selected-names (set (map :name selected))
 
-         ;; Everything not selected is "also available"
          also-available (vec (remove #(or (selected-names (:name %))
                                           (exclude-set (:name %)))
                                      scored-tools))
 
-         ;; Tools that were excluded
          excluded-tools (filter #(exclude-set (:name %)) scored-tools)
 
-         ;; Build reasoning
          reasoning (str "Selected " (count selected) " tools: "
                         (count forced-includes) " forced, "
                         (count auto-selected) " auto-selected with relevance >= "
@@ -165,13 +156,10 @@
     (->> unselected
          (map (fn [tool]
                 (let [tool-caps (or (:capabilities tool) #{})
-                      ;; Complementary = different capabilities
                       complement-score (/ (count (set/difference tool-caps selected-capabilities))
                                           (max 1 (count tool-caps)))
-                      ;; Alternative = similar capabilities
                       alternative-score (/ (count (set/intersection tool-caps selected-capabilities))
                                            (max 1 (count tool-caps)))
-                      ;; Intent relevance
                       {:keys [relevance]} (intent/score-tool-relevance tool user-intent)]
                   {:tool tool
                    :name (:name tool)
@@ -225,17 +213,15 @@
   ([tools user-description]
    (select-tools-for-workflow tools user-description {}))
   ([tools user-description {:keys [use-llm-intent? provider model] :as opts}]
-   (let [;; Analyze intent (quick or LLM-based)
+   (let [
          user-intent (if use-llm-intent?
                        (intent/analyze-intent user-description tools
                                               {:provider (or provider :openrouter)
                                                :model (or model "google/gemini-2.5-flash")})
                        (intent/infer-intent-from-keywords user-description))
 
-         ;; Get tool suggestions
          suggestion (suggest-tools tools user-intent opts)
 
-         ;; Find related tools
          selected-tools (mapv :tool (:selected suggestion))
          related (suggest-related-tools selected-tools tools user-intent opts)]
 
@@ -270,32 +256,3 @@
 ;; ============================================================================
 ;; REPL / Testing
 ;; ============================================================================
-
-(comment
-  ;; Example usage with many tools
-  (def many-tools
-    [{:name "searchDocs" :capabilities #{:search} :description "Search docs"}
-     {:name "getPage" :capabilities #{:retrieval} :description "Get page"}
-     {:name "sendEmail" :capabilities #{:create} :description "Send email"}
-     {:name "validateCode" :capabilities #{:validate} :description "Validate code"}
-     {:name "generateReport" :capabilities #{:generate} :description "Generate reports"}
-     {:name "searchAPI" :capabilities #{:search} :description "Search API"}
-     {:name "fetchData" :capabilities #{:retrieval} :description "Fetch data"}
-     {:name "transformData" :capabilities #{:transform} :description "Transform data"}])
-
-  ;; Score all tools
-  (def intent (intent/infer-intent-from-keywords "search for pricing documentation"))
-  (score-all-tools many-tools intent)
-
-  ;; Get suggestions
-  (suggest-tools many-tools intent {:max-tools 5})
-
-  ;; High-level API
-  (select-tools-for-workflow many-tools "I want to search and compile pricing information"
-                             {:max-tools 5
-                              :exclude-tools ["sendEmail"]})
-
-  ;; Format for display
-  (-> (suggest-tools many-tools intent {:max-tools 5})
-      format-tool-suggestion
-      println))

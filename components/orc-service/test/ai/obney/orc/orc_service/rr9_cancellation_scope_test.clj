@@ -52,9 +52,6 @@
               (let [result (deref execution 3000 ::caller-still-blocked)]
                 (is (not= ::caller-still-blocked result))
                 (is (true? (:cancelled? result)) (pr-str result)))
-              ;; The unblocked caller is the public cancellation-delivery
-              ;; barrier. Before RR-9, non-checkpointed researcher work was not
-              ;; in the active-work ledger and therefore remained untouched.
               (is (false? (realized? provider-interrupted))
                   "legacy researcher work is not newly interrupted")
               (deliver release-provider true)

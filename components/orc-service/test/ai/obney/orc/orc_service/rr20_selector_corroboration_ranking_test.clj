@@ -28,8 +28,6 @@
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
-            [ai.obney.orc.ontology.core.evidence-guard :as guard]
-            [ai.obney.orc.ontology.core.harvest :as harvest]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.pubsub.interface :as pubsub]
@@ -37,7 +35,9 @@
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]))
 
 (defn- stub-predict-fixture [f]
   (with-redefs [llm/predict (fn [_provider _module _inputs _options]
@@ -77,23 +77,16 @@
 (defmacro with-test-ctx [[sym] & body]
   `(let [~sym (create-context)] (try ~@body (finally (stop-context ~sym)))))
 
-;; -----------------------------------------------------------------------------
-;; (a) the enum member exists and is admitted past the evidence guard.
-;; -----------------------------------------------------------------------------
 
 (deftest campaign-verdict-is-a-declared-evidence-basis-admitted-without-episodes
   (testing "schema: :campaign-verdict is a member of evidence-basis"
     (is (m/validate ontology-schemas/evidence-basis :campaign-verdict)))
   (testing "guard: a delta naming no episode and declaring :campaign-verdict is grounded by declared provenance"
-    (is (contains? guard/declared-bases-admitted :campaign-verdict))
+    (is (contains? ontology-logic/declared-bases-admitted :campaign-verdict))
     (is (:grounded?
-         (guard/evidence-verdict {} {:episodes [] :evidence-basis :campaign-verdict}))
+         (ontology-queries/evidence-verdict {} {:episodes [] :evidence-basis :campaign-verdict}))
         "admitted exactly like the other mechanical bases")))
 
-;; -----------------------------------------------------------------------------
-;; (b) reinforce-claim increments :verdict-corroborations, through the REAL
-;; :ontology/record-claim-deltas command (a public boundary, not the private fn).
-;; -----------------------------------------------------------------------------
 
 (defn- add-claim!
   ([ctx class-id content] (add-claim! ctx class-id content "the-pattern"))
@@ -168,23 +161,16 @@
             (is (= 1 (:verdict-corroborations entry-after))
                 "present and correct once corroborated")))))))
 
-;; -----------------------------------------------------------------------------
-;; (c) THE ACCEPTANCE CRITERION: a bare artefact re-emitted 3x (support 4)
-;; must NOT outrank a shape corroborated by only ONE campaign verdict
-;; (support 3) — harvest-body must return the corroborated shape.
-;; -----------------------------------------------------------------------------
 
 (deftest a-corroborated-shape-outranks-a-more-repeated-bare-artefact
   (testing "bare-x3 (support 4, no corroboration) vs corroborated-x1 (support 3,
             :verdict-corroborations 1): harvest-body returns the CORROBORATED one"
     (with-test-ctx [ctx]
       (let [class-id (random-uuid)]
-        ;; The bare artefact: :add then two more :support (:emitted-artifact-outcome) -> support 4.
         (add-claim! ctx class-id "bare-shape" "bare-pattern")
         (let [bare (claim-by-content ctx class-id "bare-shape")]
           (support-delta! ctx class-id (:claim-id bare) :emitted-artifact-outcome)
           (support-delta! ctx class-id (:claim-id bare) :emitted-artifact-outcome))
-        ;; The corroborated shape: :add then ONE :campaign-verdict support -> support 3.
         (add-claim! ctx class-id "corroborated-shape" "corroborated-pattern")
         (let [corroborated (claim-by-content ctx class-id "corroborated-shape")]
           (support-delta! ctx class-id (:claim-id corroborated) :campaign-verdict))
@@ -195,7 +181,7 @@
           (is (zero? (or (:verdict-corroborations bare-final) 0)))
           (is (= 1 (:verdict-corroborations corroborated-final))))
         (let [desc (ontology/get-description ctx :tree-class class-id)
-              body (harvest/harvest-body desc 12)]
+              body (ontology-queries/harvest-body desc 12)]
           (is (= "corroborated-pattern" (:recommended-pattern body))
               "THE ACCEPTANCE CRITERION: harvest-body offers the CORROBORATED shape
                (lower raw support, 3) over the bare artefact re-emitted more times

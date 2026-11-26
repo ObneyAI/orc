@@ -32,7 +32,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
+            [ai.obney.orc.orc-service.core.logic :as logic]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.llm.interface :as llm]
@@ -45,13 +45,6 @@
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]))
 
-;; -----------------------------------------------------------------------------
-;; The offered pattern — a "proven" tree recorded directly as a :strength
-;; claim (Seam-4, same claim-recording path RR-19/RR-20 use to crystallize a
-;; winning shape; this test does not re-prove THAT mechanism, RR-19/RR-20's
-;; own suites do). Two :code leaves so the pattern's OWN internal keys
-;; (:draft written-then-read, :summary the final output) are unambiguous.
-;; -----------------------------------------------------------------------------
 (def ^:private offered-tree
   '[:sequence
     [:code {:reads []
@@ -164,11 +157,6 @@
               tick-id (random-uuid)
               received-tasks (atom [])
               calls (atom 0)
-              ;; ADOPT: the model copies the offered pattern's EXACT source —
-              ;; same :reads/:writes throughout, only the surrounding task
-              ;; differs. This is the "as-is" move R-Inject's own prompt
-              ;; names; content (the :fn bodies) is unchanged too, since
-              ;; nothing about THIS task requires adapting the logic.
               adopted-tree-code (str "(emit-tree! (quote " offered-tree-source "))")]
           (classify! ctx sheet-id tick-id researcher-id class-id)
           (with-redefs [llm/predict
@@ -178,10 +166,6 @@
                             1 {:outputs {:code adopted-tree-code}
                                :reasoning "adopt the proven draft-then-summarize pattern as-is"
                                :usage {:prompt_tokens 4 :completion_tokens 3 :total_tokens 7}}
-                            ;; The bridge: :summary is the PATTERN's own key
-                            ;; (named in the rendered "Writes:"/"Outputs:"
-                            ;; line, never re-derived by reading the tree);
-                            ;; :report is THIS task's declared :writes key.
                             2 {:outputs {:code "(final! {:report (get-var :summary)})"}
                                :reasoning "bridge the pattern's :summary to this task's declared :report"
                                :usage {:prompt_tokens 3 :completion_tokens 2 :total_tokens 5}}
@@ -216,6 +200,6 @@
                       emitted-tree (read-string emitted-source)]
                   (is (= offered-tree-source emitted-source)
                       "the durably recorded tree is the offered pattern's exact source — ADOPT, not reconstruction")
-                  (is (= (rlm-fingerprint/fingerprint offered-tree)
-                         (rlm-fingerprint/fingerprint emitted-tree))
+                  (is (= (logic/fingerprint offered-tree)
+                         (logic/fingerprint emitted-tree))
                       "same shape — same :reads/:writes throughout — proves the rebind never re-derived the pattern's logic"))))))))))

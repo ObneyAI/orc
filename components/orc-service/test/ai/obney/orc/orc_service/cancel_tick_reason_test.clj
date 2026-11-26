@@ -5,7 +5,6 @@
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]))
 
@@ -136,7 +135,7 @@
                         (h/read-tick-events ctx tick-id))
               "public cancellation contributes no verdict occurrence")
           (is (empty? (filter #(= tick-id (:tick-id %))
-                              (runtime/resume-in-progress! ctx)))))))))
+                              (sheet/resume-in-progress! ctx)))))))))
 
 (deftest cancellation-and-completion-share-one-terminal-winner
   (testing "the first append-boundary terminal is immutable under later campaign events"

@@ -7,21 +7,21 @@
    reports per task: top-1 fitness, coverage, label, and pass-to-pass label
    agreement. Nothing in components/ is modified on disk; vars are altered in
    this JVM only. Delete when RS-1 lands."
-  (:require [ai.obney.orc.ontology.core.reranker :as reranker]
-            [ai.obney.orc.ontology.core.task-classifier :as classifier]
+  (:require
             [ai.obney.orc.ontology.test-support.c2d-ood-stress-test :as ood]
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [malli.core :as m]
             [com.brunobonacci.mulog :as mu]
-            [runner]))
+            [runner]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]))
 
 (def corpus-dir "development/bench/ood-corpus")
 (def out-dir "development/bench/ood-stress-results/rs-p1b2-sibling-reuse-separated-probe")
 
-;; --- 1. the extended instruction: the shipped one with the output contract widened
-(def base-instruction @#'reranker/reranker-instruction)
+(def base-instruction @#'ontology-logic/reranker-instruction)
 
 (def old-contract
   "PRODUCE a JSON string of a vector, descending by fitness_score. Each
@@ -85,7 +85,6 @@ Example shape:
     (assert (not= s base-instruction) "old contract text not found in shipped instruction")
     s))
 
-;; --- 2. a parse that keeps the extra keys (the shipped one select-keys them away)
 (defn probe-parse [result]
   (let [raw-json (get-in result [:outputs :reranked-json])
         payload (when (string? raw-json)
@@ -103,14 +102,14 @@ Example shape:
         valid (when (sequential? canon) (filterv #(m/validate ontology-schemas/reranked-result %) canon))]
     valid))
 
-(def captured (atom []))  ;; every rerank! output in this JVM, in call order
-(def siblings-by-doc (atom {}))  ;; document-id -> #{labels minted under it in pass 1}; empty in pass 1
+(def captured (atom []))
+(def siblings-by-doc (atom {}))
 
 (defn install-probe! []
-  (alter-var-root #'reranker/reranker-instruction (constantly extended-instruction))
-  (alter-var-root #'reranker/parse-reranked-json (constantly probe-parse))
-  (let [orig @#'reranker/rerank!]
-    (alter-var-root #'reranker/rerank!
+  (alter-var-root #'ontology-logic/reranker-instruction (constantly extended-instruction))
+  (alter-var-root #'ontology-logic/parse-reranked-json (constantly probe-parse))
+  (let [orig ontology-logic/reranker-rerank!]
+    (alter-var-root #'ontology-logic/reranker-rerank!
       (constantly (fn [ctx opts]
                     (let [opts (update opts :candidates
                                        (fn [cs] (mapv (fn [c] (if-let [sibs (seq (get @siblings-by-doc (:document-id c)))]
@@ -121,14 +120,12 @@ Example shape:
                       (swap! captured conj {:query (:query opts) :out out})
                       out))))))
 
-;; --- 3. one pass over the corpus
 (defn run-pass! [ctx pass]
   (let [corpus (ood/load-corpus corpus-dir)]
     (vec (for [{:keys [slug instruction]} corpus]
            (let [before (count @captured)
-                 env (classifier/classify-task ctx {:task-signature instruction :threshold 0.6})
+                 env (ontology-queries/classify-task ctx {:task-signature instruction :threshold 0.6})
                  calls (subvec @captured before)
-                 ;; the first rerank! call of this classify is the structural rank (walk-down may add more)
                  first-out (:out (first calls))
                  top (first (sort-by #(- (or (:fitness-score %) 0.0)) first-out))
                  n-valid (count (filter #(contains? #{"covered" "partial" "uncovered" "unknown"} (:domain-coverage %)) first-out))]
@@ -145,7 +142,7 @@ Example shape:
 (defn run! []
   (install-probe!)
   (.mkdirs (java.io.File. out-dir))
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))
+  (let [ctx (runner/current-context)
         p1 (run-pass! ctx 1)
         _ (reset! siblings-by-doc
                   (reduce (fn [m r] (if (and (:top-document r) (:label r) (contains? #{"partial" "uncovered"} (:coverage r)))

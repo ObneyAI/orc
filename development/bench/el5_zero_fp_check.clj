@@ -11,11 +11,8 @@
    Real ColBERT + production knobs. Run:
      OPENROUTER_API_KEY=… clojure -M:dev -m el5-zero-fp-check"
   (:require [runner]
-            [ai.obney.orc.ontology.core.domain-penalty :as dp]))
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
-;; The web-search behavior (synthetic, from the separability probe). Its positive
-;; use-case is a plain web search; its avoid-condition is the 'special
-;; permissions' qualifier — which a plain web-search task does NOT match.
 (def websearch-candidate
   {:document-id "websearch"
    :avoid-when ["the web search requires special elevated permissions or authenticated access the agent does not hold"
@@ -26,8 +23,6 @@
 (def websearch-task
   "INSTRUCTION:\nSearch the web for the latest documentation on the payment API and summarize what you find.\n\nREADS: :user-message\nWRITES: :assistant-response\nMCP-TOOLS: web/search\nBROWSER-TOOLS: (none)")
 
-;; Positive control: the rename-move-symbol force-fit candidate on a refactor
-;; task — the penalty MUST fire here (proves the scorer is live + discriminating).
 (def rename-candidate
   {:document-id "rename"
    :avoid-when ["the task is to extract a helper, pull out a function, or otherwise refactor/restructure code — that is code-building/refactor, NOT a pure identity rename or move of an existing symbol"
@@ -40,11 +35,11 @@
 
 (defn -main [& _]
   (runner/start!)
-  (let [ctx (deref (var-get (requiring-resolve 'runner/system-state)))
-        cfg (assoc dp/default-penalty-config :scorer :colbert)
-        scorer (dp/make-scorer ctx cfg)
-        ws (dp/score-candidate websearch-candidate websearch-task scorer cfg)
-        rn (dp/score-candidate rename-candidate refactor-task scorer cfg)]
+  (let [ctx (runner/current-context)
+        cfg (assoc ontology-logic/default-penalty-config :scorer :colbert)
+        scorer (ontology-logic/make-scorer ctx cfg)
+        ws (ontology-logic/score-candidate websearch-candidate websearch-task scorer cfg)
+        rn (ontology-logic/score-candidate rename-candidate refactor-task scorer cfg)]
     (println "\n=== EL-5 CASE (3) ZERO-FALSE-POSITIVE CHECK (real :colbert, prod knobs) ===")
     (println "config:" (select-keys cfg [:scorer :penalty-scale :margin :penalty-cap]))
     (println (format "CASE (3) web-search-on-own-domain: cos-avoid=%.4f cos-good=%.4f diff=%+.4f penalty=%.3f"

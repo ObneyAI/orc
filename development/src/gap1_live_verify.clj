@@ -34,8 +34,6 @@
    Per `feedback_no_truncating_model_output`: the LLM's :feedback strings
    are printed verbatim in the report — no truncation."
   (:require [ai.obney.orc.evaluation.interface :as evaluation]
-            ;; Loading evaluation.interface transitively requires
-            ;; judge-runtime which registers the defprocessor.
             [ai.obney.orc.evaluation.interface.schemas]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
@@ -167,7 +165,6 @@
                     (throw (ex-info "OPENROUTER_API_KEY not set" {})))
         model "google/gemini-3-flash-preview"
         _ (register-openrouter! api-key model)
-        ;; Surface mulog events so any judge failures land in stdout
         _ (u/start-publisher! {:type :console})
         ctx (create-context)]
     (try
@@ -192,8 +189,6 @@
             _ (println (str "\n  → dispatching :sheet/complete-node-execution at "
                             (java.time.Instant/now) "..."))
             _ (emit-node-execution-completed! ctx sheet-id tick-id node-id)
-            ;; Real LLM calls take 5-30s each; both judges fire in parallel
-            ;; on async threads. Poll up to 60s for both to complete.
             _ (loop [waited 0]
                 (let [n (count (into [] (es/read (:event-store ctx)
                                                   {:types #{:judge/score-emitted}
@@ -222,8 +217,5 @@
       (finally
         (stop-context ctx)))))
 
-(comment
-  ;; Run from REPL:
-  ;;   OPENROUTER_API_KEY=... clj -M:dev -e \
-  ;;     "(require '[gap1-live-verify :as v]) (v/verify!)"
+#_(do
   )

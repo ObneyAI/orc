@@ -197,7 +197,7 @@ handles it.
 ```
 
 Inject `(:formatted-context result)` directly into an `:instruction` string or `:reads` key.
-No ontology infrastructure beyond `components/ontology` required.
+No ontology infrastructure beyond `components/ontology-service` required.
 
 ---
 

@@ -9,7 +9,6 @@
 
 (use-fixtures :each
   (fn [f]
-    ;; Ensure clean lock state across tests
     (runner/release-task-lock!)
     (try (f) (finally (runner/release-task-lock!)))))
 

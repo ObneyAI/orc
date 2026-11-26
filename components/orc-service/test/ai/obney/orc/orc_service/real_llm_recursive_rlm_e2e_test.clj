@@ -136,14 +136,6 @@
               tick-id (:trace-id result)
               events (root-events ctx tick-id)
               child-ids (child-tick-ids events tick-id)
-              ;; The Phase-1 code a campaign actually ran lives on its immutable
-              ;; iteration records. A recursive researcher is CHECKPOINTED by
-              ;; default (RR-15), and the terminal :rlm/researcher-iterations
-              ;; aggregate is emitted ONLY for explicit non-checkpointed
-              ;; compatibility — so reading that event alone silently yields no
-              ;; code here and makes the drill-down assertions below vacuous.
-              ;; Read the authoritative records, keeping the legacy aggregate so
-              ;; this journey stays honest in either execution mode.
               records (rm/get-researcher-iteration-records ctx sheet-id tick-id node-id)
               legacy-iterations (mapcat :iterations
                                         (filter #(= :rlm/researcher-iterations

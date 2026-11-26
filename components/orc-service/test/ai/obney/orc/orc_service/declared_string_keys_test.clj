@@ -3,9 +3,9 @@
    the contract leaves to convention are read as keywords (llm.allium)."
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [litellm.router :as router]))
+            [litellm.router :as router]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
 (defn probs [_] {:out {"0" 0.41 "1" 0.59}})
 (defn probs-map-of [_] {:out {"0" 0.41 "1" 0.59}})
@@ -29,7 +29,7 @@
           written (filter #(and (= :sheet/execution-value-written (:event/type %))
                                 (= :out (:key %)))
                           (h/read-all-events ctx))
-          durable (mapv #(value-log/resolve-source
+          durable (mapv #(service-read-models/resolve-source
                           ctx (:tenant-id ctx)
                           {:tick-id (:tick-id %) :event-id (:event/id %)})
                         written)]

@@ -4,7 +4,6 @@
    to verify the complete execution chain."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.todo-processors]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -15,7 +14,8 @@
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.mcp-sheet-builder.interface :as mcp]
-            [ai.obney.orc.llm.interface :as llm]))
+            [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Async Context with MCP Support
@@ -71,9 +71,6 @@
        (finally
          (stop-mcp-async-context ~ctx-sym)))))
 
-;; =============================================================================
-;; Helper: Build repl-researcher sheet via commands
-;; =============================================================================
 
 (defn- setup-repl-researcher-sheet!
   [ctx & {:keys [instruction mcp-tools max-iterations reads writes]
@@ -98,7 +95,7 @@
 (defn- dispatch-async-execute!
   [ctx sheet-id inputs & {:keys [timeout-ms] :or {timeout-ms 15000}}]
   (let [tick-id (random-uuid)
-        p (runtime/register-completion! tick-id)
+        p (service-logic/register-completion! tick-id)
         _cmd-result (cp/process-command
                       (assoc ctx :command
                              {:command/id (random-uuid)

@@ -4,7 +4,7 @@
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.profile :as profile])
+            [ai.obney.orc.orc-service.core.logic :as logic])
   (:import [java.nio.file Files]))
 
 (def proofs (atom []))
@@ -21,9 +21,6 @@
 (defn new-source [_] {:result "a longer forwarded value"})
 
 (deftest forwarded-profile-uses-only-the-declared-references
-  ;; Deliberately stage earlier writes of the same node/context through public
-  ;; commands. This guards command metadata; it does not assert that a normal
-  ;; workflow repeats a terminal completion or changes historical rehydration.
   (h/with-test-context [ctx]
     (let [definition
           (sheet/workflow (str "declared-forwarded-profile-" (random-uuid))
@@ -59,7 +56,7 @@
           completion (last (filter #(= :sheet/node-execution-completed (:event/type %)) after))]
       (is (some? source-event))
       (is (= [:result] (:write-keys completion)))
-      (is (= {:result (profile/profile-value (:result (new-source nil)))} (:write-profile completion)))
+      (is (= {:result (logic/profile-value (:result (new-source nil)))} (:write-profile completion)))
       (is (= {:result source} (:write-sources completion)))
       (is (not (contains? completion :writes)))
       (is (= (count (filter #(= :sheet/execution-value-written (:event/type %)) before))
@@ -108,7 +105,7 @@
                 aggregate (first (filter #(= "aggregate" (:node-name %)) (:node-traces trace)))
                 aggregate-writes (filter #(and (= :sheet/execution-value-written (:event/type %))
                                                (= :results (:key %))) events)
-                profile {:results (profile/profile-value expected)}]
+                profile {:results (logic/profile-value expected)}]
             (is (some? aggregate))
             (is (= 1 (count aggregate-writes)) "aggregate payload has exactly one canonical home")
             (is (= (:node-id aggregate) (:node-id (first aggregate-writes))))
@@ -128,7 +125,7 @@
               (is (= profile (:output-profile node)) name)
               (is (= {:results expected} (:outputs detail)) name)
               (is (not (contains? completion :writes)) "lifecycle metadata never duplicates the aggregate value"))
-            (is (= profile (profile/profile-values {:results expected})))
+            (is (= profile (logic/profile-values {:results expected})))
             (doseq [completion completions
                     :let [node (get nodes (:node-id completion))]
                     :when (and (= "item" (:node-name node)) (= :success (:status completion)))

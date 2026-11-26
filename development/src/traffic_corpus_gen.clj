@@ -48,9 +48,6 @@
                         (.getBytes (str s) java.nio.charset.StandardCharsets/UTF_8))]
     (apply str (map #(format "%02x" (bit-and (int %) 0xff)) digest))))
 
-;; =============================================================================
-;; Slug scheme — NNN-<group>-vVV, a seeded round-robin interleave
-;; =============================================================================
 
 (def slug-re #"^(\d{3})-([a-z][a-z0-9]*(?:-[a-z0-9]+)*)-v(\d{2})$")
 
@@ -89,11 +86,6 @@
                 {:group group :brief-id (:brief-id brief) :variant variant})]
     (vec (map-indexed (fn [i s] (assoc s :index (inc i))) slots))))
 
-;; =============================================================================
-;; Style cards — six fixed styles; PLAN.md Part A names all six under "5
-;; variants": every named style is implemented, `:n-variants` picks how many
-;; of them (in this fixed order) `generate!` actually produces.
-;; =============================================================================
 
 (def style-cards
   [{:style :ticket
@@ -115,9 +107,6 @@
     :desc "prose that embeds an inline data excerpt (a small table or key:value block) the task should act on"
     :words [150 400]}])
 
-;; =============================================================================
-;; Generation — two calls per variant: draft, then polish
-;; =============================================================================
 
 (defn- brief-by-id [briefs brief-id]
   (or (some #(when (= brief-id (:brief-id %)) %) briefs)
@@ -210,9 +199,6 @@
   [v]
   (let [t (cond
             (string? v) (or (extract-json-array-string v) (str/trim v))
-            ;; A task split across several strings keeps ALL of them (joined),
-            ;; never just the first line (live: a release-notes task came back
-            ;; as its first line only).
             (sequential? v) (let [parts (keep output-text v)]
                               (when (seq parts) (str/join "\n" parts)))
             (map? v) (some output-text (vals v))
@@ -230,11 +216,7 @@
                         :validate? false
                         :with-metadata? true
                         :timeout-ms predict-timeout-ms})
-              ;; Only the declared output field counts. A fallback over every
-              ;; string in the outputs map picked up echoed input text (the
-              ;; polish instruction itself) when the field was missing.
               text (output-text (get-in result [:outputs :variants]))]
-          ;; An empty text is a failed call, never a draft: retried, then thrown.
           (when-not text
             (throw (ex-info "Generator call returned no instruction text"
                             {:output-keys (keys (:outputs result))})))
@@ -286,8 +268,6 @@
         entries-dir (io/file out-dir "entries")
         _ (.mkdirs tasks-dir)
         _ (.mkdirs entries-dir)
-        ;; trimmed: generated text is trimmed before it is written, and the loader
-        ;; keeps the blank line after the header, so parity for prior-texts
         on-disk (into {} (map (juxt :slug (comp str/trim :instruction))) (ood/load-corpus (str tasks-dir)))
         order (interleave-order briefs n-variants seed)
         entries (atom [])]
@@ -320,7 +300,6 @@
                                   (str "; brief-id: " brief-id "\n; group: " group "\n; variant: " variant "\n\n" text))
                             (spit sidecar (with-out-str (pp/pprint e)))
                             (assoc e :text text)))]]
-      ;; :text is kept transiently for prior-text bookkeeping ONLY
       (swap! entries conj entry))
     (let [manifest {:entries (mapv #(dissoc % :text) @entries)
                      :seed seed
@@ -329,9 +308,6 @@
       (spit (io/file out-dir "manifest.edn") (with-out-str (pp/pprint manifest)))
       manifest)))
 
-;; =============================================================================
-;; unwrap-bracketed-bodies! — one-time repair of the first corpus run
-;; =============================================================================
 
 (defn unwrap-bracketed-bodies!
   "Rewrite every task file whose body (after the `;` header) parses as a JSON
@@ -358,9 +334,6 @@
     {:unwrapped (count (filter #{:unwrapped} results))
      :kept (count (filter #{:kept} results))}))
 
-;; =============================================================================
-;; Review flags — HITL aids only, NEVER a metric, NEVER ground truth
-;; =============================================================================
 
 (defn- tokens
   [s]
@@ -392,8 +365,6 @@
           {:from-other-group? (and (some? neighbour-group) (not= own-group neighbour-group))
            :neighbour-group neighbour-group})))))
 
-;; NOTE: ood/load-corpus reads a whole directory; re-reading the whole tasks
-;; dir once and indexing by slug is far cheaper than one dir-scan per entry.
 (defn- texts-by-slug
   [corpus-dir]
   (into {} (map (juxt :slug :instruction)) (ood/load-corpus (str corpus-dir "/tasks"))))
@@ -459,9 +430,6 @@
     (spit path (with-out-str (pp/pprint flagged)))
     flagged))
 
-;; =============================================================================
-;; judge-on-brief! — is each task faithful to its brief? (a judged review flag)
-;; =============================================================================
 
 (def ^:private on-brief-module
   {:inputs [{:name :brief :spec :string :description "what the task must be: subject matter, material, output kind, and what it must not be"}
@@ -502,9 +470,6 @@
                   (fn [inputs]
                     (:outputs (with-bounded-retries predict-attempts [5000 15000]
                                 #(llm/predict (:llm-provider ctx :openrouter) on-brief-module inputs
-                                              ;; :with-metadata? so the answer is under :outputs
-                                              ;; (without it predict returns the outputs map
-                                              ;; itself, and every verdict read as missing)
                                               {:model model :use-function-calling? true :validate? false
                                                :with-metadata? true :timeout-ms predict-timeout-ms})))))
         judged (update manifest :entries
@@ -516,7 +481,6 @@
                                                         :task (get by-slug (:slug e))})
                                                 (catch Throwable _ nil))
                                    verdict (or (parse-on-brief outputs) :unjudged)]
-                               ;; the judge owns :off-brief / :unjudged: a re-run replaces them
                                (cond-> (-> e
                                            (assoc :on-brief verdict
                                                   :on-brief-reasoning (output-text (:reasoning outputs)))
@@ -527,10 +491,6 @@
     (spit path (with-out-str (pp/pprint judged)))
     judged))
 
-;; =============================================================================
-;; freeze! — corpus-sha256 over the sorted accepted (slug, instruction-sha256)
-;; pairs
-;; =============================================================================
 
 (defn freeze!
   "Read `manifest.edn` from `corpus-dir`, compute `corpus-sha256` over the
@@ -554,7 +514,5 @@
     (spit manifest-path (with-out-str (pp/pprint frozen)))
     frozen))
 
-(comment
-  ;; Launcher (from the worktree root, OPENROUTER_API_KEY in the environment):
-  ;; clojure -J-Djava.awt.headless=true -J-Xmx1600m -M:dev:test -e "(require 'runner) (runner/start!) (Thread/sleep 45000) (require 'traffic-corpus-gen) (traffic-corpus-gen/generate! \"development/bench/ood-corpus-traffic/briefs.edn\" traffic-corpus-gen/corpus-dir {:ctx (deref @(requiring-resolve 'runner/system-state))}) (runner/stop!) (shutdown-agents) (System/exit 0)"
+#_(do
   )

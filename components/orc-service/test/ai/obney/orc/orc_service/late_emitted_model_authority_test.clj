@@ -8,10 +8,9 @@
             [ai.obney.orc.orc-service.emitted-model-authority-test :as original]
             [ai.obney.orc.orc-service.retained-prime-model-plan-test :as prime]
             [ai.obney.orc.orc-service.core.todo-processors :as processors]
-            [ai.obney.orc.orc-service.core.emitted-model-authority :as authority]
-            [ai.obney.orc.orc-service.core.budget-facts :as budget-facts]
-            [ai.obney.orc.orc-service.core.model-call-journal :as journal]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
 (defn gated-prefix [{:keys [probe-effects]}]
   (let [{:keys [entered release]} @probe-effects]
@@ -62,11 +61,11 @@
                     node (:node-id start)
                     owner {:sheet-id sheet :tick-id child :node-id node :node-start-id (:event/id start)
                            :exec-context {} :role :subcall :logical-action-id (pr-str [child node {}])}
-                    _ (let [campaign (budget-facts/researcher-campaign ctx child)
-                            facts (authority/read-facts ctx owner campaign)]
+                    _ (let [campaign (service-read-models/researcher-campaign ctx child)
+                            facts (processors/read-facts ctx owner campaign)]
                         (doseq [incomplete [(dissoc campaign :ownership-epoch)
                                             (assoc campaign :ownership-epoch 0)]]
-                          (is (= :refused (:status (authority/assess owner incomplete facts)))
+                          (is (= :refused (:status (service-logic/assess owner incomplete facts)))
                               "Incomplete old snapshot ownership cannot authorize new work")))
                     result (original/authorize! ctx owner)
                     bindings (filterv #(= :sheet/emitted-model-work-authorized (:event/type %)) (original/events ctx))]
@@ -137,15 +136,13 @@
 (deftest first-configured-descendant-retains-plan-before-binding-without-authorizing-dispatch
   (with-late-configured-child!
     (fn [ctx owner parent logical authored plan _ _]
-      (let [prepared (journal/prepare-emitted-call ctx owner authored (constantly plan))
+      (let [prepared (processors/prepare-emitted-call ctx owner authored (constantly plan))
             owner (assoc owner :configuration-id (:configuration-id prepared))
             cb (:callbacks prepared)
             request (original/started-request prepared)
             retained (first (filter #(= :sheet/model-plan-retained (:event/type %)) (original/events ctx)))]
         (is (seq (:configuration-id owner)))
         (is (= plan (:plan retained)))
-        ;; A candidate claim is internal cursor bookkeeping. It makes no
-        ;; provider request and does not grant fresh-request authority.
         (is (nil? (:cognitect.anomalies/category ((:claim! cb) 0 nil))))
         (is (= :cognitect.anomalies/conflict
                (:cognitect.anomalies/category ((:record-request! cb) request)))
@@ -171,11 +168,11 @@
 (deftest provisional-retention-cannot-replace-a-different-retained-configuration
   (with-late-configured-child!
     (fn [ctx owner _ _ authored plan _ _]
-      (let [prepared (journal/prepare-emitted-call ctx owner authored (constantly plan))
+      (let [prepared (processors/prepare-emitted-call ctx owner authored (constantly plan))
             retained (first (filter #(= :sheet/model-plan-retained (:event/type %)) (original/events ctx)))
             different (assoc-in plan [:candidates 0 :model] "fixture/conflicting")
             result (h/run-and-apply! ctx (prime/command :sheet/retain-model-plan
-                      (assoc owner :configuration-id (journal/retained-configuration-id different)
+                      (assoc owner :configuration-id (service-logic/retained-configuration-id different)
                                    :plan-scope-id (:plan-scope-id retained) :plan different)))]
         (is (seq (:configuration-id prepared)))
         (is (= :cognitect.anomalies/conflict (:cognitect.anomalies/category result)))
@@ -199,7 +196,7 @@
                                   :child-start (original/resumed-start! ctx owner nil child-staged)))
                               (actual-append store options))]
                 (try
-                  (journal/prepare-emitted-call ctx owner authored (constantly plan))
+                  (processors/prepare-emitted-call ctx owner authored (constantly plan))
                   :unexpected-success
                   (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))]
           (is @fired)
@@ -257,10 +254,10 @@
   (doseq [ordering [:before-frontier :before-claim] configured? [false true]]
     (with-first-start-before-parent-claim! ordering configured?
       (fn [ctx owner parent logical authored plan configured? ordering deadline _]
-        (let [campaign (budget-facts/researcher-campaign ctx (:tick-id owner))
-              before (authority/assess owner campaign (authority/read-facts ctx owner campaign))
+        (let [campaign (service-read-models/researcher-campaign ctx (:tick-id owner))
+              before (service-logic/assess owner campaign (processors/read-facts ctx owner campaign))
               prepared (when configured?
-                         (try {:value (journal/prepare-emitted-call ctx owner authored (constantly plan))}
+                         (try {:value (processors/prepare-emitted-call ctx owner authored (constantly plan))}
                               (catch clojure.lang.ExceptionInfo e {:error (:reason (ex-data e))})))
               owner (cond-> owner configured? (assoc :configuration-id (get-in prepared [:value :configuration-id])))
               sleeping (promise) work (atom nil)]
@@ -271,7 +268,7 @@
               (reset! work
                 (future
                   (try
-                    (authority/ensure!
+                    (processors/ensure!
                      (assoc ctx :orc/model-authority-sleep!
                             (fn [ms] (deliver sleeping true) (Thread/sleep ms))) owner deadline)
                     (catch clojure.lang.ExceptionInfo e {:error (:reason (ex-data e))}))))
@@ -280,7 +277,7 @@
               (is (empty? (filter #(= :sheet/provider-call-reserved (:event/type %)) (original/events ctx))))
               (is (empty? (filter #(= :sheet/model-request-recorded (:event/type %)) (original/events ctx))))
               (when (= :before-frontier ordering) (prime/frontier! ctx parent 2))
-              (is (= :pending (:status (authority/assess owner campaign (authority/read-facts ctx owner campaign)))))
+              (is (= :pending (:status (service-logic/assess owner campaign (processors/read-facts ctx owner campaign)))))
               (original/claim! ctx parent logical 2)
               (let [bound (deref @work 3000 {:error :timeout})
                     bindings (filterv #(= :sheet/emitted-model-work-authorized (:event/type %)) (original/events ctx))]
@@ -293,7 +290,7 @@
                                                       (= 2 (:ownership-epoch %)) (= :generated-child (:kind %)))
                                                (original/events ctx))))))
                 (is (= deadline (get-in (orc/get-tick-execution-context ctx (:tick-id owner)) [:options :execution-deadline-ms])))
-                (is (= bound (authority/ensure! ctx owner deadline)))
+                (is (= bound (processors/ensure! ctx owner deadline)))
                 (is (= 1 (count (filter #(= :sheet/emitted-model-work-authorized (:event/type %)) (original/events ctx))))))
               (finally (when @work (future-cancel @work))))))))))
 
@@ -301,12 +298,12 @@
   (doseq [movement [:parent-start :frontier] configured? [false true]]
     (with-first-start-before-parent-claim! :before-claim configured?
       (fn [ctx owner parent logical authored plan configured? _ deadline parent-staged]
-        (let [prepared (when configured? (journal/prepare-emitted-call ctx owner authored (constantly plan)))
+        (let [prepared (when configured? (processors/prepare-emitted-call ctx owner authored (constantly plan)))
               owner (cond-> owner configured? (assoc :configuration-id (:configuration-id prepared)))
               sleeping (promise)
               work (future
                      (try
-                       (authority/ensure!
+                       (processors/ensure!
                         (assoc ctx :orc/model-authority-sleep!
                                (fn [ms] (deliver sleeping true) (Thread/sleep ms))) owner deadline)
                        (catch clojure.lang.ExceptionInfo e {:error (:reason (ex-data e))})))]
@@ -326,12 +323,12 @@
 (deftest pending-configured-first-start-still-requires-its-exact-retained-plan
   (with-first-start-before-parent-claim! :before-claim true
     (fn [ctx owner parent logical authored plan _ _ deadline _]
-      (let [_ (journal/prepare-emitted-call ctx owner authored (constantly plan))
+      (let [_ (processors/prepare-emitted-call ctx owner authored (constantly plan))
             owner (assoc owner :configuration-id "unrelated-retained-plan")
             sleeping (promise)
             work (future
                    (try
-                     (authority/ensure!
+                     (processors/ensure!
                       (assoc ctx :orc/model-authority-sleep!
                              (fn [ms] (deliver sleeping true) (Thread/sleep ms))) owner deadline)
                      (catch clojure.lang.ExceptionInfo e {:error (:reason (ex-data e))})))]

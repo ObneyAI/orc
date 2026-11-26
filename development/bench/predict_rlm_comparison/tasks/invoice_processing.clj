@@ -40,8 +40,6 @@
   (str references-dir "/globaltech-invoice-GT-10587.pdf"))
 
 (def ^:private output-workbook-path
-  ;; Each run writes a fresh workbook here. The path is computed at
-  ;; task-load time so the model sees a real absolute path in its inputs.
   (.getAbsolutePath
     (io/file "development/bench/predict_rlm_comparison/results/invoice_extraction.xlsx")))
 
@@ -145,15 +143,8 @@
   {:name "Invoice Processing (predict-rlm port)"
    :slug "invoice-processing"
    :pattern "Multi-invoice vision-extraction → structured data → xlsx output"
-   ;; Apples-to-apples model setup matching predict-rlm:
-   ;;   main LM:  openai/gpt-5.4
-   ;;   sub LM:   openai/gpt-5.1-chat
    :model "openai/gpt-5.4"
    :sub-model "openai/gpt-5.1-chat"
-   ;; Catalog content embedded directly in :instruction (avoiding the
-   ;; framework's :available-code-nodes input-field path that has known
-   ;; interaction issues with gpt-5.4 — see document_redaction.clj for
-   ;; the same workaround).
    :instruction (str instruction
                      "\n\n## Available pre-built code-node functions\n\n"
                      invoice-tools/available-code-nodes)
@@ -186,8 +177,6 @@
     ":total-amount equals sum of per-invoice totals"
     "Workbook file exists at :workbook-path"
     "Workbook has Summary sheet + per-invoice sheets with correct columns"]
-   ;; Reference numbers from predict-rlm's sample/output (output.md is minimal —
-   ;; no published token/cost stats for this benchmark, just the xlsx + screenshot).
    :predict-rlm-reported {:invoices-count 2
                           :workbook-file "invoice_extraction.xlsx"
                           :note "output.md does not publish token/cost stats; structural comparison is xlsx-based"}})

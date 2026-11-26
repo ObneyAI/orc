@@ -25,7 +25,6 @@
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
             [ai.obney.orc.ontology.core.todo-processors]
-            [ai.obney.orc.ontology.core.reranker :as reranker]
             [ai.obney.orc.colbert.interface :as colbert]
             [ai.obney.orc.llm.interface]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -35,7 +34,8 @@
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
-            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]))
+            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
 ;; =============================================================================
 ;; Test context
@@ -80,9 +80,6 @@
   `(let [~sym (create-context)]
      (try ~@body (finally (stop-context ~sym)))))
 
-;; =============================================================================
-;; Fixtures — the two real edges, faked
-;; =============================================================================
 
 (def ^:private free-model
   "Stands in for the `:free` slot a free shakeout configures. Deliberately
@@ -166,9 +163,9 @@
                   "sanity: the auto-classify path actually executed a rerank node")
               (is (contains? models free-model)
                   "the configured reranker model is what the store says executed")
-              (is (not (contains? models reranker/default-model))
+              (is (not (contains? models ontology-logic/default-model))
                   (str "DEFEAT CONDITION: a run configured for " free-model
-                       " still billed " reranker/default-model
+                       " still billed " ontology-logic/default-model
                        " on the auto-classify path — recorded models: "
                        (pr-str models))))))))))
 

@@ -2,7 +2,6 @@
   "Generated from the RR-11 ProviderCallReservation obligations."
   (:require [clojure.java.io :as io]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.orc.orc-service.core.provider-call-reservations :as reservations]
             [ai.obney.orc.orc-service.core.todo-processors :as todo]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
@@ -12,7 +11,8 @@
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.grain.periodic-task.interface :as periodic]
             [ai.obney.grain.time.interface :as time]
-            [clojure.test :refer [deftest is testing]]))
+            [clojure.test :refer [deftest is testing]]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- an-hour-later-clock
   "Context map whose lease clock reads an hour after the crashed owner's last renewal."
@@ -20,8 +20,7 @@
   (assoc m :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))
 
 (defn- budget-cache-atom []
-  (var-get (ns-resolve 'ai.obney.orc.orc-service.core.todo-processors
-                       'tick-llm-counts)))
+  (var-get #'service-logic/tick-llm-counts))
 
 (deftest provider-invocation-identities-are-scoped-to-the-durable-budget-root
   (testing "root-local CAS streams cannot produce the same global reservation identity"
@@ -29,10 +28,10 @@
           ownership-epoch 1
           provider-attempt-ordinal 0]
       (is (not=
-           (reservations/invocation-identity
+           (service-logic/invocation-identity
             (random-uuid) logical-action-identity ownership-epoch
             provider-attempt-ordinal)
-           (reservations/invocation-identity
+           (service-logic/invocation-identity
             (random-uuid) logical-action-identity ownership-epoch
             provider-attempt-ordinal))))))
 
@@ -84,11 +83,11 @@
         existing {:event/type :sheet/provider-call-reserved
                   :invocation-identity "invocation-existing"}
         accepts? (fn [request events]
-                   ((:predicate-fn (reservations/reservation-cas request))
+                   ((:predicate-fn (service-logic/reservation-cas request))
                     events))]
     (is (= :incomplete-history
            (:decision
-            (reservations/reservation-decision
+            (service-logic/reservation-decision
              candidate
              [(update root :options dissoc :llm-budget-accounting-version)
               node-start frontier iteration-claim existing])))
@@ -99,14 +98,14 @@
     (is (true? (accepts? candidate [root node-start frontier iteration-claim existing])))
     (is (= {:decision :duplicate :current 1}
            (select-keys
-            (reservations/reservation-decision
+            (service-logic/reservation-decision
              (assoc candidate :invocation-identity "invocation-existing")
              [root node-start frontier iteration-claim existing])
             [:decision :current]))
         "a duplicate conflict retains an authoritative cache count")
     (is (= {:decision :rejected :current 1}
            (select-keys
-            (reservations/reservation-decision
+            (service-logic/reservation-decision
              (assoc candidate :ownership-epoch 1)
              [root node-start frontier iteration-claim existing])
             [:decision :current]))
@@ -195,7 +194,7 @@
               (is (= (str (:logical-action-identity provider-claim) "/candidate/0")
                      (:logical-action-identity reservation))
                   "the physical reservation scopes the effect action to candidate zero")
-              (is (= (reservations/invocation-identity
+              (is (= (service-logic/invocation-identity
                       (:trace-id result)
                       (str (:logical-action-identity provider-claim) "/candidate/0")
                       (:ownership-epoch provider-claim)
@@ -427,10 +426,8 @@
             (is (true? (:cancelled? result)) (pr-str result))))))))
 
 (defn- race-next-reservation! [ctx first-reservation]
-  ;; Exercise the native command admission contract. These deliveries do not
-  ;; impersonate HTTP dispatches; the actual original provider is held separately.
   (let [ordinal (inc (:provider-attempt-ordinal first-reservation))
-        invocation (reservations/invocation-identity
+        invocation (service-logic/invocation-identity
                     (:budget-tick-id first-reservation)
                     (:logical-action-identity first-reservation)
                     (:ownership-epoch first-reservation)
@@ -757,14 +754,6 @@
                 (deliver first-provider-entered true)
                 (deref release-crashed-provider 5000 nil)
                 (throw (ex-info "simulated process crash after reservation" {})))]
-          ;; The crash stub is installed on THIS thread and removed on this
-          ;; thread, only after the crashed run's future has returned. A
-          ;; `with-redefs` inside the future restored the root binding from
-          ;; the future's thread whenever it finished — which on a slow runner
-          ;; was AFTER the second `with-redefs` below had captured the stub as
-          ;; the value to restore, leaving the crash stub as the permanent root
-          ;; binding of `llm/predict` for every later namespace in the JVM
-          ;; (CI: 26 failures in deterministic-value-storage-e2e-test).
           (with-redefs [llm/predict crashed-provider]
             (let [original-run (future
                                  (sheet/execute ctx sheet-id {}
@@ -777,12 +766,8 @@
                                ctx sheet-id tick-id))))
               (h/stop-async-context ctx)
               (reset! first-context nil)
-              (todo/clear-llm-count! tick-id)
+              (service-logic/clear-llm-count! tick-id)
               (deliver release-crashed-provider true)
-              ;; The run's own outcome is irrelevant here (its context was
-              ;; stopped underneath it, so it may return a result or throw a
-              ;; closed-pool exception); what matters is that it has RETURNED
-              ;; before the stub is removed.
               (is (not= ::still-running
                         (try (deref original-run 20000 ::still-running)
                              (catch java.util.concurrent.ExecutionException e
@@ -1128,7 +1113,6 @@
                                               (contains? output-names :right) :right)]
                             (if (= :code output-name)
                               (do
-                                ;; Force both children down the cold path.
                                 (reset! (budget-cache-atom) {})
                                 {:outputs {:code code}})
                               (let [entry (swap! child-provider-entries inc)]

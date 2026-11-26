@@ -17,16 +17,14 @@
    than starts, and prints the amplification."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-;; The leaf's observable side effect — the analogue of a paid LLM call.
 (def leaf-runs (atom 0))
 (defn counting-leaf [_ctx]
   (swap! leaf-runs inc)
-  ;; a little work, to widen the window during which the pool is contended
   (Thread/sleep 5)
   {:flag "attempt"})
 
@@ -56,7 +54,7 @@
 
 (defn- fire! [ctx sheet-id]
   (let [tick-id (random-uuid)
-        p (runtime/register-completion! tick-id)]
+        p (service-logic/register-completion! tick-id)]
     (cp/process-command
      (assoc ctx :command {:command/id (random-uuid) :command/timestamp (time/now)
                           :command/name :sheet/tick-tree :sheet-id sheet-id
@@ -70,18 +68,15 @@
   (testing "each node completes at most once per start within its tick — extra
             completions are the missing per-[:tick :node] CAS that :parallel has"
     (reset! leaf-runs 0)
-    ;; warm the fn resolution once so concurrent executors don't race on require
     (counting-leaf nil) (reset! leaf-runs 0)
     (h/with-async-test-context [ctx]
       (let [sheet-id (build-failing-fallback! ctx)
-            ;; fire many executions at once so the shared poller pool is contended
             fired (mapv (fn [_] (fire! ctx sheet-id)) (range concurrent))
             _ (doseq [{:keys [promise]} fired] (deref promise 30000 ::timeout))
-            _ (Thread/sleep 500) ;; let any in-flight duplicate cascades settle
+            _ (Thread/sleep 500)
             completes (all-events ctx :sheet/node-execution-completed)
             starts (all-events ctx :sheet/node-execution-started)
             fails (all-events ctx :sheet/node-execution-completed)
-            ;; per (tick,node): starts vs completions
             comp-by (frequencies (map (juxt :tick-id :node-id) completes))
             start-by (frequencies (map (juxt :tick-id :node-id) starts))
             over (into {} (filter (fn [[k c]] (> c (get start-by k 0))) comp-by))
@@ -95,18 +90,6 @@
         (println "worst single node completions in one tick   :" (or worst 1))
         (println "completion statuses:" (frequencies (map :status completes)))
         (when (seq err) (println "leaf/exec errors   :" err))
-        ;; NEGATIVE RESULT (2026-07-20): this assertion PASSES. In isolation —
-        ;; single or 24x concurrent — every node completes exactly once per start;
-        ;; the sequence/fallback propagation is idempotent here despite the missing
-        ;; per-[:tick :node] CAS. So this test does NOT reproduce the duplicate-
-        ;; completion amplification seen live (282 completions in one tick). The
-        ;; missing CAS is a real latent asymmetry and the live symptom is real, but
-        ;; the causal link is UNPROVEN by this repro: reproducing it evidently needs
-        ;; conditions not present here — slow async LLM completions (~30s windows),
-        ;; the live multi-service poller under sustained load, or restart/lease-
-        ;; driven event re-processing. (Leaf side effects don't run under run-tests:
-        ;; the fn is in a test ns and the executor future can't resolve it — a test
-        ;; artifact, not the bug; it runs fine from a plain eval.)
         (is (empty? over)
             (str (count over) " (tick,node) pairs completed more than they started "
                  "(worst = " worst "x)"))))))

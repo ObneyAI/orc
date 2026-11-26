@@ -4,13 +4,13 @@
             [clojure.test :refer [deftest is testing]]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.todo-processors]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (def gated-calls (atom []))
 (def base-calls (atom []))
@@ -92,7 +92,7 @@
             config-event (some #(when (= :sheet/repl-researcher-config-set
                                          (:event/type %)) %)
                                (events ctx))
-            replayed-node (get (reduce rm/nodes* {} (events ctx)) (:id node))]
+            replayed-node (get (reduce service-logic/nodes* {} (events ctx)) (:id node))]
         (is (= builder-fqn (:tool-caller-fn node)))
         (is (= builder-fqn (:tool-caller-fn config-event)))
         (is (= builder-fqn (:tool-caller-fn replayed-node)))
@@ -164,7 +164,7 @@
                                 (= :research-draft (:key %)))
                           tick-events))
             (is (zero? @downstream-calls))
-            (let [replayed-tick (get (reduce rm/ticks* {} (events ctx)) tick-id)]
+            (let [replayed-tick (get (reduce service-logic/ticks* {} (events ctx)) tick-id)]
               (is (= :completed (:status replayed-tick)))
               (is (= :failure (:root-status replayed-tick))))))))))
 
@@ -222,7 +222,7 @@
                                                (:event/type %))
                                             (= :source-count (:key %))) %)
                                tick-events)
-                replayed-tick (get (reduce rm/ticks* {} (events ctx)) tick-id)]
+                replayed-tick (get (reduce service-logic/ticks* {} (events ctx)) tick-id)]
             (is (= :failure (:status result)) (pr-str result))
             (is (str/includes? (:error researcher-failure) "source-count"))
             (is (nil? (:value rejected)))
@@ -252,7 +252,7 @@
                                       :timeout-ms 30000)
                 tick-id (:trace-id result)
                 tick-blackboard (rm/get-tick-blackboard ctx tick-id)
-                resolved-values (value-log/resolve-values
+                resolved-values (rm/resolve-values
                                  (:event-store ctx) (:tenant-id ctx) tick-id
                                  tick-blackboard [:research-draft])
                 write-event (some #(when (and (= :sheet/execution-value-written
@@ -288,7 +288,7 @@
                 tick-id (:trace-id result)
                 tick-events (filter #(= tick-id (:tick-id %)) (events ctx))
                 tick-blackboard (rm/get-tick-blackboard ctx tick-id)
-                resolved-values (value-log/resolve-values
+                resolved-values (rm/resolve-values
                                  (:event-store ctx) (:tenant-id ctx) tick-id
                                  tick-blackboard [:summary :optional-note])]
             (is (= :success (:status result)) (pr-str result))
@@ -343,7 +343,7 @@
                 :writes [:summary :source-count]
                 :rlm {:recursive? true}))
             sheet-id (sheet/build-workflow! ctx definition)]
-        (with-redefs [executor/execute-repl-researcher
+        (with-redefs [service-processors/execute-repl-researcher
                       (fn [_node _blackboard _provider _context]
                         {:status :success
                          :outputs {:summary "grounded"}})]
@@ -360,7 +360,7 @@
                                                (:event/type %))
                                             (= :source-count (:key %))) %)
                                tick-events)
-                replayed-tick (get (reduce rm/ticks* {} (events ctx)) tick-id)]
+                replayed-tick (get (reduce service-logic/ticks* {} (events ctx)) tick-id)]
             (is (= :failure (:status result)) (pr-str result))
             (is (str/includes? (:error researcher-failure) "source-count"))
             (is (some? rejected))
@@ -510,9 +510,9 @@
                 iteration-records
                 (rm/get-researcher-iteration-records
                  ctx sheet-id tick-id researcher-id)
-                replayed-tick (get (reduce rm/ticks* {} (events ctx)) tick-id)
+                replayed-tick (get (reduce service-logic/ticks* {} (events ctx)) tick-id)
                 tick-blackboard (rm/get-tick-blackboard ctx tick-id)
-                replayed-values (value-log/resolve-values
+                replayed-values (rm/resolve-values
                                  (:event-store ctx) (:tenant-id ctx) tick-id
                                  tick-blackboard [:answer])]
             (is (= :success (:status result)) (pr-str result))
@@ -551,7 +551,7 @@
                          :usage {:prompt_tokens 2 :completion_tokens 1 :total_tokens 3}})]
           (let [result (sheet/execute ctx sheet-id {:question "research"}
                                       :timeout-ms 30000)
-                replayed-tick (get (reduce rm/ticks* {} (events ctx))
+                replayed-tick (get (reduce service-logic/ticks* {} (events ctx))
                                    (:trace-id result))]
             (is (= :failure (:status result)) (pr-str result))
             (is (= 3 @call-count))
@@ -586,7 +586,7 @@
                          :usage {:prompt_tokens 2 :completion_tokens 0 :total_tokens 2}})]
           (let [result (sheet/execute ctx sheet-id {:question "research"}
                                       :timeout-ms 30000)
-                replayed-tick (get (reduce rm/ticks* {} (events ctx))
+                replayed-tick (get (reduce service-logic/ticks* {} (events ctx))
                                    (:trace-id result))]
             (is (= :failure (:status result)) (pr-str result))
             (is (= 1 @call-count))

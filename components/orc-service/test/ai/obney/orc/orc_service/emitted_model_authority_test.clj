@@ -5,9 +5,7 @@
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.retained-prime-model-plan-test :as prime]
             [ai.obney.orc.orc-service.core.todo-processors :as processors]
-            [ai.obney.orc.orc-service.core.model-call-journal :as journal]
-            [ai.obney.orc.orc-service.core.researcher-effects :as effects]
-            [ai.obney.orc.orc-service.core.provider-call-reservations :as reservations]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def proofs (atom []))
 (defn events [ctx] (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx)})))
@@ -15,7 +13,7 @@
   (h/run-and-apply! ctx (prime/command :sheet/claim-researcher-effect
     (merge (select-keys parent [:sheet-id :tick-id :node-id])
       {:ownership-epoch epoch :iteration-index 0 :kind :generated-child
-       :logical-action-identity logical :attempt-identity (effects/attempt-identity logical epoch 0)
+       :logical-action-identity logical :attempt-identity (service-logic/attempt-identity logical epoch 0)
        :attempt-ordinal 0 :claimed-at (str (java.time.Instant/now))}))))
 (defn resumed-start! [ctx owner epoch staged]
   (let [before (count @staged)]
@@ -71,7 +69,7 @@
                 owner {:sheet-id sheet :tick-id child-tick :node-id node :exec-context {} :role :subcall
                        :node-start-id (get-in (first @child-staged) [:event :event/id])
                        :logical-action-id (pr-str [child-tick node {}])}
-                prepared (journal/prepare-emitted-call ctx owner {:model "fixture/original"} (constantly plan))
+                prepared (processors/prepare-emitted-call ctx owner {:model "fixture/original"} (constantly plan))
                 config (:configuration-id (first (filter #(and (= :sheet/model-plan-retained (:event/type %))
                                                           (= child-tick (:tick-id %)) (= node (:node-id %))) (events ctx))))]
             (is (some? config))
@@ -107,7 +105,7 @@
     (is (nil? (:cognitect.anomalies/category (claim! ctx current logical epoch))))
     current))
 (defn callbacks [ctx owner prepared]
-  (journal/callbacks ctx owner (:candidates prepared) :temporary-transport))
+  (processors/callbacks ctx owner (:candidates prepared) :temporary-transport))
 (defn started-request [prepared]
   (merge (select-keys (first (:candidates prepared)) [:provider])
          {:request-id (random-uuid) :requested-model "fixture/original" :candidate-index 0 :attempt-ordinal 0 :phase :started}))
@@ -129,7 +127,7 @@
                              [:candidates 0 :model] "fixture/contradictory")
               before (count (filter #(= :sheet/model-plan-retained (:event/type %)) (events ctx)))
               result (h/run-and-apply! ctx (prime/command :sheet/retain-model-plan
-                       (merge current {:configuration-id (journal/retained-configuration-id other)
+                       (merge current {:configuration-id (service-logic/retained-configuration-id other)
                                        :plan-scope-id "competing-plan-after-authority" :plan other})))]
           (is (= :cognitect.anomalies/conflict (:cognitect.anomalies/category result)))
           (is (= before (count (filter #(= :sheet/model-plan-retained (:event/type %)) (events ctx))))))
@@ -167,8 +165,6 @@
                                         (when (contains? (:types query) :sheet/emitted-model-work-authorized)
                                           (deliver read-seen true))
                                         (actual-read store query))]
-                   ;; The binding captures with-redefs only while the worker is
-                   ;; observed pending and until its eventual body exits.
                    (let [work (future ((:fresh-authority! cb) (+ (System/currentTimeMillis) 5000)))]
                      (is (= true (deref read-seen 2000 :timeout)))
                      (is (not (future-done? work)))
@@ -187,7 +183,7 @@
                   :iteration-index 0 :ownership-epoch epoch :provider-attempt-ordinal ordinal
                   :logical-action-identity "one-original-provider-task" :reserved-at (str (java.time.Instant/now))
                   :model-configuration-id (:configuration-id owner) :model-logical-action-id (:logical-action-id owner)})]
-    (assoc r :invocation-identity (reservations/reservation-identity r))))
+    (assoc r :invocation-identity (service-logic/reservation-identity r))))
 (defn reserve! [ctx r] (h/run-and-apply! ctx (prime/command :sheet/reserve-provider-call r)))
 
 (deftest budget-and-journal-use-the-same-exact-binding-and-original-cap

@@ -28,11 +28,12 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [litellm.router]
             [ai.obney.orc.llm.interface]
             [clojure.pprint :as pp]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -71,7 +72,7 @@
         (.delete f)))))
 
 (defn- build-sheet! [ctx]
-  (executor/setup-providers!)
+  (service-logic/setup-providers!)
   (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "R-1 Recursive Live Verify"))
         sheet-id (-> sheet-result :command-result/events first :sheet-id)]
     (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :document :string))
@@ -93,7 +94,6 @@
                               []
                               :model "google/gemini-2.5-flash"
                               :max-iterations 6
-                              ;; R-1 opt-in flag
                               :rlm {:recursive? true :debug? true}
                               :timeout-ms 120000))
       {:sheet-id sheet-id :node-id node-id})))
@@ -116,11 +116,8 @@
 (defn run! []
   (let [ctx (create-context)]
     (try
-      (executor/setup-providers!)
-      (let [;; Call execute-repl-researcher-rlm DIRECTLY (not via sheet/execute) so
-            ;; the iterations history is visible. Same execution path the production
-            ;; processor uses — we're just skipping the Grain tick-tree wrapper to
-            ;; surface debug info.
+      (service-logic/setup-providers!)
+      (let [
             node {:type :repl-researcher
                   :instruction (str "Document available: :document (a short article, ~450 chars)\n\n"
                                     "Task: Two-step extraction.\n"
@@ -143,13 +140,10 @@
             _ (println "Mode :recursive?:" (get-in node [:rlm :recursive?]))
 
             t0 (System/currentTimeMillis)
-            ;; Intercept llm/predict to log raw LLM output for debugging.
-            ;; Capture the FUNCTION VALUE before with-redefs (not a var ref —
-            ;; that would recurse infinitely once the redef takes effect).
-            real-completion-fn @#'litellm.router/completion
-            real-predict-fn @#'ai.obney.orc.llm.interface/predict
+            real-completion-fn litellm.router/completion
+            real-predict-fn ai.obney.orc.llm.interface/predict
             call-num (atom 0)
-            result (with-redefs [;; Capture raw LLM response text at the router level
+            result (with-redefs [
                                  litellm.router/completion
                                  (fn [provider-config req]
                                    (let [r (real-completion-fn provider-config req)
@@ -174,7 +168,7 @@
                                        (println "\n========== PHASE 1 CALL #" n " ==========")
                                        (println "Task instruction:" (subs (str (:task inputs)) 0 (min 200 (count (str (:task inputs)))))))
                                      r))]
-                     (executor/execute-repl-researcher-rlm node blackboard :openrouter ctx))
+                     (service-processors/execute-repl-researcher-rlm node blackboard :openrouter ctx))
             elapsed (- (System/currentTimeMillis) t0)
 
             _ (println "\nElapsed wall-time:" elapsed "ms")
@@ -185,8 +179,6 @@
             _ (println "Cumulative thinking-ms:" (:cumulative-thinking-ms result))
             _ (println "Cumulative tree-ms:" (:cumulative-tree-ms result))
 
-            ;; Events are all tagged under the child Phase 2 tick. Read everything
-            ;; from the tenant scope.
             events (into [] (es/read (:event-store ctx)
                               {:tenant-id (:tenant-id ctx)}))
             _ (println "\n--- Event store evidence ---")
@@ -196,9 +188,6 @@
             _ (println "Rlm-tree-node-completed events:"
                        (count (filter #(= :sheet/rlm-tree-node-completed (:event/type %)) events)))
 
-            ;; Iteration history is buried inside the result — surface it so we
-            ;; can see EXACTLY what the model wrote each iteration + what came
-            ;; back from SCI execution.
             iterations (or (:iterations result) [])
             _ (println "\n--- Iteration history (" (count iterations) "iterations) ---")
             _ (doseq [[i it] (map-indexed vector iterations)]
@@ -219,7 +208,6 @@
                           :result-error (:error result)
                           :elapsed-wall-ms elapsed
                           :event-types (frequencies (map :event/type events))
-                          ;; FULL iteration history for debugging
                           :iterations iterations
                           :cumulative-thinking-ms (:cumulative-thinking-ms result)
                           :cumulative-tree-ms (:cumulative-tree-ms result)
@@ -229,6 +217,6 @@
       (finally
         (stop-context ctx)))))
 
-(comment
+#_(do
   (run!)
   )

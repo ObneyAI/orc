@@ -74,9 +74,6 @@
                          :instruction "Grade." :reads [:evidence :rubric]
                          :bands-from :rubric :options-from :rubric :writes [:band]))))))))
 
-;; ---------------------------------------------------------------------------
-;; A conversational model: the model returns just the band
-;; ---------------------------------------------------------------------------
 
 (defn- fake-predict [answers calls]
   (let [remaining (atom answers)]
@@ -163,9 +160,6 @@
           (is (not (str/includes? (:instructions (:module call-a)) "Fast")))
           (is (str/includes? (:instructions (:module call-b)) "4: Instant")))))))
 
-;; ---------------------------------------------------------------------------
-;; A native decision model: Score
-;; ---------------------------------------------------------------------------
 
 (defn- score-response [score probabilities & {:keys [legend confidence]
                                               :or {legend {"0" "Unsupported facts"

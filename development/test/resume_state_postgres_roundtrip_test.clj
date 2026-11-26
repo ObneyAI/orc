@@ -13,16 +13,6 @@
             [ai.obney.grain.event-store-postgres-v3.interface]
             [ai.obney.grain.time.interface :as time]))
 
-;; =============================================================================
-;; Real Postgres round trip — the actual store-specific mechanism
-;; =============================================================================
-;;
-;; Uses the same throwaway dev container as the rs7-traffic-sweep bench
-;; harness (docker container "orc-rs7-postgres", 127.0.0.1:5435, user orc, no
-;; password — see development/src/rs7_traffic_sweep.clj's
-;; rs7-postgres-conn-defaults). A fresh, uniquely-named database is created
-;; before this ns's tests and dropped afterward; nothing else in the
-;; container is touched.
 
 (def ^:private pg-conn-defaults
   {:server-name "127.0.0.1"

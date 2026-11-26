@@ -28,13 +28,15 @@
             [ai.obney.orc.evaluation.interface.schemas]
             [ai.obney.orc.evaluation.core.judge-runtime]
             [ai.obney.orc.ontology.interface :as ontology]
-            [ai.obney.orc.ontology.core.consolidator]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [com.brunobonacci.mulog :as u]
             [runner]
-            [legal-issue-detection :as task]))
+            [legal-issue-detection :as task]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (def tree-class-id
   "Stable seed UUID for legal-issue-detection."
@@ -71,9 +73,8 @@
   (println "============================================================")
   (u/start-publisher! {:type :console})
   (runner/start!)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))]
+  (let [ctx (runner/current-context)]
     (try
-      ;; Living Description on (turns on Gap-1+Gap-3+Gap-5 judges)
       (cp/process-command
         (assoc ctx :command
                {:command/name :ontology/set-living-description-enabled
@@ -87,7 +88,6 @@
         (println "  strengths:" (:strengths-count bootstrap)
                  "weaknesses:" (:weaknesses-count bootstrap))
 
-        ;; Cycle 1
         (println "\n--- Cycle-1 runs ---")
         (dotimes [i runs-per-cycle]
           (println "  run" (inc i))
@@ -101,7 +101,6 @@
                    "strengths:" (:strengths-count c1)
                    "weaknesses:" (:weaknesses-count c1)))
 
-        ;; Cycle 2
         (println "\n--- Cycle-2 runs ---")
         (dotimes [i runs-per-cycle]
           (println "  run" (inc i))
@@ -161,6 +160,6 @@
       (finally
         (runner/stop!)))))
 
-(comment
+#_(do
   (require '[gap6-live-verify :as v])
   (v/verify! {:runs-per-cycle 2}))

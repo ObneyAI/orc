@@ -8,15 +8,13 @@
             [ai.obney.orc.mcp-sheet-builder.core.relationships :as relationships]
             [ai.obney.orc.mcp-sheet-builder.core.patterns :as patterns]
             [ai.obney.orc.mcp-sheet-builder.core.generator :as generator]
+            [ai.obney.orc.mcp-sheet-builder.core.exporter :as exporter]
             [ai.obney.orc.mcp-sheet-builder.core.validator :as validator]
             [ai.obney.orc.mcp-sheet-builder.core.executor-generator :as executor-gen]
             [ai.obney.orc.mcp-sheet-builder.core.executor-runtime :as executor-runtime]
             [ai.obney.orc.orc-service.interface :as sheet]
             [clojure.string :as str]))
 
-;; ============================================================================
-;; Analysis Orchestration (used by builders)
-;; ============================================================================
 
 (defn analyze-tools
   "Analyze MCP tools: list-tools -> analyze -> detect-relationships -> select-patterns.
@@ -96,20 +94,17 @@
   ([ctx mcp-opts]
    (build-sheet-from-mcp! ctx mcp-opts {}))
   ([ctx mcp-opts opts]
-   (let [;; Connect and analyze
+   (let [
          mcp-conn (mcp-client/connect-legacy mcp-opts)
          analysis (analyze-tools mcp-conn opts)
 
-         ;; Select pattern
          pattern-key (or (:pattern opts)
                          (-> analysis :patterns first :pattern)
                          :sequential-pipeline)
 
-         ;; Generate workflow data structure
          sheet-data (generator/generate-sheet-data analysis {:pattern pattern-key})
          workflow-data (:workflow-data sheet-data)
 
-         ;; Build the sheet
          sheet-id (sheet/build-workflow! ctx workflow-data)]
 
      {:sheet-id sheet-id
@@ -145,12 +140,11 @@
   ([ctx mcp-opts instruction]
    (build-repl-researcher-sheet! ctx mcp-opts instruction {}))
   ([ctx mcp-opts instruction opts]
-   (let [;; Connect and get tools
+   (let [
          mcp-conn (mcp-client/connect-legacy mcp-opts)
          tools (mcp-client/list-tools mcp-conn)
          tool-names (mapv :name tools)
 
-         ;; Build workflow data
          workflow-name (or (:name opts) "mcp-researcher")
          workflow-data {:workflow-name workflow-name
                         :blackboard-schema {:question [:string {:description "The question to research"}]
@@ -164,7 +158,6 @@
                                     :mcp-tools tool-names
                                     :max-iterations (or (:max-iterations opts) 5)}}
 
-         ;; Build the sheet
          sheet-id (sheet/build-workflow! ctx workflow-data)]
 
      {:sheet-id sheet-id
@@ -199,18 +192,16 @@
   ([ctx mcp-opts]
    (build-sheet-with-executors! ctx mcp-opts {}))
   ([ctx mcp-opts opts]
-   (let [;; Connect and analyze
+   (let [
          mcp-conn (mcp-client/connect-legacy mcp-opts)
          analysis (analyze-tools mcp-conn opts)
          tools (:tools analysis)
 
-         ;; Generate executors for all tools
          executor-defs (executor-gen/build-executor-definitions
                         (map (fn [t] {:name (:name t)
                                       :inputSchema (:input-schema t)})
                              tools))
 
-         ;; Persist executors to event store (if command dispatcher available)
          dispatch-fn (:command-dispatcher ctx)
          _ (when dispatch-fn
              (dispatch-fn
@@ -219,7 +210,6 @@
                                                  :namespace-requires :checksum])
                                 executor-defs)}))
 
-         ;; Load executors into runtime
          load-results (for [exec-def executor-defs]
                         (executor-runtime/load-executor!
                          (:tool-id exec-def)
@@ -228,16 +218,13 @@
                          (:namespace-requires exec-def)
                          :checksum (:checksum exec-def)))
 
-         ;; Select pattern and generate workflow
          pattern-key (or (:pattern opts)
                          (-> analysis :patterns first :pattern)
                          :sequential-pipeline)
 
-         ;; Generate workflow data
          sheet-data (generator/generate-sheet-data analysis {:pattern pattern-key})
          workflow-data (:workflow-data sheet-data)
 
-         ;; Build the sheet
          sheet-id (sheet/build-workflow! ctx workflow-data)]
 
      {:sheet-id sheet-id
@@ -246,6 +233,34 @@
       :executors (mapv #(select-keys % [:tool-id :tool-name :fn-reference]) executor-defs)
       :load-results (vec load-results)
       :mcp-connection mcp-conn})))
+
+(defn build-and-export-sheet!
+  "Build a sheet from MCP tools and export it to a file.
+
+   Convenience function combining build-sheet-from-mcp! + export.
+   This is the recommended way to create reusable MCP-powered sheets.
+
+   Args:
+     ctx - Context with :event-store
+     mcp-opts - MCP connection options {:preset :tavily} or {:type :streamable-http ...}
+     export-path - File path to save the sheet
+
+   Options:
+     :format - :dsl (default) or :edn
+     :pattern - Specific pattern to use
+     :pattern-hint - Description for pattern selection
+
+   Returns:
+   {:sheet-id uuid
+    :workflow-name string
+    :pattern keyword
+    :tools [...]
+    :exported-to string   ;; File path}"
+  [ctx mcp-opts export-path & {:keys [format] :or {format :dsl} :as opts}]
+  (let [build-opts (dissoc opts :format)
+        result (build-sheet-from-mcp! ctx mcp-opts build-opts)]
+    (exporter/export-generated-sheet! ctx (:sheet-id result) export-path :format format)
+    (assoc result :exported-to export-path)))
 
 (defn build-and-export-portable!
   "Build from MCP, persist, AND export as portable .clj files.
@@ -279,33 +294,25 @@
   ([ctx mcp-opts export-dir]
    (build-and-export-portable! ctx mcp-opts export-dir {}))
   ([ctx mcp-opts export-dir opts]
-   (let [;; Import exporter lazily to avoid circular dep
-         exporter-ns (requiring-resolve 'ai.obney.orc.mcp-sheet-builder.core.exporter/export-portable-sheet!)
-
-         ;; Build with executors
-         result (build-sheet-with-executors! ctx mcp-opts opts)
+   (let [result (build-sheet-with-executors! ctx mcp-opts opts)
          {:keys [sheet-id workflow-name pattern executors mcp-connection]} result
 
-         ;; Get workflow data for export
          sheet-data (generator/generate-sheet-data
                      (analyze-tools mcp-connection opts)
                      {:pattern pattern})
          workflow-data (:workflow-data sheet-data)
 
-         ;; Derive name from workflow or option
          base-name (or (:name opts)
                        (-> workflow-name
                            (str/replace #"[^a-zA-Z0-9-]" "-")
                            (str/replace #"-+" "-")))
 
-         ;; Generate executor defs with input schemas
          tools (mcp-client/list-tools mcp-connection)
          executor-defs (for [t tools]
                          {:tool-name (:name t)
                           :input-schema (:inputSchema t)})
 
-         ;; Export portable files
-         export-result (exporter-ns
+         export-result (exporter/export-portable-sheet!
                         workflow-data
                         executor-defs
                         export-dir

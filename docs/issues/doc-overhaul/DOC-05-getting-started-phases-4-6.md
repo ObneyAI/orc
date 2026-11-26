@@ -6,8 +6,8 @@ Complete `docs/GETTING-STARTED.md` with Phases 4–6: (4) GEPA instruction optim
 
 1. `docs/GETTING-STARTED.md` current state (DOC-04 output — must exist)
 2. `docs/COMPONENT-MAP.md` (DOC-01 output)
-3. `components/gepa/src/ai/obney/orc/gepa/interface.clj`
-4. `components/gepa/src/ai/obney/orc/gepa/core/metrics.clj`
+3. `components/gepa-service/src/ai/obney/orc/gepa/interface.clj`
+4. `components/gepa-service/src/ai/obney/orc/gepa/core/logic.clj`
 5. `components/ontology/src/ai/obney/orc/ontology/interface.clj` — `seed-baseline-corpus!`
 6. `components/ontology/src/ai/obney/orc/ontology/core/embedding.clj`
 7. `components/orc-service/src/ai/obney/orc/orc_service/core/executor.clj` line 2176
@@ -72,7 +72,7 @@ Phases 1–3 written by DOC-04. Any component source files.
 
 ## Live QA the orchestrator runs
 
-Run Phase 4 GEPA example — confirm `optimize!` completes. Read `components/gepa/deps.edn` — confirm zero `ontology` dep. Read `executor.clj:2176` (`recursive-mode?` computation) — confirm matches Phase 6 description verbatim. Confirm ColBERT is absent and Phase 5 still works. Confirm 0 orphan JVMs.
+Run Phase 4 GEPA example — confirm `optimize!` completes. Read `components/gepa-service/deps.edn` — confirm zero `ontology` dep. Read `executor.clj:2176` (`recursive-mode?` computation) — confirm matches Phase 6 description verbatim. Confirm ColBERT is absent and Phase 5 still works. Confirm 0 orphan JVMs.
 
 ## Blocked by
 

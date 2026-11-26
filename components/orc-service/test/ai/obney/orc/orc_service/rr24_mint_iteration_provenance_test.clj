@@ -14,7 +14,6 @@
    loaded or the reindex dispatch skips itself)."
   (:require [clojure.test :refer [deftest is testing]]
             [malli.core :as m]
-            [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.interface.schemas :as orc-schemas]
             [ai.obney.orc.orc-service.core.commands]
             [ai.obney.orc.ontology.interface :as ontology]
@@ -24,7 +23,7 @@
             [ai.obney.orc.ontology.core.todo-processors]
             [ai.obney.orc.colbert.interface]
             [ai.obney.orc.colbert.interface.schemas]
-            [ai.obney.orc.colbert.core.operations :as colbert-ops]
+            [ai.obney.orc.colbert.core.logic :as colbert-ops]
             [ai.obney.grain.schema-util.interface :as schema-util]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -32,7 +31,9 @@
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
-            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]))
+            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (defn- create-ctx [processor-names]
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -75,7 +76,7 @@
   "Run `(mint-behavior! name body)` inside a real sandbox built with the landed
    RR-7 durable-effect options. `claims` records every claim the sandbox makes."
   [ctx {:keys [sheet-id tick-id node-id iteration attempt epoch code-hash claims name]}]
-  (let [rlm-ctx (rlm-sandbox/build-rlm-context
+  (let [rlm-ctx (service-processors/build-rlm-context
                  {:provider :openrouter :blackboard {} :declared-writes [:result]
                   :event-store (:event-store ctx) :tenant-id (:tenant-id ctx) :cache (:cache ctx)
                   :command-registry (:command-registry ctx)
@@ -89,14 +90,7 @@
                   :complete-researcher-effect! (fn [_outcome] {})
                   :completed-researcher-effects (atom {})})
         code (str "(mint-behavior! " (pr-str name) " " (pr-str body) ")")]
-    (rlm-sandbox/execute-rlm-code rlm-ctx code)))
-
-(defn- provenance
-  "RED-first seam: `ontology/behavior-mint-provenance` does not exist until RR-24 lands."
-  [ctx target-id]
-  (if-let [f (resolve 'ai.obney.orc.ontology.interface/behavior-mint-provenance)]
-    (f ctx target-id)
-    {:missing-fn 'ai.obney.orc.ontology.interface/behavior-mint-provenance}))
+    (service-logic/execute-rlm-code rlm-ctx code)))
 
 (defn- minted-events [ctx]
   (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx) :types #{:ontology/behavioral-subtree-minted}})))
@@ -126,7 +120,7 @@
       (mint-via-sandbox! ctx {:sheet-id (random-uuid) :tick-id (random-uuid) :node-id (random-uuid)
                               :iteration 5 :attempt 3 :epoch 2 :code-hash "h-late" :claims claims :name "rr24-fallback"})
       (let [by-name (into {} (map (juxt :name identity)) (minted-events ctx))
-            prov (fn [n] (provenance ctx (:target-id (get by-name n))))]
+            prov (fn [n] (ontology/behavior-mint-provenance ctx (:target-id (get by-name n))))]
         (is (= {:iteration-index 0 :attempt-ordinal 0 :ownership-epoch 1 :first-attempt? true}
                (prov "rr24-first")))
         (is (= {:iteration-index 5 :attempt-ordinal 3 :ownership-epoch 2 :first-attempt? false}
@@ -164,7 +158,7 @@
           parent (random-uuid)
           expected (java.util.UUID/nameUUIDFromBytes (.getBytes (str "mint:rr24-stable:" parent) "UTF-8"))]
       (doseq [[iteration attempt epoch] [[1 0 1] [1 1 1] [1 0 2]]]
-        (let [rlm-ctx (rlm-sandbox/build-rlm-context
+        (let [rlm-ctx (service-processors/build-rlm-context
                        {:provider :openrouter :blackboard {} :declared-writes [:result]
                         :event-store (:event-store ctx) :tenant-id (:tenant-id ctx) :cache (:cache ctx)
                         :command-registry (:command-registry ctx)
@@ -175,7 +169,7 @@
                         :claim-researcher-effect! (fn [claim] (swap! claims conj claim) {})
                   :complete-researcher-effect! (fn [_outcome] {})
                         :completed-researcher-effects (atom {})})]
-          (rlm-sandbox/execute-rlm-code rlm-ctx (str "(mint-behavior! \"rr24-stable\" " (pr-str body) " :parent " (pr-str (str parent)) ")"))))
+          (service-logic/execute-rlm-code rlm-ctx (str "(mint-behavior! \"rr24-stable\" " (pr-str body) " :parent " (pr-str (str parent)) ")"))))
       (is (every? #(= expected (:target-id %)) (minted-events ctx)) "every attempt resolves to the one derived concept id")
       (is (= 1 (count (distinct (map :target-id (minted-events ctx))))))
       (is (some? (ontology/get-description ctx :tree-fingerprint expected))))))

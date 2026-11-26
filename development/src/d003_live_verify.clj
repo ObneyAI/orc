@@ -35,10 +35,10 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.llm.interface :as llm]
             [clojure.pprint :as pp]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Context bringup
@@ -80,14 +80,6 @@
         (doseq [child (.listFiles f)] (.delete child))
         (.delete f)))))
 
-;; =============================================================================
-;; The deterministic Phase 1 tree (returned by mocked predict on first call)
-;;
-;; A :map-each over :chunks → :results, child is an :llm node that summarizes
-;; each chunk. Final :llm consolidates into :summary. With 6 chunks @ ~1s each
-;; (serial), Phase 2 takes ~6-8 seconds — long enough for an 8s total budget
-;; (with Phase 1 mocked-instant) to cancel partway through.
-;; =============================================================================
 
 (def ^:private phase1-emit-tree-code
   "(emit-tree!
@@ -107,7 +99,7 @@
 ;; =============================================================================
 
 (defn- build-sheet! [ctx timeout-ms]
-  (executor/setup-providers!)
+  (service-logic/setup-providers!)
   (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "D-003 Live Verify"))
         sheet-id (-> sheet-result :command-result/events first :sheet-id)]
     (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :chunks [:vector :string]))
@@ -140,7 +132,6 @@
       path)))
 
 (defn- chunks-data []
-  ;; 6 small chunks — Phase 2 will run 6 real LLM calls
   ["Cats are carnivorous mammals popular as pets."
    "Dogs descended from wolves and are loyal companions."
    "Birds have feathers and most can fly."
@@ -167,8 +158,6 @@
              _ (println "Configured :timeout-ms:" timeout-ms)
              _ (println "Chunks:" (count (chunks-data)))
 
-             ;; Mock predict: 1st call (Phase 1) returns emit-tree! code instantly,
-             ;; all subsequent calls (Phase 2 sub-LLMs) delegate to the real provider.
              t0 (System/currentTimeMillis)
              result (with-redefs [llm/predict
                                   (fn [provider module inputs opts]
@@ -177,13 +166,8 @@
                                         (do (println "[predict mock] Phase 1 — returning emit-tree! code")
                                             {:outputs {:code phase1-emit-tree-code}
                                              :usage {:prompt_tokens 100 :completion_tokens 80 :total_tokens 180}})
-                                        ;; Phase 2 sub-LLM — REAL provider
                                         (real-predict provider module inputs opts))))]
                       (sheet/execute ctx sheet-id {:chunks (chunks-data)}
-                        ;; Outer wall is GENEROUS — let D-003's internal budget
-                        ;; cancellation be the actual gate. We must avoid the
-                        ;; outer sheet/execute deref timing out before D-003
-                        ;; finishes its cancel + drain.
                         :timeout-ms 60000))
              elapsed (- (System/currentTimeMillis) t0)
 
@@ -222,9 +206,7 @@
        (finally
          (stop-context ctx))))))
 
-(comment
-  ;; Tight budget — should TIMEOUT + CANCEL:
+#_(do
   (run! {:tight-budget? true})
-  ;; Generous budget — should SUCCEED:
   (run! {:tight-budget? false})
   )

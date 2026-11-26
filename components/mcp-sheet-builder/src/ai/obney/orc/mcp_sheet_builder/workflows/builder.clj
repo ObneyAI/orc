@@ -15,9 +15,6 @@
             [ai.obney.orc.mcp-sheet-builder.core.generator :as generator]
             [ai.obney.orc.mcp-sheet-builder.core.validator :as validator]))
 
-;; ============================================================================
-;; Workflow Executors (for ORC code nodes)
-;; ============================================================================
 
 (defn fetch-tools-executor
   "Executor that fetches tools from an MCP connection."
@@ -130,13 +127,11 @@
                             [:warnings [:vector :string]]]})
 
      (sheet/sequence "build-sheet"
-       ;; Phase 1: Discover
        (sheet/code "fetch-tools"
          :fn "ai.obney.orc.mcp-sheet-builder.workflows.builder/fetch-tools-executor"
          :reads [:mcp-opts]
          :writes [:raw-tools])
 
-       ;; Phase 2: Analyze (parallel)
        (sheet/sequence "analyze"
          (sheet/code "analyze-capabilities"
            :fn "ai.obney.orc.mcp-sheet-builder.workflows.builder/analyze-capabilities-executor"
@@ -148,13 +143,11 @@
            :reads [:analyzed-tools]
            :writes [:tool-relationships]))
 
-       ;; Phase 3: Match patterns
        (sheet/code "match-patterns"
          :fn "ai.obney.orc.mcp-sheet-builder.workflows.builder/match-patterns-executor"
          :reads [:analyzed-tools :tool-relationships]
          :writes [:applicable-patterns])
 
-       ;; Phase 4: Select best pattern (LLM-assisted)
        (sheet/llm "select-pattern"
          :model "google/gemini-2.5-flash"
          :instruction "Given these analyzed MCP tools and applicable patterns,
@@ -169,50 +162,40 @@
          :reads [:analyzed-tools :applicable-patterns]
          :writes [:selected-pattern])
 
-       ;; Phase 5: Generate
        (sheet/code "generate-sheet"
          :fn "ai.obney.orc.mcp-sheet-builder.workflows.builder/generate-sheet-executor"
          :reads [:analyzed-tools :tool-relationships :selected-pattern]
          :writes [:generated-dsl-code :generated-workflow :generated-blackboard])
 
-       ;; Phase 6: Validate
        (sheet/code "validate-sheet"
          :fn "ai.obney.orc.mcp-sheet-builder.workflows.builder/validate-sheet-executor"
          :reads [:generated-workflow :generated-blackboard]
          :writes [:validation-result]))))
 
-;; ============================================================================
-;; Direct Execution (without ORC)
-;; ============================================================================
 
 (defn build-sheet-directly
   "Execute the sheet building pipeline directly (without ORC runtime).
 
    Useful for testing and exploration."
   [{:keys [mcp-opts problem]}]
-  (let [;; Phase 1: Discover
+  (let [
         mcp-conn (mcp-client/connect-legacy mcp-opts)
         raw-tools (mcp-client/list-tools mcp-conn)
 
-        ;; Phase 2: Analyze
         analyzed-tools (analyzer/analyze-tools raw-tools)
         tool-relationships (relationships/detect-relationships analyzed-tools)
 
-        ;; Phase 3: Match patterns
         applicable-patterns (patterns/select-patterns analyzed-tools tool-relationships)
 
-        ;; Phase 4: Select (simple heuristic if no LLM)
         selected-pattern (if problem
                            (patterns/pattern-for-problem analyzed-tools tool-relationships problem)
                            (first applicable-patterns))
 
-        ;; Phase 5: Generate
         analysis {:tools analyzed-tools
                   :relationships tool-relationships
                   :patterns applicable-patterns}
         sheet (generator/generate-sheet analysis {:pattern (:pattern selected-pattern)})
 
-        ;; Phase 6: Validate
         validation (validator/validate-sheet sheet)]
 
     {:mcp-connection mcp-conn
@@ -223,13 +206,3 @@
      :selected-pattern selected-pattern
      :sheet sheet
      :validation validation}))
-
-(comment
-  ;; Example: Build a sheet from Langfuse tools
-  (def result
-    (build-sheet-directly
-     {:mcp-opts {:preset :langfuse}
-      :problem "Research Langfuse documentation"}))
-
-  (:sheet result)
-  (:validation result))

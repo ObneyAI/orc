@@ -21,12 +21,11 @@
    rather than a missing one, and silently. Both the in-memory and the SQL path
    have to reject that."
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
-            ;; Registers the :sheet/* event schemas the store validates against.
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-sqlite-v3.interface]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
 ;; =============================================================================
 ;; Store lifecycle
@@ -48,9 +47,6 @@
   `(let [[~store-sym db-file#] (sqlite-store!)]
      (try ~@body (finally (stop-store! ~store-sym db-file#)))))
 
-;; =============================================================================
-;; Event synthesis — the exact shapes the engine emits
-;; =============================================================================
 
 (defn- tick-started
   "Mirrors commands.clj tick-tree: structure plus canonical seed references."
@@ -156,13 +152,12 @@
         (let [stored (into [] (es/read store {:tenant-id tenant-id
                                               :tags #{[:tick tick-id]}}))
               expected (oracle stored tick-id)
-              hydrated (value-log/hydrate-blackboard
+              hydrated (service-read-models/hydrate-blackboard
                         store tenant-id tick-id (metadata-of expected) nil)]
           (is (= 7 (count stored)) "all events must be readable back")
           (doseq [[k e] expected]
             (is (= (:value e) (:value (get hydrated k)))
                 (str "key " k " resolved to the wrong value on SQLite")))
-          ;; Named explicitly so a regression in any single route is legible.
           (is (= "overwritten" (:value (get hydrated :doc)))
               "a seeded key that was later written resolves to the WRITE")
           (is (= "second" (:value (get hydrated :out)))
@@ -172,23 +167,17 @@
 
 (deftest as-of-pointer-rejects-mismatched-event-on-sqlite
   (testing "a pointer from another tick resolves to nothing, not to a neighbour"
-    ;; The SQL path is where this bites hardest: `e.id <= ? ORDER BY e.id DESC
-    ;; LIMIT 1` combined with a tag filter will happily return an EARLIER row
-    ;; when the pointed-at row is filtered out. Without the identity guard the
-    ;; caller gets a plausible, wrong value.
     (with-sqlite-store [store]
       (let [tenant-id (random-uuid)
             sheet-id (random-uuid)
             tick-a (random-uuid)
             tick-b (random-uuid)
             node (random-uuid)]
-        ;; tick A writes :k twice, so there are earlier rows for :as-of to
-        ;; fall back onto; tick B's write is the pointer we will misuse.
         (append! store tenant-id [(value-written sheet-id tick-a node :k "a1")
                                   (value-written sheet-id tick-a node :k "a2")])
         (let [b-event (value-written sheet-id tick-b node :k "b1")]
           (append! store tenant-id [b-event])
-          (let [resolved (value-log/values-by-event-id
+          (let [resolved (service-read-models/values-by-event-id
                           store tenant-id tick-a [(:event/id b-event)])]
             (is (empty? resolved)
                 (str "pointer from tick B must not resolve within tick A; got "
@@ -198,16 +187,6 @@
 
 (deftest resolution-survives-append-order-differing-from-id-order
   (testing "a pointer resolves even when the store's append order is not id order"
-    ;; THE regression this pins. The obvious way to fetch one event by id is
-    ;; {:as-of id :reverse? true :limit 1} — "the last matching event at or
-    ;; before this id". But "last" means last in APPEND order, and concurrent
-    ;; appends commit out of id order routinely. When they do, that query
-    ;; returns a NEIGHBOURING write.
-    ;;
-    ;; Constructed deterministically here: two events are created so that
-    ;; a-id < b-id, then appended in the opposite order. A seek for b would
-    ;; reverse the append order [b a] to [a b] and take a — the wrong event.
-    ;; values-by-event-id must return b's value regardless.
     (with-sqlite-store [store]
       (let [tenant-id (random-uuid)
             sheet-id (random-uuid)
@@ -217,15 +196,14 @@
             ev-b (value-written sheet-id tick-id node :k "value-b")]
         (is (not= (value-id ev-a) (value-id ev-b))
             "fixture assumes a was created before b")
-        ;; Append in reverse: storage order [b a], id order [a b].
         (append! store tenant-id [ev-b])
         (append! store tenant-id [ev-a])
         (is (= {(value-id ev-b) "value-b"}
-               (value-log/values-by-event-id store tenant-id tick-id
+               (service-read-models/values-by-event-id store tenant-id tick-id
                                              [(value-id ev-b)]))
             "must resolve the requested event, not its append-order neighbour")
         (is (= {(value-id ev-a) "value-a"}
-               (value-log/values-by-event-id store tenant-id tick-id
+               (service-read-models/values-by-event-id store tenant-id tick-id
                                              [(value-id ev-a)])))))))
 
 (deftest resolution-scales-to-many-pointers-on-sqlite
@@ -241,9 +219,9 @@
                          (range n))]
         (append! store tenant-id events)
         (let [ids (mapv value-id events)
-              all-at-once (value-log/values-by-event-id store tenant-id tick-id ids)
+              all-at-once (service-read-models/values-by-event-id store tenant-id tick-id ids)
               one-at-a-time (reduce (fn [acc id]
-                                      (merge acc (value-log/values-by-event-id
+                                      (merge acc (service-read-models/values-by-event-id
                                                   store tenant-id tick-id [id])))
                                     {} ids)]
           (is (= n (count all-at-once)) "must resolve every pointer")
@@ -262,6 +240,6 @@
                   {:from-snapshot {:key :from-snapshot :schema :string :version 1}
                    :from-inputs {:key :from-inputs :schema :string :version 1}}
                   {:from-snapshot "snap" :from-inputs "inp"}))
-        (let [seeds (value-log/tick-seeds store tenant-id tick-id)]
+        (let [seeds (service-read-models/tick-seeds store tenant-id tick-id)]
           (is (= "snap" (:from-snapshot seeds)))
           (is (= "inp" (:from-inputs seeds))))))))

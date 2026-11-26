@@ -1,10 +1,11 @@
 (ns ai.obney.orc.orc-service.gepa-metric-recovery-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [ai.obney.orc.gepa.core.commands]
+            [ai.obney.orc.gepa.core.read-models :as rm]
+            [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.gepa.interface :as gepa]
             [ai.obney.orc.gepa.core.todo-processors :as todo]
-            [ai.obney.orc.gepa.core.task-ledger :as ledger]
             [ai.obney.orc.grain-test-utils.interface :as tu]
             [ai.obney.grain.todo-processor-v2.interface :as tp])
   (:import [java.time Instant]
@@ -61,10 +62,10 @@
             (is (uuid? opt))
             (todo/on-candidate-evaluation-started (assoc running :event event))
             (let [events (h/read-all-events running)
-                  task (first (vals (:tasks (ledger/get-state running opt))))]
+                  task (first (vals (:tasks (rm/get-state running opt))))]
               (is (= expected-calls (count @invocations)))
-              (is (= expected-calls (:spent (ledger/get-accounting running opt))))
-              (is (<= (:spent (ledger/get-accounting running opt)) budget))
+              (is (= expected-calls (:spent (rm/get-accounting running opt))))
+              (is (<= (:spent (rm/get-accounting running opt)) budget))
               (is (= expected-calls (count (filter #(= :gepa/task-attempt-dispatched (:event/type %)) events))))
               (is (= 1 (count (filter #(= :sheet/tree-tick-started (:event/type %)) events))))
               (is (every? #(= {:input {"question" "q"} :output {:question "q" :answer "fixed"}} %)
@@ -73,8 +74,6 @@
               (is (= (if complete? 1 0) (count (filter #(= :gepa/candidate-evaluated (:event/type %)) events))))
               (when complete?
                 (is (= "Original evidence is intact." (get-in task [:result :feedback]))))
-              ;; An explicit resumed delivery must not rerun completed or unsafe
-              ;; work, nor bypass exhausted metric attempts/capacity.
               (swap! clock #(.plusSeconds % 91))
               (gepa/resume! running opt)
               (is (= expected-calls (count @invocations)))

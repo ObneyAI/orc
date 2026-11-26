@@ -2,7 +2,7 @@
 
 > **Role of this doc:** the design behind ORC judges: what a judge is, why a judgment is a durable assessment, the `criterion x stance x bands` rubric, and what the engine guarantees. The reference (declaring judges, evidence, queries) is [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md). The decision record is [ADR 0008](adr/0008-judge-assessments-are-durable-grain-work.md).
 >
-> Every code block marked `;; docs-example: <id>` is run by `components/evaluation/test/ai/obney/orc/evaluation/docs_examples_test.clj`.
+> Every code block marked `;; docs-example: <id>` is run by `components/evaluation-service/test/ai/obney/orc/evaluation/docs_examples_test.clj`.
 
 ---
 
@@ -131,7 +131,7 @@ A learning judge's scored outcomes with feedback also emit the legacy `:judge/sc
 
 ## 3. What the engine guarantees
 
-Each guarantee is exercised by a test in `components/evaluation/test/ai/obney/orc/evaluation/`.
+Each guarantee is exercised by a test in `components/evaluation-service/test/ai/obney/orc/evaluation/`.
 
 | Guarantee | Test namespace |
 |---|---|

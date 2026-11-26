@@ -17,7 +17,8 @@
    family's rich description is synthesised here from what the runtime already
    records at birth (the verdict's reasoning, the birth signature, the birth
    shape) — the shape C2 makes durable. Nothing in components/ is modified."
-  (:require [ai.obney.orc.colbert.interface :as colbert]
+  (:require [time-literals.read-write]
+            [ai.obney.orc.colbert.interface :as colbert]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.ontology.test-support.c2d-ood-stress-test :as ood]
             [clojure.data.json :as json]
@@ -41,7 +42,7 @@
    "153f1c69-e1d8-3592-8e62-391a7fab2dac" "Briefing generation"})
 
 (defn- read-edn [f]
-  (edn/read-string {:readers (merge @(requiring-resolve 'time-literals.read-write/tags)
+  (edn/read-string {:readers (merge time-literals.read-write/tags
                                     {'uuid (fn [s] (java.util.UUID/fromString s))})
                     :default (fn [_ v] v)}
                    (slurp f)))

@@ -8,9 +8,10 @@
    ungated caller that must never be used when a gate is configured."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.dsl :as dsl]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def builds (atom []))
 (def gated-calls (atom []))
@@ -117,8 +118,8 @@
   (h/with-async-test-context [ctx]
     (let [sheet-id (sheet/build-workflow! ctx (gated-workflow "gate-round-trip"
                                                              (fq "gate-builder")))
-          form (dsl/export-to-dsl (dsl/export-sheet ctx sheet-id))
-          regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
+          form (service-logic/export-to-dsl (service-commands/export-sheet ctx sheet-id))
+          regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.interface)]
                         (eval (read-string form)))]
       (is (str/includes? form ":tool-caller-fn")
           "the regenerated DSL names the gate")

@@ -1,6 +1,7 @@
 (ns ai.obney.orc.orc-service.execution-budget-test
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.execution-budget :as execution-budget])
+            [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
+            [ai.obney.orc.orc-service.core.logic :as service-logic])
   (:import [java.util.concurrent Future TimeUnit TimeoutException]))
 
 (defn- await-future
@@ -21,7 +22,7 @@
           release-loss (promise)
           monitor-returned (promise)
           work
-          (execution-budget/start-work!
+          (service-logic/start-work!
            tick-id node-id
            #(do
               (deliver work-entered true)
@@ -33,7 +34,7 @@
           (future
             (deliver
              monitor-returned
-             (execution-budget/cancel-work-when!
+             (service-logic/cancel-work-when!
               work
               (constantly false)
               #(throw (ex-info "a lost initial fence must not wait" {}))
@@ -56,7 +57,7 @@
           (deliver release-loss true)
           (deliver release-work true)
           (future-cancel caller)
-          (execution-budget/cancel-active-work! tick-id))))))
+          (service-logic/cancel-active-work! tick-id))))))
 
 (deftest stopping-an-ownership-monitor-awaits-its-thread-exit
   (testing "worker cleanup cannot report completion while its monitor remains alive"
@@ -68,11 +69,11 @@
           release-monitor-exit (promise)
           stop-returned (promise)
           work
-          (execution-budget/start-work!
+          (service-logic/start-work!
            tick-id node-id
            #(deref release-work))
           monitor-handle
-          (execution-budget/cancel-work-when!
+          (service-logic/cancel-work-when!
            work
            (constantly true)
            #(do
@@ -90,15 +91,12 @@
         (let [stopper
               (Thread.
                (fn []
-                 ;; Lease cancellation can leave the worker interrupted before
-                 ;; it enters finally. Cleanup must still join the monitor and
-                 ;; then restore this status for its caller.
                  (.interrupt (Thread/currentThread))
                  (deliver
                   stop-returned
                   (try
                     {:result
-                     (execution-budget/stop-ownership-monitor! monitor-handle)
+                     (service-logic/stop-ownership-monitor! monitor-handle)
                      :interrupt-restored?
                      (.isInterrupted (Thread/currentThread))}
                     (catch Throwable failure
@@ -119,7 +117,7 @@
         (finally
           (deliver release-monitor-exit true)
           (deliver release-work true)
-          (execution-budget/cancel-active-work! tick-id))))))
+          (service-logic/cancel-active-work! tick-id))))))
 
 (deftest ownership-monitor-is-armed-before-campaign-work-may-continue
   (testing "monitor construction waits for the initial live ownership fence"
@@ -133,7 +131,7 @@
           release-monitor (promise)
           monitor-returned (promise)
           work
-          (execution-budget/start-work!
+          (service-logic/start-work!
            tick-id node-id
            #(do
               (deliver work-entered true)
@@ -142,7 +140,7 @@
           (future
             (deliver
              monitor-returned
-             (execution-budget/cancel-work-when!
+             (service-logic/cancel-work-when!
               work
               #(do
                  (deliver ownership-check-entered true)
@@ -170,7 +168,7 @@
           (deliver release-monitor true)
           (deliver release-work true)
           (future-cancel caller)
-          (execution-budget/cancel-active-work! tick-id))))))
+          (service-logic/cancel-active-work! tick-id))))))
 
 (deftest older-work-cleanup-cannot-remove-a-newer-registration
   (testing "the active [tick,node] slot remains owned by the newer work"
@@ -183,7 +181,7 @@
           release-old (promise)
           release-new (promise)
           old-work
-          (execution-budget/start-work!
+          (service-logic/start-work!
            tick-id node-id
            #(do
               (deliver old-entered true)
@@ -192,7 +190,7 @@
       (try
         (is (= true (deref old-entered 1000 ::old-not-entered)))
         (let [_new-work
-              (execution-budget/start-work!
+              (service-logic/start-work!
                tick-id node-id
                #(do
                   (deliver new-entered true)
@@ -205,14 +203,14 @@
           (is (= true (deref new-entered 1000 ::new-not-entered)))
           (deliver release-old true)
           (is (= :old-complete (deref old-work 1000 ::old-not-finished)))
-          (execution-budget/cancel-active-work! tick-id)
+          (service-logic/cancel-active-work! tick-id)
           (is (= true (deref new-interrupted 1000 ::new-not-interrupted))
               "old cleanup preserved the newer cancellation target")
           (is (= true (deref new-finished 1000 ::new-not-finished))))
         (finally
           (deliver release-old true)
           (deliver release-new true)
-          (execution-budget/cancel-active-work! tick-id))))))
+          (service-logic/cancel-active-work! tick-id))))))
 
 (deftest delayed-old-monitor-cannot-cancel-a-replacement-registration
   (testing "the monitor retains the exact older Future identity across slot reuse"
@@ -229,7 +227,7 @@
           new-finished (promise)
           release-new (promise)
           old-work
-          (execution-budget/start-work!
+          (service-logic/start-work!
            tick-id node-id
            #(do
               (deliver old-entered true)
@@ -238,7 +236,7 @@
       (try
         (is (= true (deref old-entered 1000 ::old-not-entered)))
         (let [old-monitor
-              (execution-budget/cancel-work-when!
+              (service-logic/cancel-work-when!
                old-work
                #(true? @owner?)
                #(do
@@ -249,7 +247,7 @@
           (deliver release-old true)
           (is (= :old-complete (deref old-work 1000 ::old-not-finished)))
           (let [_new-work
-                (execution-budget/start-work!
+                (service-logic/start-work!
                  tick-id node-id
                  #(do
                     (deliver new-entered true)
@@ -270,7 +268,7 @@
             (is (= ::new-not-interrupted
                    (deref new-interrupted 100 ::new-not-interrupted))
                 "the delayed old monitor cannot cancel the newer Future")
-            (execution-budget/cancel-active-work! tick-id)
+            (service-logic/cancel-active-work! tick-id)
             (is (= true (deref new-interrupted 1000 ::new-not-interrupted))
                 "the replacement remains the ledger's real cancellation target")
             (is (= true (deref new-finished 1000 ::new-not-finished)))))
@@ -278,7 +276,7 @@
           (deliver release-old true)
           (deliver release-monitor true)
           (deliver release-new true)
-          (execution-budget/cancel-active-work! tick-id))))))
+          (service-logic/cancel-active-work! tick-id))))))
 
 (deftest throwing-ownership-predicate-fails-closed
   (testing "an unreadable live lease cannot leave registered work running"
@@ -291,7 +289,7 @@
           lease-loss-observed (promise)
           wait-calls (atom 0)
           work
-          (execution-budget/start-work!
+          (service-logic/start-work!
            tick-id node-id
            #(do
               (deliver work-entered true)
@@ -304,7 +302,7 @@
       (try
         (is (= true (deref work-entered 1000 ::work-not-entered)))
         (let [monitor
-              (execution-budget/cancel-work-when!
+              (service-logic/cancel-work-when!
                work
                #(throw (ex-info "lease projection unavailable" {}))
                #(swap! wait-calls inc)
@@ -318,7 +316,7 @@
           (is (zero? @wait-calls)))
         (finally
           (deliver release-work true)
-          (execution-budget/cancel-active-work! tick-id))))))
+          (service-logic/cancel-active-work! tick-id))))))
 
 (deftest throwing-monitor-wait-fails-closed
   (testing "a broken wait capability cannot leave registered work running"
@@ -331,7 +329,7 @@
           lease-loss-observed (promise)
           ownership-checks (atom 0)
           work
-          (execution-budget/start-work!
+          (service-logic/start-work!
            tick-id node-id
            #(do
               (deliver work-entered true)
@@ -344,7 +342,7 @@
       (try
         (is (= true (deref work-entered 1000 ::work-not-entered)))
         (let [monitor
-              (execution-budget/cancel-work-when!
+              (service-logic/cancel-work-when!
                work
                #(do (swap! ownership-checks inc) true)
                #(throw (ex-info "monitor scheduler unavailable" {}))
@@ -358,7 +356,7 @@
           (is (= 1 @ownership-checks)))
         (finally
           (deliver release-work true)
-          (execution-budget/cancel-active-work! tick-id))))))
+          (service-logic/cancel-active-work! tick-id))))))
 
 (deftest current-worker-monitor-wait-failure-cancels-that-exact-worker
   (testing "the production in-worker monitor fails closed after its wait capability breaks"
@@ -370,11 +368,11 @@
           work-finished (promise)
           release-work (promise)]
       (try
-        (execution-budget/start-work!
+        (service-logic/start-work!
          tick-id node-id
          #(try
-            (execution-budget/cancel-work-when!
-             (execution-budget/current-work)
+            (service-logic/cancel-work-when!
+             (service-logic/current-work)
              (constantly true)
              (fn []
                (deliver monitor-started true)
@@ -393,4 +391,4 @@
         (is (= true (deref work-finished 1000 ::work-not-finished)))
         (finally
           (deliver release-work true)
-          (execution-budget/cancel-active-work! tick-id))))))
+          (service-logic/cancel-active-work! tick-id))))))

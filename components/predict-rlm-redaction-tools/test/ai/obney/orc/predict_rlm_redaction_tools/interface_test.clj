@@ -9,9 +9,6 @@
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.predict-rlm-redaction-tools.interface :as redact]))
 
-;; =============================================================================
-;; Tracer bullet — one target on one page
-;; =============================================================================
 
 (deftest applies-one-target-on-one-page
   (testing "single target text is replaced with redaction block + total-redactions = 1"
@@ -43,7 +40,6 @@
           targets [{:page 0 :text "John Smith" :category "person_name" :reason "name"}]
           first-pass (redact/apply-redactions {:inputs {:page-texts page-texts
                                                         :targets targets}})
-          ;; Feed the already-redacted text BACK as page-texts and try again
           second-pass (redact/apply-redactions
                         {:inputs {:page-texts (:redacted-text-per-page first-pass)
                                   :targets targets}})]

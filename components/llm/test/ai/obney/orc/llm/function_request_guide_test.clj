@@ -39,7 +39,6 @@
                      [:sent-at {:optional true :description "When it was sent"} :string]]]}]
    :outputs [{:name :reply :spec :string :description "The reply to send"}]})
 
-;; `coupon` is absent altogether; supplied `account` has an absent optional region.
 (def ^:private support-values
   {:subject (as-the-executor-sends "Refund please")
    :account (as-the-executor-sends {:tier "pro"})
@@ -118,12 +117,6 @@
           (is (str/includes? content "\nsubject: Refund please\n"))
           (is (str/includes? content "\naccount: {\"tier\":\"pro\"}\n")))))))
 
-;; ---------------------------------------------------------------------------
-;; The tool definition is not part of this change. The golden below is the
-;; `tools` JSON that function mode produced for this contract BEFORE the input
-;; field guide existed; it must stay byte-for-byte what a provider receives
-;; (so a provider's prompt cache and a consumer's tool schema are untouched).
-;; ---------------------------------------------------------------------------
 
 (def ^:private triage
   {:instructions "Triage the ticket."
@@ -148,9 +141,6 @@
         (is (not (str/includes? (json/generate-string (:tools request)) "Your input fields are"))
             "the guide rides in the message, never in the tool")))))
 
-;; ---------------------------------------------------------------------------
-;; Wire: the body the pinned OpenRouter adapter serializes and would POST.
-;; ---------------------------------------------------------------------------
 
 (defn- capture-wire-body
   "Run `predict` against the pinned OpenRouter adapter with the HTTP post
@@ -212,12 +202,8 @@
         (is (= "submit_response" (get-in body ["tools" 0 "function" "name"]))
             "the function-calling shape is what was serialized")))))
 
-;; ---------------------------------------------------------------------------
-;; Shown, edge by edge.
-;; ---------------------------------------------------------------------------
 
 (deftest an-input-present-with-no-value-is-shown
-  ;; Present nil and an empty string are both shown, with distinct wire values.
   (doseq [no-value ["" nil]]
     (testing (str "value " (pr-str no-value))
       (let [content (user-message
@@ -267,9 +253,6 @@
                 "Call the submit_response function with your answer.")
            (user-message (capture-request spec {:q "why"} {}))))))
 
-;; ---------------------------------------------------------------------------
-;; Opt-in prompt caching and generic tool description. Off by default.
-;; ---------------------------------------------------------------------------
 
 (deftest the-opt-in-controls-leave-a-default-request-untouched
   (let [plain (capture-request triage {:subject "Refund please"} {})

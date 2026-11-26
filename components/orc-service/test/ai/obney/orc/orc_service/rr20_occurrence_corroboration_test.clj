@@ -25,7 +25,7 @@
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.core.commands]
             [ai.obney.orc.orc-service.core.read-models]
-            [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
+            [ai.obney.orc.orc-service.core.logic :as logic]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
@@ -59,8 +59,6 @@
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   ::cache-dir cache-dir}
-        ;; ALL registered processors, including the one this test proves:
-        ;; :ontology/on-campaign-success-corroborate-worked-pattern.
         processors (reduce-kv
                     (fn [acc n {:keys [handler-fn topics]}]
                       (assoc acc n (tp/start {:event-pubsub ps :topics topics
@@ -137,7 +135,7 @@
            :total-usage {:total-tokens 0}
            :status status
            :duration-ms 1
-           :tree-fingerprint (rlm-fingerprint/fingerprint tree)
+           :tree-fingerprint (logic/fingerprint tree)
            :generated-tree tree
            :generated-tree-source source
            :source-sheet-id source-sheet-id
@@ -243,13 +241,13 @@
         (emit! ctx sheet tick tree-b source-b :success)
         (is (settle-until!
              #(and (some? (claim-by ctx class-id :weakness
-                                    (str "emitted the " (rlm-fingerprint/fingerprint tree-a)
+                                    (str "emitted the " (logic/fingerprint tree-a)
                                          " tree for tasks of this class and it failed")))
                    (some? (first (filter (fn [c] (= source-b (:recommendation c)))
                                         (ontology/get-claims ctx :tree-class class-id))))))
             "both shapes landed: A as a failed shape, B as a worked pattern")
         (let [weakness-before (claim-by ctx class-id :weakness
-                                        (str "emitted the " (rlm-fingerprint/fingerprint tree-a)
+                                        (str "emitted the " (logic/fingerprint tree-a)
                                              " tree for tasks of this class and it failed"))
               strength-before (first (filter #(= source-b (:recommendation %))
                                              (ontology/get-claims ctx :tree-class class-id)))

@@ -46,7 +46,8 @@
             [ai.obney.orc.ontology.core.todo-processors :as ont-tp]
             [c2d-ood-stress-live :as live]
             [ai.obney.orc.ontology.test-support.c2d-ood-stress-test :as ood]
-            [runner]))
+            [runner]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]))
 
 ;; =============================================================================
 ;; Specialized seed bodies
@@ -167,9 +168,6 @@
 (def experimental-seeds
   [iterative-tuning-seed code-investigation-seed])
 
-;; =============================================================================
-;; Emission + ColBERT rebuild
-;; =============================================================================
 
 (defn- emit-experimental-seed!
   "Dispatch :ontology/record-tree-description for one experimental seed.
@@ -209,7 +207,7 @@
   (when-not (System/getenv "OPENROUTER_API_KEY")
     (throw (ex-info "OPENROUTER_API_KEY must be set for this experiment" {})))
   (runner/start!)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))]
+  (let [ctx (runner/current-context)]
     (try
       (install-experimental-seeds! ctx)
       (let [outcome (live/run-classify-only! ctx
@@ -222,7 +220,6 @@
       (finally
         (runner/stop!)))))
 
-(comment
-  ;; From REPL:
+#_(do
   (require '[c2d-ood-specialized-seeds-experiment :as exp] :reload)
   (exp/run-experiment!))

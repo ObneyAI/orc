@@ -193,13 +193,13 @@ duplication ratio of 0 and that a payload appears in exactly one event.
 
 #### Resolving values
 
-Use `core/value-log` — the one place that turns write events back into values:
+Read values from write events with the public ORC interface.
 
 ```clojure
-(require '[ai.obney.orc.orc-service.core.value-log :as value-log])
+(require '[ai.obney.orc.orc-service.interface :as orc])
 
-(value-log/writes-for events completion-event) ;; what THIS node execution wrote
-(value-log/latest-values events)               ;; final value per key for the tick
+(orc/value-log-writes-for events completion-event) ;; what THIS node execution wrote
+(orc/value-log-latest-values events)               ;; final value per key for the tick
 ```
 
 Attribution is by the pair `(node-id, exec-context)`, not by key alone. A later

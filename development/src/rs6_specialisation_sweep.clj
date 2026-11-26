@@ -13,7 +13,8 @@
    map, the rendered block as an opaque string — never a parse of prose.
 
    Run from the launcher (see the comment block at the bottom)."
-  (:require [ai.obney.grain.event-store-v3.interface :as es]
+  (:require [runner]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.orc-service.core.todo-processors :as tp]
             [ai.obney.orc.ontology.test-support.c2d-ood-stress-test :as ood]
             [clojure.java.io :as io]
@@ -63,8 +64,6 @@
         by-type (group-by :event/type events)
         classified (first (:ontology/task-classified by-type))
         deferred (:ontology/task-classification-deferred by-type)
-        ;; The mint event is tagged by the CHILD (description-target), not the
-        ;; tick; read it by the assigned child and keep the one this tick minted.
         minted (when-let [child (:assigned-tree-id classified)]
                  (->> (es/read (:event-store ctx)
                                {:tenant-id (:tenant-id ctx)
@@ -79,7 +78,6 @@
      :sheet-id sheet-id
      :tick-id tick-id
      :elapsed-ms elapsed
-     ;; The three-state outcome + provenance + verdict, from the EVENT.
      :outcome (:outcome classified)
      :assigned-via (:assigned-via classified)
      :assigned-tree-id (:assigned-tree-id classified)
@@ -98,9 +96,7 @@
                :domain-label (:domain-label c)})
      :deferred-events (mapv #(select-keys % [:fallback-source :reasoning]) deferred)
      :minted-events (mapv #(select-keys % [:parent-tree-id :child-tree-id :domain-label]) minted)
-     ;; The June-era flags, for the side-by-side the issue asks for.
      :june-flags (when structural (ood/classify-outcome structural))
-     ;; The render: the payload's :domain map (structured) and the block.
      :payload-domain (:domain structural)
      :rendered-instruction (:instruction rendered-node)
      :classified-event classified})))
@@ -216,12 +212,6 @@
      (println "\nResults saved to" dir)
      (assoc summary :dir dir))))
 
-;; =============================================================================
-;; The bounded full-bench observation: three off-domain tasks through the
-;; REAL bench runner (Phase 1 + Phase 2, auto-classify on), recorded as
-;; observation — the classified event, the mint, the render's candidates and
-;; block, the verdict occurrence and the claims that followed.
-;; =============================================================================
 
 (def full-bench-slugs
   ["domain-001-game-balance" "domain-002-recipe-scaling" "domain-003-marathon-training"])
@@ -247,12 +237,11 @@
          by-slug (into {} (map (juxt :slug identity)) corpus)
          dir (str results-root "/" (now-stamp) dir-suffix)
          _ (.mkdirs (io/file dir))
-         run! (requiring-resolve 'runner/run!)
          results
          (vec (for [slug slugs
                     :let [entry (get by-slug slug)]]
                 (do (println "\n=== full bench:" slug)
-                    (let [record (run! {:name slug
+                    (let [record (runner/run! {:name slug
                                         :slug slug
                                         :pattern "ood-observation"
                                         :documents []
@@ -296,18 +285,10 @@
      (println "\nObservations saved to" dir)
      {:dir dir :results results})))
 
-;; =============================================================================
-;; The convergence sweep: does the runtime OVER-mint? Eight domain groups,
-;; three paraphrases each, interleaved. Expected: an off-domain group yields
-;; exactly ONE child (first mints, the rest land by label); an in-domain group
-;; matches its seeded class every time with no child; the behavioral axis
-;; matches existing behaviors rather than fresh-minting.
-;; =============================================================================
 
 (def convergence-corpus-dir "development/bench/ood-corpus-convergence")
 
 (defn- group-of [slug]
-  ;; "09-marathon-b" -> "marathon"
   (second (re-matches #"\d+-([a-z]+)-[a-z]" slug)))
 
 (defn convergence-analysis [results]
@@ -374,7 +355,5 @@
      (println "\nResults saved to" dir)
      {:dir dir :results results :analysis analysis})))
 
-(comment
-  ;; Launcher (from the worktree root, OPENROUTER_API_KEY in the environment):
-  ;; clojure -J-Djava.awt.headless=true -J-Xmx4g -M:dev:test -e "(require 'runner) (runner/start!) (Thread/sleep 45000) (require 'rs6-specialisation-sweep) (let [ctx (deref @(requiring-resolve 'runner/system-state))] (rs6-specialisation-sweep/run-two-pass! ctx)) (runner/stop!) (shutdown-agents) (System/exit 0)"
+#_(do
   )

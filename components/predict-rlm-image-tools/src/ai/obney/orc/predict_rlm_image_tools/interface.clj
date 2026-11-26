@@ -39,18 +39,6 @@
         encoded (.encodeToString (Base64/getEncoder) bytes)]
     (str "data:" mime ";base64," encoded)))
 
-;; =============================================================================
-;; Code-node fns for emit-tree! :code references
-;; =============================================================================
-;;
-;; These are deterministic pure functions referenced by the model's emitted
-;; :code nodes via {:fn "ai.obney.orc.predict-rlm-image-tools.interface/<name>"}.
-;; They live here so the model has concrete affordances advertised via the
-;; task's :available-code-nodes catalog — avoiding LLM-based counting which
-;; is hallucination-prone.
-;;
-;; All fns follow the standard :code-node contract:
-;;   (fn [{:keys [inputs] ...}] {:write-key value})
 
 (defn count-letter-frequencies
   "Count case-insensitive A-Z letter frequencies in the input text.
@@ -66,10 +54,8 @@
   (let [text (-> inputs vals first str)
         letters (filter #(Character/isLetter ^char %) text)
         lower (map #(Character/toLowerCase ^char %) letters)
-        ;; Initialize with all letters a-z at 0 so the output is dense
         zero-map (into (sorted-map) (map (fn [c] [c 0]) (map char (range (int \a) (inc (int \z))))))
         freqs (reduce (fn [m c] (update m c (fnil inc 0))) zero-map lower)
-        ;; Re-key to uppercase for output
         upper-freqs (into (sorted-map)
                           (map (fn [[c n]] [(Character/toUpperCase ^char c) n]) freqs))]
     {:letter-frequencies upper-freqs}))

@@ -76,9 +76,6 @@
   [mcp-conn]
   (mcp-client/close mcp-conn))
 
-;; ============================================================================
-;; MCP Registry API (Multi-Server)
-;; ============================================================================
 
 (defn create-registry
   "Create a registry of named MCP connections with auto-discovered tools.
@@ -184,9 +181,6 @@
   ([mcp-opts opts]
    (builders/build-from-mcp mcp-opts opts)))
 
-;; ============================================================================
-;; Data Structure Generation (for direct build-workflow!)
-;; ============================================================================
 
 (defn generate-sheet-data
   "Generate an ORC workflow as data structure from analyzed tools.
@@ -202,9 +196,6 @@
   [analysis pattern-opts]
   (generator/generate-sheet-data analysis pattern-opts))
 
-;; ============================================================================
-;; Build API (creates sheets in event store)
-;; ============================================================================
 
 (defn build-sheet-from-mcp!
   "Complete pipeline: MCP server -> tool analysis -> pattern -> generate -> build sheet.
@@ -259,9 +250,6 @@
   ([ctx mcp-opts instruction opts]
    (builders/build-repl-researcher-sheet! ctx mcp-opts instruction opts)))
 
-;; ============================================================================
-;; Export API (save generated sheets as reusable files)
-;; ============================================================================
 
 (defn export-generated-sheet!
   "Export a generated sheet to a file.
@@ -301,11 +289,8 @@
     :tools [...]
     :exported-to string   ;; File path}"
   [ctx mcp-opts export-path & {:as opts}]
-  (apply exporter/build-and-export-sheet! ctx mcp-opts export-path (mapcat identity opts)))
+  (apply builders/build-and-export-sheet! ctx mcp-opts export-path (mapcat identity opts)))
 
-;; ============================================================================
-;; Portable Export API (standalone sheets with executors)
-;; ============================================================================
 
 (defn export-executors!
   "Export executor definitions to a standalone .clj file.
@@ -450,9 +435,6 @@
   ([ctx mcp-opts opts]
    (builders/build-sheet-with-executors! ctx mcp-opts opts)))
 
-;; ============================================================================
-;; Build + Export Portable Files
-;; ============================================================================
 
 (defn build-and-export-portable!
   "Build from MCP, persist, AND export as portable .clj files.

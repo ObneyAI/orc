@@ -17,9 +17,9 @@
    prompt); key renderings are asserted at byte level."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-(def ^:private build-fn #'executor/build-rlm-code-generation-module)
+(def ^:private build-fn #'service-logic/build-rlm-code-generation-module)
 
 (def ^:private coding-tools
   ["shell/exec" "fs/write" "fs/read"])

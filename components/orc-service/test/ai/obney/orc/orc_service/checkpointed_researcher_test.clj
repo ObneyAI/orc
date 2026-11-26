@@ -3,12 +3,8 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
-            [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
-            [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
+            [ai.obney.orc.orc-service.core.logic :as logic]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.llm.interface :as llm]
@@ -19,7 +15,10 @@
             [ai.obney.grain.periodic-task.interface :as periodic]
             [ai.obney.grain.time.interface :as time]
             [cognitect.anomalies :as anom]
-            [malli.core :as m]))
+            [malli.core :as m]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]
+            [ai.obney.orc.orc-service.interface.schemas :as schemas]))
 
 (defn- an-hour-later
   "The recovering worker's view an hour after the crashed owner last renewed:
@@ -34,8 +33,8 @@
    behavior from Grain command/projection behavior. RR-7's dedicated public
    tests exercise the real claim store and fail-closed boundary."
   [test-fn]
-  (let [execute executor/execute-repl-researcher-rlm]
-    (with-redefs [executor/execute-repl-researcher-rlm
+  (let [execute service-processors/execute-repl-researcher-rlm]
+    (with-redefs [service-processors/execute-repl-researcher-rlm
                   (fn [node blackboard provider context & options]
                     (apply execute node blackboard provider
                            (merge {:researcher-ownership-epoch 1
@@ -91,17 +90,10 @@
       (throw (ex-info "researcher provider did not start" {}))))
   (throw (ex-info "parallel sibling ended the parent" {})))
 
-;; The campaign deadline is absolute. These fixtures stamp it when the test
-;; starts, but recovery runs only after processors stop and restart, which can
-;; take longer than 15 s inside a long full-suite JVM. That made the campaign
-;; time out before its first recovered model call. The headroom keeps the
-;; deadline out of what these recovery tests assert.
 (def ^:private recovery-headroom-ms 120000)
 
 (deftest det-e2e-235-automatic-recovery-recognises-a-researcher-frontier
   (testing "rebuilt runtimes resume a yielded campaign without execute or resume calls"
-    ;; This tracer owns recovery ordering, not scheduler throughput. Dedicated
-    ;; RR-9 tests advance the same injected clock to prove deadline expiry.
     (let [now-ms 1000]
       (h/with-async-test-context
         [ctx {:context {:llm-provider :test
@@ -147,12 +139,6 @@
             rebuilt-processors (atom nil)
             periodic-triggers (atom nil)]
         (try
-          ;; The old process durably started the tick and saved one completed
-          ;; quantum, then disappeared after the continuation start append.
-          ;; Stopping the pubsub processors before these commands means the
-          ;; abandoned start cannot execute in this process or be replayed when
-          ;; the fresh processors subscribe. Only automatic recovery can append
-          ;; a new start after restart.
           (h/stop-test-processors! ctx)
           (h/run-and-apply!
            ctx
@@ -186,10 +172,10 @@
                     :tenant-ids-fn #(set (keys (es/tenants (:event-store ctx))))})]
               (reset! periodic-triggers triggers)
               (is (h/settle-until!
-                   #(some? (runtime/durable-terminal-result ctx tick-id))
+                   #(some? (service-commands/durable-terminal-result ctx tick-id))
                    :timeout-ms 7000)
                   "the registered startup scan resumes the campaign without a caller")
-              (let [result (runtime/durable-terminal-result ctx tick-id)
+              (let [result (service-commands/durable-terminal-result ctx tick-id)
                     campaign (sheet/get-researcher-campaign
                               ctx tick-id researcher-id)
                     tenant-events (into [] (es/read (:event-store ctx)
@@ -272,8 +258,6 @@
           event-store-conn {:type :sqlite
                             :database-file db-file
                             :maximum-pool-size 2}
-          ;; Keep persistence/reopen semantics independent of machine speed;
-          ;; deadline expiry is exercised by dedicated clock-driven tracers.
           now-ms 1000
           first-context (atom nil)
           reopened-context (atom nil)
@@ -336,9 +320,6 @@
                                 :code "(store! :memo \"sqlite-survived-restart\")"
                                 :generated-code-recorded? true
                                 :emitted-tree-recorded? false}]
-          ;; Persist the abandoned frontier without allowing this runtime's
-          ;; subscribers to execute it. Closing the complete context below is
-          ;; the restart boundary under test, not merely a processor rebuild.
           (h/stop-test-processors! ctx)
           (h/run-and-apply!
            ctx
@@ -397,10 +378,10 @@
                     #(set (keys (es/tenants (:event-store reopened))))})]
               (reset! periodic-triggers triggers)
               (is (h/settle-until!
-                   #(some? (runtime/durable-terminal-result reopened tick-id))
+                   #(some? (service-commands/durable-terminal-result reopened tick-id))
                    :timeout-ms 7000)
                   "the fresh runtime recovers without execute or resume calls")
-              (let [result (runtime/durable-terminal-result reopened tick-id)
+              (let [result (service-commands/durable-terminal-result reopened tick-id)
                     campaign (sheet/get-researcher-campaign
                               reopened tick-id researcher-id)
                     tenant-events
@@ -503,8 +484,6 @@
               sheet-id (sheet/build-workflow! ctx definition)
               researcher-id (:id (first (sheet/get-nodes-for-sheet ctx sheet-id)))
               tick-id (random-uuid)]
-          ;; Persist exactly the crash boundary: the campaign exists and its
-          ;; classification outcome is committed, but no resume checkpoint is.
           (h/stop-test-processors! ctx)
           (h/run-and-apply!
            ctx
@@ -515,9 +494,6 @@
             :tick-id tick-id
             :inputs {}
             :options {:timeout-ms 15000}})
-          ;; Processors are stopped, so synthesize the exact node-start event
-          ;; emitted by execute-node. There is no public command that starts a
-          ;; composite node directly.
           (let [append-result
                 (es/append
                  (:event-store ctx)
@@ -575,11 +551,11 @@
                                        :campaign-now-ms-fn (constantly 1000)}
                              :event-store-conn event-store-conn})]
               (reset! reopened-context reopened)
-              (is (= 1 (count (runtime/resume-in-progress! reopened))))
+              (is (= 1 (count (sheet/resume-in-progress! reopened))))
               (is (h/settle-until!
-                   #(some? (runtime/durable-terminal-result reopened tick-id))
+                   #(some? (service-commands/durable-terminal-result reopened tick-id))
                    :timeout-ms 7000))
-              (let [result (runtime/durable-terminal-result reopened tick-id)
+              (let [result (service-commands/durable-terminal-result reopened tick-id)
                     classification-events
                     (into []
                           (es/read (:event-store reopened)
@@ -663,8 +639,6 @@
                     (get-in command-context [:command :command/name]))
                (let [result (original-process-command command-context)]
                  (deliver classification-committed true)
-                 ;; The lease monitor interrupts this exact post-append,
-                 ;; pre-provider boundary, modelling loss of the old process.
                  @hold-after-commit
                  result)
                (original-process-command command-context)))]
@@ -713,10 +687,10 @@
                               :lease-owned? (constantly true)}
                     :event-store-conn event-store-conn})]
               (reset! reopened-context reopened)
-              (let [scan (runtime/resume-in-progress! (an-hour-later reopened))]
+              (let [scan (sheet/resume-in-progress! (an-hour-later reopened))]
                 (is (= 1 (count (filter :resumed? scan))) (pr-str scan)))
               (is (h/settle-until!
-                   #(some? (runtime/durable-terminal-result reopened tick-id))
+                   #(some? (service-commands/durable-terminal-result reopened tick-id))
                    :timeout-ms 7000))
               (is (h/settle-until!
                    #(= 1
@@ -728,7 +702,7 @@
                                         :tags #{[:tick tick-id]}}))))
                    :timeout-ms 5000)
                   "the recovered public campaign publishes one verdict occurrence")
-              (let [result (runtime/durable-terminal-result reopened tick-id)
+              (let [result (service-commands/durable-terminal-result reopened tick-id)
                     events (into [] (es/read (:event-store reopened)
                                              {:tenant-id (:tenant-id reopened)
                                               :types #{:ontology/task-classified}
@@ -777,7 +751,7 @@
           tick-id (random-uuid)
           orphan-logical-id "sha256:rr10-sqlite-orphan"
           orphan-attempt-id
-          (researcher-effects/attempt-identity orphan-logical-id 1 0)
+          (logic/attempt-identity orphan-logical-id 1 0)
           recovery-checkpoint
           {:version 1
            :next-iteration 0
@@ -821,9 +795,6 @@
             :tick-id tick-id
             :inputs {}
             :options {:timeout-ms 15000}})
-          ;; The durable checkpoint command is the public boundary that both
-          ;; saves the continuation and records the active researcher-node
-          ;; start discovered by automatic recovery after reopen.
           (h/run-and-apply!
            ctx
            (checkpoint-command sheet-id tick-id researcher-id
@@ -881,10 +852,10 @@
                     #(set (keys (es/tenants (:event-store reopened))))})]
               (reset! periodic-triggers triggers)
               (is (h/settle-until!
-                   #(some? (runtime/durable-terminal-result reopened tick-id))
+                   #(some? (service-commands/durable-terminal-result reopened tick-id))
                    :timeout-ms 7000)
                   "the reopened runtime recovers without an execute or resume call")
-              (let [result (runtime/durable-terminal-result reopened tick-id)
+              (let [result (service-commands/durable-terminal-result reopened tick-id)
                     claims (sheet/get-researcher-effect-claims
                             reopened sheet-id tick-id researcher-id)
                     events
@@ -1044,8 +1015,6 @@
            ctx
            (iteration-commit-command sheet-id tick-id researcher-id
                                      resume-state iteration-record))
-          ;; The continuation acquired epoch 2 and the process died before it
-          ;; could save another iteration. Resume state therefore still says 1.
           (h/run-and-apply!
            ctx
            {:command/id (random-uuid)
@@ -1075,7 +1044,7 @@
                     :tenant-ids-fn #(set (keys (es/tenants (:event-store ctx))))})]
               (reset! periodic-triggers triggers)
               (is (h/settle-until!
-                   #(some? (runtime/durable-terminal-result ctx tick-id))
+                   #(some? (service-commands/durable-terminal-result ctx tick-id))
                    :timeout-ms 7000))
               (let [events (h/read-tick-events ctx tick-id)
                     recovered-start
@@ -1106,7 +1075,7 @@
                 (is (= 3 (:researcher-ownership-epoch recovered-start)))
                 (is (= [1 2 3] frontier-epochs))
                 (is (= 1 @calls)
-                    (str "terminal: " (pr-str (runtime/durable-terminal-result ctx tick-id))
+                    (str "terminal: " (pr-str (service-commands/durable-terminal-result ctx tick-id))
                          " records: " (pr-str (mapv #(select-keys % [:iteration-index :status :error])
                                                     records))))
                 (is (= [0 1] (mapv :iteration-index records)))
@@ -1217,7 +1186,7 @@
               (reset! periodic-triggers triggers)
               (is (not-any? #{::timeout} scans) (pr-str scans))
               (is (h/settle-until!
-                   #(some? (runtime/durable-terminal-result ctx tick-id))
+                   #(some? (service-commands/durable-terminal-result ctx tick-id))
                    :timeout-ms 7000))
               (let [post-completion-scan (sheet/resume-in-progress! ctx)
                     events (into [] (es/read (:event-store ctx)
@@ -1243,7 +1212,7 @@
                 (is (= 1 (count recovery-starts)))
                 (is (= [1] (mapv :ownership-epoch frontiers)))
                 (is (= 1 @calls)
-                    (str "terminal: " (pr-str (runtime/durable-terminal-result ctx tick-id))))
+                    (str "terminal: " (pr-str (service-commands/durable-terminal-result ctx tick-id))))
                 (is (= [0 1]
                        (mapv :iteration-index
                              (rm/get-researcher-iteration-records
@@ -1473,9 +1442,9 @@
                       :tick-id tick-id
                       :root-status :failure}
         before (-> {}
-                   (rm/researcher-campaigns* started)
-                   (rm/researcher-campaigns* yielded))
-        after (rm/researcher-campaigns* before parent-ended)
+                   (logic/researcher-campaigns* started)
+                   (logic/researcher-campaigns* yielded))
+        after (logic/researcher-campaigns* before parent-ended)
         campaign (get-in after [tick-id :campaigns node-id])]
     (is (= :yielded (get-in before [tick-id :campaigns node-id :status])))
     (is (= :abandoned (:status campaign)))
@@ -1596,8 +1565,8 @@
           (str "the public command boundary rejects nested fields outside "
                profile-path)))
     (doseq [[field limit]
-            [[:reasoning executor/iteration-reasoning-max-chars]
-             [:error-excerpt executor/iteration-error-excerpt-max-chars]]]
+            [[:reasoning logic/iteration-reasoning-max-chars]
+             [:error-excerpt logic/iteration-error-excerpt-max-chars]]]
       (is (m/validate schema
                       (assoc-in command [:iteration-record field]
                                 (apply str (repeat limit "x"))))
@@ -1767,7 +1736,7 @@
                                          :maximum-pool-size 2}})
               events (into [] (es/read reopened {:tenant-id tenant-id
                                                   :tags #{[:sheet sheet-id]}}))
-              projected (get (reduce rm/researcher-checkpoints* {} events)
+              projected (get (reduce logic/researcher-checkpoints* {} events)
                              [tick-id node-id])
               calls (atom 0)
               node {:type :repl-researcher
@@ -1780,7 +1749,7 @@
                           (fn [& _]
                             (swap! calls inc)
                             {:outputs {:code "(final! {:summary (get-var :memo)})"}})]
-              (let [result (executor/execute-repl-researcher-rlm
+              (let [result (service-processors/execute-repl-researcher-rlm
                             node {} :openrouter
                             {:tick-id tick-id
                              :node-id node-id
@@ -1870,7 +1839,7 @@
                             (swap! calls inc)
                             (reset! prompt-history (:history inputs))
                             {:outputs {:code "(final! {:summary (get-var :memo)})"}})]
-              (let [result (executor/execute-repl-researcher-rlm
+              (let [result (service-processors/execute-repl-researcher-rlm
                             node {} :openrouter
                             {:tick-id tick-id
                              :node-id node-id
@@ -1912,7 +1881,7 @@
                     :fn (fn [{:keys [inputs]}]
                           {:doubled (* 2 (:n inputs))})}]
             [:final {:keys [:doubled]}]]
-          source-fingerprint (rlm-fingerprint/fingerprint source-tree)
+          source-fingerprint (logic/fingerprint source-tree)
           resume-state {:version 2
                         :revision 1
                         :next-iteration 1
@@ -1987,7 +1956,7 @@
               (is (= source-tree projected-source) (pr-str projected-records))
               (is (= source-tree (read-string projected-source-text)))
               (is (= source-fingerprint
-                     (rlm-fingerprint/fingerprint projected-source)))
+                     (logic/fingerprint projected-source)))
               (is (not (str/includes? (pr-str reopened-events) "<inline-fn>")))
               (is (not-any? fn? (tree-seq coll? seq reopened-events)))
               (with-redefs [llm/predict
@@ -1996,7 +1965,7 @@
                               {:outputs
                                {:code
                                 "(final! {:doubled (get-var :doubled)})"}})]
-                (let [resumed (executor/execute-repl-researcher-rlm
+                (let [resumed (service-processors/execute-repl-researcher-rlm
                                node {} :openrouter
                                {:tick-id tick-id
                                 :node-id node-id
@@ -2010,7 +1979,7 @@
                   (is (= 1 @resume-calls)
                       "the completed source-producing turn is not replayed")))
 
-              (reset! @#'tree-executor/ephemeral-fn-registry {})
+              (reset! @#'logic/ephemeral-fn-registry {})
               (h/with-async-test-context [fresh-ctx
                                           {:context {:llm-provider :test}}]
                 (let [definition
@@ -2049,7 +2018,7 @@
                       (is (= 22 (get-in reemit-result [:outputs :doubled]))
                           (pr-str reemit-result))
                       (is (= 2 @reemit-calls))
-                      (is (empty? @@#'tree-executor/ephemeral-fn-registry)))))))
+                      (is (empty? @@#'logic/ephemeral-fn-registry)))))))
             (finally
               (es/stop reopened))))
         (finally
@@ -2526,7 +2495,7 @@
     (let [phase1-calls (atom 0)
           emitted-tree [:sequence [:final {:keys [:summary]}]]
           emitted-tree-code "(emit-tree! [:sequence [:final {:keys [:summary]}]])"
-          expected-fingerprint (rlm-fingerprint/fingerprint emitted-tree)]
+          expected-fingerprint (logic/fingerprint emitted-tree)]
       (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
         (let [definition
               (sheet/workflow "rr5-emitted-tree-evidence"
@@ -2608,7 +2577,7 @@
                   (str "a generated-tree outcome leaked a raw blackboard value: "
                        (pr-str emitted-record)))
               (is (not (m/validate
-                        ai.obney.orc.orc-service.interface.schemas/researcher-iteration-record
+                        schemas/researcher-iteration-record
                         {:iteration-index 0
                          :attempt-ordinal 0
                          :status :success
@@ -2712,18 +2681,15 @@
               (is (= projected-source-text
                      (:generated-tree-source completion-bookend)))
               (is (= source-tree (read-string serialized-source)))
-              (is (= (rlm-fingerprint/fingerprint source-tree)
-                     (rlm-fingerprint/fingerprint
+              (is (= (logic/fingerprint source-tree)
+                     (logic/fingerprint
                       (read-string serialized-source)))
                   "durable serialization preserves the tree's shape identity")
               (is (not (str/includes? serialized-source "<inline-fn>")))
               (is (not-any? fn? (tree-seq coll? seq projected-source))
                   "the durable tree contains source forms, never live closures")
 
-              ;; A prior execution's registry must not be able to make this
-              ;; pass. Re-emission recompiles the projected source in the
-              ;; second researcher's fresh SCI context.
-              (reset! @#'tree-executor/ephemeral-fn-registry {})
+              (reset! @#'logic/ephemeral-fn-registry {})
               (let [reemit-definition
                     (sheet/workflow "rr6-reemit-projected-source"
                       (sheet/blackboard {:n :int :doubled :int})
@@ -2760,7 +2726,7 @@
                     (is (= 18 (get-in reemit-result [:outputs :doubled]))
                         (pr-str reemit-result))
                     (is (= 2 @reemit-calls))
-                    (is (empty? @@#'tree-executor/ephemeral-fn-registry)
+                    (is (empty? @@#'logic/ephemeral-fn-registry)
                         "the second execution cleans up its fresh compiled fn")))))))))))
 
 (deftest non-checkpointed-inline-closure-tree-still-executes-without-durable-source
@@ -2902,7 +2868,7 @@
                       :duration-ms 11
                       :code code
                       :reasoning (subs reasoning 0
-                                       executor/iteration-reasoning-max-chars)}
+                                       logic/iteration-reasoning-max-chars)}
                      (select-keys record
                                   [:iteration-index :attempt-ordinal :status
                                    :started-at :completed-at :duration-ms
@@ -2912,11 +2878,11 @@
                        (not (str/blank? (:error-class record))))
                   (pr-str record))
               (is (and (string? (:error-excerpt record))
-                       (= executor/iteration-error-excerpt-max-chars
+                       (= logic/iteration-error-excerpt-max-chars
                           (count (:error-excerpt record)))
                        (= (:error-excerpt record)
                           (subs raw-error 0
-                                executor/iteration-error-excerpt-max-chars)))
+                                logic/iteration-error-excerpt-max-chars)))
                   (pr-str record))
               (is (not (contains? record :error))
                   "the legacy unclassified error field is not part of the v2 digest"))))))))
@@ -3112,13 +3078,13 @@
 
 (deftest measured-iteration-evidence-bounds-preserve-prefix-at-the-boundary
   (testing "the checked-in live maxima define below, at, and above-limit behavior"
-    (is (= 438 executor/iteration-reasoning-max-chars))
-    (is (= 175 executor/iteration-error-excerpt-max-chars))
-    (doseq [limit [executor/iteration-reasoning-max-chars
-                   executor/iteration-error-excerpt-max-chars]
+    (is (= 438 logic/iteration-reasoning-max-chars))
+    (is (= 175 logic/iteration-error-excerpt-max-chars))
+    (doseq [limit [logic/iteration-reasoning-max-chars
+                   logic/iteration-error-excerpt-max-chars]
             length [(dec limit) limit (inc limit)]]
       (let [text (apply str (repeat length "x"))
-            bounded (executor/bound-iteration-evidence-text text limit)]
+            bounded (logic/bound-iteration-evidence-text text limit)]
         (is (= (min length limit) (count bounded)))
         (is (= bounded (subs text 0 (min length limit))))))))
 
@@ -3235,10 +3201,6 @@
               assertion-message
               (str "measurements=" (pr-str measurements)
                    " bytes-per-iteration=" (pr-str bytes-per-iteration))]
-          ;; A fixed event overhead plus a bounded amount per iteration makes
-          ;; total/N fall toward the per-iteration constant. Repeated history
-          ;; blobs make total/N rise with N. This compares the observed shape;
-          ;; it does not encode a guessed byte or multiplier limit.
           (println assertion-message)
           (is (apply >= bytes-per-iteration) assertion-message))))))
 

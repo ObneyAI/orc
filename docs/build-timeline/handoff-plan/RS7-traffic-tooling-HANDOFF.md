@@ -25,7 +25,7 @@ brief shape in the plan and a small fixture set of 3 briefs you write for tests 
   (`load-corpus`), `components/ontology/src/ai/obney/orc/ontology/core/reranker.clj` (`rerank!` — where the orc
   execute result's `:usage` is discarded), `components/ontology/src/ai/obney/orc/ontology/core/todo_processors.clj`
   (`maybe-rebuild!`, `force-rebuild!`, the reindex processor), the colbert read-model accessor for the active index,
-  `components/gepa/src/ai/obney/orc/gepa/core/todo_processors.clj` `make-llm-fn` (the `llm/predict` module shape),
+  `components/gepa-service/src/ai/obney/orc/gepa/core/logic.clj` `make-llm-fn` (the `llm/predict` module shape),
   `development/src/diagnose_llm_hang.clj` (a minimal predict call).
 
 ## The exact change

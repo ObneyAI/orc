@@ -36,7 +36,6 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.core.commands]
@@ -45,7 +44,8 @@
             [ai.obney.orc.ontology.test-support.seed-principles :as seed]
             [clojure.pprint :as pp]
             [clojure.string :as str]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Context setup
@@ -91,9 +91,6 @@
       (spit path (with-out-str (pp/pprint data)))
       path)))
 
-;; =============================================================================
-;; Task setup — small synthetic chunked document, no external fixtures
-;; =============================================================================
 
 (defn- synthetic-doc []
   (let [sections
@@ -128,9 +125,6 @@
            (when context-config
              [:context context-config]))))
 
-;; =============================================================================
-;; Event-store inspection — pull iteration history via U10 event
-;; =============================================================================
 
 (defn- find-iterations-event
   "Query the event store for the U10 :rlm/researcher-iterations event
@@ -164,15 +158,10 @@
   [label context-config]
   (let [ctx (create-context)]
     (try
-      (executor/setup-providers!)
-      ;; Seed the principle into THIS context's event store.
-      ;; Y will retrieve it (matching task-class-id).
-      ;; Z will NOT retrieve it (mismatched task-class-id).
-      ;; X has no :context so it won't try to retrieve at all.
+      (service-logic/setup-providers!)
       (when context-config
         (seed/seed-one! ctx seed/bounded-map-each-for-chunked-extraction))
       (Thread/sleep 200)
-      ;; Build + execute
       (let [wf (workflow-for label context-config)
             sheet-id (orc/build-workflow! ctx wf)
             t0 (System/currentTimeMillis)
@@ -180,7 +169,6 @@
                                 {:document (synthetic-doc)}
                                 :timeout-ms 120000)
             elapsed (- (System/currentTimeMillis) t0)
-            ;; U10 — pull the iteration history from the event store
             _ (Thread/sleep 500)
             iter-event (find-iterations-event ctx sheet-id)
             iterations (:iterations iter-event)
@@ -282,5 +270,5 @@
        :run-y run-y
        :run-z run-z})))
 
-(comment
+#_(do
   (run!))

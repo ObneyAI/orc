@@ -2,14 +2,14 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.java.io :as io]
             [ai.obney.orc.orc-service.interface :as orc]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.grain.kv-store.interface :as kv]
-            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]))
+            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- with-store [f]
   (let [dir (.toFile (java.nio.file.Files/createTempDirectory "researcher-timeout-" (make-array java.nio.file.attribute.FileAttribute 0)))
@@ -100,11 +100,11 @@
                                       [{} nil 900000 :hardcoded]]]
     (is (= {:total-budget-ms expected :remaining-ms (max 0 (- expected 936000))
             :source source :exhausted? (<= expected 936000)}
-           (executor/resolve-phase2-budget {:node node :parent-timeout-ms tick :phase1-elapsed-ms 936000}))))
+           (service-logic/resolve-phase2-budget {:node node :parent-timeout-ms tick :phase1-elapsed-ms 936000}))))
   (is (= {:campaign-started-at-ms 100 :campaign-deadline-ms 1200100 :campaign-timeout-ms 1200000}
-         (executor/resolve-researcher-campaign-timing {:node {:timeout-ms 1200000} :started-at-ms 100 :parent-timeout-ms 1500000})))
-  (is (= 700 (get (executor/resolve-researcher-campaign-timing
+         (service-logic/resolve-researcher-campaign-timing {:node {:timeout-ms 1200000} :started-at-ms 100 :parent-timeout-ms 1500000})))
+  (is (= 700 (get (service-logic/resolve-researcher-campaign-timing
                   {:node {:timeout-ms 1200000} :started-at-ms 900 :parent-timeout-ms 1500000
                    :checkpoint {:campaign-started-at-ms 100 :campaign-deadline-ms 700}}) :campaign-deadline-ms)))
-  (is (= 600 (get (executor/resolve-researcher-campaign-timing
+  (is (= 600 (get (service-logic/resolve-researcher-campaign-timing
                   {:node {:timeout-ms 1200000 :rlm {:timeouts {:campaign-ms 500}}} :started-at-ms 100}) :campaign-deadline-ms))))

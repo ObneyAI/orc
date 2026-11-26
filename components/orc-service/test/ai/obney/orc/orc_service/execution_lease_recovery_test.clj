@@ -163,8 +163,6 @@
             run (future (sheet/execute ctx sheet-id {:n 8} :timeout-ms 30000))]
         (is (h/settle-until! #(= 1 (count (starts ctx sheet-id node-id))) :timeout-ms 10000))
         (Thread/sleep 1000)
-        ;; A live worker must be listening before recovery publishes the
-        ;; resumed start (pub/sub delivery is not replayed to late subscribers).
         (let [restarted (restart-leaf-processor! ctx)]
           (try
             (is (= 1 (count (resumed (sheet/resume-in-progress! (later recoverer 1))))))
@@ -258,7 +256,6 @@
           (try
             (is (h/settle-until! #(seq (scans)) :timeout-ms 10000)
                 "the registered startup recovery scan actually fired")
-            ;; Give the recovery processor time to act on the scan.
             (Thread/sleep 1500)
             (is (= 1 @invocations) "the healthy leaf is not invoked a second time")
             (is (= 1 (count (starts ctx sheet-id node-id))) "no resumed start was recorded")

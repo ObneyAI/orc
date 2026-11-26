@@ -90,10 +90,9 @@
 
 (deftest select-patterns-respects-min-tools
   (testing "respects minimum tool requirements"
-    (let [tools [search-tool]  ;; Only 1 tool
+    (let [tools [search-tool]
           rels []
           result (patterns/select-patterns tools rels {})]
-      ;; Sequential pipeline requires 2 tools minimum
       (is (not (some #(and (= :sequential-pipeline (:pattern %))
                           (>= (:confidence %) 0.5))
                     result))))))
@@ -105,7 +104,6 @@
           rels [{:type :alternative :from "search" :to "extract"}]
           result-2 (patterns/select-patterns two-tools rels {})
           result-3 (patterns/select-patterns three-tools rels {})]
-      ;; With 2 tools, should not have high confidence for coordinator
       (let [coord-2 (first (filter #(= :coordinator-dispatcher (:pattern %)) result-2))
             coord-3 (first (filter #(= :coordinator-dispatcher (:pattern %)) result-3))]
         (when coord-2
@@ -143,5 +141,4 @@
   (testing "works without relationships"
     (let [tools [search-tool extract-tool]
           result (patterns/select-patterns tools [] {})]
-      ;; Should still return patterns based on capabilities
       (is (seq result)))))

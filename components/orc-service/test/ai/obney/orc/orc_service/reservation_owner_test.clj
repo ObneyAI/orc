@@ -9,9 +9,9 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas :as schemas]
             [ai.obney.orc.orc-service.core.todo-processors :as todo]
-            [ai.obney.orc.orc-service.core.provider-call-reservations :as reservations]
             [ai.obney.orc.orc-service.budget-reservation-fixture :as barrier]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (deftest campaign-reservation-cannot-omit-start-to-evade-context-ownership
   (testing "omitting the canonical start cannot authorize a different execution context"
@@ -57,7 +57,7 @@
                                                    (= tick-id (:tick-id %))) events-before))
                     wrong-context (assoc (:exec-context owner) ::todo/map-each-index 0)
                     ordinal (inc (:provider-attempt-ordinal owner))
-                    invocation (reservations/invocation-identity
+                    invocation (service-logic/invocation-identity
                                 (:budget-tick-id owner) (:logical-action-identity owner)
                                 (:ownership-epoch owner) ordinal)
                     with-start

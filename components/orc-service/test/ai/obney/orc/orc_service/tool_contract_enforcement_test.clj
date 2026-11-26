@@ -12,9 +12,9 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (def tool-calls (atom []))
 (def tool-reply (atom nil))
@@ -54,9 +54,6 @@
 
 (def ^:private ok-reply {:hits ["revenue-q3"]})
 
-;; ---------------------------------------------------------------------------
-;; DeclaredToolContractsAreEnforced (researcher)
-;; ---------------------------------------------------------------------------
 
 (deftest researcher-invalid-arguments-never-reach-the-tool
   (h/with-async-test-context [ctx {:context {:llm-provider :test :call-tool-fn tool-caller}}]
@@ -180,9 +177,6 @@
           node (some #(when (= "search-leaf" (:name %)) %) (sheet/get-nodes-for-sheet ctx sheet-id))]
       (is (= search-contract (:tool-contracts node))))))
 
-;; ---------------------------------------------------------------------------
-;; DeclaredToolContractsAreEnforced (checkpointed researcher claims no effect)
-;; ---------------------------------------------------------------------------
 
 (deftest checkpointed-researcher-claims-no-effect-for-invalid-arguments
   (let [node-id (random-uuid)
@@ -208,17 +202,13 @@
                   (fn [& _]
                     {:outputs {:code "(final! {:out (pr-str (search {\"query\" 42}))})"}
                      :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})]
-      (let [result (executor/execute-repl-researcher-rlm node blackboard :test context)]
+      (let [result (service-processors/execute-repl-researcher-rlm node blackboard :test context)]
         (is (empty? @calls) "the tool is never invoked")
         (is (empty? (filter #(= :tool (:kind %)) @claims))
             "no effect is claimed for arguments that fail the contract")
         (is (str/includes? (str (get-in result [:outputs :out])) ":invalid-arguments")
             (pr-str (select-keys result [:status :error :outputs])))))))
 
-;; ---------------------------------------------------------------------------
-;; ToolOutcomesAreStructured — every researcher-facing tool failure, typed or
-;; not, plain or checkpointed; a host may declare a safe message to share.
-;; ---------------------------------------------------------------------------
 
 (deftest researcher-untyped-tool-error-is-structured-and-safe
   (h/with-async-test-context [ctx {:context {:llm-provider :test :call-tool-fn tool-caller}}]
@@ -260,7 +250,7 @@
                   (fn [& _]
                     {:outputs {:code "(final! {:out (pr-str (search {\"query\" \"q3\"}))})"}
                      :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})]
-      (let [out (str (get-in (executor/execute-repl-researcher-rlm node blackboard :test context)
+      (let [out (str (get-in (service-processors/execute-repl-researcher-rlm node blackboard :test context)
                              [:outputs :out]))]
         (is (str/includes? out ":tool-error") out)
         (is (not (str/includes? out "SECRET-TOKEN-1")) out)))))

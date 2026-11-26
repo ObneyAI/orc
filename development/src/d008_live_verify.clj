@@ -28,14 +28,11 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [clojure.pprint :as pp]
             [clojure.java.io :as io]
-            [clojure.edn :as edn]))
+            [clojure.edn :as edn]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-;; =============================================================================
-;; Test functions used by :code leaves in the sheet
-;; =============================================================================
 
 (defn check-sentinel
   "Throws when :current-item :sentinel? is true. Used to force one map-each
@@ -53,9 +50,6 @@
   [{:keys [inputs]}]
   {:count (count (get inputs :results))})
 
-;; =============================================================================
-;; Context bringup (mirrors rlm-gen-bench)
-;; =============================================================================
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -98,42 +92,37 @@
 ;; =============================================================================
 
 (defn- build-sheet! [ctx]
-  (executor/setup-providers!)
+  (service-logic/setup-providers!)
   (let [item-schema [:map
                      [:id :int]
                      [:sentinel? {:optional true} :boolean]
                      [:text :string]]
         sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "D-008 Live Verify"))
         sheet-id (-> sheet-result :command-result/events first :sheet-id)]
-    ;; Declare blackboard keys
     (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :chunks [:vector item-schema]))
     (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item item-schema))
     (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector item-schema]))
     (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :summary :string))
     (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :count :int))
 
-    (let [;; ROOT: sequence
+    (let [
           seq-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
           seq-id (-> seq-result :command-result/events first :node-id)
 
-          ;; Sequence child 0: map-each over :chunks → :results
           map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each :parent-id seq-id))
           map-id (-> map-result :command-result/events first :node-id)
           _ (h/run-and-apply! ctx (h/make-set-map-each-config-command sheet-id map-id
                                     :chunks :current-item :results))
 
-          ;; Map-each child: SEQUENCE [check-sentinel, ai-summarize]
           inner-seq-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence :parent-id map-id))
           inner-seq-id (-> inner-seq-result :command-result/events first :node-id)
 
-          ;; check-sentinel leaf (:code, throws on sentinel item)
           check-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf :parent-id inner-seq-id :index 0))
           check-id (-> check-result :command-result/events first :node-id)
           _ (h/run-and-apply! ctx (h/make-set-node-executor-command sheet-id check-id :code
                                     :fn "d008-live-verify/check-sentinel"))
           _ (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id check-id [:current-item] [:current-item]))
 
-          ;; ai-summarize leaf (real LLM via :openrouter provider)
           ai-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf :parent-id inner-seq-id :index 1))
           ai-id (-> ai-result :command-result/events first :node-id)
           _ (h/run-and-apply! ctx (h/make-set-node-instruction-command sheet-id ai-id
@@ -142,7 +131,6 @@
                                     :model "google/gemini-2.5-flash"))
           _ (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id ai-id [:current-item] [:current-item]))
 
-          ;; Sequence child 1: count-results (:code, reads :results, writes :count)
           count-leaf-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf :parent-id seq-id :index 1))
           count-leaf-id (-> count-leaf-result :command-result/events first :node-id)
           _ (h/run-and-apply! ctx (h/make-set-node-executor-command sheet-id count-leaf-id :code
@@ -212,7 +200,6 @@
             _ (println "Partial summary:")
             _ (pp/pprint (:partial-summary map-completion))
 
-            ;; Save full EDN for inspection
             saved-path (save-edn!
                          (str "d008-live-verify_" (System/currentTimeMillis) ".edn")
                          {:result result
@@ -226,9 +213,7 @@
       (finally
         (stop-context ctx))))))
 
-(comment
-  ;; To run the partial path (sentinel injection):
+#_(do
   (run!)
-  ;; To run the happy-path no-regression check (all 3 chunks succeed):
   (run! {:happy-path? true})
   )

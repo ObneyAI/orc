@@ -39,12 +39,13 @@
                               orc/orc-dev           {:local/root "bases/orc-dev"}
 
                               ;; Components
+                              orc/integrations      {:local/root "components/integrations"}
                               orc/llm               {:local/root "components/llm"}
                               orc/orc-service       {:local/root "components/orc-service"}
-                              orc/gepa              {:local/root "components/gepa"}
-                              orc/evaluation        {:local/root "components/evaluation"}
-                              orc/colbert           {:local/root "components/colbert"}
-                              orc/ontology          {:local/root "components/ontology"}
+                              orc/gepa-service              {:local/root "components/gepa-service"}
+                              orc/evaluation-service        {:local/root "components/evaluation-service"}
+                              orc/colbert-service           {:local/root "components/colbert-service"}
+                              orc/ontology-service          {:local/root "components/ontology-service"}
                               orc/mcp-sheet-builder {:local/root "components/mcp-sheet-builder"}
                               orc/agent-browser     {:local/root "components/agent-browser"}
                               orc/langfuse          {:local/root "components/langfuse"}
@@ -59,10 +60,10 @@
 
            :test {:extra-paths ["components/llm/test"
                                 "components/orc-service/test"
-                                "components/gepa/test"
-                                "components/colbert/test"
-                                "components/evaluation/test"
-                                "components/ontology/test"
+                                "components/gepa-service/test"
+                                "components/colbert-service/test"
+                                "components/evaluation-service/test"
+                                "components/ontology-service/test"
                                 "components/mcp-sheet-builder/test"
                                 "components/predict-rlm-pdf/test"
                                 "components/predict-rlm-image-tools/test"

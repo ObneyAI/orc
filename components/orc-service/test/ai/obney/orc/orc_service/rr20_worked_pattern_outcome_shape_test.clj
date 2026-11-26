@@ -21,13 +21,12 @@
             [ai.obney.orc.orc-service.interface.schemas :as orc-schemas]
             [ai.obney.orc.orc-service.core.commands]
             [ai.obney.orc.orc-service.core.read-models]
-            [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
+            [ai.obney.orc.orc-service.core.logic :as logic]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
             [ai.obney.orc.ontology.core.todo-processors]
-            [ai.obney.orc.ontology.core.harvest :as harvest]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.query-processor.interface :as qp]
@@ -35,7 +34,8 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]))
 
 (defn- stub-predict-fixture [f]
   (with-redefs [llm/predict (fn [_provider _module _inputs _options]
@@ -46,10 +46,6 @@
 
 (use-fixtures :each stub-predict-fixture)
 
-;; -----------------------------------------------------------------------------
-;; entity-optional.CampaignIteration.emitted_shape
-;; invariant.RecordedTreesCarryTheirShape
-;; -----------------------------------------------------------------------------
 
 (def ^:private base-record
   {:iteration-index 0 :attempt-ordinal 0 :status :success
@@ -80,9 +76,6 @@
                                 :tree-fingerprint "")))
         "an empty shape does not satisfy the invariant")))
 
-;; -----------------------------------------------------------------------------
-;; WorkedPatternsAreProvenNotMerelyRecent — the behavioural bridge
-;; -----------------------------------------------------------------------------
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -120,9 +113,6 @@
             (> (System/currentTimeMillis) deadline) false
             :else (do (Thread/sleep 25) (recur))))))
 
-;; Two shapes. Each carries distinctive SOURCE text (RR-6's re-emission
-;; authority) that differs from `pr-str` of the decoded tree, so a pattern
-;; offered from the decoded structure rather than the exact source is visible.
 (def ^:private tree-a
   [:sequence
    [:llm {:reads [:doc] :writes [:summary]}]
@@ -179,7 +169,7 @@
            :total-usage {:total-tokens 0}
            :status status
            :duration-ms 1
-           :tree-fingerprint (rlm-fingerprint/fingerprint tree)
+           :tree-fingerprint (logic/fingerprint tree)
            :generated-tree tree
            :generated-tree-source source
            :source-sheet-id source-sheet-id
@@ -212,7 +202,7 @@
         (is (empty? (pattern-strengths ctx class-id))
             "a failed shape is not offered as a worked pattern")
         (is (nil? (:recommended-pattern
-                   (harvest/harvest-body
+                   (ontology-queries/harvest-body
                     (ontology/get-description ctx :tree-class class-id) 12)))
             "harvest offers nothing when nothing succeeded")
         (is (some #(and (= :weakness (:kind %))
@@ -234,7 +224,7 @@
             "the repaired, successful shape is the class's worked pattern, as exact source")
         (is (= source-b
                (:recommended-pattern
-                (harvest/harvest-body
+                (ontology-queries/harvest-body
                  (ontology/get-description ctx :tree-class class-id) 12)))
             "harvest ships the proven shape")
         (is (some #(and (= :weakness (:kind %)) (= source-a (:recommendation %)))
@@ -257,7 +247,7 @@
               "the later failure neither displaces nor joins the proven pattern")
           (is (= source-a
                  (:recommended-pattern
-                  (harvest/harvest-body
+                  (ontology-queries/harvest-body
                    (ontology/get-description ctx :tree-class class-id) 12))))
           (is (some #(and (= :weakness (:kind %)) (= source-b (:recommendation %)))
                     (ontology/get-claims ctx :tree-class class-id))

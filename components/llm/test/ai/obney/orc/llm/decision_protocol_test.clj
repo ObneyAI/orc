@@ -136,10 +136,6 @@
       (is (str/includes? (pr-str (:instructions question))
                          "The operation that addresses the request")))))
 
-;; ---------------------------------------------------------------------------
-;; EveryRequestCarriesItsInputFieldGuide (decision path): each question's
-;; instruction carries the guide for the fields this request shows.
-;; ---------------------------------------------------------------------------
 
 (defn- as-the-executor-sends
   "The executor retains native values before request rendering."
@@ -196,7 +192,6 @@
 (deftest every-question-carries-the-guide-for-the-shown-fields
   (let [requests (atom [])]
     (register-decision-provider! :decision-test-guide (response guide-answers) requests)
-    ;; The executor validates typed values separately and keeps them native here.
     (llm/predict :decision-test-guide guide-spec (guide-request-inputs) {:validate? false})
     (is (= 1 (count @requests)))
     (doseq [qname ["route" "urgent"]
@@ -440,9 +435,6 @@
     (is (= 0.21 (:probability evidence)))
     (is (not (contains? evidence :confidence)))))
 
-;; ---------------------------------------------------------------------------
-;; Default transport: OpenRouter alpha decisions endpoint
-;; ---------------------------------------------------------------------------
 
 (deftest default-transport-posts-to-the-openrouter-decisions-endpoint
   (let [posts (atom [])]
@@ -460,10 +452,6 @@
     (is (= (str "Bearer " dummy-key)
            (get-in (first @posts) [:request :headers "Authorization"])))))
 
-;; ---------------------------------------------------------------------------
-;; ProtocolFollowsRegisteredProvider — the streaming call reaches the same
-;; decision protocol (it never falls through to a conversational completion)
-;; ---------------------------------------------------------------------------
 
 (deftest streaming-call-to-a-decision-provider-uses-the-decision-protocol
   (let [requests (atom [])
@@ -495,13 +483,6 @@
                    (if-some [e (clojure.core.async/<!! ch)] (recur (conj acc e)) acc))]
       (is (= [:error] (mapv :orc/event events))))))
 
-;; ---------------------------------------------------------------------------
-;; Reported resolution. Real OpenRouter Jev responses (captured verbatim,
-;; 2026-10-05) report probabilities and confidence rounded to 0.01, while the
-;; confidence is computed from the unrounded distribution. Validation must
-;; hold the documented definitions within the reported resolution, and must
-;; still reject genuine contradictions.
-;; ---------------------------------------------------------------------------
 
 (def ^:private captured-lookup
   {:route {:type "choice" :choice "lookup"
@@ -553,11 +534,6 @@
     (testing label
       (is (= :schema-validation-failed (failure-kind-for answers spec))))))
 
-;; ---------------------------------------------------------------------------
-;; ProtocolFollowsRegisteredProvider — selecting by model: a per-call :model
-;; that NAMES a registered decision provider engages it, so one workflow can
-;; mix a native decision node with conversational nodes.
-;; ---------------------------------------------------------------------------
 
 (deftest model-naming-a-registered-decision-provider-engages-it
   (let [requests (atom [])
@@ -575,9 +551,6 @@
     (is (= "typesafe/jev-1.13" (:model (first @requests)))
         "the decision provider's own model is used, not the provider name")))
 
-;; RECON-9: state construction preserves presence, independently of validation.
-;; The earlier coupon=nil snapshot encoded an implementation artifact rather
-;; than the specified omitted-field contract.
 (deftest native-state-preserves-absence-null-false-and-empty-values
   (let [requests (atom [])
         spec (assoc boolean-spec :inputs

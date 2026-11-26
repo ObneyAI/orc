@@ -115,11 +115,8 @@
         tool-count (count tools)
         min-tools (:min-tools pattern)
         requirements (:requires pattern)
-        ;; Base confidence from meeting minimum tools
         base-conf (if (>= tool-count min-tools) 0.5 0.3)
-        ;; Bonus for each satisfied requirement
         req-bonus (* 0.1 (count requirements))
-        ;; Bonus for relationship density
         rel-density (/ (count relationships) (max 1 (* tool-count (dec tool-count) 0.5)))
         density-bonus (* 0.2 (min 1.0 rel-density))]
     (min 1.0 (+ base-conf req-bonus density-bonus))))
@@ -153,7 +150,6 @@
                       (filter some?)
                       (sort-by :confidence >)
                       vec)]
-     ;; Apply exploration budget if specified
      (if-let [budget (:exploration-budget opts)]
        (take (:patterns budget) matches)
        matches))))
@@ -185,9 +181,6 @@
     :else
     (best-pattern _tools relationships)))
 
-;; ============================================================================
-;; LLM-Based Pattern Selection (Phase 3)
-;; ============================================================================
 
 (def pattern-selection-module
   "ORC LLM module for semantic pattern selection.
@@ -299,41 +292,34 @@ Be specific in your reasoning about WHY this pattern fits the user's goal."})
   ([intent tools relationships {:keys [provider model]
                                 :or {provider :openrouter
                                      model "google/gemini-2.5-flash"}}]
-   (let [;; Extract user intent string
+   (let [
          intent-str (if (map? intent)
                       (or (:primary-goal intent)
                           (str intent))
                       (str intent))
 
-         ;; Format inputs
          tools-str (format-tools-for-selection tools)
          rels-str (format-relationships-for-selection relationships)
          patterns-str (format-patterns-for-selection)
 
-         ;; Prepare ORC LLM inputs
          inputs {:user-intent intent-str
                  :tool-capabilities tools-str
                  :relationship-summary rels-str
                  :available-patterns patterns-str}
 
-         ;; Options for ORC LLM
          options {:with-metadata? true :validate? false :model model}
 
-         ;; Call ORC LLM
          result (llm/predict provider pattern-selection-module inputs options)
          outputs (:outputs result)
 
-         ;; Parse pattern keyword
          selected-str (:selected-pattern outputs)
          pattern-keyword (when selected-str
                            (keyword selected-str))
 
-         ;; Parse alternative
          alt-str (:alternative-pattern outputs)
          alt-keyword (when (and alt-str (not= alt-str "none"))
                        (keyword alt-str))
 
-         ;; Parse confidence
          conf-str (:confidence outputs)
          confidence-keyword (when conf-str
                               (keyword conf-str))]
@@ -352,10 +338,8 @@ Be specific in your reasoning about WHY this pattern fits the user's goal."})
                     (if (map? intent)
                       (or (:primary-goal intent) "")
                       (str intent)))
-        ;; Get applicable patterns first
         applicable (select-patterns tools relationships)]
     (cond
-      ;; Research/search intents
       (or (str/includes? intent-str "research")
           (str/includes? intent-str "search")
           (str/includes? intent-str "find")
@@ -363,7 +347,6 @@ Be specific in your reasoning about WHY this pattern fits the user's goal."})
       (or (first (filter #(= (:pattern %) :research-compilation) applicable))
           (first applicable))
 
-      ;; Generation/creation intents
       (or (str/includes? intent-str "generate")
           (str/includes? intent-str "create")
           (str/includes? intent-str "produce")
@@ -371,7 +354,6 @@ Be specific in your reasoning about WHY this pattern fits the user's goal."})
       (or (first (filter #(= (:pattern %) :generator-critic) applicable))
           (first applicable))
 
-      ;; Comparison/analysis intents
       (or (str/includes? intent-str "compare")
           (str/includes? intent-str "analyze")
           (str/includes? intent-str "evaluate")
@@ -379,28 +361,24 @@ Be specific in your reasoning about WHY this pattern fits the user's goal."})
       (or (first (filter #(= (:pattern %) :adversarial) applicable))
           (first applicable))
 
-      ;; Multi-step process intents
       (or (str/includes? intent-str "pipeline")
           (str/includes? intent-str "transform")
           (str/includes? intent-str "process"))
       (or (first (filter #(= (:pattern %) :sequential-pipeline) applicable))
           (first applicable))
 
-      ;; Multiple independent tasks
       (or (str/includes? intent-str "parallel")
           (str/includes? intent-str "simultaneously")
           (str/includes? intent-str "at the same time"))
       (or (first (filter #(= (:pattern %) :parallel-fan-out) applicable))
           (first applicable))
 
-      ;; Validate/check intents
       (or (str/includes? intent-str "validate")
           (str/includes? intent-str "check")
           (str/includes? intent-str "verify"))
       (or (first (filter #(= (:pattern %) :generator-critic) applicable))
           (first applicable))
 
-      ;; Default: use best pattern from relationship detection
       :else
       (first applicable))))
 
@@ -413,16 +391,13 @@ Be specific in your reasoning about WHY this pattern fits the user's goal."})
   [tools relationships pattern-key]
   (case pattern-key
     :sequential-pipeline
-    ;; Order tools by sequential relationships
     (let [seq-rels (filter #(= (:type %) :sequential) relationships)
           graph (reduce (fn [g {:keys [from to]}]
                           (assoc g from to))
                         {} seq-rels)]
-      ;; Simple topological sort
       {:pipeline (mapv :name tools)})
 
     :parallel-fan-out
-    ;; Group tools that can run in parallel
     (let [parallel-rels (filter #(= (:type %) :parallel) relationships)
           parallel-tools (distinct (concat (map :from parallel-rels)
                                            (map :to parallel-rels)))]
@@ -430,24 +405,9 @@ Be specific in your reasoning about WHY this pattern fits the user's goal."})
        :synthesizer (first (filter #(contains? (:capabilities %) :aggregate) tools))})
 
     :research-compilation
-    ;; Searchers + synthesizer
     (let [searchers (filter #(some (:capabilities %) #{:search :retrieval}) tools)
           synthesizers (filter #(contains? (:capabilities %) :generate) tools)]
       {:searchers (mapv :name searchers)
        :synthesizer (first (map :name synthesizers))})
 
-    ;; Default: no specific grouping
     {:tools (mapv :name tools)}))
-
-(comment
-  ;; Example usage
-  (def tools
-    [{:name "search" :capabilities #{:search} :idempotent? true}
-     {:name "getPage" :capabilities #{:retrieval} :idempotent? true}
-     {:name "summarize" :capabilities #{:generate :transform}}])
-
-  (def rels
-    [{:type :sequential :from "search" :to "getPage" :confidence 0.8}
-     {:type :sequential :from "getPage" :to "summarize" :confidence 0.7}])
-
-  (select-patterns tools rels))

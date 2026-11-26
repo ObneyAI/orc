@@ -18,9 +18,6 @@
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.test-helpers]
-            [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
-            [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.todo-processors :as tp-core]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -28,15 +25,9 @@
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
-            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]))
+            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-;; =============================================================================
-;; Test context (mirrors rlm_tree_executor_test/create-test-context).
-;; extra-base is merged into base-ctx BEFORE processors are registered, so the
-;; test controls exactly what the async processor-registration context carries.
-;; The KEY point of G1: stub keys go on the execute-tree ARG (not base-ctx) —
-;; proving the arg's :tool-context is threaded end-to-end to the leaf.
-;; =============================================================================
 
 (defn- create-test-context [extra-base]
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -76,7 +67,7 @@
         (.delete f)))))
 
 (defmacro ^:private with-test-context [[ctx-sym extra] & body]
-  `(binding [tp-core/*default-llm-provider* nil]
+  `(binding [service-logic/*default-llm-provider* nil]
      (let [~ctx-sym (create-test-context ~extra)]
        (try ~@body
             (finally (stop-test-context ~ctx-sym))))))
@@ -122,27 +113,20 @@
                                :call-result call-result})
       {:result-a "leaf-done"})))
 
-;; =============================================================================
-;; G1 Cycle 1 — S1 leaf reachability
-;; =============================================================================
 
 (deftest g1-s1-tool-context-on-execute-tree-arg-reaches-leaf
   (testing "an opaque :tool-context on the execute-tree context ARG reaches the emitted :code leaf fn's context"
     (let [leaf-record  (atom [])
           tool-context {:workspace "/ws" :marker :STUB-TOOL-CONTEXT}]
       (with-test-context [ctx {}]
-        ;; tool-context is placed ONLY on the execute-tree ARG (base-ctx is
-        ;; clean). Before G1 threading the arg is dropped at the async boundary
-        ;; and the leaf sees nil; after threading it rides the tick-execution
-        ;; context to the leaf.
         (let [exec-ctx (assoc ctx :tool-context tool-context)
-              tree     (rlm-dsl/rlm-dsl->orc-dsl
+              tree     (service-logic/rlm-dsl->orc-dsl
                          [:sequence
                           [:code {:fn (recording-leaf-fn leaf-record)
                                   :reads [] :writes [:result-a]
                                   :output-schemas {:result-a :string}}]
                           [:final {:keys [:result-a]}]])
-              result   (tree-executor/execute-tree tree exec-ctx
+              result   (tp-core/execute-tree tree exec-ctx
                          {:sandbox-vars {} :timeout-ms 20000})]
           (is (= :success (:status result))
               (str "tree should succeed; got " (:status result) " error " (:error result)))
@@ -153,9 +137,6 @@
             (is (= tool-context (:tool-context-val rec))
                 "leaf context's :tool-context should equal the RLM context's opaque tool-context")))))))
 
-;; =============================================================================
-;; G1 Cycle 2 — S2 end-to-end: leaf invokes gated tool, gate sees tool-context
-;; =============================================================================
 
 (deftest g1-s2-leaf-invokes-gated-tool-which-sees-tool-context
   (testing "the emitted :code leaf invokes a stub gated tool AND the stub sees the threaded :tool-context"
@@ -163,31 +144,24 @@
           tool-calls   (atom [])
           tool-context {:workspace "/ws" :marker :STUB-TOOL-CONTEXT}
           stub-ctf     (make-stub-call-tool-fn tool-calls)]
-      ;; :call-tool-fn lives on the processor-registration context (as it does
-      ;; in orc-sessions' ::context — do NOT re-plumb it). :tool-context is on
-      ;; the execute-tree ARG and must be threaded (G1) to the invocation point.
       (with-test-context [ctx {:call-tool-fn stub-ctf}]
         (let [exec-ctx (assoc ctx :tool-context tool-context)
-              tree     (rlm-dsl/rlm-dsl->orc-dsl
+              tree     (service-logic/rlm-dsl->orc-dsl
                          [:sequence
                           [:code {:fn (gated-tool-leaf-fn leaf-record)
                                   :reads [] :writes [:result-a]
                                   :output-schemas {:result-a :string}}]
                           [:final {:keys [:result-a]}]])
-              result   (tree-executor/execute-tree tree exec-ctx
+              result   (tp-core/execute-tree tree exec-ctx
                          {:sandbox-vars {} :timeout-ms 20000})]
           (is (= :success (:status result))
               (str "tree should succeed; got " (:status result) " error " (:error result)))
-          ;; Read the stub-tool record BACK (not a node return value).
           (is (= 1 (count @tool-calls)) "the gated tool should have been invoked exactly once")
           (let [call (first @tool-calls)]
             (is (= "fs/write" (:tool call)) "the leaf invoked the fs/write gated tool")
             (is (= tool-context (:gate-saw-tool-context call))
                 "the gate (inside call-tool-fn) saw the SAME threaded opaque :tool-context")))))))
 
-;; =============================================================================
-;; G1 Cycle 3 — transitive: a nested tick (leaf emits a tree) re-threads it
-;; =============================================================================
 
 (defn- nested-emitting-leaf-fn
   "Outer Phase-2 leaf that itself emits a nested tree — models a leaf/researcher
@@ -196,15 +170,14 @@
    re-thread down to the deeper leaf."
   [inner-leaf-record]
   (fn [ctx]
-    (let [inner-tree (rlm-dsl/rlm-dsl->orc-dsl
+    (let [inner-tree (service-logic/rlm-dsl->orc-dsl
                        [:sequence
                         [:code {:fn (recording-leaf-fn inner-leaf-record)
                                 :reads [] :writes [:inner-result]
                                 :output-schemas {:inner-result :string}}]
                         [:final {:keys [:inner-result]}]])
-          ;; Pass the leaf's own execution-context down (the transitive seam).
           inner-ctx (:execution-context ctx)
-          inner-result (tree-executor/execute-tree inner-tree inner-ctx
+          inner-result (tp-core/execute-tree inner-tree inner-ctx
                          {:sandbox-vars {} :timeout-ms 20000})]
       {:result-a {:inner-status (:status inner-result)}})))
 
@@ -214,14 +187,14 @@
           tool-context      {:workspace "/ws" :marker :STUB-TOOL-CONTEXT :depth :outer}]
       (with-test-context [ctx {}]
         (let [exec-ctx (assoc ctx :tool-context tool-context)
-              outer-tree (rlm-dsl/rlm-dsl->orc-dsl
+              outer-tree (service-logic/rlm-dsl->orc-dsl
                            [:sequence
                             [:code {:fn (nested-emitting-leaf-fn inner-leaf-record)
                                     :reads [] :writes [:result-a]
                                     :output-schemas
                                     {:result-a [:map [:inner-status :keyword]]}}]
                             [:final {:keys [:result-a]}]])
-              result (tree-executor/execute-tree outer-tree exec-ctx
+              result (tp-core/execute-tree outer-tree exec-ctx
                        {:sandbox-vars {} :timeout-ms 30000})]
           (is (= :success (:status result))
               (str "outer tree should succeed; got " (:status result) " error " (:error result)))
@@ -232,9 +205,6 @@
             (is (= tool-context (:tool-context-val rec))
                 "the deeper leaf's :tool-context should equal the outer RLM context's opaque tool-context")))))))
 
-;; =============================================================================
-;; G2 Cycle 4 — :available-code-nodes VALUE reaches the RLM code-gen inputs
-;; =============================================================================
 
 (def ^:private catalog-value
   "STUB-CATALOG-XYZZY: fs/write {:path :content} -> {:status}")
@@ -259,7 +229,7 @@
       (with-redefs [llm/predict (fn [_provider module inputs _opts]
                                      (reset! captured {:module module :inputs inputs})
                                      (throw (ex-info "capture-abort" {})))]
-        (try (executor/execute-repl-researcher-rlm node blackboard :probe-provider ctx)
+        (try (tp-core/execute-repl-researcher-rlm node blackboard :probe-provider ctx)
              (catch Throwable _ nil))))
     @captured))
 
@@ -272,8 +242,6 @@
           "runtime inputs map should CONTAIN :available-code-nodes (RED before G2)")
       (is (= catalog-value (:available-code-nodes inputs))
           "the inputs :available-code-nodes should equal the configured catalog VALUE")
-      ;; the module already declares the field + catalog note (pre-existing);
-      ;; sanity-check the field is declared so value + declaration line up.
       (is (contains? (set (map :name (:inputs module))) :available-code-nodes)
           "module should declare the :available-code-nodes input field")))
 
@@ -283,16 +251,6 @@
       (is (not (contains? inputs :available-code-nodes))
           "runtime inputs map should NOT contain :available-code-nodes when unconfigured"))))
 
-;; =============================================================================
-;; WS-5b — Phase-1 inline tool calls thread the tick :tool-context to the gate
-;; =============================================================================
-;;
-;; The SCI sandbox invokes MCP tools via a two-arg (tool-name args) caller, so
-;; the raw :call-tool-fn never sees the tick :tool-context — an inline (Phase-1)
-;; mutate fail-closes on a missing tool-context, and a granted resume never
-;; re-applies (the WS-5b FALSE SUCCESS). phase1-call-tool-fn wraps the raw
-;; caller to FORWARD the tick :tool-context as the third arg — the same 3-arity
-;; gate contract the Phase-2 :code leaf uses (make-stub-call-tool-fn above).
 
 (deftest ws5b-phase1-call-tool-fn-threads-tool-context
   (testing "with :tool-context present, the Phase-1 caller forwards it as the 3rd gate arg"
@@ -301,15 +259,14 @@
                  ([tn args] (reset! seen {:arity 2 :tn tn :args args}) :two)
                  ([tn args tc] (reset! seen {:arity 3 :tn tn :args args :tc tc}) :three))
           tc   {:marker :STUB-TOOL-CONTEXT}
-          ctf  (executor/phase1-call-tool-fn {:call-tool-fn raw :tool-context tc})]
-      ;; the sandbox still calls it two-arg; the wrapper adds the tool-context.
+          ctf  (service-logic/phase1-call-tool-fn {:call-tool-fn raw :tool-context tc})]
       (is (= :three (ctf "apply_patch" {:patch "p"}))
           "the wrapped caller routed to the 3-arity gate arm")
       (is (= {:arity 3 :tn "apply_patch" :args {:patch "p"} :tc tc} @seen)
           "the gate saw the SAME tick tool-context the wrapper forwarded")))
   (testing "without :tool-context, the raw caller is returned UNCHANGED (backward-compatible)"
     (let [raw (fn ([tn args] :two))]
-      (is (identical? raw (executor/phase1-call-tool-fn {:call-tool-fn raw}))
+      (is (identical? raw (service-logic/phase1-call-tool-fn {:call-tool-fn raw}))
           "no tool-context -> no wrapping (non-coding hosts unaffected)")))
   (testing "without :call-tool-fn, returns nil (sandbox binds no tools)"
-    (is (nil? (executor/phase1-call-tool-fn {:tool-context {:marker :X}})))))
+    (is (nil? (service-logic/phase1-call-tool-fn {:tool-context {:marker :X}})))))

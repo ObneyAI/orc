@@ -1076,7 +1076,7 @@ Configure retries for unreliable operations:
 
 ### Evaluation Judges
 
-A judge grades what a node did. You declare judges at the workflow level with `sheet/judges`, parallel to `sheet/blackboard`, and attach them to nodes by name with `:judges`. Attaching a judge enables it. Full reference: [EVALUATION-COMPONENT.md](EVALUATION-COMPONENT.md). Every code block marked `;; docs-example: <id>` in this section is run by `components/evaluation/test/ai/obney/orc/evaluation/docs_examples_test.clj`.
+A judge grades what a node did. You declare judges at the workflow level with `sheet/judges`, parallel to `sheet/blackboard`, and attach them to nodes by name with `:judges`. Attaching a judge enables it. Full reference: [EVALUATION-COMPONENT.md](EVALUATION-COMPONENT.md). Every code block marked `;; docs-example: <id>` in this section is run by `components/evaluation-service/test/ai/obney/orc/evaluation/docs_examples_test.clj`.
 
 #### `:judges` on every node
 

@@ -68,7 +68,6 @@
           (is (= ["Vendor" "Invoice #" "Date" "Due Date" "Subtotal" "Tax" "Total"]
                  header)
               "Header row must match the documented columns exactly")
-          ;; 1 header + 2 invoice rows = 3 rows
           (is (= 3 (count (ss/row-seq summary)))
               "Should have 1 header row + 2 invoice rows"))))))
 
@@ -109,6 +108,5 @@
           (let [wb (ss/load-workbook path)
                 summary (ss/select-sheet "Summary" wb)]
             (is (some? summary) "Summary sheet must exist even with no invoices")
-            ;; Just the header row
             (is (= 1 (count (ss/row-seq summary)))
                 "Summary should have only the header row")))))))

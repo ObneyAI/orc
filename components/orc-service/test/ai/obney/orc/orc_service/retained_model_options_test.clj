@@ -4,9 +4,8 @@
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.ordinary-model-plan :as plan]
-            [ai.obney.orc.orc-service.core.model-call-journal :as journal]
-            [ai.obney.orc.orc-service.inherited-profile-fallback-repro-test])
+            [ai.obney.orc.orc-service.inherited-profile-fallback-repro-test]
+            [ai.obney.orc.orc-service.core.logic :as service-logic])
   (:import [com.sun.net.httpserver HttpServer HttpHandler] [java.net InetSocketAddress]
            [java.nio.file Files] [java.util.concurrent TimeUnit]))
 
@@ -83,10 +82,10 @@
               (doseq [[candidate expected-opts]
                       (map vector (:candidates retained) [opts (merge opts backup-opts)])]
                 (is (= expected-opts (select-keys (:options candidate) (keys expected-opts)))))
-              (is (not= (journal/retained-configuration-id retained)
-                        (journal/retained-configuration-id (assoc-in retained [:candidates 0 :options :stop] ["CHANGED"]))))
-              (is (not= (journal/retained-configuration-id retained)
-                        (journal/retained-configuration-id (assoc-in retained [:candidates 0 :options :reasoning-effort] :low))))
+              (is (not= (service-logic/retained-configuration-id retained)
+                        (service-logic/retained-configuration-id (assoc-in retained [:candidates 0 :options :stop] ["CHANGED"]))))
+              (is (not= (service-logic/retained-configuration-id retained)
+                        (service-logic/retained-configuration-id (assoc-in retained [:candidates 0 :options :reasoning-effort] :low))))
               (swap! proofs conj {:variant variant :directory (.getAbsolutePath dir) :requests actual :events events
                                   :plan retained :result result})))))
       (is (empty? @errors))
@@ -102,7 +101,7 @@
                                     :config {:api-key "SYNTHETIC-NOT-SENT"}})
     (doseq [options [{:unknown-generation-control true} {:api-key "SYNTHETIC-NEVER-PERSIST"}
                     {:api-base "https://must-not-override.example"}]]
-      (let [failure (try (plan/resolve-plan node primary module options) nil
+      (let [failure (try (service-logic/resolve-plan node primary module options) nil
                          (catch clojure.lang.ExceptionInfo error error))]
         (is (instance? clojure.lang.ExceptionInfo failure))
         (is (= :model-plan-incompatible (:failure-kind (ex-data failure))))

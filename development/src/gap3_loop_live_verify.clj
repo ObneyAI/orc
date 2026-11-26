@@ -29,7 +29,6 @@
             [ai.obney.orc.evaluation.interface.schemas]
             [ai.obney.orc.evaluation.core.judge-runtime]
             [ai.obney.orc.ontology.interface :as ontology]
-            [ai.obney.orc.ontology.core.consolidator]
             [ai.obney.orc.orc-service.core.todo-processors :as orc-tp]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -41,7 +40,10 @@
             [clojure.string :as str]
             [ai.obney.orc.ontology.test-support.seed-principles :as principles]
             [runner]
-            [legal-issue-detection :as task]))
+            [legal-issue-detection :as task]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (def report-dir
   "development/bench/gap3_loop_live_verify")
@@ -257,10 +259,7 @@
   (println "===========================================================")
   (u/start-publisher! {:type :console})
   (runner/start!)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))
-        ;; Gap-3: turn on Living Description loop — this is what
-        ;; unlocks Gap-1's per-event judge runtime + Gap-5's default
-        ;; judge attachment on repl-researcher nodes.
+  (let [ctx (runner/current-context)
         _ (do (println "\n--- Enabling Living Description (Gap-1+Gap-5 activation) ---")
               (cp/process-command
                 (assoc ctx :command
@@ -331,6 +330,6 @@
      :judges-cycle-2 (:total judge-snap-2)
      :final-version (:version cycle-2-snap)}))
 
-(comment
+#_(do
   (require '[gap3-loop-live-verify :as v])
   (v/verify! {:runs-per-cycle 3}))

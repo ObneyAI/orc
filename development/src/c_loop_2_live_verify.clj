@@ -63,10 +63,7 @@
     (throw (ex-info "OPENROUTER_API_KEY must be set" {})))
   (u/start-publisher! {:type :console})
   (runner/start!)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))
-        ;; Distinctive name to keep the corpus clean across re-runs.
-        ;; Same name + parent → same UUID (C-Loop-2 D4), so re-runs
-        ;; idempotently land at the same minted concept.
+  (let [ctx (runner/current-context)
         mint-name "c-loop-2-live-verify-polysomnography-grader"
         body (distinctive-mint-body)]
     (try
@@ -81,7 +78,6 @@
                 :provenance :human-authored}))
       (println "  → mint dispatched")
 
-      ;; Read the audit event to confirm what target-id was assigned
       (Thread/sleep 200)
       (let [audit-events (filter #(= mint-name (:name %))
                                   (into [] (es/read (:event-store ctx)
@@ -147,6 +143,6 @@
       (finally
         (runner/stop!)))))
 
-(comment
+#_(do
   (require '[c-loop-2-live-verify :as v] :reload)
   (v/verify!))

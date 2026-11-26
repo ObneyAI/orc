@@ -1949,22 +1949,19 @@ Query examples:
 ## File Structure
 
 ```
-components/ontology/
+components/ontology-service/
 ├── deps.edn
 └── src/ai/obney/orc/ontology/
-    ├── interface.clj              ;; Public API
-    ├── interface/schemas.clj      ;; Malli schemas
+    ├── interface.clj
+    ├── interface/
+    │   ├── evolutionary.clj        Ingestion and evolution API
+    │   └── schemas.clj             Malli schemas
     └── core/
-        ├── static_ontology.clj    ;; Static concept definitions
-        ├── read_models.clj        ;; Event projections (incl. learned-rules)
-        ├── commands.clj           ;; Command handlers (incl. self-learning)
-        ├── queries.clj            ;; Query handlers
-        ├── serialization.clj      ;; TTL export
-        ├── classifier.clj         ;; Evaluation classification
-        ├── graph.clj              ;; BFS, RRF, temporal (Phase 3)
-        ├── retrieval.clj          ;; Few-shot, hybrid, self-learning retrieval
-        ├── rule_extraction.clj    ;; Rule extraction workflow (Self-Learning)
-        └── embedding.clj          ;; DJL embeddings, schema analysis (Phase 4)
+        ├── logic.clj               Graph algorithms, retrieval and extraction helpers
+        ├── read_models.clj         Event projections
+        ├── commands.clj            Command handlers
+        ├── queries.clj             Queries and projection reads
+        └── todo_processors.clj     Event-driven side effects
 ```
 
 ## Phase 3: Graph Traversal & Few-Shot Retrieval
@@ -2480,29 +2477,20 @@ Build ontology context using hybrid search:
 
 ## Known issues
 
-### BFS scoping — fixed in feature branch, not yet on main
+### Ontology scope in hybrid retrieval
 
-**Source:** `components/ontology/src/ai/obney/orc/ontology/core/retrieval.clj:116`
-
-On the current `main` branch, `expand-concept-neighborhood` has no `:ontology-id` parameter and walks all concepts regardless of ontology boundary. Embedding and ColBERT searches are correctly scoped; BFS is not.
-
-```clojure
-;; Current signature on main — no :ontology-id:
-(defn expand-concept-neighborhood
-  [seed-uris & {:keys [max-depth decay graph]
-                :or {max-depth 2 decay 0.6}}]
-  ...)
-```
-
-**Workaround today:** call `hybrid-search` with `:signals #{:embedding}` or `:signals #{:graph :embedding}` AND pass `:ontology-id` — the embedding signal is correctly scoped. For purely scoped results, use `semantic-search-concepts` directly.
-
-**Fix landed:** `feature/ontology-architecture` (S02) — `expand-concept-neighborhood` now accepts `:ontology-id`/`:ontology-ids` and builds a scoped concept graph accordingly. Back-compat preserved: callers without `:ontology-id` behave identically to before. Merges to `main` when that branch lands.
+`hybrid-search` applies `:ontology-id` and `:ontology-ids` to the embedding signal.
+Its graph signal expands seed URIs against the default static graph. Its ColBERT
+signal reads the selected index. To restrict results by ontology ID, use
+`semantic-search-concepts` directly or pass `:signals #{:embedding}` and
+`:ontology-id` to `hybrid-search`. When enabling ColBERT, choose an index
+built for that ontology. [Ontology public interface](../components/ontology-service/src/ai/obney/orc/ontology/interface.clj)
 
 ---
 
 ### `tree-fingerprint` is structural — instruction variants collapse
 
-**Source:** `components/orc-service/src/ai/obney/orc/orc_service/core/rlm_fingerprint.clj:30-50`
+**Source:** [Fingerprint implementation](../components/orc-service/src/ai/obney/orc/orc_service/core/logic.clj)
 
 The fingerprint replaces every `:instruction` string with the canonical placeholder `:fingerprint/instruction` before hashing. Two `:repl-researcher` nodes with the same tree shape but different instruction content hash to the **same fingerprint**.
 

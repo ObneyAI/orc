@@ -8,12 +8,12 @@
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.schema-util.interface :as schema-util]
             [ai.obney.orc.orc-service.core.block :as block]
-            [ai.obney.orc.orc-service.core.dsl :as dsl]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.todo-processors :as tp]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
 (def captured-child-inputs (atom nil))
 (def empty-release (atom nil))
@@ -68,7 +68,7 @@
       (throw (ex-info "item two failed" {:id 2}))
       {:item (assoc item :processed true)})))
 (def blocked-payload {:kind :approval-required :request-id "delegate-block-1"})
-(defn block-child [_] (block/block! blocked-payload))
+(defn block-child [_] (service-logic/block! blocked-payload))
 (defn fallback-recovery [_]
   (swap! fallback-recovery-calls inc)
   {:recovered "yes"})
@@ -116,27 +116,27 @@
           (h/read-all-events ctx)))
 
 (defn- build-config-fixture! [ctx suffix]
-  (let [target-id (dsl/build-workflow!
+  (let [target-id (service-commands/build-workflow!
                    ctx
-                   (dsl/workflow (str "delegate-config-target-" suffix)
-                     (dsl/blackboard {:input :string :output :string})
-                     (dsl/code "copy" :fn "consumer.delegate/copy"
+                   (service-logic/workflow (str "delegate-config-target-" suffix)
+                     (service-logic/dsl-blackboard {:input :string :output :string})
+                     (service-logic/code "copy" :fn "consumer.delegate/copy"
                        :reads [:input] :writes [:output])))
-        parent-id (dsl/build-workflow!
+        parent-id (service-commands/build-workflow!
                    ctx
-                   (dsl/workflow (str "delegate-config-parent-" suffix)
-                     (dsl/blackboard {:input :string :output :string :other :string})
-                     (dsl/delegate "child" :target-sheet-id target-id
+                   (service-logic/workflow (str "delegate-config-parent-" suffix)
+                     (service-logic/dsl-blackboard {:input :string :output :string :other :string})
+                     (service-logic/delegate "child" :target-sheet-id target-id
                        :reads [:input] :writes [:output])))
-        leaf-id (dsl/build-workflow!
+        leaf-id (service-commands/build-workflow!
                  ctx
-                 (dsl/workflow (str "delegate-config-leaf-" suffix)
-                   (dsl/blackboard {:input :string})
-                   (dsl/code "leaf" :fn "consumer.delegate/noop" :reads [:input])))]
+                 (service-logic/workflow (str "delegate-config-leaf-" suffix)
+                   (service-logic/dsl-blackboard {:input :string})
+                   (service-logic/code "leaf" :fn "consumer.delegate/noop" :reads [:input])))]
     {:target-id target-id
      :parent-id parent-id
-     :delegate-id (get-in (dsl/export-sheet ctx parent-id) [:nodes :id])
-     :leaf-id (get-in (dsl/export-sheet ctx leaf-id) [:nodes :id])
+     :delegate-id (get-in (service-commands/export-sheet ctx parent-id) [:nodes :id])
+     :leaf-id (get-in (service-commands/export-sheet ctx leaf-id) [:nodes :id])
      :leaf-sheet-id leaf-id}))
 
 (deftest det-e2e-172-delegate-target-validation-matrix
@@ -197,7 +197,7 @@
                      :timeout-ms 1
                      :max-ticks 1
                      :inherit-ontology? false))
-            node (:nodes (dsl/export-sheet ctx parent-id))]
+            node (:nodes (service-commands/export-sheet ctx parent-id))]
         (is (not (anomaly? result)))
         (is (= {:target-sheet-id target-id
                 :reads [:input :other]
@@ -376,7 +376,7 @@
                        (sheet/blackboard {:result :string})
                        (sheet/delegate "child" :target-sheet-id target-a
                          :writes [:result])))
-          delegate-id (get-in (dsl/export-sheet ctx parent-id) [:nodes :id])]
+          delegate-id (get-in (service-commands/export-sheet ctx parent-id) [:nodes :id])]
       (is (not (anomaly? (publish! ctx parent-id))))
       (is (not (anomaly? (execution-mode! ctx parent-id :published))))
       (is (not (anomaly?
@@ -409,7 +409,6 @@
                        (sheet/blackboard {:result :string})
                        (sheet/delegate "child" :target-sheet-id target-id
                          :writes [:result])))]
-      ;; Change the target draft after publishing v1.
       (is (= target-id
              (sheet/build-workflow!
               ctx
@@ -495,9 +494,9 @@
       (is (= child-result-source (get-in consumer [:read-sources :result]))
           (pr-str consumer))
       (is (= "origin-parent"
-             (value-log/resolve-source ctx (:tenant-id ctx) parent-handoff-source)))
+             (service-read-models/resolve-source ctx (:tenant-id ctx) parent-handoff-source)))
       (is (= "origin-parent-child"
-             (value-log/resolve-source ctx (:tenant-id ctx) child-result-source))))))
+             (service-read-models/resolve-source ctx (:tenant-id ctx) child-result-source))))))
 
 (defn- input-contract-workflow! [ctx suffix parent-schema child-schema]
   (let [child-id (sheet/build-workflow!
@@ -763,8 +762,6 @@
                          (sheet/delegate "second" :target-sheet-id child-id
                            :reads [:input] :writes [:result]))))
           result (sheet/execute ctx parent-id {:input "same"} :timeout-ms 3000)
-          ;; The trace projection is asynchronous: wait for the root and both
-          ;; children, as every other trace-family read in this file does.
           family (settled-family ctx (:trace-id result) 3)
           children (filter :parent-trace-id (:traces family))
           deliveries (filter #(and (= :sheet/node-execution-completed (:event/type %))
@@ -1169,7 +1166,7 @@
                                                     (h/read-all-events ctx))
                                               (do (Thread/yield) (recur))))
                           terminal (loop []
-                                     (or (runtime/durable-terminal-result ctx child-tick-id)
+                                     (or (service-commands/durable-terminal-result ctx child-tick-id)
                                          (do (Thread/yield) (recur))))]
                       (is (= expected-status (:status terminal)))
                       (is (= ::waiting (deref pending 50 ::waiting)))
@@ -1240,12 +1237,6 @@
   (assoc ctx :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))
 
 (deftest det-e2e-205-recovery-while-child-running
-  ;; The run and delegate bounds are 600 s, not 120 s: on the hosted runner the
-  ;; stop, drain and recovery settle of this test approached two minutes, and a
-  ;; run that reaches its own bound is cancelled and completed by the timeout
-  ;; path before the recovery under test can resume it (seen twice on CI as
-  ;; "Last scan: []" with a cancelled, completed abandoned tick). The bound is
-  ;; a ceiling, never an assertion; the recovery assertions below are unchanged.
   (h/with-async-test-context [ctx]
     (reset! recovery-effect-calls 0)
     (let [child-id (sheet/build-workflow!
@@ -1279,17 +1270,14 @@
       (let [stop-result (future (h/stop-test-processors! ctx))]
         (deliver retire-release true)
         (is (not= ::stop-timeout (deref stop-result 5000 ::stop-timeout))))
-      (runtime/deregister-completion! (:tick-id abandoned-start))
+      (service-logic/deregister-completion! (:tick-id abandoned-start))
       (let [recovered-ctx (assoc ctx :processors (h/start-test-processors ctx))
             last-scan (atom nil)]
         (try
           (is (h/settle-until!
-               #(some :resumed? (reset! last-scan (runtime/resume-in-progress!
+               #(some :resumed? (reset! last-scan (sheet/resume-in-progress!
                                                      (an-hour-later recovered-ctx))))
                :timeout-ms 30000)
-              ;; A CI-only failure here said nothing; the message now carries
-              ;; what the last scan actually returned and which of the
-              ;; abandoned start's events the store holds.
               (str "recovery waits until the abandoned frontier is projected. Last scan: "
                    (pr-str @last-scan)
                    " Events for the abandoned tick: "
@@ -1354,9 +1342,6 @@
              (es/append (:event-store ctx)
                         {:tenant-id (:tenant-id ctx) :events (vec events)})
              (vec events))]
-      ;; The first recovery appends the continuation. Grain's strong
-      ;; read-your-own-write contract makes that fact immediately visible to
-      ;; every later recovery, including concurrent duplicate deliveries.
       (is (some? (append-continuation!)) "recovery appended parent continuation")
       (is (h/settle-until!
            #(some (fn [event]
@@ -1434,9 +1419,7 @@
                      (assoc ctx :event (:terminal gap)))
           observe! #(tp/execute-delegate-node
                      (assoc ctx :event (:parent-start gap)))
-          recover! #(runtime/resume-in-progress! ctx)]
-      ;; Exercise several orderings concurrently. All three paths converge on
-      ;; the child's durable tick identity and the parent's completion CAS.
+          recover! #(sheet/resume-in-progress! ctx)]
       (doseq [ordering [[deliver! observe! recover!]
                         [recover! deliver! observe!]
                         [observe! recover! deliver!]]]

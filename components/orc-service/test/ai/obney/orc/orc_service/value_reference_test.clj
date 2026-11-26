@@ -1,12 +1,12 @@
 (ns ai.obney.orc.orc-service.value-reference-test
   "End-to-end invariants for canonical values and cross-tick references."
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
-            [ai.obney.orc.orc-service.core.value-storage :as value-storage]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.file-store.interface.protocol :as file-store]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
 (def ^:private large-value (apply str (repeat 4096 "reference-payload-")))
 
@@ -33,20 +33,20 @@
         context {:tenant-id "tenant-a"
                  :orc/value-storage {:type :file-store}
                  :orc/file-store store}
-        external (value-storage/prepare-write context body)
+        external (service-logic/prepare-write context body)
         file-id (get-in external [:value-reference :file-id])]
     (testing "event-store remains the default"
-      (is (= body (value-storage/prepare-write {} body))))
+      (is (= body (service-logic/prepare-write {} body))))
     (testing "file-store mode externalizes and round-trips every value"
       (is (not (contains? external :value)))
-      (is (= {:n 42} (value-storage/event-value context external))))
+      (is (= {:n 42} (service-logic/event-value context external))))
     (testing "missing and corrupt objects fail loudly"
       (swap! objects dissoc file-id)
       (is (thrown? clojure.lang.ExceptionInfo
-                   (value-storage/event-value context external)))
+                   (service-logic/event-value context external)))
       (swap! objects assoc file-id (byte-array [1 2 3]))
       (is (thrown? clojure.lang.ExceptionInfo
-                   (value-storage/event-value context external))))))
+                   (service-logic/event-value context external))))))
 
 (defn- setup-nested-producer! [ctx]
   (let [sheet-id (-> (h/run-and-apply! ctx (h/make-create-sheet-command :name "nested-ref"))
@@ -97,7 +97,7 @@
   (testing "leaf bytes are stored once while every sequence retains provenance"
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id leaf sequences]} (setup-nested-producer! ctx)
-            result (runtime/execute ctx sheet-id {})
+            result (service-commands/execute ctx sheet-id {})
             summaries-settled?
             (h/settle-until!
              #(= 2
@@ -136,7 +136,7 @@
                                             :prefix "test/orc-values"}
                         :orc/file-store store}}]
         (let [{:keys [sheet-id]} (setup-nested-producer! ctx)
-              result (runtime/execute ctx sheet-id {})
+              result (service-commands/execute ctx sheet-id {})
               events (h/read-all-events ctx)
               writes (event-type events :sheet/execution-value-written)
               blob-write (some #(when (= :blob (:key %)) %) writes)]
@@ -147,7 +147,7 @@
           (is (every? :value-reference writes))
           (is (= (count writes) (count @objects)))
           (is (= large-value
-                 (value-log/resolve-source
+                 (service-read-models/resolve-source
                   ctx (:tenant-id ctx)
                   {:tick-id (:tick-id blob-write)
                    :event-id (:event/id blob-write)}))))))))
@@ -167,7 +167,7 @@
           (h/run-and-apply! ctx (h/make-set-delegate-config-command
                                  parent-id delegate child-id
                                  :reads [:input] :writes [:output]))
-          (let [result (runtime/execute ctx parent-id {:input large-value})
+          (let [result (service-commands/execute ctx parent-id {:input large-value})
                 events (h/read-all-events ctx)
                 starts (event-type events :sheet/tree-tick-started)
                 input-writes (filter #(and (= :sheet/execution-value-written (:event/type %))
@@ -185,7 +185,7 @@
             (is (every? #(not (clojure.string/includes? (pr-str %) large-value)) starts)
                 "tick-started events contain structure and references, never input bytes")
             (is (= large-value
-                   (value-log/resolve-source (:event-store ctx) (:tenant-id ctx)
+                   (service-read-models/resolve-source (:event-store ctx) (:tenant-id ctx)
                                              (:source (first refs)))))))))))
 
 (deftest reference-resolution-is-safe-and-transitive
@@ -215,17 +215,16 @@
                                  :body {:sheet-id sheet :tick-id tick-d :key :cycle
                                         :value-id cycle-d-id
                                         :source {:tick-id tick-c :event-id cycle-c-id}}})]
-        ;; Reference first proves resolution does not depend on append or UUID order.
         (es/append store {:tenant-id tenant :events [ref-event]})
         (es/append store {:tenant-id tenant :events [value-event]})
-        (is (= large-value (value-log/resolve-source store tenant source)))
+        (is (= large-value (service-read-models/resolve-source store tenant source)))
         (is (= large-value
-               (value-log/resolve-source store tenant
+               (service-read-models/resolve-source store tenant
                                          {:tick-id tick-b :event-id ref-id})))
-        (is (nil? (value-log/resolve-source store tenant
+        (is (nil? (service-read-models/resolve-source store tenant
                                             {:tick-id tick-a :event-id (random-uuid)})))
         (es/append store {:tenant-id tenant :events [cycle-c cycle-d]})
-        (is (nil? (value-log/resolve-source store tenant
+        (is (nil? (service-read-models/resolve-source store tenant
                                             {:tick-id tick-c :event-id cycle-c-id})))))))
 
 (deftest concurrent-delegates-remain-linear-and-isolated
@@ -235,7 +234,7 @@
             {parent-id :sheet-id} (setup-delegate-sheet! ctx child-id "concurrent-ref-parent")
             payloads (mapv #(str large-value %) (range 8))
             runs (mapv (fn [payload]
-                         (future (runtime/execute ctx parent-id {:input payload}
+                         (future (service-commands/execute ctx parent-id {:input payload}
                                                   :timeout-ms 20000)))
                        payloads)
             results (mapv deref runs)

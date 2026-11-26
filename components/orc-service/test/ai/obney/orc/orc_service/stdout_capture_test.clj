@@ -2,9 +2,8 @@
   "Actual public sandbox/executor calls; no providers, tools or stores mocked."
   (:require [clojure.test :refer [deftest is testing]]
             [sci.core :as sci]
-            [ai.obney.orc.orc-service.core.sci-sandbox :as plain]
-            [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm]
-            [ai.obney.orc.orc-service.core.executor :as executor])
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors])
   (:import [java.io StringWriter]))
 
 (defn- restored-call [f]
@@ -18,9 +17,9 @@
           result)))))
 
 (defn- eval-plain [code]
-  (plain/execute-code (plain/build-sci-context {}) code))
+  (service-logic/sci-sandbox-execute-code (service-logic/build-sci-context {}) code))
 (defn- eval-rlm [code]
-  (rlm/execute-rlm-code (rlm/build-rlm-context {:blackboard {} :declared-writes []}) code))
+  (service-logic/execute-rlm-code (service-processors/build-rlm-context {:blackboard {} :declared-writes []}) code))
 
 (deftest plain-and-researcher-output-preserve-results-and-normal-errors
   (doseq [[surface evaluate] [[:plain eval-plain] [:researcher eval-rlm]]]
@@ -47,7 +46,7 @@
     (let [f (:raw-result (eval-plain source)) writer (StringWriter.)
           host-root *out* sci-root @sci/out
           result (binding [*out* writer]
-                   (let [r (executor/execute-code {:fn f :reads [] :writes [:answer]} {} {})]
+                   (let [r (service-logic/executor-execute-code {:fn f :reads [] :writes [:answer]} {} {})]
                      (is (identical? writer *out*))
                      (is (identical? sci-root @sci/out)) r))]
       (is (identical? host-root *out*))
@@ -64,7 +63,7 @@
            [(fn [_] (prn :authored true) (throw (ex-info "authored-error" {:preserved true}))) :failure "authored-error"]]]
     (let [writer (StringWriter.) so @sci/out
           result (binding [*out* writer]
-                   (let [r (executor/execute-code {:fn f :reads [] :writes [:answer]} {} {})]
+                   (let [r (service-logic/executor-execute-code {:fn f :reads [] :writes [:answer]} {} {})]
                      (is (identical? writer *out*))
                      (is (identical? so @sci/out)) r))]
       (is (= ":authored true\n" (str writer)))
@@ -78,11 +77,11 @@
     (binding [*out* host]
       (sci/with-bindings {sci/out sci-outer}
         (let [caught (try
-                       (plain/call-with-output-writer inner
+                       (service-logic/call-with-output-writer inner
                          #(do (is (identical? inner *out*))
                               (is (identical? inner @sci/out))
                               (println :host true)
-                              (sci/eval-string* (plain/build-sci-context {}) "(prn :sci false)")
+                              (sci/eval-string* (service-logic/build-sci-context {}) "(prn :sci false)")
                               (throw sentinel)))
                        (catch Exception e e))]
           (is (identical? sentinel caught) "The helper propagates the exact exception object")

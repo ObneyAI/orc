@@ -2,12 +2,12 @@
   (:require [clojure.test :refer [deftest is]] [clojure.core.async :as a]
             [cheshire.core :as json]
             [ai.obney.orc.orc-service.interface :as orc]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
-            [ai.obney.grain.event-store-v3.interface :as es])
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.orc-service.core.logic :as service-logic])
   (:import [com.sun.net.httpserver HttpServer HttpHandler] [java.net InetSocketAddress]))
 (def proof (atom nil))
 (defn drain [ch]
@@ -47,7 +47,7 @@
                         (orc/llm "answer" :model primary :fallback-models [{:model "fixture/backup"}]
                           :fallback-policy :all-transport :instruction "Answer" :reads [] :writes [:answer])))
                 tick (random-uuid) {:keys [events-ch]} (orc/subscribe-execution ctx tick :llm-deltas? true :raw-deltas? true)
-                done (runtime/register-completion! tick)
+                done (service-logic/register-completion! tick)
                 sent (cp/process-command (assoc ctx :command {:command/name :sheet/tick-tree :command/id (random-uuid)
                        :command/timestamp (time/now) :sheet-id sheet :tick-id tick :inputs {} :options {:timeout-ms 30000}}))
                 result (deref done 30000 ::timeout) envelopes (drain events-ch)

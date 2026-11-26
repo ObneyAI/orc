@@ -1,6 +1,9 @@
 (ns ai.obney.orc.orc-service.gepa-cold-recovery-test
   "Two separate JVMs prove recovery using SQLite, real trees and processors."
-  (:require [clojure.test :as test :refer [is]]
+  (:require [ai.obney.orc.gepa.core.commands :as commands]
+            [ai.obney.orc.gepa.core.logic :as logic]
+            [ai.obney.orc.gepa.core.read-models :as rm]
+            [clojure.test :as test :refer [is]]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [ai.obney.grain.event-store-sqlite-v3.interface]
@@ -8,8 +11,6 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.gepa.interface :as gepa]
-            [ai.obney.orc.gepa.core.task-ledger :as ledger]
-            [ai.obney.orc.gepa.core.metric-runtime :as metric]
             [ai.obney.orc.grain-test-utils.interface :as tu])
   (:import [java.time Instant]
            [java.util UUID]
@@ -37,8 +38,6 @@
         without (into #{} (remove #(or (= "sheet" (namespace %))
                                       (and recover? (= :gepa/on-optimization-recovery-requested %))))
                       (keys @tp/processor-registry*))]
-    ;; Run ordinary sheet effects and, in the second JVM, normal recovery.
-    ;; Frontier/proposer processors are outside this crash-boundary proof.
     (assoc base :processors (h/start-test-processors base without)))))
 
 (defn- facts [ctx] (h/read-all-events ctx))
@@ -50,7 +49,7 @@
   ([ctx sheet-id stage metric-options]
   (let [input {"question" (name stage) "expected" (str "answer:" (name stage))}
         opt (random-uuid)
-        descriptor (metric/prepare! ctx opt metric-options)
+        descriptor (logic/prepare! ctx opt metric-options)
         started (tu/process-command! ctx
                   {:command/name :gepa/start-optimization :optimization-id opt
                    :sheet-id sheet-id :trainset [input] :valset [input]
@@ -71,23 +70,23 @@
         owner {:optimization-id opt :boundary-id boundary-id :call-id call-id
                :owner-id (random-uuid) :epoch 1 :attempt-id (random-uuid)}]
     (is (nil? (:cognitect.anomalies/category started)))
-    (is (= :opened (:status (ledger/open-boundary! ctx
+    (is (= :opened (:status (commands/open-boundary! ctx
                               {:optimization-id opt :boundary-id boundary-id
                                :boundary {:kind :candidate :candidate-id candidate} :tasks [task]}))))
-    (is (= :owned (:status (ledger/claim! ctx owner))))
+    (is (= :owned (:status (commands/claim! ctx owner))))
     (when-not (= stage :before-dispatch)
-      (is (= :dispatched (:status (ledger/dispatch! ctx (assoc owner :attempt-kind :evaluation)))))
+      (is (= :dispatched (:status (commands/dispatch! ctx (assoc owner :attempt-kind :evaluation)))))
       (is (= :success (:status (sheet/execute ctx sheet-id input :tick-id trace-id :timeout-ms 30000)))))
     (let [durable (sheet/get-execution-result ctx trace-id)
           scored (when (= stage :before-aggregate)
-                   (is (= :workflow-recorded (:status (ledger/record-workflow! ctx (assoc owner :result durable)))))
-                   (is (= :metric-started (:status (ledger/begin-metric! ctx owner))))
-                   (let [actual (metric/invoke-once! ctx descriptor input (:outputs durable))]
+                   (is (= :workflow-recorded (:status (commands/record-workflow! ctx (assoc owner :result durable)))))
+                   (is (= :metric-started (:status (commands/begin-metric! ctx owner))))
+                   (let [actual (logic/invoke-once! ctx descriptor input (:outputs durable))]
                      (is (= :completed (:status actual)))
-                     (is (= :completed (:status (ledger/finish! ctx
+                     (is (= :completed (:status (commands/finish! ctx
                                                    (assoc owner :result (assoc (:result actual) :output (:outputs durable)))))))
                      (:result actual)))
-          current (ledger/get-task ctx opt call-id)]
+          current (rm/get-task ctx opt call-id)]
       (is (= (case stage :before-dispatch :claimed :after-tree :running :before-aggregate :completed)
              (:status current)))
       (is (empty? (of-type (opt-facts ctx opt) :gepa/candidate-evaluated)))
@@ -123,7 +122,7 @@
 
 (defn- verify-case! [ctx {:keys [optimization-id candidate-id call-id trace-id input instructions
                                 expected-output stage prepared-score]}]
-  (let [task (ledger/get-task ctx optimization-id call-id)
+  (let [task (rm/get-task ctx optimization-id call-id)
         events (opt-facts ctx optimization-id)
         aggregates (of-type events :gepa/candidate-evaluated)
         starts (filter #(= trace-id (:tick-id %)) (of-type (facts ctx) :sheet/tree-tick-started))
@@ -151,7 +150,7 @@
       (is (= {:total-metric-calls 1 :reserved-metric-calls 0 :available-metric-calls 2}
              (select-keys view [:total-metric-calls :reserved-metric-calls :available-metric-calls]))))
     (is (= {:used 1 :reserved 0 :available 2 :budget 3} (:metric-calls progress)))
-    (is (= {:spent 1 :reserved 0 :available 2 :budget 3} (ledger/get-accounting ctx optimization-id)))))
+    (is (= {:spent 1 :reserved 0 :available 2 :budget 3} (rm/get-accounting ctx optimization-id)))))
 
 (defn recover! [manifest-path]
   (let [{:keys [database tenant-id cases prepare-pid]} (edn/read-string (slurp manifest-path))
@@ -217,12 +216,12 @@
     (try
       (is (not= prepare-pid (.pid (java.lang.ProcessHandle/current))))
       (is (= descriptor (:metric-descriptor (gepa/get-optimization-summary ctx optimization-id))))
-      (is (= :metric-registration-missing (:reason (metric/resolve-metric ctx descriptor))))
+      (is (= :metric-registration-missing (:reason (logic/resolve-metric ctx descriptor))))
       (is (= 1 (count (gepa/recover-in-progress! ctx))))
       (is (h/settle-until!
-            #(= :recovery-required (:status (ledger/get-task ctx optimization-id call-id)))
+            #(= :recovery-required (:status (rm/get-task ctx optimization-id call-id)))
             :timeout-ms 10000))
-      (let [task (ledger/get-task ctx optimization-id call-id)
+      (let [task (rm/get-task ctx optimization-id call-id)
             events (facts ctx)]
         (is (= :metric-registration-missing (get-in task [:recovery-reason :code])))
         (is (= 1 (count (of-type events :gepa/task-recovery-required))))
@@ -230,14 +229,12 @@
         (is (= 1 (count (of-type events :sheet/node-execution-completed))))
         (is (empty? (of-type events :gepa/task-metric-started)))
         (is (empty? (of-type events :gepa/candidate-evaluated)))
-        (is (= 1 (:spent (ledger/get-accounting ctx optimization-id))))
+        (is (= 1 (:spent (rm/get-accounting ctx optimization-id))))
         (is (= expected-output (:outputs (sheet/get-execution-result ctx trace-id)))))
       (gepa/register-metric! ctx descriptor
         (fn [expected actual]
           (swap! calls conj [expected actual])
           {:score 0.75 :feedback custom-feedback}))
-      ;; Restoring a capability does not steal a healthy lease. Advance the
-      ;; injected clock beyond the attention owner's lease, then public recovery.
       (swap! clock #(.plusSeconds % 91))
       (is (= 1 (count (gepa/recover-in-progress! ctx))))
       (is (h/settle-until!
@@ -245,7 +242,7 @@
             :timeout-ms 10000))
       (verify-case! ctx fixture)
       (is (= [[input expected-output]] @calls))
-      (is (= 0.75 (get-in (ledger/get-task ctx optimization-id call-id) [:result :score])))
+      (is (= 0.75 (get-in (rm/get-task ctx optimization-id call-id) [:result :score])))
       (let [aggregate (first (of-type (opt-facts ctx optimization-id) :gepa/candidate-evaluated))]
         (is (= {0 custom-feedback} (:feedbacks aggregate)))
         (is (= {0 expected-output} (:outputs aggregate))))
@@ -286,7 +283,7 @@
                        (sheet/code "finish" :fn "ai.obney.orc.orc-service.gepa-cold-recovery-test/finish-retained"
                          :reads [:retained] :writes [:answer]))))
         input {"question" "running" "expected" "retained:running:finished"}
-        opt (random-uuid) descriptor (metric/prepare! ctx opt {})
+        opt (random-uuid) descriptor (logic/prepare! ctx opt {})
         _ (tu/process-command! ctx {:command/name :gepa/start-optimization :optimization-id opt
                                    :sheet-id sheet-id :trainset [input] :valset [input]
                                    :metric-descriptor descriptor :config {:max-metric-calls 3}})
@@ -305,11 +302,11 @@
               :metric-retry-safe? true :max-metric-attempts 3}
         owner {:optimization-id opt :boundary-id boundary-id :call-id call-id
                :owner-id (random-uuid) :epoch 1 :attempt-id (random-uuid)}]
-    (is (= :opened (:status (ledger/open-boundary! ctx {:optimization-id opt :boundary-id boundary-id
+    (is (= :opened (:status (commands/open-boundary! ctx {:optimization-id opt :boundary-id boundary-id
                                                        :boundary {:kind :candidate :candidate-id candidate}
                                                        :tasks [task]}))))
-    (is (= :owned (:status (ledger/claim! ctx owner))))
-    (is (= :dispatched (:status (ledger/dispatch! ctx (assoc owner :attempt-kind :evaluation)))))
+    (is (= :owned (:status (commands/claim! ctx owner))))
+    (is (= :dispatched (:status (commands/dispatch! ctx (assoc owner :attempt-kind :evaluation)))))
     (is (nil? (:cognitect.anomalies/category
                 (tu/process-command! (assoc ctx :gepa/patched-instructions instructions)
                   {:command/name :sheet/tick-tree :sheet-id sheet-id :tick-id trace-id :inputs input}))))
@@ -333,18 +330,12 @@
         (pr-str {:database database :tenant-id tenant-id
                  :prepare-pid (.pid (java.lang.ProcessHandle/current))
                  :nodes nodes
-                 ;; Event timestamps print as tagged time literals. Keep the full
-                 ;; event verbatim as text so the outer EDN manifest needs only
-                 ;; built-in readers, while preserving the exact evidence check.
                  :first-completion-edn (pr-str (first first-completions))
                  :second-start-id (:event/id (first second-starts))
                  :fixture {:optimization-id opt :candidate-id candidate :call-id call-id
                            :trace-id trace-id :input input :instructions instructions :stage :running
                            :expected-output {:question "running" :expected "retained:running:finished"
                                              :retained "retained:running" :answer "retained:running:finished"}}})))
-    ;; Intentionally leave the pure leaf blocked. The CLI halts this dedicated
-    ;; process after flushing results, without graceful fixture teardown that
-    ;; might turn interruption into a durable failure. SQLite appends committed.
     nil))
 
 (defn recover-running! [manifest-path]
@@ -370,7 +361,7 @@
         (is (= [first-completion-edn] (mapv pr-str retained-completions)))
         (is (= 2 (count finish-starts)))
         (is (= second-start-id (:resumed-from-event-id (last finish-starts))))
-        (is (= 1.0 (get-in (ledger/get-task ctx (:optimization-id fixture) (:call-id fixture))
+        (is (= 1.0 (get-in (rm/get-task ctx (:optimization-id fixture) (:call-id fixture))
                            [:result :score])))
         (is (empty? (gepa/recover-in-progress! ctx)))
         (is (= events (facts ctx))))

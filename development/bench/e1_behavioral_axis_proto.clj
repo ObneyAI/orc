@@ -14,15 +14,10 @@
    NO engine source change. This file is scratch/prototype."
   (:require [runner]
             [ai.obney.orc.ontology.interface :as ont]
-            [ai.obney.orc.ontology.core.task-classifier :as tc]
             [ai.obney.orc.colbert.interface :as colbert]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
-;; -----------------------------------------------------------------------------
-;; behavior-id -> seed name, derived from the 12 behavioral-subtree seeds
-;; (first word of each :summary; ids verified against
-;; components/ontology/resources/seeds/behavioral-subtrees.edn @ cefbb577)
-;; -----------------------------------------------------------------------------
 (def seed-name-by-id
   {#uuid "8ad38e72-05e4-3201-bac7-3ed9c54a2791" "Research"
    #uuid "abe10f3b-ab49-3916-ae30-0ca7abfcad96" "Extraction"
@@ -39,8 +34,6 @@
 
 (defn seed-name [id] (get seed-name-by-id id (str "MINT/" (subs (str id) 0 8))))
 
-;; Coding-implementation tasks (task in :instruction so it reaches the
-;; classifier via build-task-signature — PB-1 showed static node sig is task-blind).
 (def coding-tasks
   [["add-function"      "Add a new function `summarize-line-items` to the report namespace that aggregates each invoice's line items into a per-category subtotal and returns a sorted vector."]
    ["fix-bug"           "Fix the off-by-one bug in the pagination loop in list_view.clj so the final page renders its last row instead of dropping it."]
@@ -55,7 +48,6 @@
    ["add-endpoint"      "Add a new POST /invoices REST endpoint that validates the request body against the invoice schema, persists it, and returns the created id."]
    ["migrate-schema"    "Write a database migration that adds a nullable `archived_at` timestamp column to the invoices table and backfills it to null for existing rows."]])
 
-;; OOD / non-coding tasks — first-class overfit evidence.
 (def ood-tasks
   [["ood-earnings-pdf"  "Summarize this quarterly earnings PDF into a one-page executive brief highlighting revenue, margin trend, and forward guidance."]
    ["ood-marketing"     "Plan a three-month marketing campaign to launch a new consumer coffee brand, including channels, budget split, and a content calendar."]
@@ -66,7 +58,7 @@
 (defn classify-one
   "Run classify-behaviors on one task's signature. Returns the raw result."
   [ctx instruction]
-  (let [sig (tc/build-task-signature {:instruction instruction
+  (let [sig (ontology-logic/build-task-signature {:instruction instruction
                                       :reads [:user-message :active-plan :workspace-root]
                                       :writes [:assistant-response]
                                       :mcp-tools ["shell/exec" "fs/read" "fs/list"]})]
@@ -85,9 +77,8 @@
     (println "FATAL: OPENROUTER_API_KEY not set") (System/exit 1))
   (let [results (atom [])]
     (try
-      ;; --- bring up real ctx + build the real ontology-descriptions index ---
       (runner/start!)
-      (let [ctx (deref (var-get (requiring-resolve 'runner/system-state)))]
+      (let [ctx (runner/current-context)]
         ;; ---------------- RULE OUT THE HARNESS FIRST ----------------
         (println "\n--- HARNESS SANITY ---")
         (let [idxs (filter #(= "ontology-descriptions" (:index-name %))
@@ -117,7 +108,6 @@
               (when (seq (:reasoning b))
                 (println "        reasoning:" (:reasoning b))))))
 
-        ;; ---------------- MACHINE-READABLE DUMP (verbatim, for the report) ----------------
         (println "\n\n=== VERBATIM RESULT DUMP (for the evidence table) ===")
         (doseq [{:keys [label instruction result]} @results]
           (println "\n----------------------------------------")

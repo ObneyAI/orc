@@ -13,11 +13,8 @@
             [clojure.test :refer [deftest is testing]]
             [litellm.router :as router]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-;; The blackboard a workflow would hold. Every input is described except
-;; `:order-id` and `:attachments`. Fields no value carries: `region` (account),
-;; `sent-at` (messages), `internal-memo` (attachments).
 (def ^:private blackboard
   {:subject {:schema [:string {:description "The ticket subject line"}]
              :value "Refund please"}
@@ -41,7 +38,6 @@
                           [:kind :string]
                           [:internal-memo {:optional true} :string]]
                  :value {:kind "pdf"}}
-   ;; Outputs, including nested ones the executor flattens.
    :reply {:schema [:string {:description "The reply to send"}]}
    :plan {:schema [:map {:description "What to do next"}
                    [:priority {:description "How urgent"} [:enum "low" "high"]]
@@ -56,9 +52,9 @@
    :reads [:subject :coupon :order-id :account :messages :attachments]
    :writes [:reply :plan]})
 
-(defn- module [] (dissoc (executor/build-module node blackboard) :output-mapping))
+(defn- module [] (dissoc (service-logic/build-module node blackboard) :output-mapping))
 
-(defn- inputs [] (executor/gather-inputs node blackboard))
+(defn- inputs [] (service-logic/gather-inputs node blackboard))
 
 (defn- request
   "The request `llm/predict` hands the provider for the leaf, in `mode`."
@@ -110,14 +106,6 @@
       (is (not (str/includes? text "list of")))
       (is (not (str/includes? text "(string)"))))))
 
-;; ---------------------------------------------------------------------------
-;; Outputs are not part of this change. The goldens below are what the module
-;; and the function request produced for this contract BEFORE input descriptions
-;; stopped carrying type text: the flattened output fields with their
-;; descriptions, and the submit_response tool a provider receives. The merged
-;; judge runtime retains exact typed nested keys as internal reassembly metadata.
-;; The provider tool bytes remain unchanged for this noncolliding contract.
-;; ---------------------------------------------------------------------------
 
 (def ^:private outputs-before
   (clojure.edn/read-string
@@ -138,9 +126,6 @@
       "the tool a function-mode provider receives"))
 
 (deftest a-marker-request-through-the-executor-describes-inputs-by-their-declared-meaning-only
-  ;; The input section is whatever sits between the two section headings. The
-  ;; output section keeps its type text (outputs are unchanged), so the input
-  ;; section is checked on its own.
   (let [text (text-of (request :marker))
         input-section (-> text
                           (str/split #"Your output fields are:" 2)

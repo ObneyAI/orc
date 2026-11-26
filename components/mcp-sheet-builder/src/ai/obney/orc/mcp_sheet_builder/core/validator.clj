@@ -65,7 +65,6 @@
 (defn- check-data-flow
   "Check that writes precede reads (within sequences)."
   [_workflow]
-  ;; Simplified check - full data flow analysis would be more complex
   {:valid? true :errors [] :warnings []})
 
 (defn- check-tool-references
@@ -117,16 +116,3 @@
                 (not valid?) (str "Invalid: " (count errors) " error(s)")
                 (seq warnings) (str "Valid with " (count warnings) " warning(s)")
                 :else "Valid")}))
-
-(comment
-  ;; Example validation
-  (validate-sheet
-   {:blackboard {:query :string
-                 :searchDocs-result [:map [:content :string]]}
-    :workflow '(sheet/workflow "test"
-                 (sheet/blackboard {:query :string})
-                 (sheet/sequence "main"
-                   (sheet/code "call-searchDocs"
-                     :fn "..."
-                     :reads [:query]
-                     :writes [:searchDocs-result])))}))

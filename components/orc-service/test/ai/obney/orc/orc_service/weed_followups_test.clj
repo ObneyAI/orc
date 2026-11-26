@@ -22,9 +22,6 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]))
 
-;; ---------------------------------------------------------------------------
-;; D1 — the researcher's gate and contracts always govern its generated subtree
-;; ---------------------------------------------------------------------------
 
 (def gate-calls (atom []))
 (def raw-calls (atom []))
@@ -71,9 +68,6 @@
               (is (empty? @raw-calls) "a model-authored gate is never used")
               (is (empty? @gate-calls) "the researcher's contract blocked the call"))))))))
 
-;; ---------------------------------------------------------------------------
-;; D3 — family usage keeps a researcher's own cost
-;; ---------------------------------------------------------------------------
 
 (deftest family-usage-keeps-a-researchers-own-cost
   (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
@@ -93,9 +87,6 @@
                :timeout-ms 5000)
               (pr-str (sheet/get-family-usage ctx (:trace-id result)))))))))
 
-;; ---------------------------------------------------------------------------
-;; D4 — contract failures never echo supplied keys
-;; ---------------------------------------------------------------------------
 
 (def d4-calls (atom []))
 (defn d4-caller [tool args & _] (swap! d4-calls conj [tool args]) {:hits ["x"]})
@@ -118,9 +109,6 @@
       (is (not (str/includes? out "SECRET-EXTRA-KEY")) out)
       (is (empty? @d4-calls)))))
 
-;; ---------------------------------------------------------------------------
-;; D6 — a start queued longer than one lease is still owned while its owner lives
-;; ---------------------------------------------------------------------------
 
 (defn d6-leaf [{:keys [inputs]}] {:out (* 2 (:n inputs))})
 
@@ -143,9 +131,6 @@
           "the owner keeps renewing its queued start's lease")
       (future-cancel run))))
 
-;; ---------------------------------------------------------------------------
-;; R — a healthy non-checkpointed researcher is not replayed by recovery
-;; ---------------------------------------------------------------------------
 
 (deftest healthy-non-checkpointed-researcher-is-not-replayed
   (let [entered (promise) release (promise) calls (atom 0)]
@@ -170,9 +155,6 @@
             (is (= :success (:status (deref run 20000 ::timeout))))
             (is (= 1 @calls) "the researcher ran once")))))))
 
-;; ---------------------------------------------------------------------------
-;; D7 — an explicit MCP dry run never calls out
-;; ---------------------------------------------------------------------------
 
 (deftest explicit-dry-run-never-calls-out
   (let [session-calls (atom 0) caller-calls (atom 0)]
@@ -192,9 +174,6 @@
           (is (true? (get-in result [:outputs :seamEcho-result :dry-run?])))
           (is (zero? @session-calls)) (is (zero? @caller-calls)))))))
 
-;; ---------------------------------------------------------------------------
-;; U2 — model decisions: default provider retry and deadline
-;; ---------------------------------------------------------------------------
 
 (def ^:private route-schema [:enum {:descriptions {"a" "A" "b" "B"}} "a" "b"])
 
@@ -231,9 +210,6 @@
           (is (not= :success (:status result)))
           (is (= 1 @calls) "no further provider invocation after the deadline"))))))
 
-;; ---------------------------------------------------------------------------
-;; U3 — a delegated child draws on the family wall-clock budget
-;; ---------------------------------------------------------------------------
 
 (defn slow-leaf [_] (Thread/sleep 3000) {:out "late"})
 

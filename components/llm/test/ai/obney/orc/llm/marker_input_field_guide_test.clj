@@ -14,11 +14,6 @@
             [litellm.router :as router]
             [ai.obney.orc.llm.interface :as llm]))
 
-;; --------------------------------------------------------------------------- ;;
-;; A contract whose meaning lives at every level: top-level, nested, and in the
-;; item fields of a collection. Optional fields exist at each of those levels so
-;; that a request can leave them out.
-;; --------------------------------------------------------------------------- ;;
 
 (def ^:private support
   {:inputs
@@ -144,9 +139,6 @@
     (is (true? (:stream request)) "the request is a streaming one")
     (check-guide-in-request request)))
 
-;; --------------------------------------------------------------------------- ;;
-;; The wire: the pinned OpenRouter adapter, with only the HTTP post intercepted.
-;; --------------------------------------------------------------------------- ;;
 
 (defn- wire-body-for
   "The serialized HTTP body `predict` sends through the pinned OpenRouter
@@ -190,10 +182,6 @@
     (is (string? body) "the body is the serialized JSON the provider receives")
     (check-guide message body)))
 
-;; --------------------------------------------------------------------------- ;;
-;; An input the request does not carry is named nowhere in what is sent -- not in
-;; the guide, not in the interaction markers, not in the input values.
-;; --------------------------------------------------------------------------- ;;
 
 (def ^:private top-level-names-and-meanings
   {:promo-code ["promo-code" "Promo code the customer quoted"]
@@ -217,9 +205,6 @@
           (doseq [text (mapcat val top-level-names-and-meanings)]
             (is (not (str/includes? sent text)) (str "present: " text))))))))
 
-;; --------------------------------------------------------------------------- ;;
-;; Present with no value is shown: "no value" is read with the meaning declared.
-;; --------------------------------------------------------------------------- ;;
 
 (deftest a-field-present-with-no-value-is-shown-at-the-top-level-and-nested
   (let [request (marker-request-for support {:subject "Refund please"
@@ -237,9 +222,6 @@
     (testing "a nested field sent as null is explained"
       (is (str/includes? text "Where they are billed")))))
 
-;; --------------------------------------------------------------------------- ;;
-;; Image inputs stay content parts; the guide does not list them.
-;; --------------------------------------------------------------------------- ;;
 
 (def ^:private with-photo
   (update support :inputs conj

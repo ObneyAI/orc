@@ -6,11 +6,11 @@
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.model-call-journal :as journal]
             [ai.obney.orc.orc-service.core.todo-processors :as processors]
             [ai.obney.orc.orc-service.retained-ordinary-model-plan-test :as fixture]
             [hato.client :as http]
-            [cognitect.anomalies :as anom])
+            [cognitect.anomalies :as anom]
+            [ai.obney.orc.orc-service.core.logic :as service-logic])
   (:import [java.nio.file Files] [java.time Instant]
            [com.sun.net.httpserver HttpServer HttpHandler]
            [java.net InetSocketAddress] [java.util.concurrent TimeUnit]))
@@ -49,10 +49,10 @@
     @saved))
 
 (defn retain! [ctx owner authored plan]
-  (let [owned (assoc owner :configuration-id (journal/retained-configuration-id plan))]
+  (let [owned (assoc owner :configuration-id (service-logic/retained-configuration-id plan))]
     (is (accepted? (h/run-and-apply! ctx (fixture/command :sheet/retain-model-plan
-                     (assoc owned :plan-scope-id (journal/plan-scope-id owner authored) :plan plan)))))
-    (journal/callbacks ctx owned (:candidates plan) (:policy plan))))
+                     (assoc owned :plan-scope-id (service-logic/plan-scope-id owner authored) :plan plan)))))
+    (processors/callbacks ctx owned (:candidates plan) (:policy plan))))
 
 (defn future-plan []
   (assoc-in (fixture/plan-fixture :unregistered-no-dispatch "fixture/original")
@@ -67,7 +67,7 @@
                     (is (accepted? ((:claim! cb) 0 (first (:candidates plan)))))
                     (is (accepted? ((:record! cb) {:candidate-index 0 :status :success
                                                   :advanced? false :outcome outcome})))
-                    {:configuration-id (journal/retained-configuration-id plan)
+                    {:configuration-id (service-logic/retained-configuration-id plan)
                      :before (fixture/plan-history ctx (:tick-id owner))})))
         tick (get-in saved [:owner :tick-id])
         node (get-in saved [:owner :node-id])
@@ -103,7 +103,7 @@
       (let [plan (future-plan) cb (retain! ctx owner authored plan)
             _ (is (accepted? ((:claim! cb) 0 (first (:candidates plan)))))
             calls (atom 0)
-            result (try (journal/prepare-ordinary-call ctx owner authored
+            result (try (processors/prepare-ordinary-call ctx owner authored
                           #(do (swap! calls inc) plan))
                         :unexpected-return
                         (catch clojure.lang.ExceptionInfo error
@@ -130,7 +130,7 @@
                     (is (accepted? ((:record-request! cb) (assoc request :phase :started))))
                     (is (accepted? ((:record-request! cb)
                                     (assoc request :phase :completed :outcome outcome))))
-                    {:configuration-id (journal/retained-configuration-id plan)})))
+                    {:configuration-id (service-logic/retained-configuration-id plan)})))
         tick (get-in saved [:owner :tick-id]) node (get-in saved [:owner :node-id])
         tenant (get-in saved [:ctx-options :context :tenant-id]) calls (atom 0)]
     (with-redefs [http/post (fn [& _] (swap! calls inc)
@@ -173,9 +173,9 @@
   (with-owner
     (fn [ctx owner authored]
       (let [legacy [{:provider :old-provider :model "old-model" :options {}}]
-            cb (journal/callbacks ctx owner legacy :temporary-transport)
+            cb (processors/callbacks ctx owner legacy :temporary-transport)
             plan (fixture/plan-fixture :new-provider "new-model")
-            result (try (journal/prepare-ordinary-call ctx owner authored
+            result (try (processors/prepare-ordinary-call ctx owner authored
                           #(do (is (accepted? ((:claim! cb) 0 (first legacy)))) plan))
                         :unexpected-return
                         (catch clojure.lang.ExceptionInfo error
@@ -183,7 +183,7 @@
             history (fixture/plan-history ctx (:tick-id owner))]
         (is (= {:failure-kind :model-plan-incompatible :reason :model-plan-ownership-lost} result))
         (is (not-any? #(= :sheet/model-plan-retained (:event/type %)) history))
-        (is (= #{(journal/configuration-id legacy :temporary-transport)}
+        (is (= #{(service-logic/configuration-id legacy :temporary-transport)}
                (set (map :configuration-id history))))
         (is (= 1 (count (filter #(= :sheet/model-candidate-claimed (:event/type %)) history))))
         (swap! proofs conj {:kind :legacy-before-plan :result result :history history})
@@ -194,15 +194,15 @@
   (with-owner
     (fn [ctx owner authored]
       (let [plan (fixture/plan-fixture :new-provider "new-model")
-            prepared (journal/prepare-ordinary-call ctx owner authored (constantly plan))
+            prepared (processors/prepare-ordinary-call ctx owner authored (constantly plan))
             legacy [{:provider :old-provider :model "old-model" :options {}}]
-            legacy-cb (journal/callbacks ctx owner legacy :temporary-transport)
+            legacy-cb (processors/callbacks ctx owner legacy :temporary-transport)
             refused ((:claim! legacy-cb) 0 (first legacy))
             claimed ((get-in prepared [:callbacks :claim!]) 0 (first (:candidates plan)))
             history (fixture/plan-history ctx (:tick-id owner))]
         (is (= ::anom/conflict (::anom/category refused)))
         (is (accepted? claimed))
-        (is (= #{(journal/retained-configuration-id plan)} (set (map :configuration-id history))))
+        (is (= #{(service-logic/retained-configuration-id plan)} (set (map :configuration-id history))))
         (is (= 1 (count (filter #(= :sheet/model-candidate-claimed (:event/type %)) history))))
         (swap! proofs conj {:kind :plan-before-legacy :refused refused :claimed claimed :history history})
         (orc/cancel! ctx (:tick-id owner))
@@ -212,7 +212,7 @@
   (with-owner
     (fn [ctx owner authored]
       (let [legacy [{:provider :old-provider :model "old-model" :options {}}]
-            cb (journal/callbacks ctx owner legacy :temporary-transport)
+            cb (processors/callbacks ctx owner legacy :temporary-transport)
             plan (fixture/plan-fixture :new-provider "new-model")
             inject? (atom true) append-results (atom []) real-append es/append
             result
@@ -220,13 +220,11 @@
                           (fn [store args]
                             (let [plan? (some #(= :sheet/model-plan-retained (:event/type %)) (:events args))]
                               (when (and plan? (compare-and-set! inject? true false))
-                                ;; Real nested command wins after the plan handler
-                                ;; read, before SQLite evaluates the outer CAS.
                                 (is (accepted? ((:claim! cb) 0 (first legacy)))))
                               (let [result (real-append store args)]
                                 (when plan? (swap! append-results conj result))
                                 result)))]
-              (try (journal/prepare-ordinary-call ctx owner authored (constantly plan))
+              (try (processors/prepare-ordinary-call ctx owner authored (constantly plan))
                    :unexpected-return
                    (catch clojure.lang.ExceptionInfo error
                      (select-keys (ex-data error) [:failure-kind :reason]))))
@@ -236,7 +234,7 @@
         (is (= ::anom/conflict (::anom/category (first @append-results))))
         (is (= {:failure-kind :model-plan-incompatible :reason :model-plan-ownership-lost} result))
         (is (not-any? #(= :sheet/model-plan-retained (:event/type %)) history))
-        (is (= #{(journal/configuration-id legacy :temporary-transport)}
+        (is (= #{(service-logic/configuration-id legacy :temporary-transport)}
                (set (map :configuration-id history))))
         (swap! proofs conj {:kind :legacy-between-plan-read-and-append
                             :result result :append-results @append-results :history history})
@@ -247,8 +245,8 @@
   (with-owner
     (fn [ctx owner authored]
       (let [legacy [{:provider :old-provider :model "old-model" :options {}}]
-            cb (journal/callbacks ctx owner legacy :temporary-transport)
-            legacy-id (journal/configuration-id legacy :temporary-transport)
+            cb (processors/callbacks ctx owner legacy :temporary-transport)
+            legacy-id (service-logic/configuration-id legacy :temporary-transport)
             plan (fixture/plan-fixture :new-provider "new-model")
             inject? (atom true) append-results (atom []) real-append es/append
             refused
@@ -268,7 +266,7 @@
         (is (= ::anom/conflict (::anom/category (first @append-results))))
         (is (= ::anom/conflict (::anom/category refused)))
         (is (not-any? #(= :sheet/model-candidate-claimed (:event/type %)) history))
-        (is (= #{(journal/retained-configuration-id plan)} (set (map :configuration-id history))))
+        (is (= #{(service-logic/retained-configuration-id plan)} (set (map :configuration-id history))))
         (swap! proofs conj {:kind :plan-between-legacy-read-and-append
                             :refused refused :append-results @append-results :history history})
         (orc/cancel! ctx (:tick-id owner))
@@ -278,13 +276,9 @@
   (with-owner
     (fn [ctx owner authored]
       (let [legacy [{:provider :old-provider :model "old-model" :options {}}]
-            cb (journal/callbacks ctx owner legacy :temporary-transport)
+            cb (processors/callbacks ctx owner legacy :temporary-transport)
             plan (fixture/plan-fixture :new-provider "new-model")
             inject? (atom true) real-append es/append
-            ;; Reenact the previous handler's demonstrated narrow CAS type
-            ;; filter while retaining public command/schema validation and the
-            ;; real SQLite append. This is explicitly historical fixture setup,
-            ;; not evidence of safe current or mixed-binary production dispatch.
             _ (with-redefs [es/append
                             (fn [store args]
                               (if (and (some #(= :sheet/model-plan-retained (:event/type %)) (:events args))
@@ -295,9 +289,9 @@
                                     (assoc-in args [:cas :types]
                                       #{:sheet/model-plan-retained :sheet/node-execution-started})))
                                 (real-append store args)))]
-                (journal/prepare-ordinary-call ctx owner authored (constantly plan)))
+                (processors/prepare-ordinary-call ctx owner authored (constantly plan)))
             resolver-calls (atom 0)
-            result (try (journal/prepare-ordinary-call ctx owner authored
+            result (try (processors/prepare-ordinary-call ctx owner authored
                           #(do (swap! resolver-calls inc) plan))
                         :unexpected-return
                         (catch clojure.lang.ExceptionInfo error
@@ -352,7 +346,6 @@
               backup (keyword (str "compat-backup-" (random-uuid)))
               dir (.toFile (Files/createTempDirectory "orc-client-controls-"
                              (make-array java.nio.file.attribute.FileAttribute 0)))
-              ;; Paired mode is OpenRouter-only; these existing adapters use legacy function mode.
               config {:provider backend
                       :config {:api-key "SYNTHETIC-NOT-SENT"
                                :api-base (str "http://127.0.0.1:" (.getPort (.getAddress server)))
@@ -385,11 +378,9 @@
                 (is (= controls (select-keys (:options candidate) (keys controls)))))
               (doseq [{:keys [body]} actual]
                 (is (= wire-controls (select-keys body (keys wire-controls)))))
-              ;; IDs remain accepted plan data even where this pinned adapter
-              ;; does not serialize them. Retention is not a wire-support claim.
               (doseq [key (keys controls)]
-                (is (not= (journal/retained-configuration-id retained)
-                          (journal/retained-configuration-id
+                (is (not= (service-logic/retained-configuration-id retained)
+                          (service-logic/retained-configuration-id
                             (assoc-in retained [:candidates 0 :options key] "CHANGED")))))
               (swap! proofs conj {:kind :existing-client-controls :backend backend
                                   :directory (.getAbsolutePath dir) :result result :events events

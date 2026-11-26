@@ -1,5 +1,6 @@
 {:paths []
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+        orc/integrations {:local/root "../../components/integrations"}
 
         ;; RR-9/RR-14 verification consumes the locally recovered Grain APIs
         ;; until their upstream PR is merged. Keep this project aligned with
@@ -23,10 +24,10 @@
                   ;; The brick owns cross-component E2E namespaces. Keep
                   ;; these out of the production graph above, but make the
                   ;; standalone project's test classpath explicit.
-                  :extra-deps {orc/evaluation {:local/root "../../components/evaluation"}
-                               orc/gepa {:local/root "../../components/gepa"}
-                               orc/ontology {:local/root "../../components/ontology"}
-                               orc/colbert {:local/root "../../components/colbert"}
+                  :extra-deps {orc/evaluation-service {:local/root "../../components/evaluation-service"}
+                               orc/gepa-service {:local/root "../../components/gepa-service"}
+                               orc/ontology-service {:local/root "../../components/ontology-service"}
+                               orc/colbert-service {:local/root "../../components/colbert-service"}
                                orc/mcp-sheet-builder {:local/root "../../components/mcp-sheet-builder"}
                                orc/predict-rlm-pdf {:local/root "../../components/predict-rlm-pdf"}
                                orc/predict-rlm-redaction-tools {:local/root "../../components/predict-rlm-redaction-tools"}

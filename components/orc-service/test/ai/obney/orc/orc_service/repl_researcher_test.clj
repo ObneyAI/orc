@@ -2,9 +2,9 @@
   "Unit tests for the repl-researcher executor.
    Mocks llm/predict to test the iteration loop without real LLM calls."
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [clojure.string :as str]
-            [ai.obney.orc.llm.interface :as llm]))
+            [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -47,7 +47,7 @@
                   (fn [_provider _module _inputs _opts]
                     {:outputs {:code "FINAL_ANSWER: 42"}
                      :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})]
-      (let [result (executor/execute-repl-researcher
+      (let [result (service-processors/execute-repl-researcher
                      test-node test-blackboard :test test-context)]
         (is (= :success (:status result)))
         (is (= "42" (:answer (:outputs result))))
@@ -57,10 +57,9 @@
   (testing "code executes and produces FINAL_ANSWER in stdout"
     (with-redefs [llm/predict
                   (fn [_provider _module _inputs _opts]
-                    ;; Build FINAL_ANSWER at runtime to avoid code-text detection
                     {:outputs {:code "(let [m (str \"FINAL\" \"_ANSWER: \")] (println (str m \"hello\")))"}
                      :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})]
-      (let [result (executor/execute-repl-researcher
+      (let [result (service-processors/execute-repl-researcher
                      test-node test-blackboard :test test-context)]
         (is (= :success (:status result)))
         (is (= "hello" (:answer (:outputs result))))))))
@@ -73,17 +72,15 @@
                     (fn [_provider _module _inputs _opts]
                       (let [n (swap! call-count inc)]
                         (if (= n 1)
-                          ;; First: call tool, print result (no FINAL_ANSWER)
                           {:outputs {:code "(println (get (lookup {\"key\" \"pi\"}) \"result\"))"}
                            :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}}
-                          ;; Second: plain-text FINAL_ANSWER
                           {:outputs {:code "FINAL_ANSWER: pi is 3.14"}
                            :usage {:prompt_tokens 15 :completion_tokens 8 :total_tokens 23}})))]
         (let [ctx (assoc test-context :call-tool-fn
                          (fn [tool-name args]
                            (swap! tool-calls conj {:tool tool-name :args args})
                            {"result" "3.14"}))
-              result (executor/execute-repl-researcher
+              result (service-processors/execute-repl-researcher
                        test-node test-blackboard :test ctx)]
           (is (= :success (:status result)))
           (is (= "pi is 3.14" (:answer (:outputs result))))
@@ -95,12 +92,11 @@
     (let [call-count (atom 0)]
       (with-redefs [llm/predict
                     (fn [_provider _module _inputs _opts]
-                      ;; Different output each time to avoid convergence detection
                       (let [n (swap! call-count inc)]
                         {:outputs {:code (clojure.core/str "(println \"iteration " n " searching...\")")}
                          :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}}))]
         (let [node (assoc test-node :max-iterations 3)
-              result (executor/execute-repl-researcher
+              result (service-processors/execute-repl-researcher
                        node test-blackboard :test test-context)]
           (is (= :failure (:status result)))
           (is (str/includes? (:error result) "Max iterations")))))))
@@ -111,7 +107,7 @@
                   (fn [_provider _module _inputs _opts]
                     {:outputs {:code ""}
                      :usage {:prompt_tokens 10 :completion_tokens 0 :total_tokens 10}})]
-      (let [result (executor/execute-repl-researcher
+      (let [result (service-processors/execute-repl-researcher
                      test-node test-blackboard :test test-context)]
         (is (= :failure (:status result)))
         (is (str/includes? (:error result) "did not generate code"))))))
@@ -127,7 +123,7 @@
                            :usage {:prompt_tokens 100 :completion_tokens 50 :total_tokens 150}}
                           {:outputs {:code "FINAL_ANSWER: done"}
                            :usage {:prompt_tokens 100 :completion_tokens 50 :total_tokens 150}})))]
-        (let [result (executor/execute-repl-researcher
+        (let [result (service-processors/execute-repl-researcher
                        test-node test-blackboard :test test-context)]
           (is (= :success (:status result)))
           (is (= 300 (get-in result [:usage :prompt-tokens])))
@@ -141,7 +137,7 @@
                     {:outputs {:code "FINAL_ANSWER: 42"}
                      :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})]
       (let [ctx (dissoc test-context :call-tool-fn)
-            result (executor/execute-repl-researcher
+            result (service-processors/execute-repl-researcher
                      test-node test-blackboard :test ctx)]
         (is (= :success (:status result)))
         (is (= "42" (:answer (:outputs result))))))))
@@ -169,7 +165,7 @@
                                      "github/list_pulls"  {"items" ["x" "y"]}
                                      {"error" "unknown"}))
                    :llm-provider :test}
-              result (executor/execute-repl-researcher
+              result (service-processors/execute-repl-researcher
                        node test-blackboard :test ctx)]
           (is (= :success (:status result)))
           (is (= "3 issues and 2 pulls" (:answer (:outputs result))))

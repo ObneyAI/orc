@@ -23,18 +23,21 @@
    verify will surface it via a non-zero orphan count — that's a
    follow-up issue, not a Gap-7 failure (routing is the Gap-7
    deliverable)."
-  (:require [ai.obney.orc.evaluation.interface]
+  (:require [ai.obney.orc.evaluation.interface :as evaluation]
+            [ai.obney.orc.evaluation.interface]
             [ai.obney.orc.evaluation.interface.schemas]
-            [ai.obney.orc.evaluation.core.judge-runtime :as jr]
+            [ai.obney.orc.evaluation.core.judge-runtime]
             [ai.obney.orc.ontology.interface :as ontology]
-            [ai.obney.orc.ontology.core.consolidator]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [com.brunobonacci.mulog :as u]
             [runner]
-            [legal-issue-detection :as task]))
+            [legal-issue-detection :as task]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (defn- inspect-events [ctx]
   (let [completions (into [] (es/read (:event-store ctx)
@@ -72,15 +75,12 @@
           (filter (fn [c]
                     (let [tuple [(:sheet-id c) (:node-id c) (:tick-id c)]
                           had-judges (seq (get judges-by-tuple tuple))
-                          ;; Effective judges if completion-kind matches
-                          eff (jr/get-effective-judges-for-node
+                          eff (evaluation/get-effective-judges-for-node
                                 ctx (:sheet-id c) (:node-id c) (:completion-kind c))]
                       (and (seq eff) (not had-judges)))))
           (mapv (fn [c] {:completion-kind (:completion-kind c)
                           :status (:status c)
                           :tick-id (:tick-id c)
-                          ;; The completion event names the keys it wrote; values live in
-                          ;; :sheet/execution-value-written (see EVENT-STORE-PATTERNS).
                           :writes-keys (vec (or (:write-keys c) []))})))}))
 
 (defn verify!
@@ -90,7 +90,7 @@
   (println "============================================================")
   (u/start-publisher! {:type :console})
   (runner/start!)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))]
+  (let [ctx (runner/current-context)]
     (try
       (cp/process-command
         (assoc ctx :command
@@ -102,11 +102,6 @@
 
       (println "\n--- Single legal-issue-detection run ---")
       (runner/run! task/task)
-      ;; Diagnostic: the processor invokes 5 judges sequentially;
-      ;; each LLM judge can take 3-10s. Poll up to 60s for the events
-      ;; to land. If still 0 after the budget, that's a real bug;
-      ;; otherwise we caught a timing race in the verify script, not
-      ;; in the production path.
       (loop [waited 0]
         (let [n (count (into [] (es/read (:event-store ctx)
                                           {:types #{:judge/score-emitted}
@@ -135,14 +130,6 @@
           (doseq [o (:orphan-completions stats)]
             (println "    -" (:completion-kind o) "status:" (:status o)
                      "writes-keys:" (:writes-keys o))))
-        ;; Post-revert (2026-06-05): all 5 default judges fire on
-        ;; terminal events (kind filter was removed; see Gap-7
-        ;; retrospective). iter-completions stays 0 in current bench
-        ;; behavior because recursive RLM only fires one terminal
-        ;; :sheet/node-execution-completed per run — per-iteration
-        ;; tree-shape evidence lives on :rlm/tree-generated which is
-        ;; Gap-7b's territory. So PASS = 5 judges per terminal + no
-        ;; unmarked + no orphans.
         (let [expected-per-terminal 5
               terminal-expected (>= (:terminal-judges stats)
                                     (* expected-per-terminal (:terminal-completions stats)))
@@ -172,6 +159,6 @@
       (finally
         (runner/stop!)))))
 
-(comment
+#_(do
   (require '[gap7-live-verify :as v])
   (v/verify!))

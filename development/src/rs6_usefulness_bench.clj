@@ -15,7 +15,9 @@
    and render exactly as the June suite did). Everything recorded is the
    runner's own result record plus the store's facts; the report is written
    by hand from the saved EDNs."
-  (:require [ai.obney.grain.event-store-v3.interface :as es]
+  (:require [legal-issue-detection]
+            [runner]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.test-support.c2d-ood-stress-test :as ood]
             [clojure.java.io :as io]
@@ -119,9 +121,8 @@
 (defn run-bench!
   ([ctx] (run-bench! ctx {}))
   ([ctx {:keys [slugs include-legal?] :or {slugs off-domain-slugs include-legal? true}}]
-   (let [run! (requiring-resolve 'runner/run!)
-         corpus (into {} (map (juxt :slug identity)) (ood/load-corpus corpus-dir))
-         legal (when include-legal? @(requiring-resolve 'legal-issue-detection/task))
+   (let [corpus (into {} (map (juxt :slug identity)) (ood/load-corpus corpus-dir))
+         legal (when include-legal? legal-issue-detection/task)
          tasks (cond-> (vec (for [s slugs :let [e (get corpus s)]]
                               {:slug s :name s :pattern "off-domain" :documents []
                                :instruction (:instruction e) :writes [:result]}))
@@ -131,7 +132,7 @@
          runs (vec (for [task tasks
                          arm [:baseline :r-inject-1 :r-inject-2]]
                      (do (println (format "\n##### %s / %s" (:slug task) arm))
-                         (let [r (run-arm! ctx run! task arm)]
+                         (let [r (run-arm! ctx runner/run! task arm)]
                            (spit (str dir "/" (:slug task) "-" (name arm) ".edn")
                                  (with-out-str (pp/pprint r)))
                            (println (format "    -> status=%s tokens=%s via=%s label=%s prepend=%s"

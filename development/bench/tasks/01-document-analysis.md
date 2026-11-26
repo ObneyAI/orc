@@ -1,6 +1,6 @@
 # Task 01 — Document Analysis (Extraction on 280K)
 
-**Run file:** `generalization-results/document-analysis_2026-05-19_131441.edn`
+**Archived run file:** `generalization-results/document-analysis_2026-05-19_131441.edn`. [Restore the capture](../README.md#archived-may-2026-benchmark-captures).
 **Source:** `development/bench/document_analysis.clj` (ns `document-analysis`, var `task`)
 
 ## What the task is

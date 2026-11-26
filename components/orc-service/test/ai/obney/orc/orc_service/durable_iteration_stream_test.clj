@@ -4,23 +4,23 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [malli.core :as m]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
-            [ai.obney.orc.orc-service.core.streaming :as streaming]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.pubsub.interface :as pubsub]
-            [ai.obney.grain.event-store-sqlite-v3.interface]))
+            [ai.obney.grain.event-store-sqlite-v3.interface]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (use-fixtures :each
   (fn [f]
-    (streaming/reset-all!)
+    (service-logic/reset-all!)
     (try
       (f)
       (finally
-        (streaming/reset-all!)))))
+        (service-logic/reset-all!)))))
 
 (defn- drain!
   [events-ch timeout-ms]
@@ -187,7 +187,7 @@
             ((:close! first-sub))
             (h/stop-async-context ctx)
             (reset! first-context nil)
-            (streaming/reset-all!)
+            (service-logic/reset-all!)
 
             (let [reopened
                   (h/create-async-test-context
@@ -207,7 +207,7 @@
               (is (some? second-envelope)
                   (pr-str (mapv :orc.stream/type observed-after-reopen)))
               (is (h/settle-until!
-                   #(some? (runtime/durable-terminal-result reopened tick-id))
+                   #(some? (service-commands/durable-terminal-result reopened tick-id))
                    :timeout-ms 15000))
               (let [durable
                     (->> (es/read (:event-store reopened)
@@ -300,18 +300,15 @@
                            :version 0}}]
             (is (= :success (:status first-result)) (pr-str first-result))
             (is (some? completed-child) (pr-str claims))
-            (streaming/reset-all!)
+            (service-logic/reset-all!)
             (let [{:keys [events-ch] :as subscription}
                   (sheet/subscribe-execution ctx tick-id)
                   replay-result
-                  (executor/execute-repl-researcher-rlm
+                  (service-processors/execute-repl-researcher-rlm
                    node replay-blackboard :test
                    {:sheet-id sheet-id
                     :tick-id tick-id
                     :node-id node-id
-                    ;; Replay the same advertised provider contract. The
-                    ;; command registry determines whether mint-behavior! is
-                    ;; present in both the module and its inputs.
                     :command-registry (:command-registry ctx)
                     :researcher-ownership-epoch 2
                     :researcher-effect-claims claims
@@ -415,16 +412,9 @@
                    (get-in ctx [:event-store :config :event-pubsub]))
             child-tap-entered (promise)
             release-child-tap (promise)
-            ;; The tap loop now forwards on its own dedicated thread (RR-27),
-            ;; not a shared core.async dispatch thread, but an unbounded
-            ;; deref here is still a latent hazard for whichever thread runs
-            ;; it — bound it and record the outcome so a wrong
-            ;; synchronization fails this test in seconds instead of
-            ;; wedging a full gate (.rr-durable-notes/WEDGE-ROOT-CAUSE.md §5).
             release-child-tap-result (atom nil)
             subs-covering-var
-            (ns-resolve 'ai.obney.orc.orc-service.core.streaming
-                        'subs-covering)
+            #'service-logic/subs-covering
             real-subs-covering @subs-covering-var]
         (with-redefs-fn
           {subs-covering-var
@@ -439,7 +429,7 @@
              (real-subs-covering tick-id))}
           (fn []
             (let [{:keys [events-ch]} (sheet/subscribe-execution ctx root-tick-id)]
-              (streaming/link-child! root-tick-id child-tick-id)
+              (service-logic/link-child! root-tick-id child-tick-id)
               (pubsub/pub
                ps
                {:message
@@ -462,10 +452,6 @@
                  :sheet-id sheet-id
                  :tick-id root-tick-id
                  :root-status :success}})
-              ;; If event types have separate tap loops, the root terminal can
-              ;; reach and close the consumer stream while the earlier child
-              ;; iteration remains blocked. A single ordered tap cannot expose
-              ;; that terminal until the child event is released.
               (let [[_ before-release]
                     (take-until events-ch
                                 #(= :tick-completed (:orc.stream/type %))
