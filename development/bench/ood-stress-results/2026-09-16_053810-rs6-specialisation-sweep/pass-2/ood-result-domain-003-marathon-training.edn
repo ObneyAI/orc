@@ -1,0 +1,431 @@
+{:assigned-tree-id #uuid "b4ebfb53-2915-3390-a74a-adb9f1321de3",
+ :tick-id #uuid "7b3a0c7a-4d13-4354-b43b-7bb364fbd2b0",
+ :slug "domain-003-marathon-training",
+ :parent-tree-id #uuid "aef71f08-76bf-373c-862a-1250ef23f450",
+ :domain-label "marathon-training-plan",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "marathon-training-plan",
+  :domain-reasoning
+  "The candidate has 'marathon-training-plan' as an existing domain child, directly matching the subject matter and output kind of the task."},
+ :node-id #uuid "1b1f51a7-7e51-49f3-a762-ecca9070953e",
+ :top-1
+ {:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+  :fitness-score 1.0,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "marathon-training-plan"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "b4ebfb53-2915-3390-a74a-adb9f1321de3",
+  :parent-tree-id #uuid "aef71f08-76bf-373c-862a-1250ef23f450",
+  :domain-label "marathon-training-plan",
+  :classified-at "2026-09-16T05:50:08.487054-05:00",
+  :reasoning
+  "This candidate explicitly lists 'marathon-training-plan' as an existing domain child. The task requires a highly complex, nuanced output (16-week schedule, pace calculations, strength programming, injury-specific constraints) that benefits from the 'draft -> critique -> revise' pattern to ensure all constraints (like the Achilles history and elevation) are respected across the full 16-week span.",
+  :outcome :matched,
+  :source-node-id #uuid "1b1f51a7-7e51-49f3-a762-ecca9070953e",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "abe48812-ad0f-3a27-a142-806558801fc0",
+    :confidence 0.95,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task is to produce a 16-week training plan that reconciles a goal (4:00 marathon) against multiple hard constraints (Achilles history, elevation, no track). This candidate's specific focus on producing a 'committable plan/spec' from 'goal + constraints' matches the intent perfectly. Its recommendation to use a :map with named sections (decisions/risks) aligns with the requirement for specific plan components like :paces and :red-flags. The 'draft -> critique -> refined-spec' pattern is highly appropriate for balancing complex physiological constraints.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "bf47c816-2833-320e-9fbd-6ae109275ab0",
+    :confidence 0.75,
+    :was-fresh-mint? false,
+    :reasoning
+    "While primarily for code, this candidate's focus on producing an artifact from a 'spec' and its 'draft -> critique -> refined' iteration pattern fits the complexity of a 16-week plan. However, the avoid-when guard 'no spec exists yet' suggests it should follow a design stage; since this task *is* the design/planning stage, it is slightly less fit than the Design candidate but useful for the structured output (:map with :week-by-week) requested.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "7b3a0c7a-4d13-4354-b43b-7bb364fbd2b0",
+  :event/tags
+  #{[:tick #uuid "7b3a0c7a-4d13-4354-b43b-7bb364fbd2b0"]
+    [:description-target
+     #uuid "b4ebfb53-2915-3390-a74a-adb9f1321de3"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:50:08.487293Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "marathon-training-plan",
+   :domain-reasoning
+   "The candidate has 'marathon-training-plan' as an existing domain child, directly matching the subject matter and output kind of the task."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit",
+      :good-when
+      "the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]"}
+     {:trait
+      "pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique",
+      :good-when
+      "the critique stage tends to focus on style/issues and might lose sight of the original requirement",
+      :recommended-pattern
+      "[:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]"}],
+    :existing-domain-children
+    ["algorithmic-melody-generation"
+     "marathon-training-plan"
+     "musical-arrangement-and-transcription"],
+    :avoid-when
+    ["the output is short and direct — single :llm with a careful instruction wins"
+     "the task needs unbounded iteration until convergence — use validation-loop"
+     "the work has clear validation rules (formal/syntactic) — use validation-loop with a code-based validator"
+     "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough"
+     "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.988553-05:00"},
+    :domain-label "marathon-training-plan",
+    :content
+    "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+    :domain-coverage :covered,
+    :rank 8,
+    :reasoning
+    "This candidate explicitly lists 'marathon-training-plan' as an existing domain child. The task requires a highly complex, nuanced output (16-week schedule, pace calculations, strength programming, injury-specific constraints) that benefits from the 'draft -> critique -> revise' pattern to ensure all constraints (like the Achilles history and elevation) are respected across the full 16-week span.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward",
+      :avoid-when
+      "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough",
+      :recommended-alternative
+      "use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality"}
+     {:trait
+      "open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's",
+      :avoid-when
+      "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics",
+      :recommended-alternative
+      "use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes"}],
+    :domain-reasoning
+    "The candidate has 'marathon-training-plan' as an existing domain child, directly matching the subject matter and output kind of the task.",
+    :cos-good 0.9972960940538573,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.993351968028084,
+    :score 428.4760583460368,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-class:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9972960940538573,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit",
+      :good-when
+      "the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]"}
+     {:trait
+      "pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique",
+      :good-when
+      "the critique stage tends to focus on style/issues and might lose sight of the original requirement",
+      :recommended-pattern
+      "[:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]"}],
+    :avoid-when
+    ["the output is short and direct — single :llm with a careful instruction wins"
+     "the task needs unbounded iteration until convergence — use validation-loop"
+     "the work has clear validation rules (formal/syntactic) — use validation-loop with a code-based validator"
+     "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough"
+     "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.973621-05:00"},
+    :domain-label "marathon-training-plan",
+    :content
+    "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+    :domain-coverage :covered,
+    :rank 9,
+    :reasoning
+    "Matches the structural need for iterative refinement for a complex, multi-constraint physical training plan. As a fingerprint of the class above, it shares the same strengths for nuanced output generation, though the class is the primary target for classification.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward",
+      :avoid-when
+      "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough",
+      :recommended-alternative
+      "use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality"}
+     {:trait
+      "open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's",
+      :avoid-when
+      "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics",
+      :recommended-alternative
+      "use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes"}],
+    :domain-reasoning
+    "While the fingerprint itself doesn't list the children, the parent tree-class explicitly covers 'marathon-training-plan'.",
+    :cos-good 0.9972960940538573,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.993351968028084,
+    :score 428.4760583460368,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.95,
+    :document-id
+    ":tree-fingerprint:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9972960940538573,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :existing-domain-children
+    ["backend-middleware-refactoring"
+     "data-warehouse-etl-design"
+     "database-migration-runbook"
+     "jvm-service-diagnosis"
+     "recipe-scaling-and-logistics"
+     "security-audit-haikus"
+     "sql-query-optimization"
+     "streaming-etl-design"],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.988167-05:00"},
+    :domain-label "marathon-training-plan",
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :domain-coverage :partial,
+    :rank 2,
+    :reasoning
+    "The task can be viewed as an ETL-like sequence (transforming runner profile into plan, then formatting to the specific JSON-like output). However, the 'avoid-when' for 'individual stages are 1-2 sentence transformations' is a partial risk, and it lacks the specific refinement strengths needed for high-stakes health/fitness advice.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :domain-reasoning
+    "The domain children like 'recipe-scaling-and-logistics' share some logistical planning overlap, but 'marathon-training-plan' is not explicitly covered.",
+    :cos-good 0.9938673813350994,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9963420877421711,
+    :score 428.9965080164829,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.6,
+    :document-id
+    ":tree-class:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9938673813350994,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.973273-05:00"},
+    :domain-label "marathon-training-plan",
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :domain-coverage :uncovered,
+    :rank 3,
+    :reasoning
+    "Matches the structural shape of a multi-stage transformation pipeline, but like its parent class, it is less specialized for the creative/nuanced drafting required for a personalized training regimen compared to the iterative refinement pattern.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :domain-reasoning
+    "No explicit mention of marathon or fitness planning in the representative uses.",
+    :cos-good 0.9938673813350994,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9963420877421711,
+    :score 428.9965080164829,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.55,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9938673813350994,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit recovery path captures real-world fragility — primary may fail; backup absorbs",
+      :good-when
+      "the primary approach has a known failure mode AND the backup produces equivalent :writes",
+      :recommended-pattern
+      "[:fallback [:llm {:model \"openai/gpt-5\" :reads [:input] :writes [:result]}] [:llm {:model \"google/gemini-2.5-flash\" :reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["all children would succeed — just use the primary (no recovery needed)"
+     "you want both children's results compared — use :parallel"
+     "you want only one child to run based on a known condition — use :condition (when supported) or upfront branching at the parent level"
+     "designing an emit-tree! pattern AND wanting recovery-style branching"
+     "the primary has high token cost AND fails often"
+     "the primary is the canonical path AND silent fallback would hide degradation"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.986631-05:00"},
+    :domain-label "marathon-training-plan",
+    :content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :domain-coverage :uncovered,
+    :rank 6,
+    :reasoning
+    "This pattern is for graceful degradation (e.g., trying a cheaper model then a better one). The task is a creative generation task, not a recovery scenario. Using :fallback would not help generate a better training plan; it would only provide a backup if the first attempt failed entirely.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "RLM models cannot emit :fallback in emit-tree! today — pattern is canonical-DSL-only",
+      :avoid-when
+      "designing an emit-tree! pattern AND wanting recovery-style branching",
+      :recommended-alternative
+      "use a single :llm with an instruction that includes fallback guidance ('if X cannot be done, instead produce Y'); OR design the pipeline as :sequence with a downstream node that handles the missing-output case"}
+     {:trait
+      "each failed primary still runs to completion before failure is detected — total cost includes the wasted primary attempt",
+      :avoid-when "the primary has high token cost AND fails often",
+      :recommended-alternative
+      "switch the order — put the cheaper backup first; OR use a guard upstream that predicts which approach to try based on input shape"}
+     {:trait
+      "silently masks real bugs — if the primary always fails and the backup always covers, the regression is invisible",
+      :avoid-when
+      "the primary is the canonical path AND silent fallback would hide degradation",
+      :recommended-alternative
+      "add a downstream :code or judge that logs/alerts when the backup fires; OR track per-tree-run which child succeeded so degradation is visible in metrics"}],
+    :domain-reasoning
+    "The representative uses (cost-tiered fallback, schema-strict-then-loose) share no subject matter or output kind with fitness coaching.",
+    :cos-good 0.9939345748683713,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9959011941099831,
+    :score 428.6474268183332,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.1,
+    :document-id ":tree-class:\"seed:tree:FallbackRecovery\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9939345748683713,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered
+  ["marathon-training-plan"
+   "algorithmic-melody-generation"
+   "musical-arrangement-and-transcription"],
+  :event/id #uuid "01a0a9d6-98e7-7093-a7e8-56ab2cc06060",
+  :confidence 1.0,
+  :source-sheet-id #uuid "b2263df9-8a3c-40ef-bcfc-a0a1aa7fd007",
+  :ranked-candidates
+  [{:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 428.4760583460368}
+   {:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.95,
+    :score 428.4760583460368}
+   {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.6,
+    :score 428.9965080164829}
+   {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.55,
+    :score 428.9965080164829}
+   {:target-id "seed:tree:FallbackRecovery",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.1,
+    :score 428.6474268183332}],
+  :was-fresh-mint? false,
+  :assigned-via :land-on-domain-child},
+ :deferred-events [],
+ :domain-children-considered
+ ["marathon-training-plan"
+  "algorithmic-melody-generation"
+  "musical-arrangement-and-transcription"],
+ :sheet-id #uuid "b2263df9-8a3c-40ef-bcfc-a0a1aa7fd007",
+ :payload-domain
+ {:assigned-via :land-on-domain-child,
+  :parent-tree-id #uuid "aef71f08-76bf-373c-862a-1250ef23f450",
+  :child-tree-id #uuid "b4ebfb53-2915-3390-a74a-adb9f1321de3",
+  :domain-label "marathon-training-plan"},
+ :pass 2,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: marathon-training-plan); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 3 from corpus retrieval)\n#### Top match — Iterative refinement (confidence: 1.00)\nWhy this fits: This candidate explicitly lists 'marathon-training-plan' as an existing domain child. The task requires a highly complex, nuanced output (16-week schedule, pace calculations, strength programming, injury-specific constraints) that benefits from the 'draft -> critique -> revise' pattern to ensure all constraints (like the Achilles history and elevation) are respected across the full 16-week span.\n\nPattern guidance (seed `:summary`):\nIterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.\n\nCapabilities:\n  - :sequence of typically 3 stages: initial draft → critic feedback → revised draft (sometimes repeated for a fixed N)\n  - natural for content quality improvement where each pass identifies and addresses specific defects from the previous pass\n  - stages share the same content key but transform it forward — :draft → :critique → :revised-draft\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit (confidence 1.00, evidence-count 1)\n    - Good when: the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]\n      ```\n\n  - **Trait:** pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique (confidence 1.00, evidence-count 1)\n    - Good when: the critique stage tends to focus on style/issues and might lose sight of the original requirement\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward (confidence 1.00, evidence-count 1)\n    - Avoid when: output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough\n    - Recommended fix: use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality\n\n  - **Failure mode:** open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's (confidence 1.00, evidence-count 1)\n    - Avoid when: the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics\n    - Recommended fix: use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical writing improvement: draft documentation → critique for clarity/missing-context → revise\n  - creative writing polish: draft scene → critique for pacing/voice → revise\n  - executive summary tightening: draft summary → critique for jargon/specificity → revise\n\n#### Alternative #1 — Iterative refinement (confidence: 0.95)\nWhy this fits: Matches the structural need for iterative refinement for a complex, multi-constraint physical training plan. As a fingerprint of the class above, it shares the same strengths for nuanced output generation, though the class is the primary target for classification.\n\nPattern guidance (seed `:summary`):\nIterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.\n\nCapabilities:\n  - :sequence of typically 3 stages: initial draft → critic feedback → revised draft (sometimes repeated for a fixed N)\n  - natural for content quality improvement where each pass identifies and addresses specific defects from the previous pass\n  - stages share the same content key but transform it forward — :draft → :critique → :revised-draft\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit (confidence 1.00, evidence-count 1)\n    - Good when: the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]\n      ```\n\n  - **Trait:** pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique (confidence 1.00, evidence-count 1)\n    - Good when: the critique stage tends to focus on style/issues and might lose sight of the original requirement\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward (confidence 1.00, evidence-count 1)\n    - Avoid when: output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough\n    - Recommended fix: use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality\n\n  - **Failure mode:** open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's (confidence 1.00, evidence-count 1)\n    - Avoid when: the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics\n    - Recommended fix: use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical writing improvement: draft documentation → critique for clarity/missing-context → revise\n  - creative writing polish: draft scene → critique for pacing/voice → revise\n  - executive summary tightening: draft summary → critique for jargon/specificity → revise\n\n#### Alternative #2 (confidence: 0.60)\nWhy this fits: The task can be viewed as an ETL-like sequence (transforming runner profile into plan, then formatting to the specific JSON-like output). However, the 'avoid-when' for 'individual stages are 1-2 sentence transformations' is a partial risk, and it lacks the specific refinement strengths needed for high-stakes health/fitness advice.\n\nPattern guidance (seed `:summary`):\nETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).\n\nCapabilities:\n  - ordered chain of typically 2-4 stages where each stage transforms the previous stage's output into a richer form\n  - natural fit for raw-input → normalized → enriched → emit-ready flows\n  - each stage's :reads consume the previous stage's :writes — explicit data dependency tracking\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate (confidence 1.00, evidence-count 1)\n    - Good when: input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]\n      ```\n\n  - **Trait:** use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names (confidence 1.00, evidence-count 1)\n    - Good when: the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage (confidence 1.00, evidence-count 1)\n    - Avoid when: intermediate stages don't declare :output-schemas and downstream stages assume specific keys\n    - Recommended fix: always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer\n\n  - **Failure mode:** 5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short (confidence 1.00, evidence-count 1)\n    - Avoid when: individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates\n    - Recommended fix: collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - customer record normalization: parse → dedupe-fields → enrich-from-CRM → emit-warehouse-row\n  - log line parsing: tokenize → classify-event-type → annotate-with-context → emit-structured-event\n  - translation pipeline: clean-input → translate → polish-style → emit-final-text\n\nAssigned to domain child b4ebfb53-2915-3390-a74a-adb9f1321de3 (label: marathon-training-plan) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 2 from corpus retrieval)\n1. Behavioral: Design (confidence: 0.95)\n   Why this fits: The task is to produce a 16-week training plan that reconciles a goal (4:00 marathon) against multiple hard constraints (Achilles history, elevation, no track). This candidate's specific focus on producing a 'committable plan/spec' from 'goal + constraints' matches the intent perfectly. Its recommendation to use a :map with named sections (decisions/risks) aligns with the requirement for specific plan components like :paces and :red-flags. The 'draft -> critique -> refined-spec' pattern is highly appropriate for balancing complex physiological constraints.\n\n   Guidance (seed `:summary`):\n   Design produces a single committable plan/spec/architecture from inputs (goal + constraints + optional candidate options). Always structure as :map with named sections (decisions / open-questions / risks) — downstream automated stages bind on these. For non-trivial designs with interacting decisions, iterate via draft → critique → refined-spec. ALWAYS require an :open-questions field — empty means 'I'm confident', non-empty surfaces the gap before downstream stages run against an implicit guess. Composes into iterative-refinement (draft → critique → finalize) and sequential-pipeline (analysis → design → code-building) shells. Avoid when the task is option generation (use ideation) or execution against a known plan (use code-building).\n\nCapabilities:\n  - given a goal + constraints + (optionally) candidate options, produce a single concrete plan/spec/architecture as the chosen direction\n  - natural fit as the convergence stage after research/extraction/analysis/ideation; the gate before code-building or execution\n  - outputs are typically a single structured spec (sections / decisions / open-questions) with explicit decisions rather than a list of options\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** structure the design output as :map with named sections (decisions / open-questions / risks) — downstream code-building or execution can :read specific sections without re-parsing prose (confidence 1.00, evidence-count 1)\n    - Good when: the design will feed automated downstream stages (code-building, validation, execution)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:goal :constraints :options] :writes [:spec] :output-schemas {:spec [:map [:decisions [:vector :string]] [:open-questions [:vector :string]] [:risks [:vector :string]]]}}]\n      ```\n\n  - **Trait:** iterate design via draft → critique → refined-spec when the design is non-trivial — single-pass design tends to leave decisions implicit (confidence 1.00, evidence-count 1)\n    - Good when: the design has multiple interacting decisions AND the cost of a wrong call is high\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:goal] :writes [:draft-spec]}] [:llm {:reads [:draft-spec :goal] :writes [:critique]}] [:llm {:reads [:draft-spec :critique] :writes [:refined-spec]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** designs that leave open-questions implicit force the downstream stage to either fail or guess — both produce drift between intended and actual outcome (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages will execute against the design\n    - Recommended fix: require an explicit :open-questions field in the spec output — empty means 'I'm confident'; non-empty surfaces the gap\n\n  - **Failure mode:** design without explicit consideration of the constraints (as part of :reads) tends to produce specs that look reasonable but violate the constraints in subtle ways (confidence 1.00, evidence-count 1)\n    - Avoid when: the task has hard constraints (budget / API limits / shape requirements)\n    - Recommended fix: always include constraints as a separate :reads input on the design stage AND require the spec output to reference how each constraint was honored\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical architecture spec from a problem brief + constraints\n  - experiment design from a research question + dataset constraints\n  - API contract design from a feature spec + backwards-compat requirements\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent abe48812-ad0f-3a27-a142-806558801fc0)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Code-building (confidence: 0.75)\n   Why this fits: While primarily for code, this candidate's focus on producing an artifact from a 'spec' and its 'draft -> critique -> refined' iteration pattern fits the complexity of a 16-week plan. However, the avoid-when guard 'no spec exists yet' suggests it should follow a design stage; since this task *is* the design/planning stage, it is slightly less fit than the Design candidate but useful for the structured output (:map with :week-by-week) requested.\n\n   Guidance (seed `:summary`):\n   Code-building produces executable code / scripts / config from a spec. Always structure output as :map with :file-path / :language / :imports / :code — downstream automated stages bind on these. For non-trivial code, iterate via draft → critique → refined-code; single-pass produces higher defect rates. NEVER feed code-building a raw goal — always pipe through a design stage first so the input is a spec, not an open-ended ask. For long files (>200 lines), scaffold then :map-each per-section to preserve cross-section consistency. Composes into iterative-refinement (draft → critique → finalize) and sequential-pipeline (design → code → validate) shells. Avoid for mechanical transformation (use transformation) or code review (use critique).\n\nCapabilities:\n  - given a spec + constraints + (optionally) examples, produce executable code / scripts / config as the artifact\n  - natural fit at the tail of a tree after design has produced the spec, before validation gates the result\n  - outputs are typically code strings with :file-path / :language / :imports / :tests so downstream stages can persist or execute\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** structure the code output as :map with :file-path / :language / :imports / :code so downstream stages (validation / persistence / execution) can bind on specific fields rather than re-parse a code blob (confidence 1.00, evidence-count 1)\n    - Good when: the code feeds automated downstream stages (linting, test runs, file writes)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:spec] :writes [:artifact] :output-schemas {:artifact [:map [:file-path :string] [:language :string] [:imports [:vector :string]] [:code :string]]}}]\n      ```\n\n  - **Trait:** iterate code via draft → critique → refined-code when the code is non-trivial — single-pass code has higher defect rates than draft-critique-refine for the same prompt (confidence 1.00, evidence-count 1)\n    - Good when: the code involves multiple interacting decisions (error handling / edge cases / type contracts)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:spec] :writes [:draft-code]}] [:llm {:reads [:draft-code :spec] :writes [:critique]}] [:llm {:reads [:draft-code :critique] :writes [:refined-code]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** code-building without an explicit :spec input (just a goal string) produces code that maps to the model's first guess at what the goal meant — divergence from intent surfaces only at test time (confidence 1.00, evidence-count 1)\n    - Avoid when: the goal is ambiguous OR the consequences of wrong-interpretation are expensive\n    - Recommended fix: always pipe code-building's :reads through a design stage first; the design's :spec field is the input to code-building, not the raw goal\n\n  - **Failure mode:** single-shot generation of a long file (>200 lines) produces code with internal inconsistencies — function signatures mismatch their callers, imports declared but unused (confidence 1.00, evidence-count 1)\n    - Avoid when: the artifact is a long file with multiple cohesive sections\n    - Recommended fix: scaffold via :code-built outline (top-of-file imports / function-declarations / glue), then :map-each per-section generation, then :code-stitched final — preserves consistency across sections\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - function implementation from a typed spec + examples\n  - config file generation from a deployment plan\n  - test case generation from a behavior specification\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent bf47c816-2833-320e-9fbd-6ae109275ab0)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nBuild a 16-week marathon training plan for a runner with the following profile:\n\n- Age 38, recreational runner, currently logging 25 miles/week\n- Goal: complete a marathon in 4:00 (~9:09/mile pace)\n- Previous race: half-marathon in 1:55 six months ago\n- Available training time: weekday runs 45-60 min, long run on Saturday or Sunday\n- Constraints: prior right Achilles tendinopathy (no flare-up in 18 months),\n  no track access, lives at 6,200 ft elevation, gym access (treadmill +\n  basic strength equipment)\n\nProduce a week-by-week plan that:\n- Builds peak training volume to ~55-60 miles/week by week 13-14\n- Includes appropriate variety: easy runs, tempo runs, intervals,\n  long runs, recovery runs\n- Has a 3-week taper (weeks 14-15-16) appropriate for the goal time\n- Includes specific paces (easy / marathon / tempo / interval) calibrated\n  to a 4:00 marathon goal\n- Schedules 2 strength sessions per week with exercise types appropriate\n  for runners (no heavy lifting; focus on glute / hip / calf stability\n  given the Achilles history)\n- Provides cutback weeks every 4th week to allow adaptation\n- Includes specific WARNING SIGNS that would warrant a deload or rest week\n\nOutput: `{:week-by-week [<week-plan> ...] :paces {...} :strength-program :red-flags}`",
+ :june-flags
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 16009,
+ :confidence 1.0,
+ :was-fresh-mint? false,
+ :assigned-via :land-on-domain-child}

@@ -1,0 +1,15 @@
+; brief-id: b-017
+; group: api-migration-guide
+; variant: 2
+
+Hi there, hope you're having a good week. I am absolutely swamped trying to get our integration partners ready for the upcoming infrastructure flip, and honestly, my brain is fried after all these stakeholder meetings. On top of that, my kid has a soccer tournament this weekend, so I’m trying to clear my plate before I head out.
+
+Could you help me draft a comprehensive migration guide for our developers moving from our legacy Node.js and Ruby SDKs over to the new v3 Core system? I’ve attached the old documentation and the new spec files, along with a messy list of breaking changes I pulled from the engineering team’s Slack channel. We are moving away from that flat REST structure to a much more nested GraphQL-based schema for the resources, and the webhook signatures have changed entirely for security reasons—so that needs to be super clear.
+
+I need this to be a proper step-by-step guide, not just a list of what's different. Please include side-by-side code blocks showing the "Before" (v2) and "After" (v3) for a standard data fetch in both Ruby and Node. I also need a clear compatibility table so they know which endpoints map to which new queries, and a final pre-flight checklist they can follow so they don't break their production environments.
+
+I really need this to feel like a roadmap for them, not just a changelog. If you could get a solid draft together, it would save me hours of manual formatting and cross-referencing.
+
+Thanks a million,
+
+Sarah

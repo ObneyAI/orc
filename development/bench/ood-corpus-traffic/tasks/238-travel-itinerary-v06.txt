@@ -1,0 +1,13 @@
+; brief-id: b-013
+; group: travel-itinerary
+; variant: 6
+
+I’m currently drowning in deadlines before we head out for a quick three-day family trip to Singapore next month, and I honestly haven’t had a spare second to map out our days. It’ll be my husband, myself, and our three-year-old daughter. We’re staying right near Orchard Road and have a total budget of $2,200 SGD for the three days, not counting our flights or hotel. The biggest constraint is that our daughter is still in a heavy stroller, so I need the entire itinerary to be 100% elevator-accessible—no stairs or steep escalators under any circumstances. We’re looking for nature and interactive spots, but definitely nothing high-adrenaline or overly loud.
+
+I’ve jotted down the hard constraints for the trip here to keep things organized:
+
+`Trip_Specs { Dates: July 10-12; Party: 2 Adults + 1 Toddler (stroller-bound); Interests: Nature, Light Shows, Kid-friendly Museums; Daily_Start: 10:00 AM; Nap_Window: 2:00 PM - 4:00 PM (Return to hotel or quiet spot); Max_Daily_Walk: 4km; }`
+
+Please build me a day-by-day itinerary with precise timings. For each day, I need a morning activity and an evening activity, ensuring we are back at the hotel or in a very quiet spot for her nap between 2:00 PM and 4:00 PM. I also need you to identify specific nursing rooms or changing station locations near every attraction we visit. For food, suggest one kid-friendly lunch spot and one 'nice but quick' dinner near the evening activity each day. Because Singapore’s weather is so unpredictable, please include a 'Plan B' indoor alternative for every morning activity in case of heavy rain or extreme humidity.
+
+Finally, I need an itemized cost breakdown that includes estimated Grab fares and entry fees, along with a list of which specific attractions I need to book on Klook or their official sites immediately so we don't miss out. Just give me the finalized plan and the total projected cost so I can stop worrying about this. Thanks so much!

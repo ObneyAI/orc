@@ -327,7 +327,7 @@ The ontology component enables:
 
 ### 2. Classify Evaluation Results
 
-> The dimension `:score` values consumed here are `[0,1]` exactly as before. Under the tier-1 judge model (ADR 0011 / [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#tier-1-judge-model-2026-06-decoupled-discrete-scale--reason-before-score--all-four-llm-judges)) each LLM-judge `:score` is **derived deterministically from a discrete 1–5 band** rather than self-reported as a float — so classification input shape is unchanged, but the scores are now band-quantized (e.g. grounding ∈ {0.0, 0.25, 0.5, 0.75, 1.0}).
+> The dimension `:score` values consumed here are `[0,1]` exactly as before. Each LLM-judge `:score` is **derived deterministically from a described band** of the judge's rubric ([`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#rubrics-and-bands)) rather than self-reported as a float — so classification input shape is unchanged, but the scores are now band-quantized (e.g. grounding ∈ {0.0, 0.25, 0.5, 0.75, 1.0}).
 
 ```clojure
 ;; Classify an evaluation from the evaluation component

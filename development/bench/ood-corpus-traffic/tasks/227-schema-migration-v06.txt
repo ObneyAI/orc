@@ -1,0 +1,13 @@
+; brief-id: b-010
+; group: schema-migration
+; variant: 6
+
+Hey, I’m hoping you can help me architect a high-stakes schema migration for our 'ShipmentTracking' table in PostgreSQL. We’ve finally hit the ceiling with our current serial integer primary key and need to transition to a UUID-based PK while simultaneously decoupling the 'Events' data into its own partition. The main constraint here is that this table powers our customer-facing tracking portal, which is under heavy write load 24/7; consequently, achieving zero downtime is a non-negotiable requirement for the business.
+
+To give you a sense of the scope, here is the schema transition we're looking at:
+Current state: {tracking_id: INT (PK), status: TEXT, customer_id: INT, last_updated: TIMESTAMPTZ}
+Target state: {tracking_uuid: UUID (PK), status: TEXT, customer_id: INT, version: INT}
+
+I have the full DDLs and traffic throughput logs ready, but I need you to draft a concrete migration sequence that avoids any long-held table-level locks. Specifically, please detail a dual-write logic for the API layer and a background backfill strategy that utilizes a cursor or small batches to prevent table bloat or CPU spikes. I also need a precise cut-over plan: at what point do we officially stop writing to the old PK? What specific performance or error metrics should trigger an immediate rollback? 
+
+Please include a rollback plan that handles edge cases where the UUID conversion might fail for specific record types. Finally, I need the SQL queries to verify that every tracking_id has been correctly mapped to its new tracking_uuid and that the associated events are fully synced across the new partitions. Please keep the focus strictly on the schema migration and data parity; we don't need general performance tuning or index optimization at this stage. Thanks!

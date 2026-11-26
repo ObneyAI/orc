@@ -1,0 +1,5 @@
+; brief-id: b-038
+; group: property-comps
+; variant: 1
+
+Run CMA for 44 Industrial Way. 2,500 sq ft shell, 15ft eaves. Use the four sales in the attached PDF (last six months). Need a table of adjusted comps factoring in sq footage, mezzanine adds, and yard access. Explain every adjustment. Final report must include projected market value range and a confidence rating specific to SE sector commercial demand. Note impacts from the adjacent brownfield site. Internal use only. Keep it tight.

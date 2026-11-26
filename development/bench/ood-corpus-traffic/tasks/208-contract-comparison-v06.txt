@@ -1,0 +1,9 @@
+; brief-id: b-002
+; group: contract-comparison
+; variant: 6
+
+I’m currently juggling three different project launches, and the redlines just came back for the New York warehouse expansion. I have two documents for you to look at: {Base_Lease_Agreement_Jan: "Standard Commercial Terms", Counter_Proposal_March: "Landlord_Modified_Final"}. We were expecting a straightforward renewal, but this looks like a complete rewrite of the operating expense definitions.
+
+Can you please run a deep comparison between these two versions? I need an executive summary at the top explaining if the landlord is shifting the burden of structural repairs onto us. I also need a section-by-section diff that quotes the exact language from our January base draft against this new March counter-proposal for the 'Common Area Maintenance (CAM),' 'Subletting Rights,' and 'Insurance Requirements' clauses. 
+
+Follow that up with a detailed impact analysis—specifically, how these changes affect our overhead if we decide to sublease the third floor next year, and whether the new insurance mandates will hike our premiums. Finally, give me a clear recommendation on which three clauses are absolute deal-breakers we need to push back on in the Friday call, and where we can afford to be flexible to avoid a lockout. I need to know if they’re trying to sneak in a triple-net shift under the guise of 'administrative updates.' Thanks!

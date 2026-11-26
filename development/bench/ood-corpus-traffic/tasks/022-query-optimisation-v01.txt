@@ -1,0 +1,5 @@
+; brief-id: b-012
+; group: query-optimisation
+; variant: 1
+
+Analyze attached PostgreSQL slow query log, execution plan, and table stats for daily sales dashboard stored procedure. Query timing out during peak hours. Diagnose bottleneck and provide specific index recommendations and query rewrites for optimization. Include estimated percentage improvement for execution time, final refactored SQL, and expected execution plan. Focus strictly on query performance tuning; no schema migrations or data-quality audits. Priority: High.

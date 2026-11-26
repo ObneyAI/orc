@@ -1,0 +1,370 @@
+{:index-id-at-classify #uuid "813a49a3-8cb9-4a79-838b-c5e51ef55d00",
+ :assigned-tree-id #uuid "87578758-6ee1-4372-b703-b72e5f725204",
+ :tick-id #uuid "ae5f19b0-27a7-48be-8138-ffd8921c3488",
+ :slug "002-recipe-scaling-v01",
+ :parent-tree-id nil,
+ :domain-label nil,
+ :timed-out? false,
+ :outcome :novel,
+ :reached-via :bundle,
+ :domain-deferral nil,
+ :rerank-calls 2,
+ :usage
+ {:prompt-tokens 11980, :completion-tokens 1339, :total-tokens 13319},
+ :confounder-of nil,
+ :domain-verdict nil,
+ :corpus-in-domain? false,
+ :status :ok,
+ :node-id #uuid "3904bf3b-647b-4745-8207-2fce5c9f7130",
+ :top-1
+ {:target-id "87578758-6ee1-4372-b703-b72e5f725204",
+  :fitness-score 0.6,
+  :rerank-source :reranker,
+  :domain-coverage :partial,
+  :domain-label "recipe-scaling-and-adjustment"},
+ :corpus-group "recipe-scaling",
+ :expected-seed-id nil,
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "87578758-6ee1-4372-b703-b72e5f725204",
+  :classified-at "2026-09-22T10:16:44.588751-05:00",
+  :reasoning
+  "This candidate describes a week-by-week progression and planning task. Scaling a recipe for a specific event (potluck) shares the structural pattern of calculating a plan based on starting constraints (6 servings vs 20 servings) and providing specific adjustments (spice ratios), similar to the mileage progression's start and peak constraints.",
+  :outcome :novel,
+  :source-node-id #uuid "3904bf3b-647b-4745-8207-2fce5c9f7130",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "86275302-0c3d-35ae-b74e-abd4f27984eb",
+    :confidence 0.85,
+    :was-fresh-mint? false,
+    :reasoning
+    "The core of the task is a deterministic transformation: scaling a set of quantities (serving size 6 to 20) using a fixed multiplier. The candidate recommends using :code for deterministic transformations to preserve fidelity and avoid the non-determinism of LLMs. However, the user also asks for 'spice ratio changes,' which requires semantic judgment/culinary reasoning. This makes it a hybrid, but the primary structural work is a transformation.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "ae5f19b0-27a7-48be-8138-ffd8921c3488",
+  :event/tags
+  #{[:tick #uuid "ae5f19b0-27a7-48be-8138-ffd8921c3488"]
+    [:description-target
+     #uuid "87578758-6ee1-4372-b703-b72e5f725204"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-22T15:16:44.589005Z",
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "87578758-6ee1-4372-b703-b72e5f725204",
+     :confidence 0.0,
+     :last-update "2026-09-22T09:59:38.340825-05:00"},
+    :domain-label "recipe-scaling-and-adjustment",
+    :content
+    "Representative uses: INSTRUCTION:\n\nI'm training for my first marathon in 12 weeks. My current long run is 8 miles. Can you build me a week-by-week mileage progression that peaks 3 weeks before race day and then tapers?\n\nREADS: (none)\nWRITES: (none)\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none).",
+    :domain-coverage :partial,
+    :rank 1,
+    :reasoning
+    "This candidate describes a week-by-week progression and planning task. Scaling a recipe for a specific event (potluck) shares the structural pattern of calculating a plan based on starting constraints (6 servings vs 20 servings) and providing specific adjustments (spice ratios), similar to the mileage progression's start and peak constraints.",
+    :cos-good-with-content 1.0,
+    :domain-reasoning
+    "The representative use covers planning a multi-step progression (mileage) based on a starting point and target, which is structurally similar to scaling ingredients and adjusting ratios for a target volume.",
+    :cos-good 0.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.0,
+    :score 448.7528245322038,
+    :cos-avoid-sans-content 0.0,
+    :fitness-score 0.6,
+    :document-id
+    ":tree-class:#uuid \"87578758-6ee1-4372-b703-b72e5f725204\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.0,
+    :cos-avoid 0.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "wall-time equals the slowest child instead of the sum of all children",
+      :good-when
+      "the same source data needs 2-3+ independent transformations AND children's latencies are similar AND children's :writes don't overlap",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:document] :writes [:summary]}] [:llm {:reads [:document] :writes [:entities]}] [:llm {:reads [:document] :writes [:key-dates]}]] [:final {:keys [:summary :entities :key-dates]}]]"}],
+    :avoid-when
+    ["the work is per-item over a collection — use :map-each (collection iteration), not :parallel (independent transformations)"
+     "any child depends on any other child's output — use :sequence"
+     "only one child exists — drop the :parallel wrapper"
+     "any two children declare the same key in their :writes"
+     "one child is dramatically slower than the others AND a downstream node needs all children's results"
+     "a child's :reads include a key another sibling writes to"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ParallelIndependent",
+     :confidence 1.0,
+     :last-update "2026-09-22T10:16:07.210734-05:00"},
+    :domain-label "recipe-scaling-and-adjustment",
+    :content
+    "ParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.",
+    :domain-coverage :uncovered,
+    :rank 6,
+    :reasoning
+    "The task requires scaling ingredients and checking spice ratios. While these could theoretically be seen as independent transformations of the input data, the instruction specifically asks for a single output (the scaled recipe) and notes on ratios, which doesn't fit the 'N children writing to DISTINCT keys' pattern of this class.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "two children with overlapping :writes race — the surviving value is non-deterministic",
+      :avoid-when
+      "any two children declare the same key in their :writes",
+      :recommended-alternative
+      "give each child a distinct :writes key; OR use :sequence so writes happen in order; OR aggregate via :code after the :parallel"}
+     {:trait
+      "uneven child latencies mean the parallel speedup is bottlenecked by the slowest",
+      :avoid-when
+      "one child is dramatically slower than the others AND a downstream node needs all children's results",
+      :recommended-alternative
+      "split the slow child into smaller pieces via :map-each so its work parallelizes too; OR restructure so the slow child runs in :sequence with a downstream node that doesn't need siblings' results"}
+     {:trait
+      "children cannot read each other's outputs — they execute concurrently",
+      :avoid-when
+      "a child's :reads include a key another sibling writes to",
+      :recommended-alternative
+      "use :sequence to chain dependent computations; OR ensure each child reads only from blackboard keys set BEFORE the :parallel"}],
+    :domain-reasoning
+    "The domain of independent data transformations (summary, entities, dates) does not match culinary scaling or ratio adjustment.",
+    :cos-good 0.9993970541566587,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.997014448206324,
+    :score 447.53627902366463,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.2,
+    :document-id ":tree-class:\"seed:tree:ParallelIndependent\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9993970541566587,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "wall-time equals the slowest child instead of the sum of all children",
+      :good-when
+      "the same source data needs 2-3+ independent transformations AND children's latencies are similar AND children's :writes don't overlap",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:document] :writes [:summary]}] [:llm {:reads [:document] :writes [:entities]}] [:llm {:reads [:document] :writes [:key-dates]}]] [:final {:keys [:summary :entities :key-dates]}]]"}],
+    :avoid-when
+    ["the work is per-item over a collection — use :map-each (collection iteration), not :parallel (independent transformations)"
+     "any child depends on any other child's output — use :sequence"
+     "only one child exists — drop the :parallel wrapper"
+     "any two children declare the same key in their :writes"
+     "one child is dramatically slower than the others AND a downstream node needs all children's results"
+     "a child's :reads include a key another sibling writes to"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ParallelIndependent",
+     :confidence 1.0,
+     :last-update "2026-09-22T10:16:07.199458-05:00"},
+    :domain-label "recipe-scaling-and-adjustment",
+    :content
+    "ParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.",
+    :domain-coverage :uncovered,
+    :rank 7,
+    :reasoning
+    "Identical to the tree-class version; the structural requirement for parallel independent transformations does not align with the sequential/integrated nature of scaling a single recipe document.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "two children with overlapping :writes race — the surviving value is non-deterministic",
+      :avoid-when
+      "any two children declare the same key in their :writes",
+      :recommended-alternative
+      "give each child a distinct :writes key; OR use :sequence so writes happen in order; OR aggregate via :code after the :parallel"}
+     {:trait
+      "uneven child latencies mean the parallel speedup is bottlenecked by the slowest",
+      :avoid-when
+      "one child is dramatically slower than the others AND a downstream node needs all children's results",
+      :recommended-alternative
+      "split the slow child into smaller pieces via :map-each so its work parallelizes too; OR restructure so the slow child runs in :sequence with a downstream node that doesn't need siblings' results"}
+     {:trait
+      "children cannot read each other's outputs — they execute concurrently",
+      :avoid-when
+      "a child's :reads include a key another sibling writes to",
+      :recommended-alternative
+      "use :sequence to chain dependent computations; OR ensure each child reads only from blackboard keys set BEFORE the :parallel"}],
+    :domain-reasoning
+    "The domain of independent data transformations (summary, entities, dates) does not match culinary scaling or ratio adjustment.",
+    :cos-good 0.9993970541566587,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.997014448206324,
+    :score 447.53627902366463,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.2,
+    :document-id ":tree-fingerprint:\"seed:tree:ParallelIndependent\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9993970541566587,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "chunked-extraction with bounded :max-concurrency reliably extracts entities from large documents",
+      :good-when
+      "input is a single document >5KB with extractable entities AND output is a structured triple (summary + dates + entities)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:entities :dates] :output-schemas {:entities [:vector :string] :dates [:vector :string]}}]] [:aggregate {:from :results :writes [:entities :dates]}] [:llm {:reads [:document] :writes [:summary]}] [:final {:keys [:summary :entities :dates]}]]"}
+     {:trait
+      "parallel summary + entity extraction reduces wall-time when downstream nodes are independent",
+      :good-when
+      "the document size justifies chunking AND summary doesn't need to consume entity-extraction output",
+      :recommended-pattern
+      "[:parallel [:llm {:reads [:document] :writes [:summary]}] [:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:risks]}]] [:aggregate {:from :results :writes [:risks]}]]]"}],
+    :avoid-when
+    ["input is a small (<5KB) document — single :llm call is simpler"
+     "output is a single field (just :summary or just :entities) — don't add aggregation overhead"
+     "the document is binary (image, PDF) — use the predict-rlm-pdf or predict-rlm-image-tools brick first to extract text"
+     "input is a large document AND :max-concurrency is unset on the :map-each"
+     "the document is >5KB and the tree is a single :llm without chunking"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b001-d0c0a0a0a0a1",
+     :confidence 1.0,
+     :last-update "2026-09-22T10:16:07.195957-05:00"},
+    :domain-label "recipe-scaling-and-adjustment",
+    :content
+    "Document-analysis trees extract summary + key-dates + entities from a large single-document input. The proven shape is chunked-extraction: :chunk-document → :map-each (bounded :max-concurrency 3) over per-chunk :llm → :aggregate → final synthesis :llm. Always chunk for documents above ~5KB. Always bound :max-concurrency to avoid sub-LLM rate-limit exhaustion. For independent summary + entity extraction, use :parallel to reduce wall-time.",
+    :domain-coverage :uncovered,
+    :rank 9,
+    :reasoning
+    "The task is a small instruction involving a few lines of text. This candidate is specifically for 'large single-document input' (>5KB) and involves chunking. The avoid-when 'input is a small (<5KB) document' explicitly fires, making this the wrong choice.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded :max-concurrency on per-chunk :llm calls exhausts rate limits on documents with 6+ chunks",
+      :avoid-when
+      "input is a large document AND :max-concurrency is unset on the :map-each",
+      :recommended-alternative
+      "always set :max-concurrency to 3 on the :map-each parent of per-chunk :llm calls"}
+     {:trait
+      "single-shot :llm on a >50KB document either truncates or burns token budget without yielding good output",
+      :avoid-when
+      "the document is >5KB and the tree is a single :llm without chunking",
+      :recommended-alternative
+      "always chunk first (use :chunk-document) for documents above ~5KB"}],
+    :domain-reasoning
+    "The task involves a small text snippet, while the candidate is explicitly for document analysis of large files. It matches the 'input is a small (<5KB) document' avoid-when guard.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9979502050152698,
+    :score 447.50998020049315,
+    :cos-avoid-sans-content 0.999805846236743,
+    :fitness-score 0.05,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b001-d0c0a0a0a0a1\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.999805846236743}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "chunked-extraction with bounded :max-concurrency reliably extracts entities from large documents",
+      :good-when
+      "input is a single document >5KB with extractable entities AND output is a structured triple (summary + dates + entities)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:entities :dates] :output-schemas {:entities [:vector :string] :dates [:vector :string]}}]] [:aggregate {:from :results :writes [:entities :dates]}] [:llm {:reads [:document] :writes [:summary]}] [:final {:keys [:summary :entities :dates]}]]"}
+     {:trait
+      "parallel summary + entity extraction reduces wall-time when downstream nodes are independent",
+      :good-when
+      "the document size justifies chunking AND summary doesn't need to consume entity-extraction output",
+      :recommended-pattern
+      "[:parallel [:llm {:reads [:document] :writes [:summary]}] [:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:risks]}]] [:aggregate {:from :results :writes [:risks]}]]]"}],
+    :avoid-when
+    ["input is a small (<5KB) document — single :llm call is simpler"
+     "output is a single field (just :summary or just :entities) — don't add aggregation overhead"
+     "the document is binary (image, PDF) — use the predict-rlm-pdf or predict-rlm-image-tools brick first to extract text"
+     "input is a large document AND :max-concurrency is unset on the :map-each"
+     "the document is >5KB and the tree is a single :llm without chunking"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "00000000-c1c1-4001-b001-d0c0a0a0a0a1",
+     :confidence 1.0,
+     :last-update "2026-09-22T10:16:07.207865-05:00"},
+    :domain-label "recipe-scaling-and-adjustment",
+    :content
+    "Document-analysis trees extract summary + key-dates + entities from a large single-document input. The proven shape is chunked-extraction: :chunk-document → :map-each (bounded :max-concurrency 3) over per-chunk :llm → :aggregate → final synthesis :llm. Always chunk for documents above ~5KB. Always bound :max-concurrency to avoid sub-LLM rate-limit exhaustion. For independent summary + entity extraction, use :parallel to reduce wall-time.",
+    :domain-coverage :uncovered,
+    :rank 10,
+    :reasoning
+    "Identical to the fingerprint version; the avoid-when guard 'input is a small (<5KB) document' fires because the chili recipe is only a few sentences. The complexity of chunking and aggregation is unnecessary.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded :max-concurrency on per-chunk :llm calls exhausts rate limits on documents with 6+ chunks",
+      :avoid-when
+      "input is a large document AND :max-concurrency is unset on the :map-each",
+      :recommended-alternative
+      "always set :max-concurrency to 3 on the :map-each parent of per-chunk :llm calls"}
+     {:trait
+      "single-shot :llm on a >50KB document either truncates or burns token budget without yielding good output",
+      :avoid-when
+      "the document is >5KB and the tree is a single :llm without chunking",
+      :recommended-alternative
+      "always chunk first (use :chunk-document) for documents above ~5KB"}],
+    :domain-reasoning
+    "The task involves a small text snippet, while the candidate is explicitly for document analysis of large files. It matches the 'input is a small (<5KB) document' avoid-when guard.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9979502050152698,
+    :score 447.50998020049315,
+    :cos-avoid-sans-content 0.999805846236743,
+    :fitness-score 0.05,
+    :document-id
+    ":tree-class:#uuid \"00000000-c1c1-4001-b001-d0c0a0a0a0a1\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.999805846236743}],
+  :event/type :ontology/task-classified,
+  :event/id #uuid "01a0c9b0-d5ad-705f-bd64-5c4e570953e1",
+  :confidence 0.6,
+  :source-sheet-id #uuid "bf35555e-a0d0-41c9-b697-02310a3d095b",
+  :ranked-candidates
+  [{:target-id "87578758-6ee1-4372-b703-b72e5f725204",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.6,
+    :score 448.7528245322038}
+   {:target-id "seed:tree:ParallelIndependent",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.2,
+    :score 447.53627902366463}
+   {:target-id "seed:tree:ParallelIndependent",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.2,
+    :score 447.53627902366463}
+   {:target-id "00000000-c1c1-4001-b001-d0c0a0a0a0a1",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.05,
+    :score 447.50998020049315}
+   {:target-id "00000000-c1c1-4001-b001-d0c0a0a0a0a1",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.05,
+    :score 447.50998020049315}],
+  :was-fresh-mint? false,
+  :assigned-via :bundle},
+ :deferred-events [],
+ :domain-children-considered nil,
+ :sheet-id #uuid "bf35555e-a0d0-41c9-b697-02310a3d095b",
+ :payload-domain nil,
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 1 from corpus retrieval)\n#### Top match (confidence: 0.60)\nWhy this fits: This candidate describes a week-by-week progression and planning task. Scaling a recipe for a specific event (potluck) shares the structural pattern of calculating a plan based on starting constraints (6 servings vs 20 servings) and providing specific adjustments (spice ratios), similar to the mileage progression's start and peak constraints.\n\nPattern guidance (seed `:summary`):\nRepresentative uses: INSTRUCTION:\n\nI'm training for my first marathon in 12 weeks. My current long run is 8 miles. Can you build me a week-by-week mileage progression that peaks 3 weeks before race day and then tapers?\n\nREADS: (none)\nWRITES: (none)\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none).\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - INSTRUCTION:\n\nI'm training for my first marathon in 12 weeks. My current long run is 8 miles. Can you build me a week-by-week mileage progression that peaks 3 weeks before race day and then tapers?\n\nREADS: (none)\nWRITES: (none)\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none)\n\n### Behavioral competencies (top 1 from corpus retrieval)\n1. Behavioral: Transformation (confidence: 0.85)\n   Why this fits: The core of the task is a deterministic transformation: scaling a set of quantities (serving size 6 to 20) using a fixed multiplier. The candidate recommends using :code for deterministic transformations to preserve fidelity and avoid the non-determinism of LLMs. However, the user also asks for 'spice ratio changes,' which requires semantic judgment/culinary reasoning. This makes it a hybrid, but the primary structural work is a transformation.\n\n   Guidance (seed `:summary`):\n   Transformation is mechanical reshape of data between deterministic shapes. ALWAYS use :code (not :llm) for deterministic transformations — preserves fidelity, costs nothing, runs in ms; :llm for transformation produces non-deterministic output. For per-item independent transformations, :map-each isolates per-item failures. ALWAYS declare :output-schemas on transformation output and :input-schemas on downstream :reads so shape mismatch fails at the boundary, not deep in the consumer. Composes into etl-pipeline (sequential transform chain), parallel-sum (map-reduce transformation), sequential-pipeline shells, and map-reduce shells. Avoid for transformations that need judgment (semantic rephrasing / style shift — use :llm) or for unstructured input (extract first).\n\nCapabilities:\n  - given input data + a target shape spec, emit the input restructured to the target shape\n  - natural fit anywhere a tree needs to change data shape without semantic interpretation\n  - outputs are typically a single restructured value or a vector of per-item transformations\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** implement transformations in :code (NOT :llm) when the mapping is deterministic — preserves byte-for-byte fidelity, costs zero tokens, runs in milliseconds (confidence 1.00, evidence-count 1)\n    - Good when: the transformation rule can be expressed as a pure function over the input\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:input] :writes [:output] :fn (fn [{:keys [inputs]}] {:output (mapv (fn [r] (select-keys r [:a :b])) (:input inputs))})}]\n      ```\n\n  - **Trait:** for per-item independent transformations over a vector, use :map-each rather than a single batch :code call when the per-item work is non-trivial — supports per-item failure isolation (confidence 1.00, evidence-count 1)\n    - Good when: items can fail independently AND partial success has value\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :records :as :record :writes [:transformed]} [:code {:reads [:record] :writes [:transformed] :fn (fn [{:keys [inputs]}] {:transformed (assoc (:record inputs) :stamp \"x\")})}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** using :llm for a deterministic transformation (CSV → JSON, snake_case → camelCase) produces non-deterministic output AND wastes tokens (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation rule is fully specifiable\n    - Recommended fix: always :code for deterministic transformations; reserve :llm for transformations that need judgment (semantic-rephrasing / style-shift / domain-translation)\n\n  - **Failure mode:** transformations without :output-schemas on the downstream :reads break silently when an upstream change shifts the output shape — the consumer gets garbage instead of an error (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation feeds another stage that binds on specific fields\n    - Recommended fix: declare :output-schemas on the transformation output AND :input-schemas on the downstream :reads — shape mismatch fails loudly at the boundary, not deep in the consumer\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - CSV row → JSON object mapping per-field\n  - extracted entity records → DB-row shape with derived fields\n  - input list → output list with N filters / projections applied\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 86275302-0c3d-35ae-b74e-abd4f27984eb)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\n\nThis chili recipe serves 6: 2 lbs ground beef, 1 onion, 2 cans beans, 1 can tomatoes, 2 tbsp chili powder. I need it to serve 20 for a work potluck -- can you scale every ingredient and note if any spice ratios should change at that volume?",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 12703,
+ :confidence 0.6,
+ :was-fresh-mint? false,
+ :assigned-via :bundle}

@@ -1,0 +1,328 @@
+{:slug "code-004-debug-memory-leak",
+ :envelope
+ {:assigned-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :parent-tree-id nil,
+  :rerank-fallback? false,
+  :reasoning
+  "The producer/validator pattern is the strongest fit because the task requires a complex diagnostic synthesis (the producer) followed by an explicit 'verification-plan' (the validator) to confirm the hypothesis. The requirement for 'evidence-chain' and 'verification-plan' aligns perfectly with the recommended pattern of a producer generating a candidate and a validator checking it against rules.",
+  :outcome :matched,
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.176129-05:00"},
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :rank 10,
+    :reasoning
+    "The producer/validator pattern is the strongest fit because the task requires a complex diagnostic synthesis (the producer) followed by an explicit 'verification-plan' (the validator) to confirm the hypothesis. The requirement for 'evidence-chain' and 'verification-plan' aligns perfectly with the recommended pattern of a producer generating a candidate and a validator checking it against rules.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :cos-good 0.9945647103374534,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9875516695722105,
+    :score 430.42327738641865,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.92,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9945647103374534,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the cheap path handles the common case at fractional cost — typical economics are 10-20x cheaper per call than always-expensive",
+      :good-when
+      "the work has a long-tail difficulty distribution AND the expensive model is materially more capable on hard cases",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:model :gemini-flash :max-retries 1}}] [:llm {:reads [:input] :writes [:result] :options {:model :claude-opus :max-retries 2}}]]"}
+     {:trait
+      "wire a confidence-check (validator) between the two LLM tiers to escalate on LOW confidence, not just on outright failure — the cheap model's confident-but-wrong answers are the main risk",
+      :good-when
+      "the cheap model has a measurable tendency to be confidently wrong on hard cases",
+      :recommended-pattern
+      "[:sequence [:llm {:options {:model :gemini-flash} :writes [:result :confidence]}] [:fallback [:condition {:predicate (fn [{:keys [confidence]}] (>= confidence 0.8))}] [:llm {:options {:model :claude-opus} :writes [:result]}]]]"}],
+    :avoid-when
+    ["the backup path is deterministic (regex, template, cache) — use primary-backup instead"
+     "the cheap model is roughly capable of the full distribution — single cheap model with :max-retries is simpler"
+     "you can't measure confidence on cheap-model output — escalation won't fire correctly"
+     "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence"
+     "both tiers use the same upstream provider AND availability is a concern"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.187463-05:00"},
+    :content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :rank 4,
+    :reasoning
+    "This task involves analyzing a long-tail failure mode (OOM after 4-6 hours) where simple heuristics might fail. While the task doesn't explicitly describe a tiered LLM approach, the logic of handling complex cases with deeper analysis (the expensive tier) fits the diagnostic intent. However, the avoid-when regarding deterministic backups is a slight mismatch as the output here is a structured synthesis, not a simple fallback.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "without a confidence-check between tiers, the cheap model's confident-but-wrong outputs ship without ever escalating — :fallback only catches outright failure (:status :failure), not bad answers",
+      :avoid-when
+      "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence",
+      :recommended-alternative
+      "always require a :confidence field on the cheap model's output schema AND escalate to expensive model on confidence < threshold (e.g., 0.7)"}
+     {:trait
+      "cascade with both tiers using the SAME provider correlates failures — when the provider has an outage, both tiers fail together",
+      :avoid-when
+      "both tiers use the same upstream provider AND availability is a concern",
+      :recommended-alternative
+      "use different providers for the two tiers (e.g., gemini for cheap, claude for expensive) so a provider outage degrades one tier but not both"}],
+    :cos-good 0.987521144204482,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9850385053724567,
+    :score 430.9926499815934,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.75,
+    :document-id
+    ":tree-class:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.987521144204482,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the cheap path handles the common case at fractional cost — typical economics are 10-20x cheaper per call than always-expensive",
+      :good-when
+      "the work has a long-tail difficulty distribution AND the expensive model is materially more capable on hard cases",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:model :gemini-flash :max-retries 1}}] [:llm {:reads [:input] :writes [:result] :options {:model :claude-opus :max-retries 2}}]]"}
+     {:trait
+      "wire a confidence-check (validator) between the two LLM tiers to escalate on LOW confidence, not just on outright failure — the cheap model's confident-but-wrong answers are the main risk",
+      :good-when
+      "the cheap model has a measurable tendency to be confidently wrong on hard cases",
+      :recommended-pattern
+      "[:sequence [:llm {:options {:model :gemini-flash} :writes [:result :confidence]}] [:fallback [:condition {:predicate (fn [{:keys [confidence]}] (>= confidence 0.8))}] [:llm {:options {:model :claude-opus} :writes [:result]}]]]"}],
+    :avoid-when
+    ["the backup path is deterministic (regex, template, cache) — use primary-backup instead"
+     "the cheap model is roughly capable of the full distribution — single cheap model with :max-retries is simpler"
+     "you can't measure confidence on cheap-model output — escalation won't fire correctly"
+     "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence"
+     "both tiers use the same upstream provider AND availability is a concern"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.177442-05:00"},
+    :content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :rank 3,
+    :reasoning
+    "Matches the model cascade logic for complex troubleshooting, but ranks slightly lower than the class-level description as it focuses more on implementation details than the high-level diagnostic logic required by the prompt.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "without a confidence-check between tiers, the cheap model's confident-but-wrong outputs ship without ever escalating — :fallback only catches outright failure (:status :failure), not bad answers",
+      :avoid-when
+      "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence",
+      :recommended-alternative
+      "always require a :confidence field on the cheap model's output schema AND escalate to expensive model on confidence < threshold (e.g., 0.7)"}
+     {:trait
+      "cascade with both tiers using the SAME provider correlates failures — when the provider has an outage, both tiers fail together",
+      :avoid-when
+      "both tiers use the same upstream provider AND availability is a concern",
+      :recommended-alternative
+      "use different providers for the two tiers (e.g., gemini for cheap, claude for expensive) so a provider outage degrades one tier but not both"}],
+    :cos-good 0.987521144204482,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9850385053724567,
+    :score 430.9926499815934,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.72,
+    :document-id
+    ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.987521144204482,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit recovery path captures real-world fragility — primary may fail; backup absorbs",
+      :good-when
+      "the primary approach has a known failure mode AND the backup produces equivalent :writes",
+      :recommended-pattern
+      "[:fallback [:llm {:model \"openai/gpt-5\" :reads [:input] :writes [:result]}] [:llm {:model \"google/gemini-2.5-flash\" :reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["all children would succeed — just use the primary (no recovery needed)"
+     "you want both children's results compared — use :parallel"
+     "you want only one child to run based on a known condition — use :condition (when supported) or upfront branching at the parent level"
+     "designing an emit-tree! pattern AND wanting recovery-style branching"
+     "the primary has high token cost AND fails often"
+     "the primary is the canonical path AND silent fallback would hide degradation"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.184354-05:00"},
+    :content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :rank 8,
+    :reasoning
+    "The task asks for alternative hypotheses, which mirrors the fallback/recovery concept (if the primary cause is wrong, what else could it be?). However, the avoid-when 'the primary is the canonical path AND silent fallback would hide degradation' is relevant here because a diagnostic task requires transparency, not silent recovery.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "RLM models cannot emit :fallback in emit-tree! today — pattern is canonical-DSL-only",
+      :avoid-when
+      "designing an emit-tree! pattern AND wanting recovery-style branching",
+      :recommended-alternative
+      "use a single :llm with an instruction that includes fallback guidance ('if X cannot be done, instead produce Y'); OR design the pipeline as :sequence with a downstream node that handles the missing-output case"}
+     {:trait
+      "each failed primary still runs to completion before failure is detected — total cost includes the wasted primary attempt",
+      :avoid-when "the primary has high token cost AND fails often",
+      :recommended-alternative
+      "switch the order — put the cheaper backup first; OR use a guard upstream that predicts which approach to try based on input shape"}
+     {:trait
+      "silently masks real bugs — if the primary always fails and the backup always covers, the regression is invisible",
+      :avoid-when
+      "the primary is the canonical path AND silent fallback would hide degradation",
+      :recommended-alternative
+      "add a downstream :code or judge that logs/alerts when the backup fires; OR track per-tree-run which child succeeded so degradation is visible in metrics"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9801876926687008,
+    :score 430.53041142817847,
+    :cos-avoid-sans-content 0.9937267887849384,
+    :fitness-score 0.6,
+    :document-id ":tree-class:\"seed:tree:FallbackRecovery\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9937267887849384}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit recovery path captures real-world fragility — primary may fail; backup absorbs",
+      :good-when
+      "the primary approach has a known failure mode AND the backup produces equivalent :writes",
+      :recommended-pattern
+      "[:fallback [:llm {:model \"openai/gpt-5\" :reads [:input] :writes [:result]}] [:llm {:model \"google/gemini-2.5-flash\" :reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["all children would succeed — just use the primary (no recovery needed)"
+     "you want both children's results compared — use :parallel"
+     "you want only one child to run based on a known condition — use :condition (when supported) or upfront branching at the parent level"
+     "designing an emit-tree! pattern AND wanting recovery-style branching"
+     "the primary has high token cost AND fails often"
+     "the primary is the canonical path AND silent fallback would hide degradation"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.173733-05:00"},
+    :content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :rank 7,
+    :reasoning
+    "Shares the same strengths and weaknesses as the FallbackRecovery class, offering a structural match for the 'alternative-hypotheses' requirement but lacking the specific diagnostic synthesis focus of the producer/validator.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "RLM models cannot emit :fallback in emit-tree! today — pattern is canonical-DSL-only",
+      :avoid-when
+      "designing an emit-tree! pattern AND wanting recovery-style branching",
+      :recommended-alternative
+      "use a single :llm with an instruction that includes fallback guidance ('if X cannot be done, instead produce Y'); OR design the pipeline as :sequence with a downstream node that handles the missing-output case"}
+     {:trait
+      "each failed primary still runs to completion before failure is detected — total cost includes the wasted primary attempt",
+      :avoid-when "the primary has high token cost AND fails often",
+      :recommended-alternative
+      "switch the order — put the cheaper backup first; OR use a guard upstream that predicts which approach to try based on input shape"}
+     {:trait
+      "silently masks real bugs — if the primary always fails and the backup always covers, the regression is invisible",
+      :avoid-when
+      "the primary is the canonical path AND silent fallback would hide degradation",
+      :recommended-alternative
+      "add a downstream :code or judge that logs/alerts when the backup fires; OR track per-tree-run which child succeeded so degradation is visible in metrics"}],
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9801876926687008,
+    :score 430.53041142817847,
+    :cos-avoid-sans-content 0.9937267887849384,
+    :fitness-score 0.58,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9937267887849384}],
+  :confidence 0.92,
+  :ranked-candidates
+  [{:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.92,
+    :score 430.42327738641865}
+   {:target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.75,
+    :score 430.9926499815934}
+   {:target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.72,
+    :score 430.9926499815934}
+   {:target-id "seed:tree:FallbackRecovery",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.6,
+    :score 430.53041142817847}
+   {:target-id "seed:tree:FallbackRecovery",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.58,
+    :score 430.53041142817847}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 5275,
+ :parent-chain []}

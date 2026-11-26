@@ -4,6 +4,24 @@ Behavior-tree workflow execution engine for LLM-powered workflows, built on Grai
 
 ## Language
 
+### Model requests
+
+**Request mode**:
+How a model leaf asks for its structured answer: marker mode (field markers in the prompt, parsed from text) or function mode (a single structured function call).
+_Avoid_: transport, protocol
+
+**Input field**:
+A field of a model leaf's declared input contract. It remains an input field when a particular request does not carry it.
+_Avoid_: argument, parameter
+
+**Shown field**:
+An input field present in a particular request's values, at any depth (present with no value counts as shown). Only shown fields are visible to the model in that request.
+_Avoid_: active field, used field
+
+**Input field guide**:
+The account, sent with every model request whatever its request mode, of each shown field -- its name, type and meaning, the item fields of a collection once, each meaning once.
+_Avoid_: schema dump, input spec, signature text
+
 ### Retrieval
 
 **Signal**:
@@ -37,6 +55,23 @@ _Avoid_: index files, the .ragatouille directory
 **Graceful degradation**:
 Hybrid search's contract that an absent or failing ColBERT signal silently narrows the search to the remaining signals, never erroring.
 _Avoid_: fallback mode
+
+### Model alternatives
+
+**Logical model task**:
+One node-owned request under an instruction and described input/output contracts, which may be attempted by more than one configured model without repeating completed work.
+
+**Model candidate**:
+A configured model and provider choice for a logical model task, with compatible request settings.
+
+**Response profile**:
+The agreed representation and interpretation of a conversational model's typed answer, distinct from the model that produces it.
+
+**Effective model plan**:
+A retained, versioned description of a logical model task's ordered candidates, their protocols, compatible request settings and failure policy.
+
+**Effective role plan**:
+The retained model choices and response profile shared by a campaign role under one authored configuration. Individual requests retain their own inputs and identities across iterations.
 
 ### Recursive researcher
 
@@ -124,6 +159,30 @@ _Avoid_: template, playbook, macro
 The four moves available to a model shown a reference behavior: use its pattern as-is; modify it for this task; mint a child of it that pins a narrower domain; or mint a fresh behavior for a genuinely novel task.
 _Avoid_: reuse, fork, inherit
 
+**Domain child**:
+A class minted under a shape class when a task matched that shape but the shape's declared domain covers the task's only partly or not at all. It keeps the parent's proven shape, pins the task's domain, carries one stable identity derived from the shape it was born under and its domain label, is found again by that label whatever shape a later occurrence retrieves (see Domain family), and is the identity the task's recurrence, consolidation and harvest accrue under.
+_Avoid_: subclass, variant, specialised seed (a seed is authored; a domain child is minted from a judged verdict)
+
+**Domain family**:
+All occurrences of one domain within one tenant, landing on the domain child that was minted first for that domain, whatever shape a later occurrence retrieves. The family's parent is the shape it was first minted under; the shape is context for the model, the family is the identity evidence accrues under.
+_Avoid_: sibling set, cluster, label group (a family is one class, not a grouping of classes)
+
+**Merge verdict**:
+The discrete answer, with its reasons, to whether a task that would otherwise mint a new domain family belongs to an existing one shown to the judge: the named family, new, or unknown. Judged over the families' full descriptions, never over a similarity number.
+_Avoid_: merge score, dedup, fuzzy match
+
+**Covered-seed protection**:
+When the best-fitting shape would mint a domain family but another retrieved class is judged to cover the task's domain, has no families of its own, and fits well enough to match, the task is assigned to that covering class instead, and the passed-over shape is recorded. An authored class keeps its own traffic.
+_Avoid_: seed priority, fitness override
+
+**Newborn family**:
+A domain family that has been minted but has not yet recurred enough to be surfaced by the retrieval gate. It can be landed on and merged into from the moment it is born; it is shown to the model as a pattern only once it has evidence.
+_Avoid_: provisional class, draft child
+
+**Domain coverage**:
+The reranker's discrete verdict on whether a candidate's declared domain — its representative uses and guards — covers the task's domain: covered, partial, uncovered, or unknown. A verdict with its reasons, never a number; distinct from fitness, which is shape-and-intent fit.
+_Avoid_: domain score, domain similarity, coverage confidence
+
 **Claim**:
 A campaign's durable assertion of ownership over one effect before that effect happens, carrying the epoch that made it. The same record that makes an effect's outcome knowable afterwards.
 _Avoid_: lock, lease (a lease is granted by the platform; a claim is asserted by the campaign)
@@ -139,3 +198,59 @@ _Avoid_: failed call, lost call
 **Provider-call reservation**:
 A durable campaign-budget slot written immediately before one provider attempt. It belongs to the budget root, campaign iteration, ownership epoch, and node execution that requested the call. It remains spent even when a crash leaves the provider outcome unknown.
 _Avoid_: provider claim (a claim fences one logical campaign effect per ownership epoch; a reservation counts one physical provider attempt)
+
+**Judge**:
+A behaviour that grades recorded work against a rubric. Every judge is an ordinary workflow, built-in or custom, and may delegate, run parallel checks and call tools. It is declared once under a name together with its rubric, its model configuration and its purposes.
+_Avoid_: scorer, evaluator function, metric (a metric is what a judge's results are aggregated into)
+
+**Rubric**:
+The editable grading contract a judge reads: the criterion, the reviewer's stance, a description for every band, and whether feedback is required. Changing the rubric changes the judge's revision, never its tree.
+_Avoid_: prompt, criteria (criteria is one part of a rubric)
+
+**Band**:
+One described level of a rubric's ordered scale. A judge selects a band; the score is derived from it, never reported by the model.
+_Avoid_: rating, raw score
+
+**Judge revision**:
+The identity of a judge's exact definition (its behaviour, rubric and declared model) at the time it assessed something. Results under different revisions are never blended.
+_Avoid_: criteria version, judge version number
+
+**Assessment**:
+One judge's judgment of one assessment subject under one judge revision. It is requested durably when the subject completes and ends scored, failed or ungradable. Delivering the same completion again never creates a second assessment.
+_Avoid_: score (a score is part of a scored assessment), evaluation run
+
+**Assessment subject**:
+The completed execution an assessment is about: one execution of a leaf, a composite, a delegate or the whole tree. Repeated executions of one node in one run are distinct subjects.
+_Avoid_: target, node (a node is a definition; a subject is one execution of it)
+
+**Assessment outcome**:
+How an assessment ended. Scored carries a band, a score and optional feedback. Failed means the judgment could not be carried out (provider error, invalid result, missed deadline, unresolved model). Ungradable means the evidence did not permit a grade, including an exact tie between bands and a subject whose execution failed. Pending means it has not ended yet. Only scored outcomes carry a score.
+_Avoid_: zero score, abstention (for a failed or ungradable outcome)
+
+**Monitoring judge**:
+A judge whose results describe how its subjects are performing. Its feedback may be absent, so its results never reach the learning loops.
+_Avoid_: score-only learning judge
+
+**Learning judge**:
+A judge whose results also feed the loops that learn from judge feedback: Living Descriptions, harvest and instruction optimization. A learning judge must require feedback.
+_Avoid_: default judge (the default researcher judges are learning judges, but not every learning judge is a default)
+
+**Execution family**:
+Every node execution beneath one execution, in order, including the executions of workflows it delegated to, each with what it read, wrote, failed with and caused. The evidence a judge of a whole behaviour may read.
+_Avoid_: trace (a trace is one execution's record), lineage (lineage is the parent chain)
+
+**Assessment origin**:
+The durable mark that an execution exists to perform an assessment. It is inherited by the executions it delegates to, and work under it is never itself assessed automatically.
+_Avoid_: judge depth
+
+**Node version**:
+A node's effective definition at the moment it executed. Performance is collected per node version, so a changed instruction or model never blends with what came before.
+_Avoid_: sheet version (a sheet version is a published workflow; one node can change within it)
+
+**Coverage**:
+Beside any grade, how many assessments were expected and how many were scored, failed, ungradable or still pending. A grade without its coverage is never reported.
+_Avoid_: success rate
+
+**Performance threshold crossing**:
+A declared alert's signal that a node version's trailing performance fell below its threshold, raised once per crossing and re-armed on recovery. It prompts a decision; it never starts training by itself.
+_Avoid_: alarm, auto-retrain

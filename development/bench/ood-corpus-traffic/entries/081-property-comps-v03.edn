@@ -1,0 +1,22 @@
+{:slug "081-property-comps-v03",
+ :group "property-comps",
+ :in-domain? false,
+ :variant 3,
+ :expected-output-kind
+ "adjusted comparables with the adjustments explained, a value range and the confidence and caveats",
+ :brief-id "b-038",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 539, :completion-tokens 247, :total-tokens 786},
+  :draft-prompt-sha256
+  "def2196d172d406478068ebf15b30c1924b6ff95e24f09300e9f88019e30cd7d",
+  :polish-usage
+  {:prompt-tokens 425, :completion-tokens 295, :total-tokens 720},
+  :polish-prompt-sha256
+  "66d8b6adc8bd248e8b3b95080b9631b94d5d9f6a9e49c894471e0a04835aebb2",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

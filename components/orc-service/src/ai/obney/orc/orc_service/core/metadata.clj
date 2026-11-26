@@ -14,14 +14,14 @@
   "Classify a node's type, handling leaf nodes specially.
 
    Leaf nodes are further classified by their executor:
-   - :executor :ai -> :llm
+   - :executor :ai / :decision -> :llm (a decision calls a model)
    - :executor :code -> :code
    - otherwise -> :leaf"
   [node]
   (let [base-type (:type node)]
     (if (= :leaf base-type)
       (case (:executor node)
-        :ai :llm
+        (:ai :decision) :llm
         :code :code
         :leaf)
       base-type)))

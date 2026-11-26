@@ -1,0 +1,5 @@
+; brief-id: b-016
+; group: incident-postmortem
+; variant: 1
+
+Draft internal blameless postmortem for yesterday's EU-West-1 DB cluster failure. Incident caused 45-minute outage and partial data loss. Use attached Slack logs, Datadog connection pooling snapshots, and PagerDuty timeline for reference. Include granular incident timeline and RCA focusing specifically on why the failover script failed to execute. Summarize customer impact and document manual recovery successes. List prioritized action items; assign all infrastructure remediation to @ops-team and monitoring enhancements to @eng-leads. Internal technical review format only—do not draft as a public-facing status page. Needs to be ready for the retro.

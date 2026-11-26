@@ -1,0 +1,19 @@
+; brief-id: b-028
+; group: experiment-plan
+; variant: 2
+
+Hi there, hope you're having a good week. I'm currently buried in prep for my daughter's soccer tournament this weekend, and I also have to finish this quarterly report, so I'm hoping you can take a look at something for me that’s been sitting on my desk for a while.
+
+Basically, we’re trying to figure out how to improve the efficiency of our document classification pipeline. The question is: "Can we achieve a 15% reduction in latency for our multi-label text classifier by moving from a heavy BERT-base architecture to a distilled model or a pruned transformer without losing more than 0.5% in F1-score?"
+
+I’ve got some notes here for you. The dataset is our internal 'Corporate-Knowledge-Base' (CKB-2023), which consists of about 450,000 short-to-medium length technical support tickets, all labeled across 42 categories. Our current baseline is the vanilla BERT-base-uncased model which takes about 180ms per inference on our standard CPU instances. We’ve got a compute budget of $12,000 for this specific experimentation phase, mostly for GPU time on our internal cluster.
+
+Could you draft a comprehensive machine-learning experiment plan for me? I need you to outline a few different hypotheses—maybe one around DistilBERT, one around weight pruning, and maybe one looking at quantized ONNX runtimes. I need a full experiment matrix comparing these against the baseline. Please define the exact metrics we should be tracking (beyond just latency and F1) and a clear evaluation protocol for how we validate the results. Also, I need a breakdown of how to allocate that $12,000 budget across the different training runs and hyperparameter sweeps. Most importantly, I need the decision criteria—basically, what results would make us pull the trigger on a production migration?
+
+Please keep it to the strategic planning side; I don't need you to write any of the PyTorch or deployment code yet, I just need the roadmap so I can get stakeholder buy-in before we start burning credits. 
+
+Thanks a ton, really appreciate the help while I juggle all this soccer gear!
+
+Best, 
+
+Mark

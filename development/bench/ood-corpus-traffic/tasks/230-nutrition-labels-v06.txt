@@ -1,0 +1,13 @@
+; brief-id: b-033
+; group: nutrition-labels
+; variant: 6
+
+Hey! I am absolutely swamped trying to finalize the new 'Healthy Grab-and-Go' fridge line for the hospital gift shop, and I really need your help with the final nutritional labeling. I’ve gone through the draft recipes and matched them up with the raw ingredient nutrient values we got from the wholesaler, but I need someone to double-check the math and get the formatting right. Can you calculate the per-serving stats for these three specific items? I specifically need the calories, protein, total fat, and total carbs. Also, please clearly list any allergens like soy, wheat, or dairy so we can bold them on the stickers as per regulations.
+
+Here are the specific portion definitions I need you to use for the breakdown:
+
+`Item: Quinoa Power Salad | Serving: 1 container (approx 220g)
+Item: Roasted Red Pepper Hummus Cup | Serving: 1 cup (includes 4 carrot sticks)
+Item: Turkey & Swiss Protein Wrap | Serving: 1/2 wrap`
+
+Please generate a professional, formatted nutrition facts label for each one that I can just copy-paste directly into our label designer software. Just to be clear, I don't need the totals for the large 20-quart batches we’re prepping in the kitchen—I just need the numbers for what a single customer is actually consuming based on the serving sizes listed above. If you could get this back to me by EOD so I can send the final proofs to the printer before they close, that would be an absolute lifesaver! Thanks so much!

@@ -1,0 +1,5 @@
+; brief-id: fx-legal
+; group: legal-issue-detection
+; variant: 1
+
+Here is an excerpt from a vendor services agreement: Section 4.2 lets the vendor subcontract any portion of the work without notice; Section 7.1 has the client indemnify the vendor for any third-party claim regardless of fault. What issues should I flag before signing?

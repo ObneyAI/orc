@@ -11,6 +11,13 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]))
 
+
+(defn- an-hour-later
+  "The recovering worker's view an hour after the stopped owner's lease was
+   last renewed: that lease has expired (ExecutionRecovery OwnedWorkIsNotAbandoned)."
+  [ctx]
+  (assoc ctx :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))
+
 (def recovery-state (atom nil))
 (def partial-recovery-state (atom nil))
 (def terminal-recovery-calls (atom []))
@@ -309,7 +316,7 @@
                                          :context (dissoc ctx :processors)})]
                 (try
                   (is (= 1 (count (filter :resumed?
-                                          (sheet/resume-in-progress! ctx)))))
+                                          (sheet/resume-in-progress! (an-hour-later ctx))))))
                   (let [recovered (deref result 5000 ::timeout)
                         recovered-completion (map-parent-completion ctx tick-id
                                                                     parent-id)]
@@ -455,8 +462,8 @@
                                        :context (dissoc ctx :processors)})]
               (try
                 (is (= 1 (count (filter :resumed?
-                                        (sheet/resume-in-progress! ctx)))))
-                (is (empty? (filter :resumed? (sheet/resume-in-progress! ctx))))
+                                        (sheet/resume-in-progress! (an-hour-later ctx))))))
+                (is (empty? (filter :resumed? (sheet/resume-in-progress! (an-hour-later ctx)))))
                 (let [recovered (deref result 5000 ::timeout)
                       parent-completions (filter #(and (= :sheet/node-execution-completed
                                                          (:event/type %))

@@ -1,0 +1,12 @@
+; brief-id: b-012
+; group: query-optimisation
+; variant: 6
+
+I’m hoping you can help me out with a major headache we're seeing on the 'Marketing Attribution' dashboard. The BigQuery stored procedure that aggregates our cross-channel spend is taking forever to finish, and honestly, the costs are starting to spike quite a bit. I pulled the current execution profile and the table stats for our `campaign_data` and `attribution_events` tables to get a sense of what's going on, but I'm currently juggling the prep for the Q4 planning meeting and really don't have the bandwidth to stare at the JSON plan tree all afternoon.
+
+The query is basically hitting a wall at this point: 
+`{avg_slot_usage: 450, total_bytes_shuffled: "1.2TB", duration: "215s"}`.
+
+It looks like we’re seeing a massive shuffle on the join between the clickstream and the cost data. Can you dig into the attached files and diagnose where the specific bottleneck is? I need to know if we’re hitting a broadcast join limit or if there’s a significant data skew issue I’m missing. Please provide specific recommendations for clustering or partitioning adjustments within the query logic, a full rewrite of the SQL to optimize the slot usage, and an estimate of how much time/cost we’ll save once the changes are implemented. I also need the final query and a summary of what the improved execution plan should look like. 
+
+Please keep this strictly to the performance of this specific procedure—I’m not looking for a full schema migration or a broad data-quality audit right now, just a way to make this dashboard snappy enough for the CMO to use without it timing out in the middle of a presentation. Let me know if you need any other logs from the GCP console. Thanks!

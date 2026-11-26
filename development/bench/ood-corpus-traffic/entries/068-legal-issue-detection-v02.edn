@@ -1,0 +1,22 @@
+{:slug "068-legal-issue-detection-v02",
+ :group "legal-issue-detection",
+ :in-domain? true,
+ :variant 2,
+ :expected-output-kind
+ "a list of issues, each with severity, area of law, a citation of the offending text and a suggested revision",
+ :brief-id "b-001",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id #uuid "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+ :generator
+ {:draft-usage
+  {:prompt-tokens 556, :completion-tokens 512, :total-tokens 1068},
+  :draft-prompt-sha256
+  "d2814675d59ac664da588cc08d9160f05c4b13dbecd18912f3ba9f737e1967a4",
+  :polish-usage
+  {:prompt-tokens 694, :completion-tokens 512, :total-tokens 1206},
+  :polish-prompt-sha256
+  "aa8281266b325443592a15fd845a6dd16079952f29585e3b4f2ab3b0a949679a",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

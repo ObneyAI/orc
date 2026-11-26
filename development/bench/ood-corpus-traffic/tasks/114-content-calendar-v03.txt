@@ -1,0 +1,17 @@
+; brief-id: b-018
+; group: content-calendar
+; variant: 3
+
+Please draft the November content calendar for 'The Calculus Collective' YouTube channel according to the following requirements:
+
+*   **Context:** Develop a 30-day strategy based on our October engagement reports, the AP/undergraduate demographic data, and the specific curriculum goals aligned with upcoming semester finals.
+*   **Production Constraints:** Adhere to a $200 monthly stock footage budget. Avoid custom animations.
+*   **Cadence:** Schedule one long-form video every Tuesday and one YouTube Short every Thursday and Saturday.
+*   **Schema Requirements:** You must provide a dated entry for every post using this exact bulleted format:
+    *   DATE: [MM/DD/YYYY]
+    *   TOPIC: [Specific mathematical concept or study tip]
+    *   FORMAT: [Long-form Tutorial, Short-form Problem Walkthrough, or 'Day in the Life']
+    *   HOOK: [The opening sentence or visual to grab students' attention]
+    *   CALL TO ACTION: [Specific link to the workbook or 'Subscribe for Exam Prep']
+    *   SUCCESS METRIC: [View duration, subscriber growth, or link clicks]
+*   **Exclusions:** Deliver only the strategic roadmap. Do not include full scripts, descriptions, or SEO keyword lists. Focus solely on the schedule so filming can begin this weekend.

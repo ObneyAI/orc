@@ -1,0 +1,21 @@
+; brief-id: b-029
+; group: research-synthesis
+; variant: 2
+
+Hi there, 
+
+I’m finally sitting down at the airport—my flight to Chicago was delayed two hours so I guess the silver lining is I can actually get these files over to you. It’s been a total whirlwind week; my kid had a fever on Monday and then we had that back-to-back leadership offsite, so my inbox is a complete disaster zone right now. 
+
+Anyway, I really need your help making sense of the qualitative data we’ve gathered over the last month for the new dashboard project. I’ve attached a folder with notes from about 35 sessions. It’s a bit of a mix—we have some heavy-hitting B2B enterprise clients talking about their churn concerns, but there’s also a bunch of transcripts from the general consumer segment regarding the new onboarding flow and how they feel about the recent pricing adjustments we piloted. 
+
+Could you go through all of these and pull out the main themes? For each theme you identify, I really need to see at least a few direct quotes from the users so I can prove to the dev team that I’m not just making this up. Also, once you have the themes, please rank the opportunities you see. We need to know where to put our engineering resources first—what's going to move the needle on retention versus what’s just a "nice to have." 
+
+Finally, I need specific recommendations on what we should actually change in the product, especially regarding the pricing tiers and that clunky first-time user experience. For each recommendation, please include a confidence rating—you know, High, Medium, or Low—based on how much evidence you actually saw in these notes. 
+
+Just to be clear, I don't need any user personas or archetypes—I already have plenty of those from the marketing team and they aren't helpful for what I'm doing right now. And I definitely don't need a new survey design; we've done enough asking, now we just need to do the analyzing. 
+
+I'm going to try and grab a quick sandwich before they start boarding Group 4. Let me know if you have any questions, otherwise, I'm looking forward to seeing what you come up with!
+
+Best,
+
+Sarah

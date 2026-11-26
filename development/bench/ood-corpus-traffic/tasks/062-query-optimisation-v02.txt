@@ -1,0 +1,14 @@
+; brief-id: b-012
+; group: query-optimisation
+; variant: 2
+
+Hi there, hope you're having a decent week. Honestly, mine has been a bit of a whirlwind—my youngest started soccer practice this week and between the carpooling and the rain, I feel like I’m barely keeping my head above water. To top it off, I just got a ping from the VP about the Snowflake dashboard we use for the quarterly regional performance reviews. It’s crawling. Like, "go get a coffee and come back and it's still spinning" crawling. 
+
+I know we’ve been loading a lot more data into the underlying tables recently, but this specific dashboard is hitting a wall. I’ve attached the SQL for the main stored procedure that handles the aggregation, along with the query profile and the table statistics from the information schema. The execution plan looks like it's doing a massive amount of scanning on the transaction history table, and I suspect the join order might be throwing things off, but I honestly don't have the bandwidth to dive into the query profile tree right now. I’m supposed to be at a dentist appointment in twenty minutes and then I have back-to-back meetings until 6 PM.
+
+Could you take a look at these files and figure out what’s going on? I need a clear diagnosis of why it’s hanging—is it a pruning issue, a bottleneck in the CTEs, or something else? Please give me specific recommendations for new indexes or perhaps a better way to rewrite the query logic to take advantage of Snowflake's clustering. I'd also love to see an estimate of how much faster it’ll be if we implement your suggestions. Please provide the final, cleaned-up SQL and what the expected plan should look like once we apply the changes. Just focus on the performance of this specific procedure; we aren't looking to change the underlying schema or do a deep dive into data quality right now—I just need this dashboard to be snappy again before the review meeting tomorrow morning.
+
+Thanks so much, really appreciate you taking this off my plate!
+
+Best,
+Marcus

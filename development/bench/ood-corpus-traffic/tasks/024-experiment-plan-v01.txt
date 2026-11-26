@@ -1,0 +1,5 @@
+; brief-id: b-028
+; group: experiment-plan
+; variant: 1
+
+Draft an experiment plan for the product recommendation engine to address the engagement drop during seasonal item filtering. Use the attached user-click logs and session metadata to outline three distinct hypotheses. Provide a full experiment matrix comparing the baseline collaborative filtering model against a graph-based retrieval approach and a transformer-based sequence model. Define specific precision/recall metrics and the evaluation protocol for A/B testing. Plan must include a strict budget allocation for the $5,000 AWS compute limit and clear decision criteria for the production rollout. Strategic plan only, no code required.

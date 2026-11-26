@@ -157,6 +157,71 @@
       (is (not (contains? node :timeout-ms)))
       (is (not (contains? node :max-ticks))))))
 
+(def ^:private decision-roundtrip-fields
+  [:executor :model :instruction :reads :writes :options-from :min-confidence
+   :abstain :retry :options])
+
+(deftest llm-decision-configuration-survives-public-roundtrips
+  (testing "every llm-decision option survives build -> export -> DSL -> eval and export -> import"
+    (h/with-test-context [ctx]
+      (let [expected {:executor :decision
+                      :model "vendor/router"
+                      :instruction "Which listed report is requested?"
+                      :reads [:request :catalog]
+                      :writes [:report]
+                      :options-from :catalog
+                      :min-confidence 0.7
+                      :abstain "none"
+                      :retry {:max-attempts 2 :backoff-ms [100 200]}
+                      :options {:temperature 0.0}}
+            definition (dsl/workflow "llm-decision-roundtrip"
+                         (dsl/blackboard
+                          {:request :string
+                           :catalog [:vector [:map [:id :string] [:description :string]]]
+                           :report :string})
+                         (dsl/llm-decision "pick-report"
+                           :model "vendor/router"
+                           :instruction "Which listed report is requested?"
+                           :reads [:request :catalog]
+                           :writes [:report]
+                           :options-from :catalog
+                           :min-confidence 0.7
+                           :abstain "none"
+                           :retry {:max-attempts 2 :backoff-ms [100 200]}
+                           :options {:temperature 0.0}))
+            source-id (dsl/build-workflow! ctx definition)
+            exported (dsl/export-sheet ctx source-id)
+            dsl-code (dsl/export-to-dsl exported)
+            regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
+                          (eval (read-string dsl-code)))
+            imported-id (dsl/import-sheet
+                         ctx
+                         (assoc-in exported [:sheet :name] "llm-decision-imported"))
+            imported-node (:nodes (dsl/export-sheet ctx imported-id))]
+        (is (= expected (select-keys (:nodes exported) decision-roundtrip-fields)))
+        (is (= expected (select-keys (:root-node regenerated) decision-roundtrip-fields)))
+        (is (= expected (select-keys imported-node decision-roundtrip-fields)))
+        (is (re-find #"llm-decision" dsl-code)
+            "the round trip reproduces sheet/llm-decision, not a plain llm leaf"))))
+  (testing "a static enum decision round-trips with no optional fields"
+    (h/with-test-context [ctx]
+      (let [definition (dsl/workflow "llm-decision-roundtrip-enum"
+                         (dsl/blackboard {:request :string
+                                          :route [:enum {:descriptions {"a" "Alpha" "b" "Beta"}} "a" "b"]})
+                         (dsl/llm-decision "route" :instruction "Pick one."
+                           :reads [:request] :writes [:route]))
+            source-id (dsl/build-workflow! ctx definition)
+            exported (dsl/export-sheet ctx source-id)
+            regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
+                          (eval (read-string (dsl/export-to-dsl exported))))
+            expected {:executor :decision :instruction "Pick one."
+                      :reads [:request] :writes [:route]}]
+        (is (= expected (select-keys (:nodes exported) decision-roundtrip-fields)))
+        ;; the constructor, like sheet/llm, carries an unset :model as nil
+        (is (= expected (->> (select-keys (:root-node regenerated) decision-roundtrip-fields)
+                             (remove (comp nil? val))
+                             (into {}))))))))
+
 (deftest simple-llm-workflow-roundtrip-test
   (testing "simple LLM workflow survives round-trip"
     (h/with-test-context [ctx]

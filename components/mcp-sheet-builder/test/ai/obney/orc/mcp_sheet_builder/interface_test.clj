@@ -288,17 +288,22 @@
     (let [filepath (str *test-dir* "/deps-test-executors.clj")]
       (msb/export-executors! sample-executor-defs filepath)
       (let [content (slurp filepath)]
-        (is (re-find #"mcp-client" content)
-            "Should require mcp-client namespace")))))
+        ;; Executors reach their MCP tool through the shared resolution seam
+        ;; (node caller, else session, else explicit dry run, else failure).
+        (is (re-find #"mcp-sheet-builder\.core\.executors" content)
+            "Should require the shared tool-invocation namespace")))))
 
 (deftest export-executors-generates-correct-function-signatures-test
   (testing "generated functions have correct ORC executor signature"
     (let [filepath (str *test-dir* "/sig-test-executors.clj")]
       (msb/export-executors! sample-executor-defs filepath)
       (let [content (slurp filepath)]
-        ;; Should destructure inputs and context
-        (is (re-find #"\{:keys \[inputs context\]\}" content)
+        ;; Takes the standard executor invocation and invokes its tool through
+        ;; the shared seam
+        (is (re-find #"\[invocation\]" content)
             "Should have standard executor signature")
+        (is (re-find #"executors/invoke-tool invocation" content)
+            "Should invoke the tool through the shared seam")
         ;; Should extract parameters from inputs
         (is (re-find #"get inputs :query" content)
             "Should extract query parameter from inputs")))))

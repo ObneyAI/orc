@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: schemamigration (off-domain); variant a of 3 — the same domain re-asked with a different concrete instance.
+Plan a zero-downtime PostgreSQL schema migration that splits a users table's address columns into a separate addresses table with a foreign key, for a service doing 2,000 writes per second. Produce the ordered migration steps, the dual-write and backfill strategy, the cut-over and rollback plan, and verification queries. Output: {:steps [...] :backfill ... :rollback ... :verification [...]}

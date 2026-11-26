@@ -1,0 +1,22 @@
+{:slug "127-resume-tailoring-v04",
+ :group "resume-tailoring",
+ :in-domain? false,
+ :variant 4,
+ :expected-output-kind
+ "a revised CV with the changes explained, a cover letter, and a gap list with how to address each",
+ :brief-id "b-039",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1253, :completion-tokens 197, :total-tokens 1450},
+  :draft-prompt-sha256
+  "9fa7eb3c33fef93e4e85a49d742629343cae7f3dd88bdd692d24daadfcaaee6a",
+  :polish-usage
+  {:prompt-tokens 366, :completion-tokens 235, :total-tokens 601},
+  :polish-prompt-sha256
+  "d5a542912be6fccd9ba428e1dd08d4832dac53f66363a3ef74b9b718f779c231",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

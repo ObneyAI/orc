@@ -1,0 +1,437 @@
+{:assigned-tree-id #uuid "6db2a133-024a-3a29-afce-0b2f384c80b7",
+ :tick-id #uuid "16197db1-3276-4e6f-bd47-4cc3ed24a6ca",
+ :slug "22-queryopt-c",
+ :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+ :domain-label "sql-query-optimization",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "sql-query-optimization",
+  :domain-reasoning
+  "The existing-domain-children include 'postgresql-query-optimization', which matches the subject matter (SQL performance tuning) and material (execution plans/statistics) of the task."},
+ :node-id #uuid "8af5a79d-57a2-478c-b5e4-85cf7654777d",
+ :top-1
+ {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :fitness-score 0.95,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "sql-query-optimization"},
+ :minted-events
+ [{:parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+   :child-tree-id #uuid "6db2a133-024a-3a29-afce-0b2f384c80b7",
+   :domain-label "sql-query-optimization"}],
+ :classified-event
+ {:assigned-tree-id #uuid "6db2a133-024a-3a29-afce-0b2f384c80b7",
+  :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :domain-label "sql-query-optimization",
+  :classified-at "2026-09-16T09:41:59.596547-05:00",
+  :reasoning
+  "The task requires a multi-step transformation (diagnosis -> indexing/query changes -> estimation -> final procedure) where each stage depends on the previous output. The ETL pipeline's strength in sequential stages with explicit :reads/:writes matches this requirement perfectly. It already contains a 'postgresql-query-optimization' child, which is the closest domain match for SQL Server optimization.",
+  :outcome :matched,
+  :source-node-id #uuid "8af5a79d-57a2-478c-b5e4-85cf7654777d",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "ed8fac34-ba1d-3855-9fc7-7f9d0205190a",
+    :confidence 1.0,
+    :was-fresh-mint? false,
+    :reasoning
+    "This candidate is the best fit because it specifically targets the 'Performance-optimization' behavior, which matches the task of fixing a SQL regression from 2s to 3m. It emphasizes a 'measure-then-change-then-re-measure loop' and 'pinning output-invariance', which aligns with the requirement to use execution plans/statistics and provide a corrected, equivalent procedure. Its recommended-pattern for derivation of a hot-path and optimization is the precise competency needed here.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "225be622-6cc2-3359-8c18-024bdf08548d",
+    :confidence 0.9,
+    :was-fresh-mint? false,
+    :reasoning
+    "Bug-diagnosis is a highly relevant child of Investigation. The task requires identifying a regression (parameter sniffing, etc.) and fixing it. The candidate's focus on 'reproduce-then-bisect-then-fix' and 'enumerating candidate causes upfront' (like the query's list of sniffing vs. conversion vs. spill) directly supports the diagnostic part of the instruction.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "760be698-0bb8-3a5a-a2bd-1d45445a5861",
+    :confidence 0.8,
+    :was-fresh-mint? false,
+    :reasoning
+    "Investigation is the parent behavior for the diagnostic portion of the task. It provides the 'hypothesis-then-evidence' structure needed to weigh 'parameter sniffing' against 'implicit conversion' using the 'actual execution plan' as evidence. It is slightly less specific than the performance/bug children but structurally correct for the 'identify the regression' requirement.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "16197db1-3276-4e6f-bd47-4cc3ed24a6ca",
+  :event/tags
+  #{[:description-target #uuid "6db2a133-024a-3a29-afce-0b2f384c80b7"]
+    [:tick #uuid "16197db1-3276-4e6f-bd47-4cc3ed24a6ca"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T14:41:59.596720Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "sql-query-optimization",
+   :domain-reasoning
+   "The existing-domain-children include 'postgresql-query-optimization', which matches the subject matter (SQL performance tuning) and material (execution plans/statistics) of the task."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :existing-domain-children
+    ["dynamodb-schema-migration"
+     "postgresql-query-optimization"
+     "postgresql-schema-migration"],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.733416-05:00"},
+    :domain-label "sql-query-optimization",
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :domain-coverage :covered,
+    :rank 8,
+    :reasoning
+    "The task requires a multi-step transformation (diagnosis -> indexing/query changes -> estimation -> final procedure) where each stage depends on the previous output. The ETL pipeline's strength in sequential stages with explicit :reads/:writes matches this requirement perfectly. It already contains a 'postgresql-query-optimization' child, which is the closest domain match for SQL Server optimization.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :domain-reasoning
+    "The existing-domain-children include 'postgresql-query-optimization', which matches the subject matter (SQL performance tuning) and material (execution plans/statistics) of the task.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9958374584700279,
+    :score 443.2583083054695,
+    :cos-avoid-sans-content 0.9998482692045585,
+    :fitness-score 0.95,
+    :document-id
+    ":tree-class:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9998482692045585}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.715900-05:00"},
+    :domain-label "sql-query-optimization",
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :domain-coverage :partial,
+    :rank 9,
+    :reasoning
+    "Matches the structural need for a 4-stage pipeline (diagnosis, indexing, estimation, rewrite). The 'explicit per-stage :reads/:writes dependency chain' ensures the diagnosis is available to the query-rewrite stage.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :domain-reasoning
+    "ETL pipelines are described as content transformation chains, which fits query analysis, but this fingerprint lacks the specific domain children of its class.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9958374584700279,
+    :score 443.2583083054695,
+    :cos-avoid-sans-content 0.9998482692045585,
+    :fitness-score 0.92,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9998482692045585}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit",
+      :good-when
+      "the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]"}
+     {:trait
+      "pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique",
+      :good-when
+      "the critique stage tends to focus on style/issues and might lose sight of the original requirement",
+      :recommended-pattern
+      "[:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]"}],
+    :existing-domain-children
+    ["database-migration-planning"
+     "game-economy-tuning"
+     "marathon-training-plan"],
+    :avoid-when
+    ["the output is short and direct — single :llm with a careful instruction wins"
+     "the task needs unbounded iteration until convergence — use validation-loop"
+     "the work has clear validation rules (formal/syntactic) — use validation-loop with a code-based validator"
+     "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough"
+     "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.733805-05:00"},
+    :domain-label "sql-query-optimization",
+    :content
+    "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+    :domain-coverage :partial,
+    :rank 3,
+    :reasoning
+    "The task requires high factual precision (SQL execution plan analysis) where an 'explicit critique stage' could help catch errors in the diagnosis before rewriting. However, the task is less about refining a single artifact and more about a sequence of distinct transformations, making ETL a better fit.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward",
+      :avoid-when
+      "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough",
+      :recommended-alternative
+      "use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality"}
+     {:trait
+      "open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's",
+      :avoid-when
+      "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics",
+      :recommended-alternative
+      "use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes"}],
+    :domain-reasoning
+    "Includes 'database-migration-planning', which is related to database administration but is not specific to performance tuning or query rewriting.",
+    :cos-good 0.9997184084005983,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9956551478763686,
+    :score 443.50007398143674,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.7,
+    :document-id
+    ":tree-class:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9997184084005983,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit",
+      :good-when
+      "the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]"}
+     {:trait
+      "pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique",
+      :good-when
+      "the critique stage tends to focus on style/issues and might lose sight of the original requirement",
+      :recommended-pattern
+      "[:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]"}],
+    :avoid-when
+    ["the output is short and direct — single :llm with a careful instruction wins"
+     "the task needs unbounded iteration until convergence — use validation-loop"
+     "the work has clear validation rules (formal/syntactic) — use validation-loop with a code-based validator"
+     "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough"
+     "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.716259-05:00"},
+    :domain-label "sql-query-optimization",
+    :content
+    "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+    :domain-coverage :uncovered,
+    :rank 4,
+    :reasoning
+    "Structural fit for iterative refinement if the user wanted to 'draft-critique-revise' the query, but the prompt asks for a linear diagnostic-to-solution pipeline.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward",
+      :avoid-when
+      "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough",
+      :recommended-alternative
+      "use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality"}
+     {:trait
+      "open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's",
+      :avoid-when
+      "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics",
+      :recommended-alternative
+      "use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes"}],
+    :domain-reasoning
+    "The content covers nuanced outputs, which fits a complex diagnostic, but doesn't mention SQL or database internals.",
+    :cos-good 0.9997184084005983,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9956551478763686,
+    :score 443.50007398143674,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.65,
+    :document-id
+    ":tree-fingerprint:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9997184084005983,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :existing-domain-children
+    ["game-balance-simulation" "security-vulnerability-haikus"],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.734873-05:00"},
+    :domain-label "sql-query-optimization",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :uncovered,
+    :rank 7,
+    :reasoning
+    "While SQL queries have formal syntax, the task is a complex optimization problem, not a simple 'valid/invalid' check. The avoid-when guard 'validation requires deep judgment' fires here, as identifying parameter sniffing from wait stats requires expert-level judgment, not a simple code-based validator.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The candidate is designed for formal/syntactic rules; performance tuning is a 'deep judgment' task explicitly listed in avoid-when.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9942029624612074,
+    :score 443.3663891170755,
+    :cos-avoid-sans-content 0.9999771209717649,
+    :fitness-score 0.4,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9999771209717649}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered
+  ["postgresql-schema-migration"
+   "postgresql-query-optimization"
+   "dynamodb-schema-migration"],
+  :event/id #uuid "01a0aaaa-dd2c-7058-87db-efac07050d7d",
+  :confidence 0.95,
+  :source-sheet-id #uuid "3d1db800-495c-4589-882e-67baf4d0018f",
+  :ranked-candidates
+  [{:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.95,
+    :score 443.2583083054695}
+   {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.92,
+    :score 443.2583083054695}
+   {:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.7,
+    :score 443.50007398143674}
+   {:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.65,
+    :score 443.50007398143674}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.4,
+    :score 443.3663891170755}],
+  :was-fresh-mint? true,
+  :assigned-via :mint-sibling-domain-child},
+ :deferred-events [],
+ :domain-children-considered
+ ["postgresql-schema-migration"
+  "postgresql-query-optimization"
+  "dynamodb-schema-migration"],
+ :sheet-id #uuid "3d1db800-495c-4589-882e-67baf4d0018f",
+ :payload-domain
+ {:assigned-via :mint-sibling-domain-child,
+  :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :child-tree-id #uuid "6db2a133-024a-3a29-afce-0b2f384c80b7",
+  :domain-label "sql-query-optimization"},
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: sql-query-optimization); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 4 from corpus retrieval)\n#### Top match (confidence: 0.95)\nWhy this fits: The task requires a multi-step transformation (diagnosis -> indexing/query changes -> estimation -> final procedure) where each stage depends on the previous output. The ETL pipeline's strength in sequential stages with explicit :reads/:writes matches this requirement perfectly. It already contains a 'postgresql-query-optimization' child, which is the closest domain match for SQL Server optimization.\n\nPattern guidance (seed `:summary`):\nETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).\n\nCapabilities:\n  - ordered chain of typically 2-4 stages where each stage transforms the previous stage's output into a richer form\n  - natural fit for raw-input → normalized → enriched → emit-ready flows\n  - each stage's :reads consume the previous stage's :writes — explicit data dependency tracking\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate (confidence 1.00, evidence-count 1)\n    - Good when: input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]\n      ```\n\n  - **Trait:** use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names (confidence 1.00, evidence-count 1)\n    - Good when: the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage (confidence 1.00, evidence-count 1)\n    - Avoid when: intermediate stages don't declare :output-schemas and downstream stages assume specific keys\n    - Recommended fix: always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer\n\n  - **Failure mode:** 5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short (confidence 1.00, evidence-count 1)\n    - Avoid when: individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates\n    - Recommended fix: collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - customer record normalization: parse → dedupe-fields → enrich-from-CRM → emit-warehouse-row\n  - log line parsing: tokenize → classify-event-type → annotate-with-context → emit-structured-event\n  - translation pipeline: clean-input → translate → polish-style → emit-final-text\n\n#### Alternative #1 (confidence: 0.92)\nWhy this fits: Matches the structural need for a 4-stage pipeline (diagnosis, indexing, estimation, rewrite). The 'explicit per-stage :reads/:writes dependency chain' ensures the diagnosis is available to the query-rewrite stage.\n\nPattern guidance (seed `:summary`):\nETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).\n\nCapabilities:\n  - ordered chain of typically 2-4 stages where each stage transforms the previous stage's output into a richer form\n  - natural fit for raw-input → normalized → enriched → emit-ready flows\n  - each stage's :reads consume the previous stage's :writes — explicit data dependency tracking\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate (confidence 1.00, evidence-count 1)\n    - Good when: input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]\n      ```\n\n  - **Trait:** use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names (confidence 1.00, evidence-count 1)\n    - Good when: the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage (confidence 1.00, evidence-count 1)\n    - Avoid when: intermediate stages don't declare :output-schemas and downstream stages assume specific keys\n    - Recommended fix: always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer\n\n  - **Failure mode:** 5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short (confidence 1.00, evidence-count 1)\n    - Avoid when: individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates\n    - Recommended fix: collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - customer record normalization: parse → dedupe-fields → enrich-from-CRM → emit-warehouse-row\n  - log line parsing: tokenize → classify-event-type → annotate-with-context → emit-structured-event\n  - translation pipeline: clean-input → translate → polish-style → emit-final-text\n\n#### Alternative #2 — Iterative refinement (confidence: 0.70)\nWhy this fits: The task requires high factual precision (SQL execution plan analysis) where an 'explicit critique stage' could help catch errors in the diagnosis before rewriting. However, the task is less about refining a single artifact and more about a sequence of distinct transformations, making ETL a better fit.\n\nPattern guidance (seed `:summary`):\nIterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.\n\nCapabilities:\n  - :sequence of typically 3 stages: initial draft → critic feedback → revised draft (sometimes repeated for a fixed N)\n  - natural for content quality improvement where each pass identifies and addresses specific defects from the previous pass\n  - stages share the same content key but transform it forward — :draft → :critique → :revised-draft\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit (confidence 1.00, evidence-count 1)\n    - Good when: the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]\n      ```\n\n  - **Trait:** pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique (confidence 1.00, evidence-count 1)\n    - Good when: the critique stage tends to focus on style/issues and might lose sight of the original requirement\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward (confidence 1.00, evidence-count 1)\n    - Avoid when: output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough\n    - Recommended fix: use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality\n\n  - **Failure mode:** open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's (confidence 1.00, evidence-count 1)\n    - Avoid when: the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics\n    - Recommended fix: use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical writing improvement: draft documentation → critique for clarity/missing-context → revise\n  - creative writing polish: draft scene → critique for pacing/voice → revise\n  - executive summary tightening: draft summary → critique for jargon/specificity → revise\n\n#### Alternative #3 — Iterative refinement (confidence: 0.65)\nWhy this fits: Structural fit for iterative refinement if the user wanted to 'draft-critique-revise' the query, but the prompt asks for a linear diagnostic-to-solution pipeline.\n\nPattern guidance (seed `:summary`):\nIterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.\n\nCapabilities:\n  - :sequence of typically 3 stages: initial draft → critic feedback → revised draft (sometimes repeated for a fixed N)\n  - natural for content quality improvement where each pass identifies and addresses specific defects from the previous pass\n  - stages share the same content key but transform it forward — :draft → :critique → :revised-draft\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit (confidence 1.00, evidence-count 1)\n    - Good when: the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]\n      ```\n\n  - **Trait:** pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique (confidence 1.00, evidence-count 1)\n    - Good when: the critique stage tends to focus on style/issues and might lose sight of the original requirement\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward (confidence 1.00, evidence-count 1)\n    - Avoid when: output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough\n    - Recommended fix: use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality\n\n  - **Failure mode:** open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's (confidence 1.00, evidence-count 1)\n    - Avoid when: the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics\n    - Recommended fix: use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical writing improvement: draft documentation → critique for clarity/missing-context → revise\n  - creative writing polish: draft scene → critique for pacing/voice → revise\n  - executive summary tightening: draft summary → critique for jargon/specificity → revise\n\nAssigned to domain child 6db2a133-024a-3a29-afce-0b2f384c80b7 (label: sql-query-optimization) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral suggestion (confidence: 1.00)\n   Why this fits: This candidate is the best fit because it specifically targets the 'Performance-optimization' behavior, which matches the task of fixing a SQL regression from 2s to 3m. It emphasizes a 'measure-then-change-then-re-measure loop' and 'pinning output-invariance', which aligns with the requirement to use execution plans/statistics and provide a corrected, equivalent procedure. Its recommended-pattern for derivation of a hot-path and optimization is the precise competency needed here.\n\n   Guidance (seed `:summary`):\n   Performance-optimization makes existing code faster WITHOUT changing what it produces — a measure-then-change-then-re-measure loop (really Investigation to find the hot path, then Code-building to optimize) under an output-invariance constraint. The load-bearing traits are profiling to locate the real bottleneck BEFORE editing (never guess from reading the code) and pinning output-invariance with a before/after comparison (a speedup that changes results is a regression). Prefer this over the broad Transformation parent whenever the task pairs a speed target with 'without changing the output': Transformation's one-shot 'reshape in :code' shape ships an unmeasured, possibly output-altering change. Avoid when the task adds new behavior (code-building) or has no correctness constraint (the Transformation parent).\n\nCapabilities:\n  - given code that is too slow + a performance target + an output-invariance constraint, locate the hot path, change it for speed, and prove the output is unchanged\n  - natural fit when the task is 'X is slow, make it faster WITHOUT changing what it produces' — a measure-then-change-then-re-measure loop, not a one-shot reshape\n  - outputs are typically a code edit to the hot path + a before/after measurement + evidence the observable output is byte-for-byte unchanged\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** measure to find the hot path BEFORE editing — optimize what the profile proves is slow, not what looks slow; premature edits to cold code add risk for no gain (confidence 0.70, evidence-count 1)\n    - Good when: the slow region is not obvious AND a profiling/timing signal is available\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:input] :writes [:profile] :fn (fn [{:keys [inputs]}] {:profile :hot-path})}] [:llm {:reads [:profile :src] :writes [:optimized-src]}] [:code {:reads [:optimized-src] :writes [:after-timing]}] [:final {:keys [:optimized-src :after-timing]}]]\n      ```\n\n  - **Trait:** pin output-invariance with a check that compares optimized output to the original on representative inputs — a speedup that changes results is a regression, not an optimization (confidence 0.70, evidence-count 1)\n    - Good when: the task explicitly requires 'without changing the output' (or correctness matters more than speed)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:writes [:optimized-src]}] [:code {:reads [:optimized-src :baseline-output] :writes [:invariance-check] :fn (fn [{:keys [inputs]}] {:invariance-check :outputs-equal})}] [:final {:keys [:optimized-src :invariance-check]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** optimizing by rewriting the logic (the Transformation parent's 'reshape it in :code' instinct) without a baseline measurement OR an invariance check ships a change that may be no faster and may silently alter output (confidence 0.70, evidence-count 1)\n    - Avoid when: the task pairs a speed target with an output-invariance constraint\n    - Recommended fix: measure first (profile/timing), change only the proven hot path, then compare optimized output to the baseline before committing\n\n  - **Failure mode:** guessing the bottleneck from reading the code instead of profiling wastes the edit on the wrong region and often misses the real cost (I/O, N+1, allocation) entirely (confidence 0.70, evidence-count 1)\n    - Avoid when: a profiler or representative-input timing harness is available\n    - Recommended fix: always derive the hot path from a measurement stage; let the profile, not intuition, choose where to edit\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - the report-rendering endpoint is slow on large inputs; profile it and optimize the hot path so a 10k-row report renders under 500ms without changing the output\n  - a nightly aggregation job exceeds its window; find and fix the dominant cost while keeping the produced totals identical\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent ed8fac34-ba1d-3855-9fc7-7f9d0205190a)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Bug-diagnosis explains WHY code (confidence: 0.90)\n   Why this fits: Bug-diagnosis is a highly relevant child of Investigation. The task requires identifying a regression (parameter sniffing, etc.) and fixing it. The candidate's focus on 'reproduce-then-bisect-then-fix' and 'enumerating candidate causes upfront' (like the query's list of sniffing vs. conversion vs. spill) directly supports the diagnostic part of the instruction.\n\n   Guidance (seed `:summary`):\n   Bug-diagnosis explains WHY code is broken and fixes it — a reproduce-then-bisect-then-fix loop sharpening the Investigation parent for the code-bug case. The load-bearing traits are establishing a DETERMINISTIC reproduction before attempting a fix (a flaky symptom must be pinned to a reliable trigger or you can't know the fix worked) and enumerating candidate causes to rule out with evidence before converging (don't fix the first plausible guess). Prefer this child of Investigation whenever the task is 'this test/behavior is broken, find why and fix it'. Avoid when building new functionality from a spec (code-building, no failure to diagnose) or doing exploratory research with no specific failure (Research).\n\nCapabilities:\n  - given a failing/flaky test or a wrong-behavior bug report + the relevant code, reproduce it deterministically, isolate the root cause, and produce the minimal fix\n  - natural fit when the goal is 'this code is broken, find WHY and fix it' — a reproduce-then-bisect-then-fix loop, distinct from greenfield code-building\n  - outputs are typically a deterministic repro, a root-cause statement tied to a specific code location, and the minimal change that makes the repro pass\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** establish a DETERMINISTIC reproduction before attempting a fix — a flaky/intermittent symptom must be pinned to a reliable trigger first, or you cannot know the fix worked (confidence 0.70, evidence-count 1)\n    - Good when: the bug is intermittent or its trigger is not yet understood (e.g. an intermittent nil from shared state / timing)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:symptom :code] :writes [:candidate-causes]}] [:code {:reads [:candidate-causes] :writes [:repro] :fn (fn [{:keys [inputs]}] {:repro :deterministic-failing-case})}] [:llm {:reads [:repro :code] :writes [:root-cause :fix]}] [:final {:keys [:root-cause :fix]}]]\n      ```\n\n  - **Trait:** enumerate candidate causes upfront and rule them out with evidence before converging — bisect the search space rather than fixing the first plausible guess (which often masks the real cause) (confidence 0.70, evidence-count 1)\n    - Good when: the symptom has multiple plausible causes (timing, shared state, environment, off-by-one)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:writes [:hypotheses]}] [:llm {:reads [:hypotheses :evidence] :writes [:ruled-out :remaining]}] [:llm {:reads [:remaining] :writes [:root-cause :minimal-fix]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** jumping straight to a code edit on the first hypothesis (a code-building instinct) without a deterministic repro produces a fix that may paper over the symptom while the real defect remains — and you cannot prove it is fixed (confidence 0.70, evidence-count 1)\n    - Avoid when: the symptom is intermittent OR the root cause is not yet evidenced\n    - Recommended fix: reproduce deterministically first, name the root cause with evidence, then make the minimal change and re-run the repro\n\n  - **Failure mode:** an over-broad 'fix' that rewrites surrounding code while chasing a bug introduces new regressions and obscures which change actually resolved the defect (confidence 0.70, evidence-count 1)\n    - Avoid when: the bug is localized and a targeted change suffices\n    - Recommended fix: scope the fix to the proven root cause; keep unrelated code untouched so the repro pinpoints the effective change\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - debug why the integration test checkout-flow-test fails intermittently with a nil cart-id and make it deterministic\n  - fix the off-by-one bug in the pagination loop so the final page renders its last row instead of dropping it\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 225be622-6cc2-3359-8c18-024bdf08548d)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral: Investigation explains WHY a system (confidence: 0.80)\n   Why this fits: Investigation is the parent behavior for the diagnostic portion of the task. It provides the 'hypothesis-then-evidence' structure needed to weigh 'parameter sniffing' against 'implicit conversion' using the 'actual execution plan' as evidence. It is slightly less specific than the performance/bug children but structurally correct for the 'identify the regression' requirement.\n\n   Guidance (seed `:summary`):\n   Investigation explains WHY a system is misbehaving. Best implemented as an explicit hypothesis-then-evidence shape: enumerate candidate causes from the symptom UPFRONT, then collect evidence to rule out alternatives, then converge on the root cause + recommended fix. ALWAYS pass ambient context (logs / code / tests / stack traces) in :reads — context-free investigation produces vacuous output. For large evidence sets (multi-file logs, large codebases), compose into chunked-extraction shells so per-chunk evidence collection parallelizes. Composes into sequential-pipeline (canonical hypothesis chain), fallback-recovery (try-one-path-then-another when initial hypothesis fails), and chunked-extraction (investigating large evidence sets). Distinct from Research (which gathers external material to seed new work, not explain existing breakage) and Analysis (which reasons over already-extracted items, not raw symptoms). Avoid when the task is exploration without a specific failure to explain.\n\nCapabilities:\n  - given symptoms + ambient context (logs, code, test artifacts, stack traces), produce a structured hypothesis with supporting evidence and a recommended fix or next step\n  - natural fit when the goal is to explain WHY something is broken — distinct from Research (gather new material) and Analysis (reason over already-extracted items)\n  - outputs are typically a single root-cause statement + supporting evidence references + a recommended-fix or next-step\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** enumerate candidate hypotheses UPFRONT from the symptom before collecting evidence — separates 'what could be wrong' from 'what is wrong' so evidence rules out rather than confirms the first guess (confidence 1.00, evidence-count 1)\n    - Good when: the failure mode space is bounded AND the model can enumerate likely causes from the symptom alone\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:symptom :context] :writes [:candidate-hypotheses]}] [:llm {:reads [:candidate-hypotheses :context] :writes [:ruled-out :remaining]}] [:llm {:reads [:remaining :context] :writes [:root-cause :recommended-fix]}] [:final {:keys [:root-cause :recommended-fix]}]]\n      ```\n\n  - **Trait:** for investigations over large evidence sets (multi-file logs, large codebases), chunk the evidence and run per-chunk hypothesis-evidence collection via :map-each so per-chunk reasoning parallelizes and the aggregator sees per-chunk findings tagged with their source (confidence 1.00, evidence-count 1)\n    - Good when: evidence is too large to fit in a single :llm context AND per-chunk findings can be aggregated without losing per-chunk attribution\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :evidence-chunks :as :chunk :max-concurrency 3 :writes [:per-chunk-findings]} [:llm {:reads [:chunk :symptom] :writes [:per-chunk-findings] :output-schemas {:per-chunk-findings [:vector [:map [:hypothesis :string] [:supporting-evidence :string] [:chunk-id :string]]]}}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** single-pass investigation on a complex symptom converges on the first plausible hypothesis without ruling out alternatives — produces overconfident root-cause claims that fail when the true cause was the second hypothesis (confidence 1.00, evidence-count 1)\n    - Avoid when: the symptom has multiple plausible causes AND the cost of acting on the wrong root cause is high\n    - Recommended fix: explicit multi-hypothesis enumeration upfront; an intermediate :llm stage must rule out at least ONE candidate hypothesis with evidence before convergence to a root cause is allowed\n\n  - **Failure mode:** investigation without ambient context (just the symptom + nothing else) produces vacuous 'could be X / could be Y' output the consumer can't act on — the model has no evidence to rule anything in or out (confidence 1.00, evidence-count 1)\n    - Avoid when: context (logs / code / tests / stack traces) is available in the system but not passed in :reads\n    - Recommended fix: always pass ambient context explicitly in :reads; if the context is too large for a single :llm node, compose into chunked-extraction via :map-each so per-chunk evidence reaches the hypothesis-evidence stage\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - investigate why an integration test is flaky: enumerate timing / shared-state / environment hypotheses; rule out via test logs + run history; recommend the deterministic fix\n  - generate property-based tests that exercise edge cases — property test generation IS investigation, finding inputs that break invariants\n  - debug a memory leak in a long-running service: enumerate allocator / reference-cycle / cache-bloat hypotheses; rule out via heap snapshots + allocation profiles; recommend the targeted fix\n  - review a post-incident report for missing root-cause analysis: enumerate plausible causes the report didn't address; surface the gap with evidence from the timeline\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 760be698-0bb8-3a5a-a2bd-1d45445a5861)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nA SQL Server stored procedure that computes customer lifetime value has regressed from 2 seconds to 3 minutes after a data growth spurt. Using the actual execution plan, the wait statistics and the table statistics, identify the regression (parameter sniffing, implicit conversion, spill), propose indexing and query changes, estimate the improvement and provide the corrected procedure. Output: {:diagnosis ... :indexes [...] :rewritten-query ... :expected-plan ...}",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? false},
+ :elapsed-ms 23577,
+ :confidence 0.95,
+ :was-fresh-mint? true,
+ :assigned-via :mint-sibling-domain-child}

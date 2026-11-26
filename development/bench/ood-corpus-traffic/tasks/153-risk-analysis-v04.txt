@@ -1,0 +1,7 @@
+; brief-id: b-003
+; group: risk-analysis
+; variant: 4
+
+Hey, sorry to bother you so late, but I just got dumped with this 140-page environmental compliance regulation update for our manufacturing sites in the Southeast. I’m honestly drowning in spreadsheets and have a flight to catch in four hours, so I’m hoping you can bail me out. I’ve attached the full regulatory filing. 
+
+Can you go through and pull out every specific compliance obligation we have to meet, along with the exact fines or penalties for non-compliance? I need this organized by section. Also, I really need a risk matrix—tag each requirement as HIGH, MEDIUM, or LOW risk for us, and give me a quick justification for the rating based on the new monitoring standards they’re proposing. Finish it off with a tight executive summary focused solely on our biggest exposure points. Please skip the general fluff about the history of the bill or the list of affected counties; I just need to know what we’re forced to do and what happens if we miss a step. Thanks so much!

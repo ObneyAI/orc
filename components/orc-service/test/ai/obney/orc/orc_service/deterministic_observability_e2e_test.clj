@@ -5,6 +5,8 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.grain.event-store-sqlite-v3.interface]
+            [ai.obney.grain.todo-processor-v2.interface :as tp]
             [cognitect.anomalies :as anom]))
 
 (defn uppercase [{:keys [inputs]}]
@@ -321,6 +323,58 @@
               "creation is singular and a newer assembly is a distinct revision fact")
           (is (= [3 4] (mapv :source-event-count publications))
               "stale and duplicate refreshes append nothing; newer evidence advances once"))))))
+
+(deftest late-rlm-bookend-refreshes-child-trace-once
+  (let [directory (str (java.nio.file.Files/createTempDirectory
+                        "late-rlm-bookend-" (make-array java.nio.file.attribute.FileAttribute 0)))
+        publications #{:sheet/execution-traced :sheet/execution-trace-refreshed}]
+    (h/with-async-test-context
+      [ctx {:event-store-conn {:type :sqlite :database-file (str directory "/events.sqlite")
+                              :maximum-pool-size 2}}]
+      (let [child-sheet (sheet/build-workflow! ctx (pipeline "late-bookend-child"))
+            parent-sheet (sheet/build-workflow!
+                          ctx (sheet/workflow "late-bookend-parent"
+                                (sheet/blackboard {:input :string :output :string})
+                                (sheet/delegate "child" :target-sheet-id child-sheet
+                                  :reads [:input] :writes [:output])))
+            result (sheet/execute ctx parent-sheet {:input "evidence"})
+            parent (trace-for ctx result)
+            child-id (first (:child-trace-ids parent))
+            trace #(get-in (h/run-query ctx (h/make-get-trace-query %)) [:query/result :trace])
+            facts #(remove (comp publications :event/type) (h/read-tick-events ctx %))
+            published #(filter (comp publications :event/type) (h/read-tick-events ctx %))
+            current? #(= (count (facts %)) (:source-event-count (trace %)))]
+        (is (= "EVIDENCE!" (get-in result [:outputs :output])))
+        (is (h/settle-until! #(and (current? child-id) (current? (:trace-id result)))))
+        (let [before (trace child-id)
+              parent-before (vec (published (:trace-id result)))
+              command-result (h/run-command
+                              ctx {:command/name :sheet/record-rlm-tree-execution-completion
+                                   :command/id (random-uuid)
+                                   :command/timestamp (java.time.OffsetDateTime/now)
+                                   :sheet-id child-sheet :tick-id child-id
+                                   :trajectory [] :total-usage {} :status :success
+                                   :source-sheet-id parent-sheet :source-tick-id (:trace-id result)})
+              event (last (filter #(= :sheet/rlm-tree-execution-completed (:event/type %))
+                                  (h/read-tick-events ctx child-id)))]
+          (is (nil? (::anom/category command-result)) (pr-str command-result))
+          (is (= (:trace-id result) (:source-tick-id event)))
+          (is (= child-id (:tick-id event)))
+          (is (h/settle-until! #(current? child-id) :timeout-ms 4000)
+              "late completion bookend is included in the canonical child trace")
+          (is (= (inc (:source-event-count before)) (:source-event-count (trace child-id))))
+          (let [after (vec (published child-id))
+                handler (get-in @tp/processor-registry*
+                                [:sheet/refresh-execution-trace-after-rlm-bookend :handler-fn])]
+            (is (= 1 (count (filter #(= :sheet/execution-traced (:event/type %)) after))))
+            (is (apply < (map :source-event-count after)))
+            (is (ifn? handler) "the real registered processor can redeliver the durable event")
+            (when handler
+              (handler (assoc ctx :event event))
+              (handler (assoc ctx :event event)))
+            (is (= after (vec (published child-id))) "redelivery appends no duplicate revision")
+            (is (= parent-before (vec (published (:trace-id result))))
+                "source campaign identity never redirects the child refresh")))))))
 
 (deftest det-e2e-118-observability-outage-does-not-corrupt-execution
   (testing "blocking, failed, and unacknowledged exports remain bounded and isolated"

@@ -11,6 +11,28 @@
 ;; Generic MCP Tool Executor
 ;; ============================================================================
 
+(defn invoke-tool
+  "Invoke an MCP tool for an executor. The ONE resolution order:
+   0. an explicit dry run (:mcp/dry-run? true) always wins: a stand-in marked
+      {:dry-run? true ...} and NO call of any kind;
+   1. the node's tool caller (:call-tool-fn), which carries the configured gate
+      and declared contracts;
+   2. else the execution's MCP connection (:mcp-session);
+   4. else an explicit failure.
+  `invocation` is the executor's argument; :context and :execution-context are
+  merged under its top-level keys exactly as `call-mcp-tool` reads them."
+  [{:keys [context execution-context] :as invocation} tool-name tool-args]
+  (let [ctx (merge invocation context execution-context)
+        call-tool-fn (:call-tool-fn ctx)
+        mcp-session (:mcp-session ctx)]
+    (cond
+      (true? (:mcp/dry-run? ctx)) {:dry-run? true :tool tool-name :args tool-args}
+      call-tool-fn (call-tool-fn tool-name tool-args)
+      mcp-session (mcp-client/call-tool mcp-session tool-name tool-args)
+      :else (throw (ex-info (str "Cannot invoke MCP tool '" tool-name
+                                 "': no tool caller, no MCP session and no dry run requested")
+                            {:tool tool-name})))))
+
 (defn call-mcp-tool
   "Code executor that invokes an MCP tool at runtime.
 
@@ -19,15 +41,14 @@
    - tool-args: Map of arguments for the tool
    - Any additional inputs are passed as tool arguments
 
-   Context must include:
-   - :mcp-session - An MCP connection"
+   The tool is invoked through `invoke-tool` (node caller, else MCP session,
+   else explicit dry run, else failure)."
   [{:keys [inputs context execution-context] :as invocation}]
   (let [effective-context (merge invocation context execution-context)
         tool-name (or (get inputs :tool-name)
                       (get-in effective-context [:node :options :tool-name])
                       (some-> (get-in effective-context [:node :name])
                               (str/replace-first #"^call-" "")))
-        mcp-session (:mcp-session effective-context)
         ;; Optional blackboard reads are represented as nil when absent. JSON
         ;; Schema optional means the member is omitted, not sent as explicit
         ;; null, so strip nils before invoking the MCP server.
@@ -37,14 +58,7 @@
                     raw-args)
         output-key (keyword (str tool-name "-result"))]
     (u/trace ::call-mcp-tool {:tool tool-name :args tool-args}
-      (if mcp-session
-        (let [result (mcp-client/call-tool mcp-session tool-name tool-args)]
-          {output-key result})
-        ;; Mock response for testing without MCP connection
-        {output-key {:mock true
-                     :tool tool-name
-                     :args tool-args
-                     :message "No MCP session in context - mock response"}}))))
+      {output-key (invoke-tool invocation tool-name tool-args)})))
 
 ;; ============================================================================
 ;; Specialized Executors for Common Patterns
@@ -59,15 +73,11 @@
 
    Returns:
    - search-results: Vector of search results"
-  [{:keys [inputs context]}]
+  [{:keys [inputs] :as invocation}]
   (let [query (get inputs :query)
-        tool-name (get inputs :tool-name "search")
-        mcp-session (:mcp-session context)]
+        tool-name (get inputs :tool-name "search")]
     (u/trace ::search-executor {:query query :tool tool-name}
-      (if mcp-session
-        (let [result (mcp-client/call-tool mcp-session tool-name {"query" query})]
-          {:search-results result})
-        {:search-results [{:mock true :query query}]}))))
+      {:search-results (invoke-tool invocation tool-name {"query" query})})))
 
 (defn fetch-executor
   "Executor specialized for fetch/retrieval tools.
@@ -78,20 +88,16 @@
 
    Returns:
    - fetched-content: The retrieved content"
-  [{:keys [inputs context]}]
+  [{:keys [inputs] :as invocation}]
   (let [path (or (get inputs :path)
                  (get inputs :url)
                  (get inputs :pathOrUrl))
-        tool-name (get inputs :tool-name "fetch")
-        mcp-session (:mcp-session context)]
+        tool-name (get inputs :tool-name "fetch")]
     (u/trace ::fetch-executor {:path path :tool tool-name}
-      (if mcp-session
-        (let [result (mcp-client/call-tool mcp-session tool-name
-                                           (or (when (get inputs :pathOrUrl)
-                                                 {"pathOrUrl" path})
-                                               {"path" path}))]
-          {:fetched-content result})
-        {:fetched-content {:mock true :path path}}))))
+      {:fetched-content (invoke-tool invocation tool-name
+                                     (or (when (get inputs :pathOrUrl)
+                                           {"pathOrUrl" path})
+                                         {"path" path}))})))
 
 ;; ============================================================================
 ;; Dynamic Executor Factory
@@ -102,9 +108,8 @@
 
    Returns a function suitable for use as an ORC code node executor."
   [tool-name input-mapping output-key]
-  (fn [{:keys [inputs context]}]
-    (let [mcp-session (:mcp-session context)
-          mapped-args (reduce-kv
+  (fn [{:keys [inputs] :as invocation}]
+    (let [mapped-args (reduce-kv
                        (fn [acc input-key tool-arg]
                          (if-let [v (get inputs (keyword input-key))]
                            (assoc acc tool-arg v)
@@ -112,10 +117,7 @@
                        {}
                        input-mapping)]
       (u/trace ::dynamic-executor {:tool tool-name :args mapped-args}
-        (if mcp-session
-          (let [result (mcp-client/call-tool mcp-session tool-name mapped-args)]
-            {output-key result})
-          {output-key {:mock true :tool tool-name :args mapped-args}})))))
+        {output-key (invoke-tool invocation tool-name mapped-args)}))))
 
 ;; ============================================================================
 ;; Executor Registry

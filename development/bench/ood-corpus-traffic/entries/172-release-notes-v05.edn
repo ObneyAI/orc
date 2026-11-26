@@ -1,0 +1,22 @@
+{:slug "172-release-notes-v05",
+ :group "release-notes",
+ :in-domain? false,
+ :variant 5,
+ :expected-output-kind
+ "grouped release notes (new, improved, fixed, breaking) in customer language with upgrade notes",
+ :brief-id "b-025",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1622, :completion-tokens 345, :total-tokens 1967},
+  :draft-prompt-sha256
+  "f4c5425aeeca32d870556ab781c34ae65ef79ce41972c5b779d568869d073581",
+  :polish-usage
+  {:prompt-tokens 518, :completion-tokens 276, :total-tokens 794},
+  :polish-prompt-sha256
+  "8a684271ae7aac3f5641ec162f7ce08da50b573e550f926ce94a96db74aa22f0",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

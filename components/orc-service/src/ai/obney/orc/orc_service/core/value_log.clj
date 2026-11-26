@@ -42,6 +42,14 @@
   (select-keys (or inputs {})
                [map-each-index-key map-each-parent-key tick-iteration-key]))
 
+(defn engine-key?
+  "True for a blackboard/inputs key the engine itself uses for bookkeeping
+   (map-each iteration markers, tick iteration, durable order): every key in the
+   namespace of the map-each markers. They are not data any node declared, so
+   evidence shown to a judge never includes them."
+  [k]
+  (and (keyword? k) (= (namespace k) (namespace map-each-index-key))))
+
 (defn execution-key
   "Correlation key for one node execution: [node-id exec-context].
    Works for :sheet/execution-value-written events (which carry
@@ -161,7 +169,7 @@
                  (catch Exception _ []))]
     (hydrate runtime-source events)))
 
-(declare resolve-source)
+(declare resolve-source-entry resolve-source-entry-in new-write-index-cache)
 
 (defn resolve-writes
   "Convenience: read a tick's events and return what one node execution
@@ -178,10 +186,11 @@
                             acc))
                         (or (:write-sources completion) {}) events)]
     (if (seq sources)
-      (reduce-kv (fn [acc k value-source]
-                   (let [v (resolve-source runtime-source tenant-id value-source)]
-                     (if (some? v) (assoc acc k v) acc)))
-                 {} sources)
+      (let [writes (new-write-index-cache)]
+        (reduce-kv (fn [acc k value-source]
+                     (if-let [entry (resolve-source-entry-in writes runtime-source tenant-id value-source #{})]
+                       (assoc acc k (:value entry)) acc))
+                   {} sources))
       (writes-for events completion))))
 
 (defn resolve-write-sources
@@ -274,19 +283,60 @@
                  (catch Exception _ []))]
     (hydrate runtime-source events)))
 
+(defn- index-writes
+  "{id event} over a tick's write events, id being :event/id or :value-id.
+   An id maps to the FIRST event, in read order, that carries it as either, which is
+   what scanning the events for the first match returns."
+  [events]
+  (reduce (fn [idx event]
+            (let [idx (if-some [id (:event/id event)]
+                        (if (contains? idx id) idx (assoc idx id event))
+                        idx)]
+              (if-some [id (:value-id event)]
+                (if (contains? idx id) idx (assoc idx id event))
+                idx)))
+          {}
+          events))
+
+(defn- new-write-index-cache
+  "One per resolution call: the tick's write events are read (and hydrated) once
+   per tick the call touches, not once per key."
+  []
+  (volatile! {}))
+
+(defn- write-index
+  [cache runtime-source tenant-id tick-id]
+  (if-let [idx (get @cache tick-id)]
+    idx
+    (let [idx (index-writes (read-tick-writes runtime-source tenant-id tick-id))]
+      (vswap! cache assoc tick-id idx)
+      idx)))
+
+(defn- resolve-source-entry-in
+  "A found value envelope, including explicit nil; nil means unresolved.
+   Reads each tick's write events at most once per `cache`."
+  [cache runtime-source tenant-id {:keys [tick-id event-id] :as source} seen]
+  (when (and tick-id event-id (not (contains? seen source)))
+    (when-let [event (get (write-index cache runtime-source tenant-id tick-id) event-id)]
+      (if (= :sheet/execution-value-referenced (:event/type event))
+        (resolve-source-entry-in cache runtime-source tenant-id (:source event) (conj seen source))
+        (when (contains? event :value) (select-keys event [:value]))))))
+
+(defn- resolve-source-entry
+  "A found value envelope, including explicit nil; nil means unresolved."
+  ([runtime-source tenant-id source]
+   (resolve-source-entry runtime-source tenant-id source #{}))
+  ([runtime-source tenant-id source seen]
+   (resolve-source-entry-in (new-write-index-cache) runtime-source tenant-id source seen)))
+
 (defn resolve-source
   "Resolve a {:tick-id :event-id} reference, following cross-tick references.
-   Missing, foreign, and cyclic references resolve to nil."
+   Missing, foreign, and cyclic references resolve to nil. Explicit null also
+   returns nil; map-producing resolution APIs preserve its key presence."
   ([runtime-source tenant-id source]
-   (resolve-source runtime-source tenant-id source #{}))
-  ([runtime-source tenant-id {:keys [tick-id event-id] :as source} seen]
-   (when (and tick-id event-id (not (contains? seen source)))
-     (when-let [event (some #(when (or (= event-id (:event/id %))
-                                       (= event-id (:value-id %))) %)
-                            (read-tick-writes runtime-source tenant-id tick-id))]
-       (if (= :sheet/execution-value-referenced (:event/type event))
-         (resolve-source runtime-source tenant-id (:source event) (conj seen source))
-         (:value event))))))
+   (:value (resolve-source-entry runtime-source tenant-id source)))
+  ([runtime-source tenant-id source seen]
+   (:value (resolve-source-entry runtime-source tenant-id source seen))))
 
 (defn tick-started-event
   "The tick's ORIGINATING :sheet/tree-tick-started — the one carrying
@@ -314,9 +364,10 @@
   (if-let [cached (get @tick-seeds* tick-id)]
     cached
     (let [started (tick-started-event runtime-source tenant-id tick-id)
+          writes (new-write-index-cache)
           v (reduce-kv (fn [acc k value-source]
-                         (let [value (resolve-source runtime-source tenant-id value-source)]
-                           (if (some? value) (assoc acc k value) acc)))
+                         (if-let [entry (resolve-source-entry-in writes runtime-source tenant-id value-source #{})]
+                           (assoc acc k (:value entry)) acc))
                        {} (or (:seed-sources started) {}))]
       (swap! tick-seeds* assoc tick-id v)
       v)))
@@ -334,14 +385,15 @@
         events (read-tick-events runtime-source tenant-id tick-id)
         iteration-seeds (get (input-seeds-by-iteration events)
                              (exec-context (:inputs completion)))
-        tick-seed-values (tick-seeds runtime-source tenant-id tick-id)]
+        tick-seed-values (tick-seeds runtime-source tenant-id tick-id)
+        writes (new-write-index-cache)]
     (reduce (fn [acc k]
               (let [source (get sources k)
-                    value (cond
-                            source (resolve-source runtime-source tenant-id source)
-                            (contains? iteration-seeds k) (get iteration-seeds k)
-                            :else (get tick-seed-values k))]
-                (if (some? value) (assoc acc k value) acc)))
+                    entry (cond
+                            source (resolve-source-entry-in writes runtime-source tenant-id source #{})
+                            (contains? iteration-seeds k) {:value (get iteration-seeds k)}
+                            (contains? tick-seed-values k) {:value (get tick-seed-values k)})]
+                (if entry (assoc acc k (:value entry)) acc)))
             {}
             read-keys)))
 
@@ -389,13 +441,14 @@
         entries (into {} (for [k ks :when (contains? metadata-bb k)]
                            [k (get metadata-bb k)]))
         seeds (when (some (fn [[_ e]] (nil? (:source e))) entries)
-                (tick-seeds source tenant-id tick-id))]
+                (tick-seeds source tenant-id tick-id))
+        writes (new-write-index-cache)]
     (reduce (fn [acc [k e]]
               (let [src (:source e)
-                    v (if src
-                        (resolve-source source tenant-id src)
-                        (get seeds k))]
-                (if (some? v) (assoc acc k v) acc)))
+                    entry (if src
+                            (resolve-source-entry-in writes source tenant-id src #{})
+                            (when (contains? seeds k) {:value (get seeds k)}))]
+                (if entry (assoc acc k (:value entry)) acc)))
             {}
             entries)))
 
@@ -413,14 +466,15 @@
    Seeds first, then every write in order, so the last write to a key wins —
    the same end state the cached blackboard converges to."
   [source tenant-id tick-id]
+  (let [writes (new-write-index-cache)]
   (merge (tick-seeds source tenant-id tick-id)
          (reduce (fn [acc event]
-                   (let [v (if (= :sheet/execution-value-referenced (:event/type event))
-                             (resolve-source source tenant-id (:source event))
-                             (:value event))]
-                     (if (some? v) (assoc acc (:key event) v) acc)))
+                   (let [entry (if (= :sheet/execution-value-referenced (:event/type event))
+                                 (resolve-source-entry-in writes source tenant-id (:source event) #{})
+                                 (when (contains? event :value) (select-keys event [:value])))]
+                     (if entry (assoc acc (:key event) (:value entry)) acc)))
                  {}
-                 (read-tick-writes source tenant-id tick-id))))
+                 (read-tick-writes source tenant-id tick-id)))))
 
 (defn final-sources
   "The canonical source reference currently backing each key at tick end."
@@ -435,10 +489,10 @@
 
    THE ENTRY SET IS PRESERVED EXACTLY. A declared-but-unresolvable key keeps
    its metadata and simply gets no :value — which is what the read model
-   produced for a declared-but-unwritten key. executor/gather-inputs
-   distinguishes 'entry absent' (skip the key) from 'entry present, value nil'
-   (serialize nil, i.e. an empty string), so dropping entries here would
-   silently change LLM prompts."
+   produced for a declared-but-unwritten key. executor/gather-inputs skips an
+   entry with no :value and preserves an explicit :value nil as a native null.
+   Shared request presentation renders that value under its declared contract;
+   metadata-only declarations must not become supplied null inputs."
   ([source tenant-id tick-id metadata-bb]
    (hydrate-blackboard source tenant-id tick-id metadata-bb nil))
   ([source tenant-id tick-id metadata-bb ks]

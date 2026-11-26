@@ -763,9 +763,9 @@
                          (sheet/delegate "second" :target-sheet-id child-id
                            :reads [:input] :writes [:result]))))
           result (sheet/execute ctx parent-id {:input "same"} :timeout-ms 3000)
-          family (get-in (h/run-query ctx {:query/name :sheet/get-trace-family
-                                            :trace-id (:trace-id result)})
-                         [:query/result])
+          ;; The trace projection is asynchronous: wait for the root and both
+          ;; children, as every other trace-family read in this file does.
+          family (settled-family ctx (:trace-id result) 3)
           children (filter :parent-trace-id (:traces family))
           deliveries (filter #(and (= :sheet/node-execution-completed (:event/type %))
                                    (:completion-id %))
@@ -1232,7 +1232,20 @@
                                                 (:tick-id (first starts))))))))
       (finally (deliver @empty-release true)))))
 
+
+(defn- an-hour-later
+  "The recovering worker's view an hour after the stopped owner's lease was
+   last renewed: that lease has expired (ExecutionRecovery OwnedWorkIsNotAbandoned)."
+  [ctx]
+  (assoc ctx :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))
+
 (deftest det-e2e-205-recovery-while-child-running
+  ;; The run and delegate bounds are 600 s, not 120 s: on the hosted runner the
+  ;; stop, drain and recovery settle of this test approached two minutes, and a
+  ;; run that reaches its own bound is cancelled and completed by the timeout
+  ;; path before the recovery under test can resume it (seen twice on CI as
+  ;; "Last scan: []" with a cancelled, completed abandoned tick). The bound is
+  ;; a ceiling, never an assertion; the recovery assertions below are unchanged.
   (h/with-async-test-context [ctx]
     (reset! recovery-effect-calls 0)
     (let [child-id (sheet/build-workflow!
@@ -1244,7 +1257,7 @@
                      ctx (sheet/workflow "recovery-running-parent"
                            (sheet/blackboard {:result :string})
                            (sheet/delegate "child" :target-sheet-id child-id
-                             :writes [:result] :timeout-ms 120000)))
+                             :writes [:result] :timeout-ms 600000)))
           intercepted (promise)
           retire-release (promise)
           execute-leaf! tp/execute-leaf-node
@@ -1256,7 +1269,7 @@
                                     nil)
                                 (execute-leaf! context)))]
                 (let [pending (future (sheet/execute ctx parent-id {}
-                                                     :timeout-ms 120000))]
+                                                     :timeout-ms 600000))]
                   {:pending pending
                    :abandoned-start (deref intercepted 5000 ::not-intercepted)}))
           pending (:pending gap)
@@ -1267,12 +1280,22 @@
         (deliver retire-release true)
         (is (not= ::stop-timeout (deref stop-result 5000 ::stop-timeout))))
       (runtime/deregister-completion! (:tick-id abandoned-start))
-      (let [recovered-ctx (assoc ctx :processors (h/start-test-processors ctx))]
+      (let [recovered-ctx (assoc ctx :processors (h/start-test-processors ctx))
+            last-scan (atom nil)]
         (try
           (is (h/settle-until!
-               #(some :resumed? (runtime/resume-in-progress! recovered-ctx))
+               #(some :resumed? (reset! last-scan (runtime/resume-in-progress!
+                                                     (an-hour-later recovered-ctx))))
                :timeout-ms 30000)
-              "recovery waits until the abandoned frontier is projected")
+              ;; A CI-only failure here said nothing; the message now carries
+              ;; what the last scan actually returned and which of the
+              ;; abandoned start's events the store holds.
+              (str "recovery waits until the abandoned frontier is projected. Last scan: "
+                   (pr-str @last-scan)
+                   " Events for the abandoned tick: "
+                   (pr-str (mapv #(select-keys % [:event/type :node-id :status :reason :root-status])
+                                 (filter #(= (:tick-id abandoned-start) (:tick-id %))
+                                         (h/read-all-events ctx))))))
           (let [result (deref pending 30000 ::timeout)
                 child-starts (filter #(and (= :sheet/tree-tick-started (:event/type %))
                                            (= (:trace-id result) (:parent-tick-id %)))

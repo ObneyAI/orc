@@ -1,0 +1,414 @@
+{:assigned-tree-id #uuid "d41af303-dcb2-3599-9198-0c006d1cc364",
+ :tick-id #uuid "e0757cb0-13f4-435f-b947-86953b7861ec",
+ :slug "conv-001-vector-vs-sql-tradeoffs",
+ :parent-tree-id nil,
+ :domain-label nil,
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "software-architecture-recommendation",
+  :domain-reasoning
+  "The task involves providing a software architecture recommendation based on comparing multiple options, which is a core use case for research-then-synthesize comparison patterns."},
+ :node-id #uuid "5fd400ff-065e-4e48-bd6e-3507c57288be",
+ :top-1
+ {:target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+  :fitness-score 1.0,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "software-architecture-recommendation"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "d41af303-dcb2-3599-9198-0c006d1cc364",
+  :classified-at "2026-09-16T05:46:58.985576-05:00",
+  :reasoning
+  "This candidate perfectly matches the structural requirements of the task. The query asks for a comparison of three options with specific structured outputs (:option-summaries, :fit-to-team-constraints, :quality-comparison, etc.), which aligns with the recommended pattern of extracting structured data per source and then using a final :llm node to synthesize 'common / differences / recommendation'. It also supports the 3-option scope (well within the ~5 source limit).",
+  :outcome :matched,
+  :source-node-id #uuid "5fd400ff-065e-4e48-bd6e-3507c57288be",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.95,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task requires integrating three structured options (Postgres, Vector DB, Hybrid) and multiple constraints (team size, expertise, timeline) into a cohesive recommendation. The 'Synthesis' subtree's recommended-pattern for long artifacts (building a :code-built outline to preserve coverage) directly maps to the required output sections like :option-summaries and :fit-to-team-constraints. Its focus on 'attribution' and 'balancing per-source weight' ensures the recommendation is grounded in the specific team context provided in the query.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "b3597aa7-3957-3734-90c6-531d27c08f67",
+    :confidence 0.85,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task requires reasoning over extracted context (12 engineers, 3M tickets, 6-week timeline) to produce structured findings (tradeoffs in cost, quality, and fit). The 'Analysis' subtree's strength in 'multi-dimensional analysis' (using :parallel for risk/opportunity) is highly applicable to the multi-faceted comparison requested (quality vs. operational cost vs. team fit).",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "760be698-0bb8-3a5a-a2bd-1d45445a5861",
+    :confidence 0.6,
+    :was-fresh-mint? false,
+    :reasoning
+    "While this task is a 'tradeoff study' rather than a 'system failure' investigation, the structure of 'hypothesis-then-evidence' can be used to evaluate if an option fits the constraints. However, the 'avoid-when' guard for 'task is producing a new spec or design from scratch' applies here, as the team is designing a new feature, not fixing a broken one.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "e0757cb0-13f4-435f-b947-86953b7861ec",
+  :event/tags
+  #{[:description-target #uuid "d41af303-dcb2-3599-9198-0c006d1cc364"]
+    [:tick #uuid "e0757cb0-13f4-435f-b947-86953b7861ec"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:46:58.985795Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "software-architecture-recommendation",
+   :domain-reasoning
+   "The task involves providing a software architecture recommendation based on comparing multiple options, which is a core use case for research-then-synthesize comparison patterns."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the synthesis stage's :reads include ALL per-source extractions structured as a per-source map — supports apples-to-apples comparison by source rather than free-form prose",
+      :good-when
+      "the sources are roughly comparable AND a structured comparison is the value (vs free-form narrative)",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]] [:code {:reads [:extract-a :extract-b] :writes [:by-source] :fn (fn [{:keys [extract-a extract-b]}] {:by-source {:a extract-a :b extract-b}})}] [:llm {:reads [:by-source] :writes [:common :differences :recommendation]}] [:final {:keys [:common :differences :recommendation]}]]"}
+     {:trait
+      "use :parallel (NOT :sequence) for the per-source extraction stages when sources are independent — extraction wall-time becomes max(per-source) not sum(per-source)",
+      :good-when
+      "sources are independent (no need to read source B before extracting source A)",
+      :recommended-pattern
+      "[:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]]"}],
+    :avoid-when
+    ["only one source — use chunked-extraction or document-analysis instead"
+     "the comparison should be a free-form narrative — use briefing-generation instead"
+     "the sources are sequentially dependent — use sequential-pipeline instead"
+     "per-source extractions use different schemas OR free-form text"
+     "source count >5 AND each source's extraction is non-trivial"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.994328-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :domain-coverage :covered,
+    :rank 9,
+    :reasoning
+    "This candidate perfectly matches the structural requirements of the task. The query asks for a comparison of three options with specific structured outputs (:option-summaries, :fit-to-team-constraints, :quality-comparison, etc.), which aligns with the recommended pattern of extracting structured data per source and then using a final :llm node to synthesize 'common / differences / recommendation'. It also supports the 3-option scope (well within the ~5 source limit).",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "free-form per-source extraction (different :output-schemas per source or open-ended free text) makes the synthesizer's apples-to-apples comparison hard — comparable fields drift across sources",
+      :avoid-when
+      "per-source extractions use different schemas OR free-form text",
+      :recommended-alternative
+      "always use IDENTICAL :output-schemas across per-source extraction stages — comparable fields stay aligned, synthesizer can do direct per-field diff"}
+     {:trait
+      "synthesizing more than ~5 sources in a single :llm call exceeds context — the comparison loses fidelity on per-source detail",
+      :avoid-when
+      "source count >5 AND each source's extraction is non-trivial",
+      :recommended-alternative
+      "for >5 sources, hierarchical comparison: cluster sources into 2-3 groups → comparative-summary within each group → final cross-group comparison"}],
+    :domain-reasoning
+    "The task involves providing a software architecture recommendation based on comparing multiple options, which is a core use case for research-then-synthesize comparison patterns.",
+    :cos-good 0.9936607574195278,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9867154124339483,
+    :score 431.6758409501537,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-class:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9936607574195278,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the synthesis stage's :reads include ALL per-source extractions structured as a per-source map — supports apples-to-apples comparison by source rather than free-form prose",
+      :good-when
+      "the sources are roughly comparable AND a structured comparison is the value (vs free-form narrative)",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]] [:code {:reads [:extract-a :extract-b] :writes [:by-source] :fn (fn [{:keys [extract-a extract-b]}] {:by-source {:a extract-a :b extract-b}})}] [:llm {:reads [:by-source] :writes [:common :differences :recommendation]}] [:final {:keys [:common :differences :recommendation]}]]"}
+     {:trait
+      "use :parallel (NOT :sequence) for the per-source extraction stages when sources are independent — extraction wall-time becomes max(per-source) not sum(per-source)",
+      :good-when
+      "sources are independent (no need to read source B before extracting source A)",
+      :recommended-pattern
+      "[:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]]"}],
+    :avoid-when
+    ["only one source — use chunked-extraction or document-analysis instead"
+     "the comparison should be a free-form narrative — use briefing-generation instead"
+     "the sources are sequentially dependent — use sequential-pipeline instead"
+     "per-source extractions use different schemas OR free-form text"
+     "source count >5 AND each source's extraction is non-trivial"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.976888-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :domain-coverage :covered,
+    :rank 10,
+    :reasoning
+    "This fingerprint matches the comparative-summary class perfectly, providing the necessary parallel extraction and synthesis structure for the three database options. It is ranked slightly lower than the class itself as the class provides the broader definition for this multi-source synthesis task.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "free-form per-source extraction (different :output-schemas per source or open-ended free text) makes the synthesizer's apples-to-apples comparison hard — comparable fields drift across sources",
+      :avoid-when
+      "per-source extractions use different schemas OR free-form text",
+      :recommended-alternative
+      "always use IDENTICAL :output-schemas across per-source extraction stages — comparable fields stay aligned, synthesizer can do direct per-field diff"}
+     {:trait
+      "synthesizing more than ~5 sources in a single :llm call exceeds context — the comparison loses fidelity on per-source detail",
+      :avoid-when
+      "source count >5 AND each source's extraction is non-trivial",
+      :recommended-alternative
+      "for >5 sources, hierarchical comparison: cluster sources into 2-3 groups → comparative-summary within each group → final cross-group comparison"}],
+    :domain-reasoning
+    "Matches the multi-source research-then-synthesize variant needed for comparing technical architecture options.",
+    :cos-good 0.9936607574195278,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9867154124339483,
+    :score 431.6758409501537,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.95,
+    :document-id
+    ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9936607574195278,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :existing-domain-children
+    ["game-balance-simulation" "software-architecture-recommendation"],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.989512-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :partial,
+    :rank 2,
+    :reasoning
+    "While this candidate mentions 'software-architecture-recommendation' in its existing-domain-children, its structural shape (a producer-validator loop) is a poor fit for a one-shot comparative analysis. The task does not provide formal validation rules or a 'correctness oracle' to check the recommendation against; it requires synthesis of tradeoffs, not iterative refinement against syntactic rules.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "Although it lists the domain in children, the task lacks the 'formal validation rules' or 'syntactic' checks required by this class's strengths and guards.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9861127732803286,
+    :score 432.03266382533417,
+    :cos-avoid-sans-content 0.9990727251087828,
+    :fitness-score 0.3,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9990727251087828}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.974326-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :uncovered,
+    :rank 1,
+    :reasoning
+    "Identical reasoning to its parent class: the producer/validator loop structure is designed for iterative correction of errors, which doesn't fit the 'explain tradeoffs across three options' intent. The avoid-when for 'validation requires deep judgment' fires here, as judging architectural tradeoffs is a matter of expertise, not code-based validation.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The guard 'validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead' applies to architectural trade-offs.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9861127732803286,
+    :score 432.03266382533417,
+    :cos-avoid-sans-content 0.9990727251087828,
+    :fitness-score 0.25,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9990727251087828}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the cheap path handles the common case at fractional cost — typical economics are 10-20x cheaper per call than always-expensive",
+      :good-when
+      "the work has a long-tail difficulty distribution AND the expensive model is materially more capable on hard cases",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:model :gemini-flash :max-retries 1}}] [:llm {:reads [:input] :writes [:result] :options {:model :claude-opus :max-retries 2}}]]"}
+     {:trait
+      "wire a confidence-check (validator) between the two LLM tiers to escalate on LOW confidence, not just on outright failure — the cheap model's confident-but-wrong answers are the main risk",
+      :good-when
+      "the cheap model has a measurable tendency to be confidently wrong on hard cases",
+      :recommended-pattern
+      "[:sequence [:llm {:options {:model :gemini-flash} :writes [:result :confidence]}] [:fallback [:condition {:predicate (fn [{:keys [confidence]}] (>= confidence 0.8))}] [:llm {:options {:model :claude-opus} :writes [:result]}]]]"}],
+    :avoid-when
+    ["the backup path is deterministic (regex, template, cache) — use primary-backup instead"
+     "the cheap model is roughly capable of the full distribution — single cheap model with :max-retries is simpler"
+     "you can't measure confidence on cheap-model output — escalation won't fire correctly"
+     "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence"
+     "both tiers use the same upstream provider AND availability is a concern"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.990653-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :domain-coverage :uncovered,
+    :rank 6,
+    :reasoning
+    "The Model Cascade pattern is entirely irrelevant. It is designed for cost-optimization and error recovery using cheap and expensive models in a sequence. The task is a complex synthesis of a fixed set of technical options, not a high-volume traffic-routing problem.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "without a confidence-check between tiers, the cheap model's confident-but-wrong outputs ship without ever escalating — :fallback only catches outright failure (:status :failure), not bad answers",
+      :avoid-when
+      "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence",
+      :recommended-alternative
+      "always require a :confidence field on the cheap model's output schema AND escalate to expensive model on confidence < threshold (e.g., 0.7)"}
+     {:trait
+      "cascade with both tiers using the SAME provider correlates failures — when the provider has an outage, both tiers fail together",
+      :avoid-when
+      "both tiers use the same upstream provider AND availability is a concern",
+      :recommended-alternative
+      "use different providers for the two tiers (e.g., gemini for cheap, claude for expensive) so a provider outage degrades one tier but not both"}],
+    :domain-reasoning
+    "No overlap in subject matter or material; this is a cost-management infrastructure pattern, not a synthesis pattern.",
+    :cos-good 0.9922470810596244,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9880082918794474,
+    :score 431.75282709351904,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.1,
+    :document-id
+    ":tree-class:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9922470810596244,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered [],
+  :event/id #uuid "01a0a9d3-b4a9-70b7-a23c-1e6f01b22496",
+  :confidence 1.0,
+  :source-sheet-id #uuid "442f8451-bbc2-4a03-9dd5-97a83fb379ec",
+  :ranked-candidates
+  [{:target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 431.6758409501537}
+   {:target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.95,
+    :score 431.6758409501537}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 432.03266382533417}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.25,
+    :score 432.03266382533417}
+   {:target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.1,
+    :score 431.75282709351904}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :deferred-events [],
+ :domain-children-considered [],
+ :sheet-id #uuid "442f8451-bbc2-4a03-9dd5-97a83fb379ec",
+ :payload-domain nil,
+ :pass 2,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 2 from corpus retrieval)\n#### Top match — Comparative summary (confidence: 1.00)\nWhy this fits: This candidate perfectly matches the structural requirements of the task. The query asks for a comparison of three options with specific structured outputs (:option-summaries, :fit-to-team-constraints, :quality-comparison, etc.), which aligns with the recommended pattern of extracting structured data per source and then using a final :llm node to synthesize 'common / differences / recommendation'. It also supports the 3-option scope (well within the ~5 source limit).\n\nPattern guidance (seed `:summary`):\nComparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.\n\nCapabilities:\n  - :sequence of :parallel (or :map-each over sources) per-source :llm extraction → :code aggregator → :llm synthesizer that produces a structured comparison\n  - natural for any 'read N versions/sources and produce a comparison' work — product comparison, contract diff, multi-source fact verification\n  - outputs are typically a structured comparison object (per-source key, common-elements, differences, recommendation)\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the synthesis stage's :reads include ALL per-source extractions structured as a per-source map — supports apples-to-apples comparison by source rather than free-form prose (confidence 1.00, evidence-count 1)\n    - Good when: the sources are roughly comparable AND a structured comparison is the value (vs free-form narrative)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]] [:code {:reads [:extract-a :extract-b] :writes [:by-source] :fn (fn [{:keys [extract-a extract-b]}] {:by-source {:a extract-a :b extract-b}})}] [:llm {:reads [:by-source] :writes [:common :differences :recommendation]}] [:final {:keys [:common :differences :recommendation]}]]\n      ```\n\n  - **Trait:** use :parallel (NOT :sequence) for the per-source extraction stages when sources are independent — extraction wall-time becomes max(per-source) not sum(per-source) (confidence 1.00, evidence-count 1)\n    - Good when: sources are independent (no need to read source B before extracting source A)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** free-form per-source extraction (different :output-schemas per source or open-ended free text) makes the synthesizer's apples-to-apples comparison hard — comparable fields drift across sources (confidence 1.00, evidence-count 1)\n    - Avoid when: per-source extractions use different schemas OR free-form text\n    - Recommended fix: always use IDENTICAL :output-schemas across per-source extraction stages — comparable fields stay aligned, synthesizer can do direct per-field diff\n\n  - **Failure mode:** synthesizing more than ~5 sources in a single :llm call exceeds context — the comparison loses fidelity on per-source detail (confidence 1.00, evidence-count 1)\n    - Avoid when: source count >5 AND each source's extraction is non-trivial\n    - Recommended fix: for >5 sources, hierarchical comparison: cluster sources into 2-3 groups → comparative-summary within each group → final cross-group comparison\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - product-feature comparison across 3-4 vendor docs: per-vendor extraction → side-by-side feature matrix\n  - contract diff across 2 versions: per-version extraction → key-differences + similarities + recommendation\n  - multi-source fact verification: per-source claim extraction → common claims + contradictions + confidence\n\n#### Alternative #1 — Comparative summary (confidence: 0.95)\nWhy this fits: This fingerprint matches the comparative-summary class perfectly, providing the necessary parallel extraction and synthesis structure for the three database options. It is ranked slightly lower than the class itself as the class provides the broader definition for this multi-source synthesis task.\n\nPattern guidance (seed `:summary`):\nComparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.\n\nCapabilities:\n  - :sequence of :parallel (or :map-each over sources) per-source :llm extraction → :code aggregator → :llm synthesizer that produces a structured comparison\n  - natural for any 'read N versions/sources and produce a comparison' work — product comparison, contract diff, multi-source fact verification\n  - outputs are typically a structured comparison object (per-source key, common-elements, differences, recommendation)\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the synthesis stage's :reads include ALL per-source extractions structured as a per-source map — supports apples-to-apples comparison by source rather than free-form prose (confidence 1.00, evidence-count 1)\n    - Good when: the sources are roughly comparable AND a structured comparison is the value (vs free-form narrative)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]] [:code {:reads [:extract-a :extract-b] :writes [:by-source] :fn (fn [{:keys [extract-a extract-b]}] {:by-source {:a extract-a :b extract-b}})}] [:llm {:reads [:by-source] :writes [:common :differences :recommendation]}] [:final {:keys [:common :differences :recommendation]}]]\n      ```\n\n  - **Trait:** use :parallel (NOT :sequence) for the per-source extraction stages when sources are independent — extraction wall-time becomes max(per-source) not sum(per-source) (confidence 1.00, evidence-count 1)\n    - Good when: sources are independent (no need to read source B before extracting source A)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:parallel [:llm {:reads [:source-a] :writes [:extract-a]}] [:llm {:reads [:source-b] :writes [:extract-b]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** free-form per-source extraction (different :output-schemas per source or open-ended free text) makes the synthesizer's apples-to-apples comparison hard — comparable fields drift across sources (confidence 1.00, evidence-count 1)\n    - Avoid when: per-source extractions use different schemas OR free-form text\n    - Recommended fix: always use IDENTICAL :output-schemas across per-source extraction stages — comparable fields stay aligned, synthesizer can do direct per-field diff\n\n  - **Failure mode:** synthesizing more than ~5 sources in a single :llm call exceeds context — the comparison loses fidelity on per-source detail (confidence 1.00, evidence-count 1)\n    - Avoid when: source count >5 AND each source's extraction is non-trivial\n    - Recommended fix: for >5 sources, hierarchical comparison: cluster sources into 2-3 groups → comparative-summary within each group → final cross-group comparison\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - product-feature comparison across 3-4 vendor docs: per-vendor extraction → side-by-side feature matrix\n  - contract diff across 2 versions: per-version extraction → key-differences + similarities + recommendation\n  - multi-source fact verification: per-source claim extraction → common claims + contradictions + confidence\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral: Synthesis (confidence: 0.95)\n   Why this fits: The task requires integrating three structured options (Postgres, Vector DB, Hybrid) and multiple constraints (team size, expertise, timeline) into a cohesive recommendation. The 'Synthesis' subtree's recommended-pattern for long artifacts (building a :code-built outline to preserve coverage) directly maps to the required output sections like :option-summaries and :fit-to-team-constraints. Its focus on 'attribution' and 'balancing per-source weight' ensures the recommendation is grounded in the specific team context provided in the query.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Analysis (confidence: 0.85)\n   Why this fits: The task requires reasoning over extracted context (12 engineers, 3M tickets, 6-week timeline) to produce structured findings (tradeoffs in cost, quality, and fit). The 'Analysis' subtree's strength in 'multi-dimensional analysis' (using :parallel for risk/opportunity) is highly applicable to the multi-faceted comparison requested (quality vs. operational cost vs. team fit).\n\n   Guidance (seed `:summary`):\n   Analysis reasons over already-extracted items to produce structured findings (patterns / problems / opportunities) with per-finding evidence. Always tie findings to specific items via :affected-items references for downstream auditability. For multi-dimensional analysis, fan out per-dimension :llm stages via :parallel — each stage gets a tighter focus. NEVER skip the extraction stage: analyzing raw documents conflates extraction and reasoning, degrading both. Composes into comparative-summary (multi-source structured findings), chunked-extraction (per-chunk parallel analysis), and sequential-pipeline (extract → analyze → synthesize). Avoid when the task is summarizing (use synthesis) or generating options (use ideation).\n\nCapabilities:\n  - given a vector/map of pre-extracted items, produce a structured set of findings (patterns / problems / opportunities) with per-finding evidence\n  - natural fit as a mid-tree stage between extraction (upstream) and synthesis/critique/code-building (downstream)\n  - outputs are typically a vector of findings, each with :type / :evidence / :confidence / :affected-items\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** tie each finding to the specific extracted item(s) that triggered it via an :affected-items reference field — downstream stages can audit, drill down, or prioritize findings by evidence weight (confidence 1.00, evidence-count 1)\n    - Good when: downstream stages need to attribute findings to evidence OR rank findings by support\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:extracts] :writes [:findings] :output-schemas {:findings [:vector [:map [:type :string] [:evidence :string] [:confidence :double] [:affected-items [:vector :string]]]]}}]\n      ```\n\n  - **Trait:** for multi-dimensional analysis (e.g., risk / opportunity / blocker across the same items), use :parallel one-:llm-per-dimension stages — each stage has a tight focus and can produce richer per-dimension reasoning (confidence 1.00, evidence-count 1)\n    - Good when: the analysis has 2-4 orthogonal dimensions that benefit from separate prompts\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:parallel [:llm {:reads [:extracts] :writes [:risks]}] [:llm {:reads [:extracts] :writes [:opportunities]}] [:llm {:reads [:extracts] :writes [:blockers]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** analyzing raw documents (skipping extraction) forces the analysis :llm to do BOTH extraction and reasoning — quality degrades on both since the model can't optimize attention for either (confidence 1.00, evidence-count 1)\n    - Avoid when: the input is raw documents AND the analysis needs to attribute findings to specific items\n    - Recommended fix: two-stage: extract structured items first, then analyze over the extracts; preserves analyzability of findings\n\n  - **Failure mode:** single-pass analysis over a long flat list of items loses signal on per-item nuance — findings cluster around the most prominent items (confidence 1.00, evidence-count 1)\n    - Avoid when: item count is high AND each item deserves per-item attention\n    - Recommended fix: use :map-each per-item analysis with bounded :max-concurrency, then aggregate findings — preserves per-item granularity\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - risk analysis over extracted contract clauses: per-clause risk score + reasoning + mitigation\n  - pattern detection across log events: clusters of related events + frequency + suspected cause\n  - gap analysis over a feature list: required-vs-present + missing-items + priority\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent b3597aa7-3957-3734-90c6-531d27c08f67)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral: Investigation explains WHY a system (confidence: 0.60)\n   Why this fits: While this task is a 'tradeoff study' rather than a 'system failure' investigation, the structure of 'hypothesis-then-evidence' can be used to evaluate if an option fits the constraints. However, the 'avoid-when' guard for 'task is producing a new spec or design from scratch' applies here, as the team is designing a new feature, not fixing a broken one.\n\n   Guidance (seed `:summary`):\n   Investigation explains WHY a system is misbehaving. Best implemented as an explicit hypothesis-then-evidence shape: enumerate candidate causes from the symptom UPFRONT, then collect evidence to rule out alternatives, then converge on the root cause + recommended fix. ALWAYS pass ambient context (logs / code / tests / stack traces) in :reads — context-free investigation produces vacuous output. For large evidence sets (multi-file logs, large codebases), compose into chunked-extraction shells so per-chunk evidence collection parallelizes. Composes into sequential-pipeline (canonical hypothesis chain), fallback-recovery (try-one-path-then-another when initial hypothesis fails), and chunked-extraction (investigating large evidence sets). Distinct from Research (which gathers external material to seed new work, not explain existing breakage) and Analysis (which reasons over already-extracted items, not raw symptoms). Avoid when the task is exploration without a specific failure to explain.\n\nCapabilities:\n  - given symptoms + ambient context (logs, code, test artifacts, stack traces), produce a structured hypothesis with supporting evidence and a recommended fix or next step\n  - natural fit when the goal is to explain WHY something is broken — distinct from Research (gather new material) and Analysis (reason over already-extracted items)\n  - outputs are typically a single root-cause statement + supporting evidence references + a recommended-fix or next-step\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** enumerate candidate hypotheses UPFRONT from the symptom before collecting evidence — separates 'what could be wrong' from 'what is wrong' so evidence rules out rather than confirms the first guess (confidence 1.00, evidence-count 1)\n    - Good when: the failure mode space is bounded AND the model can enumerate likely causes from the symptom alone\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:symptom :context] :writes [:candidate-hypotheses]}] [:llm {:reads [:candidate-hypotheses :context] :writes [:ruled-out :remaining]}] [:llm {:reads [:remaining :context] :writes [:root-cause :recommended-fix]}] [:final {:keys [:root-cause :recommended-fix]}]]\n      ```\n\n  - **Trait:** for investigations over large evidence sets (multi-file logs, large codebases), chunk the evidence and run per-chunk hypothesis-evidence collection via :map-each so per-chunk reasoning parallelizes and the aggregator sees per-chunk findings tagged with their source (confidence 1.00, evidence-count 1)\n    - Good when: evidence is too large to fit in a single :llm context AND per-chunk findings can be aggregated without losing per-chunk attribution\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :evidence-chunks :as :chunk :max-concurrency 3 :writes [:per-chunk-findings]} [:llm {:reads [:chunk :symptom] :writes [:per-chunk-findings] :output-schemas {:per-chunk-findings [:vector [:map [:hypothesis :string] [:supporting-evidence :string] [:chunk-id :string]]]}}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** single-pass investigation on a complex symptom converges on the first plausible hypothesis without ruling out alternatives — produces overconfident root-cause claims that fail when the true cause was the second hypothesis (confidence 1.00, evidence-count 1)\n    - Avoid when: the symptom has multiple plausible causes AND the cost of acting on the wrong root cause is high\n    - Recommended fix: explicit multi-hypothesis enumeration upfront; an intermediate :llm stage must rule out at least ONE candidate hypothesis with evidence before convergence to a root cause is allowed\n\n  - **Failure mode:** investigation without ambient context (just the symptom + nothing else) produces vacuous 'could be X / could be Y' output the consumer can't act on — the model has no evidence to rule anything in or out (confidence 1.00, evidence-count 1)\n    - Avoid when: context (logs / code / tests / stack traces) is available in the system but not passed in :reads\n    - Recommended fix: always pass ambient context explicitly in :reads; if the context is too large for a single :llm node, compose into chunked-extraction via :map-each so per-chunk evidence reaches the hypothesis-evidence stage\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - investigate why an integration test is flaky: enumerate timing / shared-state / environment hypotheses; rule out via test logs + run history; recommend the deterministic fix\n  - generate property-based tests that exercise edge cases — property test generation IS investigation, finding inputs that break invariants\n  - debug a memory leak in a long-running service: enumerate allocator / reference-cycle / cache-bloat hypotheses; rule out via heap snapshots + allocation profiles; recommend the targeted fix\n  - review a post-incident report for missing root-cause analysis: enumerate plausible causes the report didn't address; surface the gap with evidence from the timeline\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 760be698-0bb8-3a5a-a2bd-1d45445a5861)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nA small B2B SaaS team is debating whether to add a vector database (e.g.,\npgvector extension on their existing Postgres, OR a dedicated Weaviate/\nQdrant deployment) to power a \"find similar customer-support tickets\"\nfeature, OR whether to handle it with a Postgres LIKE + Elasticsearch\nhybrid.\n\nThe team has:\n- 12 engineers (4 backend, 4 frontend, 2 SRE, 2 mobile)\n- ~3M support tickets in Postgres today\n- Strong Postgres operational expertise\n- No prior vector-DB experience\n- 6-week timeline to ship the feature\n- Existing Elasticsearch cluster (3-node, used for full-text search on tickets)\n\nExplain the tradeoffs across these three options with a clear recommendation\nfor THIS team given THEIR context (not in the abstract). Include:\n- `:option-summaries` — what each option actually does at a 200-foot level\n- `:fit-to-team-constraints` — how each option lands against the team's\n  current expertise, infrastructure, and timeline\n- `:operational-cost-comparison` — what each costs to run + maintain over 1\n  year and 3 years\n- `:quality-comparison` — relevance, latency, recall expectations\n- `:recommendation` — pick ONE option + explain why for THIS team\n- `:caveats` — what conditions would change the recommendation",
+ :june-flags
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 18271,
+ :confidence 1.0,
+ :was-fresh-mint? false,
+ :assigned-via :match}

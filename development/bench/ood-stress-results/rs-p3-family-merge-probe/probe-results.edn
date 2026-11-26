@@ -1,0 +1,815 @@
+{:rows
+ [{:slug "01-marathon-a",
+   :arm :rich,
+   :family nil,
+   :group "marathon",
+   :candidates-shown [],
+   :outcome :new-correct,
+   :judge-reasoning "no existing families",
+   :family-group nil,
+   :usage nil,
+   :label "marathon-training-plan",
+   :verdict :new}
+  {:slug "02-recipe-a",
+   :arm :rich,
+   :family "family-0-marathon-training-plan",
+   :group "recipe",
+   :candidates-shown ["family-0-marathon-training-plan"],
+   :outcome :same-cross-group,
+   :judge-reasoning
+   "The new task and candidate family-0-marathon-training-plan both involve taking a set of constraints (original recipe/runner profile) and generating a multi-faceted plan structured as a map with specific keys (scaled-ingredients/week-by-week, technique/paces, workflow/strength-program, cost/red-flags). While the subject matter differs (cooking vs. running), the output kind is the same: a structured, multi-component plan/protocol derived from specific input parameters.",
+   :family-group "marathon",
+   :usage
+   {:prompt-tokens 755, :completion-tokens 147, :total-tokens 902},
+   :label "recipe-scaling-and-catering-prep",
+   :verdict :same}
+  {:slug "03-gamebalance-a",
+   :arm :rich,
+   :family nil,
+   :group "gamebalance",
+   :candidates-shown ["family-0-marathon-training-plan"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task and family-0-marathon-training-plan both share an iterative refinement structure where complex constraints must be met to produce a multi-component plan. However, the subject matter is entirely different (game design/balancing vs. physical training) and the output kind differs (game mechanics/statistical win-rate matrix vs. weekly running schedules/strength programs).",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 781, :completion-tokens 110, :total-tokens 891},
+   :label "game-balance-simulation",
+   :verdict :new}
+  {:slug "04-schemamigration-a",
+   :arm :rich,
+   :family nil,
+   :group "schemamigration",
+   :candidates-shown
+   ["family-1-game-balance-simulation"
+    "family-0-marathon-training-plan"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves planning a technical database schema migration with specific strategies for zero-downtime, backfilling, and rollback, structured as a multi-part plan. I compared this to family-1 (game balance) and family-0 (marathon training). While all involve planning and multi-part outputs, the subject matter (database engineering) and the specific output kind (migration steps and data integrity strategies) are distinct from fitness scheduling or game numeric balancing. There is no existing family that covers system architecture/database migrations.",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 952, :completion-tokens 141, :total-tokens 1093},
+   :label "postgresql-schema-migration",
+   :verdict :new}
+  {:slug "05-haikusecurity-a",
+   :arm :rich,
+   :family nil,
+   :group "haikusecurity",
+   :candidates-shown
+   ["family-1-game-balance-simulation"
+    "family-2-postgresql-schema-migration"
+    "family-0-marathon-training-plan"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves generating creative literary content (haikus) based on technical security audit findings. I compared it to family-1 (game balance simulation), family-2 (PostgreSQL schema migration), and family-0 (marathon training plan). While all candidates involve structured output (JSON/vectors), the subject matter of the new task (cybersecurity vulnerabilities) and the output kind (haiku poetry) differ entirely from game balancing, database migrations, or athletic training plans.",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 1184, :completion-tokens 138, :total-tokens 1322},
+   :label "security-vulnerability-haikus",
+   :verdict :new}
+  {:slug "06-queryopt-a",
+   :arm :rich,
+   :family nil,
+   :group "queryopt",
+   :candidates-shown
+   ["family-2-postgresql-schema-migration"
+    "family-1-game-balance-simulation"
+    "family-3-security-vulnerability-haikus"
+    "family-0-marathon-training-plan"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves SQL query optimization (diagnosing bottlenecks and rewriting queries), whereas family-2-postgresql-schema-migration focuses on the structural migration of data and schema refactoring for availability. While both involve PostgreSQL, the 'Output Kind' is distinct: one is an optimization report with execution plans, and the other is a step-by-step deployment and data migration plan. Other candidates are unrelated in subject matter.",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 1372, :completion-tokens 116, :total-tokens 1488},
+   :label "postgresql-query-optimization",
+   :verdict :new}
+  {:slug "07-legal-a",
+   :arm :rich,
+   :family nil,
+   :group "legal",
+   :candidates-shown
+   ["family-3-security-vulnerability-haikus"
+    "family-1-game-balance-simulation"
+    "family-4-postgresql-query-optimization"
+    "family-2-postgresql-schema-migration"
+    "family-0-marathon-training-plan"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves identifying legal concerns in a contract clause (subject matter: legal review/audit) and providing a structured list of findings with severity, citations, and revisions (output kind: legal audit report). Comparing this to the candidates: Family 3 involves security audit findings, but the output kind is creative writing (haikus), whereas the new task requires professional legal analysis. Family 0 is a physical training plan, Family 1 is game balancing, and Families 2/4 are database engineering. None of the existing families share both the subject matter of legal analysis and the output kind of a structured legal audit.",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 1589, :completion-tokens 156, :total-tokens 1745},
+   :label "legal-issue-detection",
+   :verdict :new}
+  {:slug "08-contractcompare-a",
+   :arm :rich,
+   :family nil,
+   :group "contractcompare",
+   :candidates-shown
+   ["family-5-legal-issue-detection"
+    "family-3-security-vulnerability-haikus"
+    "family-1-game-balance-simulation"
+    "family-4-postgresql-query-optimization"
+    "family-2-postgresql-schema-migration"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves legal document comparison, diffing, and impact analysis. I compared it to family-5-legal-issue-detection; while both involve legal subject matter, family-5 focuses on identifying legal concerns/violations in a single document (finding specific issues), whereas the new task is a comparative analysis of two document versions focusing on diffing and delta-impact. The output structure (summary, diffs, recommendation) is also distinct from the issue/severity/revision format of family-5. None of the other families (PostgreSQL, game balance, or security haikus) match the subject matter or output kind.",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 1620, :completion-tokens 159, :total-tokens 1779},
+   :label "contract-version-comparison",
+   :verdict :new}
+  {:slug "09-marathon-b",
+   :arm :rich,
+   :family "family-0-marathon-training-plan",
+   :group "marathon",
+   :candidates-shown
+   ["family-0-marathon-training-plan"
+    "family-1-game-balance-simulation"
+    "family-5-legal-issue-detection"
+    "family-3-security-vulnerability-haikus"
+    "family-4-postgresql-query-optimization"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task and candidate family-0-marathon-training-plan share the same subject matter (creating a structured long-distance running training plan with specific constraints like age, current mileage, and injury history) and the same output kind (a week-by-week schedule, pace targets, and red-flag signs in a map-based format). While the target distance differs (half-marathon vs marathon), these belong to the same domain family.",
+   :family-group "marathon",
+   :usage
+   {:prompt-tokens 1665, :completion-tokens 135, :total-tokens 1800},
+   :label "half-marathon-training-plan",
+   :verdict :same}
+  {:slug "10-recipe-b",
+   :arm :rich,
+   :family nil,
+   :group "recipe",
+   :candidates-shown
+   ["family-1-game-balance-simulation"
+    "family-0-marathon-training-plan"
+    "family-3-security-vulnerability-haikus"
+    "family-4-postgresql-query-optimization"
+    "family-5-legal-issue-detection"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves scaling a recipe (culinary logistics) and generating a production timeline and cost analysis. I compared it to existing families: game-balance-simulation (game mechanics), marathon-training-plan (athletic scheduling), security-vulnerability-haikus (creative writing/security), postgresql-query-optimization (database performance), and legal-issue-detection (law). None of these share the subject matter of recipe scaling/baking logistics or the output kind of ingredient/cost/logistics breakdown. While the marathon plan involves scheduling, the domain and constraints (oven capacity vs. physiological load) are distinct.",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 1648, :completion-tokens 159, :total-tokens 1807},
+   :label "bakery-production-scaling",
+   :verdict :new}
+  {:slug "11-gamebalance-b",
+   :arm :rich,
+   :family "family-1-game-balance-simulation",
+   :group "gamebalance",
+   :candidates-shown
+   ["family-1-game-balance-simulation"
+    "family-7-bakery-production-scaling"
+    "family-3-security-vulnerability-haikus"
+    "family-4-postgresql-query-optimization"
+    "family-5-legal-issue-detection"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task and family-1-game-balance-simulation share the same subject matter (game balance tuning based on simulation data) and the same output kind (a structured report containing specific adjustments, a performance matrix, and rationale). Both involve an iterative process of proposing numeric changes to game entities to meet specific statistical targets (win rate/pick rate) within a simulation.",
+   :family-group "gamebalance",
+   :usage
+   {:prompt-tokens 1679, :completion-tokens 116, :total-tokens 1795},
+   :label "game-weapon-balancing",
+   :verdict :same}
+  {:slug "12-schemamigration-b",
+   :arm :rich,
+   :family "family-2-postgresql-schema-migration",
+   :group "schemamigration",
+   :candidates-shown
+   ["family-2-postgresql-schema-migration"
+    "family-4-postgresql-query-optimization"
+    "family-3-security-vulnerability-haikus"
+    "family-1-game-balance-simulation"
+    "family-7-bakery-production-scaling"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task is compared to family-2 (postgresql-schema-migration). Both share the exact same subject matter (zero-downtime database schema migration and refactoring) and the exact same output format (ordered steps, backfill/dual-write strategy, rollback plan, and verification queries). The specific database engine (MySQL vs PostgreSQL) and specific transformation (PK type change vs table split) are instance-level differences that do not create a new family.",
+   :family-group "schemamigration",
+   :usage
+   {:prompt-tokens 1590, :completion-tokens 135, :total-tokens 1725},
+   :label "database-migration-planning",
+   :verdict :same}
+  {:slug "13-haikusecurity-b",
+   :arm :rich,
+   :family "family-3-security-vulnerability-haikus",
+   :group "haikusecurity",
+   :candidates-shown
+   ["family-3-security-vulnerability-haikus"
+    "family-7-bakery-production-scaling"
+    "family-5-legal-issue-detection"
+    "family-1-game-balance-simulation"
+    "family-2-postgresql-schema-migration"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task is compared with family-3-security-vulnerability-haikus. Both tasks share the exact same subject matter (security vulnerability findings, albeit for mobile vs web apps) and the exact same output kind (a vector of maps containing technically accurate haikus that use imagery without naming the vulnerability class).",
+   :family-group "haikusecurity",
+   :usage
+   {:prompt-tokens 1666, :completion-tokens 109, :total-tokens 1775},
+   :label "security-finding-haikus",
+   :verdict :same}
+  {:slug "15-legal-b",
+   :arm :rich,
+   :family "family-5-legal-issue-detection",
+   :group "legal",
+   :candidates-shown
+   ["family-5-legal-issue-detection"
+    "family-6-contract-version-comparison"
+    "family-3-security-vulnerability-haikus"
+    "family-7-bakery-production-scaling"
+    "family-1-game-balance-simulation"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task and candidate family-5-legal-issue-detection share the same subject matter (reviewing a specific legal clause from a contract) and the same output kind (listing legal concerns with severity, area of law, citation, and suggested revisions). While the specific clause changes from a non-compete to an IP assignment, the task type is identical.",
+   :family-group "legal",
+   :usage
+   {:prompt-tokens 1717, :completion-tokens 115, :total-tokens 1832},
+   :label "legal-issue-detection",
+   :verdict :same}
+  {:slug "16-contractcompare-b",
+   :arm :rich,
+   :family "family-6-contract-version-comparison",
+   :group "contractcompare",
+   :candidates-shown
+   ["family-6-contract-version-comparison"
+    "family-5-legal-issue-detection"
+    "family-7-bakery-production-scaling"
+    "family-3-security-vulnerability-haikus"
+    "family-1-game-balance-simulation"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task and family-6 share the exact same subject matter (comparing two versions of a legal contract) and the exact same output structure (executive summary, quoted diffs, impact analysis, and recommendations). The only difference is the specific type of contract (Master Services Agreement vs. SaaS Agreement), which is a concrete instance difference and does not create a new family.",
+   :family-group "contractcompare",
+   :usage
+   {:prompt-tokens 1677, :completion-tokens 115, :total-tokens 1792},
+   :label "contract-comparison",
+   :verdict :same}
+  {:slug "17-marathon-c",
+   :arm :rich,
+   :family "family-0-marathon-training-plan",
+   :group "marathon",
+   :candidates-shown
+   ["family-0-marathon-training-plan"
+    "family-7-bakery-production-scaling"
+    "family-1-game-balance-simulation"
+    "family-5-legal-issue-detection"
+    "family-3-security-vulnerability-haikus"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task and family-0-marathon-training-plan share the same subject matter (creating a personalized marathon training plan for a runner with specific age, experience, and injury history constraints) and the same output kind (a week-by-week schedule, calibrated paces, and red-flag/injury warning signs in a structured format).",
+   :family-group "marathon",
+   :usage
+   {:prompt-tokens 1695, :completion-tokens 115, :total-tokens 1810},
+   :label "marathon-training-plan",
+   :verdict :same}
+  {:slug "18-recipe-c",
+   :arm :rich,
+   :family "family-7-bakery-production-scaling",
+   :group "recipe",
+   :candidates-shown
+   ["family-7-bakery-production-scaling"
+    "family-1-game-balance-simulation"
+    "family-3-security-vulnerability-haikus"
+    "family-0-marathon-training-plan"
+    "family-2-postgresql-schema-migration"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task and family-7 both involve scaling a food recipe from a small/home quantity to a large commercial/market quantity, accounting for equipment limitations, ingredient costs, and specific technical constraints (hydration vs. spice/salt ratios). Both outputs are structured data (JSON/map) containing scaled ingredients and logistical/technical plans.",
+   :family-group "recipe",
+   :usage
+   {:prompt-tokens 1580, :completion-tokens 109, :total-tokens 1689},
+   :label "commercial-recipe-scaling",
+   :verdict :same}
+  {:slug "19-gamebalance-c",
+   :arm :rich,
+   :family "family-1-game-balance-simulation",
+   :group "gamebalance",
+   :candidates-shown
+   ["family-1-game-balance-simulation"
+    "family-7-bakery-production-scaling"
+    "family-4-postgresql-query-optimization"
+    "family-0-marathon-training-plan"
+    "family-3-security-vulnerability-haikus"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task is compared to family-1-game-balance-simulation. Both tasks involve the subject matter of game balancing (city-builder economy vs. card game deckbuilder) and share the same output kind: an iterative process of proposing numeric adjustments, simulating the outcome, and reporting the final balanced parameters in a structured JSON format.",
+   :family-group "gamebalance",
+   :usage
+   {:prompt-tokens 1609, :completion-tokens 109, :total-tokens 1718},
+   :label "game-economy-tuning",
+   :verdict :same}
+  {:slug "20-schemamigration-c",
+   :arm :rich,
+   :family "family-2-postgresql-schema-migration",
+   :group "schemamigration",
+   :candidates-shown
+   ["family-2-postgresql-schema-migration"
+    "family-3-security-vulnerability-haikus"
+    "family-4-postgresql-query-optimization"
+    "family-1-game-balance-simulation"
+    "family-7-bakery-production-scaling"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task (DynamoDB schema migration) and family-2-postgresql-schema-migration share the exact same subject matter (zero-downtime database schema migration) and the exact same output kind (a structured plan containing steps, backfill strategy, rollback, and verification). Although the specific database engines (DynamoDB vs. PostgreSQL) and data models differ, the fundamental task of planning a multi-phase migration for a live high-traffic API is identical.",
+   :family-group "schemamigration",
+   :usage
+   {:prompt-tokens 1595, :completion-tokens 137, :total-tokens 1732},
+   :label "dynamodb-schema-migration",
+   :verdict :same}
+  {:slug "21-haikusecurity-c",
+   :arm :rich,
+   :family "family-3-security-vulnerability-haikus",
+   :group "haikusecurity",
+   :candidates-shown
+   ["family-3-security-vulnerability-haikus"
+    "family-7-bakery-production-scaling"
+    "family-5-legal-issue-detection"
+    "family-1-game-balance-simulation"
+    "family-2-postgresql-schema-migration"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task and family-3-security-vulnerability-haikus share the exact same subject matter (summarizing security vulnerabilities/findings into haikus) and the exact same output kind (a vector of maps containing the finding name and a 5-7-5 haiku). While the specific vulnerabilities differ (cloud misconfigurations vs. web app vulnerabilities), the core task is identical.",
+   :family-group "haikusecurity",
+   :usage
+   {:prompt-tokens 1618, :completion-tokens 122, :total-tokens 1740},
+   :label "cloud-security-misconfiguration-haiku",
+   :verdict :same}
+  {:slug "22-queryopt-c",
+   :arm :rich,
+   :family "family-4-postgresql-query-optimization",
+   :group "queryopt",
+   :candidates-shown
+   ["family-4-postgresql-query-optimization"
+    "family-2-postgresql-schema-migration"
+    "family-1-game-balance-simulation"
+    "family-5-legal-issue-detection"
+    "family-3-security-vulnerability-haikus"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task and family-4 both deal with SQL performance tuning (Subject Matter). Both provide execution plans and statistics as input to diagnose a performance regression and require an output containing a diagnosis, proposed indexes, a rewritten query, and an expected plan (Output Kind). The specific database engine (SQL Server vs PostgreSQL) is a concrete instance detail that does not justify a new family.",
+   :family-group "queryopt",
+   :usage
+   {:prompt-tokens 1632, :completion-tokens 117, :total-tokens 1749},
+   :label "sql-query-optimization",
+   :verdict :same}
+  {:slug "23-legal-c",
+   :arm :rich,
+   :family "family-5-legal-issue-detection",
+   :group "legal",
+   :candidates-shown
+   ["family-5-legal-issue-detection"
+    "family-6-contract-version-comparison"
+    "family-3-security-vulnerability-haikus"
+    "family-7-bakery-production-scaling"
+    "family-1-game-balance-simulation"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task is compared to family-5-legal-issue-detection. Both tasks involve reviewing a specific clause from an employment agreement (subject matter: legal review of employment contracts) and identifying concerns with a specific schema: statement, severity, justification, area of law, quote, and revision (output kind). The subject matter and output kind are identical.",
+   :family-group "legal",
+   :usage
+   {:prompt-tokens 1711, :completion-tokens 113, :total-tokens 1824},
+   :label "legal-clause-review",
+   :verdict :same}
+  {:slug "24-contractcompare-c",
+   :arm :rich,
+   :family "family-6-contract-version-comparison",
+   :group "contractcompare",
+   :candidates-shown
+   ["family-6-contract-version-comparison"
+    "family-5-legal-issue-detection"
+    "family-7-bakery-production-scaling"
+    "family-3-security-vulnerability-haikus"
+    "family-1-game-balance-simulation"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task compares two versions of a commercial lease (landlord vs tenant) and outputs a summary, clause-by-clause diffs, impact, and recommendations. This is an identical match in both subject matter (comparing two versions of a legal contract) and output structure (summary, diffs, impact, recommendation) to family-6-contract-version-comparison, which compared two versions of a SaaS agreement.",
+   :family-group "contractcompare",
+   :usage
+   {:prompt-tokens 1694, :completion-tokens 126, :total-tokens 1820},
+   :label "commercial-lease-comparison",
+   :verdict :same}
+  {:slug "01-marathon-a",
+   :arm :labels,
+   :family nil,
+   :group "marathon",
+   :candidates-shown [],
+   :outcome :new-correct,
+   :judge-reasoning "no existing families",
+   :family-group nil,
+   :usage nil,
+   :label "marathon-training-plan",
+   :verdict :new}
+  {:slug "02-recipe-a",
+   :arm :labels,
+   :family nil,
+   :group "recipe",
+   :candidates-shown ["family-0-marathon-training-plan"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves scaling a recipe (culinary domain) and providing a multi-part output (ingredients, technique, workflow, cost). Candidate family-0-marathon-training-plan involves athletic training schedules. While both might involve planning, the subject matter (cooking vs. running) and the output kind (culinary logistics vs. exercise schedules) are completely different.",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 600, :completion-tokens 110, :total-tokens 710},
+   :label "recipe-scaling-and-catering-prep",
+   :verdict :new}
+  {:slug "03-gamebalance-a",
+   :arm :labels,
+   :family nil,
+   :group "gamebalance",
+   :candidates-shown
+   ["family-1-recipe-scaling-and-catering-prep"
+    "family-0-marathon-training-plan"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves game balancing through iterative simulation and parameter adjustment. Compared to the existing candidates (recipe scaling and marathon training), the subject matter (game design/statistics vs. culinary/fitness) and output kind (win-rate matrices vs. scaled ingredient lists or workout schedules) are completely different.",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 654, :completion-tokens 94, :total-tokens 748},
+   :label "game-balance-simulation",
+   :verdict :new}
+  {:slug "04-schemamigration-a",
+   :arm :labels,
+   :family nil,
+   :group "schemamigration",
+   :candidates-shown
+   ["family-1-recipe-scaling-and-catering-prep"
+    "family-2-game-balance-simulation"
+    "family-0-marathon-training-plan"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves database schema migration planning, including operational strategies like dual-writes and rollbacks. None of the existing candidates (recipe scaling, game balance, or marathon training) share the subject matter (database engineering) or the output kind (technical migration plan/strategy).",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 630, :completion-tokens 86, :total-tokens 716},
+   :label "postgresql-schema-migration",
+   :verdict :new}
+  {:slug "05-haikusecurity-a",
+   :arm :labels,
+   :family nil,
+   :group "haikusecurity",
+   :candidates-shown
+   ["family-1-recipe-scaling-and-catering-prep"
+    "family-3-postgresql-schema-migration"
+    "family-2-game-balance-simulation"
+    "family-0-marathon-training-plan"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves generating creative writing (haikus) based on technical security audit findings, formatted as a vector of maps. Comparing this to existing families: Family 1 is about recipe scaling, Family 3 is about database schema migration, Family 2 is about game balance simulation, and Family 0 is about marathon training. None of these share the subject matter (cybersecurity vulnerabilities) or the output kind (haikus/creative poetry).",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 712, :completion-tokens 124, :total-tokens 836},
+   :label "security-vulnerability-haikus",
+   :verdict :new}
+  {:slug "06-queryopt-a",
+   :arm :labels,
+   :family nil,
+   :group "queryopt",
+   :candidates-shown
+   ["family-3-postgresql-schema-migration"
+    "family-1-recipe-scaling-and-catering-prep"
+    "family-4-security-vulnerability-haikus"
+    "family-2-game-balance-simulation"
+    "family-0-marathon-training-plan"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves diagnosing performance bottlenecks in a PostgreSQL query and providing optimizations (indexes, rewrites). The candidate 'postgresql-schema-migration' shares the subject matter of PostgreSQL database management and schema/structure modification, but the output kind is significantly different: one is about migrating/altering schemas, while the other is performance tuning and query analysis. No other candidate matches the subject matter or output kind.",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 684, :completion-tokens 114, :total-tokens 798},
+   :label "postgresql-query-optimization",
+   :verdict :new}
+  {:slug "07-legal-a",
+   :arm :labels,
+   :family nil,
+   :group "legal",
+   :candidates-shown
+   ["family-1-recipe-scaling-and-catering-prep"
+    "family-4-security-vulnerability-haikus"
+    "family-3-postgresql-schema-migration"
+    "family-5-postgresql-query-optimization"
+    "family-2-game-balance-simulation"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves identifying legal concerns in a contract clause (non-compete) with structured findings (citation, severity, revision). Comparing this to the candidates: Family 1 is about recipes, Family 2 is game balance, Family 3/5 are PostgreSQL, and Family 4 is security haikus. None of these share the subject matter (legal analysis) or output kind (structured legal audit/review findings).",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 719, :completion-tokens 121, :total-tokens 840},
+   :label "legal-issue-detection",
+   :verdict :new}
+  {:slug "08-contractcompare-a",
+   :arm :labels,
+   :family nil,
+   :group "contractcompare",
+   :candidates-shown
+   ["family-1-recipe-scaling-and-catering-prep"
+    "family-4-security-vulnerability-haikus"
+    "family-3-postgresql-schema-migration"
+    "family-6-legal-issue-detection"
+    "family-2-game-balance-simulation"],
+   :outcome :new-correct,
+   :judge-reasoning
+   "The new task involves comparing two versions of a legal contract and providing a summary, diff, impact analysis, and recommendation. Family-6 (legal-issue-detection) deals with identifying specific risks or issues in a single contract. While the subject matter (legal documents) is identical, the output kind (a delta comparison vs. a flat issue audit) is distinct enough that it doesn't perfectly match any existing family. However, looking at the provided logic, if no family for 'contract comparison' exists, it is a new domain.",
+   :family-group nil,
+   :usage
+   {:prompt-tokens 676, :completion-tokens 143, :total-tokens 819},
+   :label "contract-version-comparison",
+   :verdict :new}
+  {:slug "09-marathon-b",
+   :arm :labels,
+   :family "family-0-marathon-training-plan",
+   :group "marathon",
+   :candidates-shown
+   ["family-0-marathon-training-plan"
+    "family-1-recipe-scaling-and-catering-prep"
+    "family-3-postgresql-schema-migration"
+    "family-4-security-vulnerability-haikus"
+    "family-5-postgresql-query-optimization"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves creating a week-by-week endurance running training plan (half-marathon) based on specific physical constraints and goals. This matches family-0 (marathon-training-plan) in both subject matter (endurance running schedules) and output kind (structured training plan with paces and weekly mileage).",
+   :family-group "marathon",
+   :usage
+   {:prompt-tokens 715, :completion-tokens 110, :total-tokens 825},
+   :label "half-marathon-training-plan",
+   :verdict :same}
+  {:slug "10-recipe-b",
+   :arm :labels,
+   :family "family-1-recipe-scaling-and-catering-prep",
+   :group "recipe",
+   :candidates-shown
+   ["family-1-recipe-scaling-and-catering-prep"
+    "family-4-security-vulnerability-haikus"
+    "family-3-postgresql-schema-migration"
+    "family-0-marathon-training-plan"
+    "family-5-postgresql-query-optimization"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves scaling a sourdough recipe for a specific production volume, including ingredient calculations, logistical scheduling (timeline), and cost analysis. Candidate family-1-recipe-scaling-and-catering-prep shares both the subject matter (scaling recipes and preparation logistics) and the output kind (ingredients and logistical plans).",
+   :family-group "recipe",
+   :usage
+   {:prompt-tokens 698, :completion-tokens 111, :total-tokens 809},
+   :label "bakery-production-scaling",
+   :verdict :same}
+  {:slug "11-gamebalance-b",
+   :arm :labels,
+   :family "family-2-game-balance-simulation",
+   :group "gamebalance",
+   :candidates-shown
+   ["family-1-recipe-scaling-and-catering-prep"
+    "family-4-security-vulnerability-haikus"
+    "family-5-postgresql-query-optimization"
+    "family-2-game-balance-simulation"
+    "family-3-postgresql-schema-migration"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves balancing game mechanics (weapon classes) by proposing stat changes and running a simulation to achieve specific performance targets (pick rate). This matches family-2-game-balance-simulation in both subject matter (game balance) and output kind (a set of adjustments and simulated results).",
+   :family-group "gamebalance",
+   :usage
+   {:prompt-tokens 705, :completion-tokens 103, :total-tokens 808},
+   :label "game-weapon-balancing",
+   :verdict :same}
+  {:slug "12-schemamigration-b",
+   :arm :labels,
+   :family "family-3-postgresql-schema-migration",
+   :group "schemamigration",
+   :candidates-shown
+   ["family-3-postgresql-schema-migration"
+    "family-1-recipe-scaling-and-catering-prep"
+    "family-5-postgresql-query-optimization"
+    "family-4-security-vulnerability-haikus"
+    "family-2-game-balance-simulation"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves planning a complex database schema migration (changing PK type) with specific steps like dual writes and backfilling. This shares the same subject matter (database schema migration) and output kind (structured migration plan/steps) as family-3, despite the specific database engine (MySQL vs PostgreSQL) being different.",
+   :family-group "schemamigration",
+   :usage
+   {:prompt-tokens 698, :completion-tokens 107, :total-tokens 805},
+   :label "database-migration-planning",
+   :verdict :same}
+  {:slug "13-haikusecurity-b",
+   :arm :labels,
+   :family "family-4-security-vulnerability-haikus",
+   :group "haikusecurity",
+   :candidates-shown
+   ["family-4-security-vulnerability-haikus"
+    "family-1-recipe-scaling-and-catering-prep"
+    "family-3-postgresql-schema-migration"
+    "family-6-legal-issue-detection"
+    "family-2-game-balance-simulation"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task matches the candidate family-4-security-vulnerability-haikus. Both share the same subject matter (security vulnerabilities from a technical report/pen-test) and the same output kind (a series of haikus that describe the risk using imagery without naming the vulnerability class).",
+   :family-group "haikusecurity",
+   :usage
+   {:prompt-tokens 702, :completion-tokens 105, :total-tokens 807},
+   :label "security-finding-haikus",
+   :verdict :same}
+  {:slug "15-legal-b",
+   :arm :labels,
+   :family "family-6-legal-issue-detection",
+   :group "legal",
+   :candidates-shown
+   ["family-1-recipe-scaling-and-catering-prep"
+    "family-4-security-vulnerability-haikus"
+    "family-7-contract-version-comparison"
+    "family-6-legal-issue-detection"
+    "family-3-postgresql-schema-migration"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves identifying legal concerns within a contract clause, including providing the area of law, citations, and suggested revisions. This aligns perfectly with family-6 (legal-issue-detection), as both share the subject matter of legal analysis/contract review and the output kind of flagging specific issues with supporting detail.",
+   :family-group "legal",
+   :usage
+   {:prompt-tokens 714, :completion-tokens 106, :total-tokens 820},
+   :label "legal-issue-detection",
+   :verdict :same}
+  {:slug "16-contractcompare-b",
+   :arm :labels,
+   :family "family-7-contract-version-comparison",
+   :group "contractcompare",
+   :candidates-shown
+   ["family-1-recipe-scaling-and-catering-prep"
+    "family-4-security-vulnerability-haikus"
+    "family-7-contract-version-comparison"
+    "family-6-legal-issue-detection"
+    "family-3-postgresql-schema-migration"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves comparing two versions of a legal contract and providing a summary, diffs, impact analysis, and recommendations. This matches the subject matter (contract versions) and output kind (comparison report) of family-7-contract-version-comparison.",
+   :family-group "contractcompare",
+   :usage
+   {:prompt-tokens 674, :completion-tokens 95, :total-tokens 769},
+   :label "contract-comparison",
+   :verdict :same}
+  {:slug "17-marathon-c",
+   :arm :labels,
+   :family "family-0-marathon-training-plan",
+   :group "marathon",
+   :candidates-shown
+   ["family-0-marathon-training-plan"
+    "family-1-recipe-scaling-and-catering-prep"
+    "family-4-security-vulnerability-haikus"
+    "family-3-postgresql-schema-migration"
+    "family-5-postgresql-query-optimization"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task and the candidate family-0-marathon-training-plan both share the exact same subject matter (creating a marathon training schedule) and the same output kind (a week-by-week plan including specific constraints like age, injury history, and schedule).",
+   :family-group "marathon",
+   :usage
+   {:prompt-tokens 725, :completion-tokens 100, :total-tokens 825},
+   :label "marathon-training-plan",
+   :verdict :same}
+  {:slug "18-recipe-c",
+   :arm :labels,
+   :family "family-1-recipe-scaling-and-catering-prep",
+   :group "recipe",
+   :candidates-shown
+   ["family-1-recipe-scaling-and-catering-prep"
+    "family-4-security-vulnerability-haikus"
+    "family-3-postgresql-schema-migration"
+    "family-0-marathon-training-plan"
+    "family-5-postgresql-query-optimization"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves scaling a food recipe for a large event, including logistics and costing. This matches family-1-recipe-scaling-and-catering-prep in both subject matter (culinary scaling and prep) and the expected output kind (scaled ingredients and catering plan).",
+   :family-group "recipe",
+   :usage
+   {:prompt-tokens 692, :completion-tokens 104, :total-tokens 796},
+   :label "commercial-recipe-scaling",
+   :verdict :same}
+  {:slug "19-gamebalance-c",
+   :arm :labels,
+   :family "family-2-game-balance-simulation",
+   :group "gamebalance",
+   :candidates-shown
+   ["family-1-recipe-scaling-and-catering-prep"
+    "family-3-postgresql-schema-migration"
+    "family-4-security-vulnerability-haikus"
+    "family-2-game-balance-simulation"
+    "family-5-postgresql-query-optimization"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves adjusting game economy parameters (multipliers, costs) and simulating a progression curve to achieve a specific gameplay duration. This directly matches the subject matter (game balance/mechanics) and output kind (simulation and numerical adjustments) of family-2-game-balance-simulation.",
+   :family-group "gamebalance",
+   :usage
+   {:prompt-tokens 709, :completion-tokens 102, :total-tokens 811},
+   :label "game-economy-tuning",
+   :verdict :same}
+  {:slug "20-schemamigration-c",
+   :arm :labels,
+   :family "family-3-postgresql-schema-migration",
+   :group "schemamigration",
+   :candidates-shown
+   ["family-1-recipe-scaling-and-catering-prep"
+    "family-3-postgresql-schema-migration"
+    "family-2-game-balance-simulation"
+    "family-4-security-vulnerability-haikus"
+    "family-5-postgresql-query-optimization"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves planning a database schema migration (specifically for DynamoDB) with a phased rollout plan. This matches the subject matter (database schema migration) and output kind (migration steps/plan) of family-3-postgresql-schema-migration. While the specific database technology differs, the core task of designing a migration strategy is the same.",
+   :family-group "schemamigration",
+   :usage
+   {:prompt-tokens 703, :completion-tokens 113, :total-tokens 816},
+   :label "dynamodb-schema-migration",
+   :verdict :same}
+  {:slug "21-haikusecurity-c",
+   :arm :labels,
+   :family "family-4-security-vulnerability-haikus",
+   :group "haikusecurity",
+   :candidates-shown
+   ["family-4-security-vulnerability-haikus"
+    "family-1-recipe-scaling-and-catering-prep"
+    "family-3-postgresql-schema-migration"
+    "family-6-legal-issue-detection"
+    "family-2-game-balance-simulation"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves writing haikus about security vulnerabilities (specifically cloud misconfigurations). This matches the subject matter (security vulnerabilities) and the output kind (haikus) of family-4-security-vulnerability-haikus.",
+   :family-group "haikusecurity",
+   :usage
+   {:prompt-tokens 654, :completion-tokens 91, :total-tokens 745},
+   :label "cloud-security-misconfiguration-haiku",
+   :verdict :same}
+  {:slug "22-queryopt-c",
+   :arm :labels,
+   :family "family-5-postgresql-query-optimization",
+   :group "queryopt",
+   :candidates-shown
+   ["family-5-postgresql-query-optimization"
+    "family-1-recipe-scaling-and-catering-prep"
+    "family-3-postgresql-schema-migration"
+    "family-4-security-vulnerability-haikus"
+    "family-7-contract-version-comparison"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves SQL performance tuning (diagnosing regressions, analyzing execution plans, and rewriting queries) for SQL Server. Candidate family-5 covers PostgreSQL query optimization. Although the specific database engine (SQL Server vs. PostgreSQL) differs, the subject matter (database query optimization) and the output kind (diagnosis, index recommendations, and rewritten queries) are identical in nature.",
+   :family-group "queryopt",
+   :usage
+   {:prompt-tokens 688, :completion-tokens 117, :total-tokens 805},
+   :label "sql-query-optimization",
+   :verdict :same}
+  {:slug "23-legal-c",
+   :arm :labels,
+   :family "family-6-legal-issue-detection",
+   :group "legal",
+   :candidates-shown
+   ["family-4-security-vulnerability-haikus"
+    "family-1-recipe-scaling-and-catering-prep"
+    "family-7-contract-version-comparison"
+    "family-6-legal-issue-detection"
+    "family-3-postgresql-schema-migration"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves analyzing a legal clause to identify specific issues and provide structured output including quotes and revisions. This aligns perfectly with family-6 (legal-issue-detection), which shares the same subject matter (legal contract review) and output kind (identifying legal concerns/risks).",
+   :family-group "legal",
+   :usage
+   {:prompt-tokens 708, :completion-tokens 102, :total-tokens 810},
+   :label "legal-clause-review",
+   :verdict :same}
+  {:slug "24-contractcompare-c",
+   :arm :labels,
+   :family "family-7-contract-version-comparison",
+   :group "contractcompare",
+   :candidates-shown
+   ["family-7-contract-version-comparison"
+    "family-4-security-vulnerability-haikus"
+    "family-1-recipe-scaling-and-catering-prep"
+    "family-3-postgresql-schema-migration"
+    "family-6-legal-issue-detection"],
+   :outcome :same-correct,
+   :judge-reasoning
+   "The new task involves comparing two versions of a legal contract (landlord's draft vs. tenant's redline) and producing a summary of differences and recommendations. This directly matches family-7 (contract-version-comparison) in both subject matter (comparing contract versions) and output kind (detailed comparison and summary).",
+   :family-group "contractcompare",
+   :usage
+   {:prompt-tokens 691, :completion-tokens 109, :total-tokens 800},
+   :label "commercial-lease-comparison",
+   :verdict :same}],
+ :summary
+ {:rich
+  {:n 23,
+   :outcomes {:new-correct 8, :same-cross-group 1, :same-correct 14},
+   :families-per-group
+   {"contractcompare" 1,
+    "gamebalance" 1,
+    "haikusecurity" 1,
+    "legal" 1,
+    "marathon" 1,
+    "queryopt" 1,
+    "recipe" 1,
+    "schemamigration" 1},
+   :tokens 35828},
+  :labels
+  {:n 23,
+   :outcomes {:new-correct 8, :same-correct 15},
+   :families-per-group
+   {"contractcompare" 1,
+    "gamebalance" 1,
+    "haikusecurity" 1,
+    "legal" 1,
+    "marathon" 1,
+    "queryopt" 1,
+    "recipe" 1,
+    "schemamigration" 1},
+   :tokens 17518}}}

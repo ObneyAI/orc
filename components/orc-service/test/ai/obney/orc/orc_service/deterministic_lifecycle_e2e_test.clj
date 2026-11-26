@@ -461,6 +461,13 @@
         (is (= 3 (:successful-count event)))
         (is (= 0 (:failed-count event)))))))
 
+
+(defn- an-hour-later
+  "The recovering worker's view an hour after the stopped owner's lease was
+   last renewed: that lease has expired (ExecutionRecovery OwnedWorkIsNotAbandoned)."
+  [ctx]
+  (assoc ctx :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))
+
 (deftest det-e2e-108-restart-and-resume-in-flight-execution
   (testing "durable leaf frontier resumes without repeating a completed external effect"
     (h/with-async-test-context [ctx]
@@ -526,8 +533,8 @@
               (is (= 1 @effect-count))
               (is (= 1 (count first-completions)))
               (is (empty? second-completions))
-              (is (= 1 (count (filter :resumed? (sheet/resume-in-progress! ctx)))))
-              (is (empty? (sheet/resume-in-progress! ctx))
+              (is (= 1 (count (filter :resumed? (sheet/resume-in-progress! (an-hour-later ctx))))))
+              (is (empty? (sheet/resume-in-progress! (an-hour-later ctx)))
                   "a repeated recovery scan cannot enqueue the frontier twice")
               (let [result (deref execution-f 10000 ::timeout)
                     after (all-events ctx)

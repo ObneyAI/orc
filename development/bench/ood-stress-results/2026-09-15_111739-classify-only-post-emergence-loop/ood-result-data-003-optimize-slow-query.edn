@@ -1,0 +1,337 @@
+{:slug "data-003-optimize-slow-query",
+ :envelope
+ {:assigned-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :parent-tree-id nil,
+  :rerank-fallback? false,
+  :reasoning
+  "The task requires a precise diagnostic and a rewrite of SQL, which are formal/syntactic outputs. The Producer/Validator pattern is the best fit because it allows an LLM to 'produce' the fix while a :code node (acting as a 'validator') could potentially check the SQL syntax or compare it against schema constraints, providing a correctness oracle as recommended in the strengths.",
+  :outcome :matched,
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.186532-05:00"},
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :rank 2,
+    :reasoning
+    "The task requires a precise diagnostic and a rewrite of SQL, which are formal/syntactic outputs. The Producer/Validator pattern is the best fit because it allows an LLM to 'produce' the fix while a :code node (acting as a 'validator') could potentially check the SQL syntax or compare it against schema constraints, providing a correctness oracle as recommended in the strengths.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :cos-good 0.9950435892473588,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9896485587970971,
+    :score 435.1592895139334,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.9,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9950435892473588,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.176129-05:00"},
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :rank 1,
+    :reasoning
+    "This fingerprint matches the Producer/Validator class. It is highly fit for generating technical solutions (SQL rewrites) where a 'validator' (like a SQL parser or a dry-run check) can provide feedback on the 'issues' to the LLM for retry, fitting the recommended sequence pattern.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :cos-good 0.9950435892473588,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9896485587970971,
+    :score 435.1592895139334,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.89,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9950435892473588,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the cheap path handles the common case at fractional cost — typical economics are 10-20x cheaper per call than always-expensive",
+      :good-when
+      "the work has a long-tail difficulty distribution AND the expensive model is materially more capable on hard cases",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:model :gemini-flash :max-retries 1}}] [:llm {:reads [:input] :writes [:result] :options {:model :claude-opus :max-retries 2}}]]"}
+     {:trait
+      "wire a confidence-check (validator) between the two LLM tiers to escalate on LOW confidence, not just on outright failure — the cheap model's confident-but-wrong answers are the main risk",
+      :good-when
+      "the cheap model has a measurable tendency to be confidently wrong on hard cases",
+      :recommended-pattern
+      "[:sequence [:llm {:options {:model :gemini-flash} :writes [:result :confidence]}] [:fallback [:condition {:predicate (fn [{:keys [confidence]}] (>= confidence 0.8))}] [:llm {:options {:model :claude-opus} :writes [:result]}]]]"}],
+    :avoid-when
+    ["the backup path is deterministic (regex, template, cache) — use primary-backup instead"
+     "the cheap model is roughly capable of the full distribution — single cheap model with :max-retries is simpler"
+     "you can't measure confidence on cheap-model output — escalation won't fire correctly"
+     "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence"
+     "both tiers use the same upstream provider AND availability is a concern"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.187463-05:00"},
+    :content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :rank 4,
+    :reasoning
+    "Database performance optimization is a 'hard case' that may benefit from a model cascade. A cheaper model could identify basic index needs, while a more expensive model (e.g., Claude Opus) handles the complex query plan analysis and rewrite. However, it lacks the formal verification needed for SQL correctness found in the validator pattern.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "without a confidence-check between tiers, the cheap model's confident-but-wrong outputs ship without ever escalating — :fallback only catches outright failure (:status :failure), not bad answers",
+      :avoid-when
+      "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence",
+      :recommended-alternative
+      "always require a :confidence field on the cheap model's output schema AND escalate to expensive model on confidence < threshold (e.g., 0.7)"}
+     {:trait
+      "cascade with both tiers using the SAME provider correlates failures — when the provider has an outage, both tiers fail together",
+      :avoid-when
+      "both tiers use the same upstream provider AND availability is a concern",
+      :recommended-alternative
+      "use different providers for the two tiers (e.g., gemini for cheap, claude for expensive) so a provider outage degrades one tier but not both"}],
+    :cos-good 0.9919436132970878,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9872212087189445,
+    :score 435.05383287612017,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.6,
+    :document-id
+    ":tree-class:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9919436132970878,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the cheap path handles the common case at fractional cost — typical economics are 10-20x cheaper per call than always-expensive",
+      :good-when
+      "the work has a long-tail difficulty distribution AND the expensive model is materially more capable on hard cases",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:model :gemini-flash :max-retries 1}}] [:llm {:reads [:input] :writes [:result] :options {:model :claude-opus :max-retries 2}}]]"}
+     {:trait
+      "wire a confidence-check (validator) between the two LLM tiers to escalate on LOW confidence, not just on outright failure — the cheap model's confident-but-wrong answers are the main risk",
+      :good-when
+      "the cheap model has a measurable tendency to be confidently wrong on hard cases",
+      :recommended-pattern
+      "[:sequence [:llm {:options {:model :gemini-flash} :writes [:result :confidence]}] [:fallback [:condition {:predicate (fn [{:keys [confidence]}] (>= confidence 0.8))}] [:llm {:options {:model :claude-opus} :writes [:result]}]]]"}],
+    :avoid-when
+    ["the backup path is deterministic (regex, template, cache) — use primary-backup instead"
+     "the cheap model is roughly capable of the full distribution — single cheap model with :max-retries is simpler"
+     "you can't measure confidence on cheap-model output — escalation won't fire correctly"
+     "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence"
+     "both tiers use the same upstream provider AND availability is a concern"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.177442-05:00"},
+    :content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :rank 3,
+    :reasoning
+    "Fits the structural shape of escalating a difficult database diagnosis from a fast model to a 'smarter' model. It captures the 'long-tail difficulty' mentioned in the strengths, as some slow queries are simple index misses while others require deep architectural reasoning.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "without a confidence-check between tiers, the cheap model's confident-but-wrong outputs ship without ever escalating — :fallback only catches outright failure (:status :failure), not bad answers",
+      :avoid-when
+      "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence",
+      :recommended-alternative
+      "always require a :confidence field on the cheap model's output schema AND escalate to expensive model on confidence < threshold (e.g., 0.7)"}
+     {:trait
+      "cascade with both tiers using the SAME provider correlates failures — when the provider has an outage, both tiers fail together",
+      :avoid-when
+      "both tiers use the same upstream provider AND availability is a concern",
+      :recommended-alternative
+      "use different providers for the two tiers (e.g., gemini for cheap, claude for expensive) so a provider outage degrades one tier but not both"}],
+    :cos-good 0.9919436132970878,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9872212087189445,
+    :score 435.05383287612017,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.58,
+    :document-id
+    ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9919436132970878,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the bounded-:max-concurrency :map-each pattern is the canonical solution for chunked extraction",
+      :good-when
+      "the input is a document larger than ~5KB AND extraction is per-chunk independent",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:per-chunk-result]}]] [:aggregate {:from :results :writes [:all-results]}] [:final {:keys [:all-results]}]]"}
+     {:trait
+      "extending the skeleton with a final synthesis :llm produces a coherent summary alongside the per-chunk results",
+      :good-when
+      "the task requires both per-chunk extracted data AND a top-level synthesis",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :all-results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:items]}]] [:aggregate {:from :all-results :writes [:items]}] [:llm {:reads [:document :all-results] :writes [:summary]}] [:final {:keys [:all-results :summary]}]]"}],
+    :avoid-when
+    ["input is small (<5KB) — single :llm without chunking is simpler"
+     "extraction requires cross-chunk context (e.g. detecting trends across the whole document) — chunked-extraction loses that context; consider a non-chunked single-pass :llm or a two-pass tree that does cross-chunk reasoning"
+     "the work is generation (writing new content) rather than extraction — chunked-extraction is an extraction pattern"
+     "input is a document with >6 chunks AND :max-concurrency is unset OR set higher than provider rate-limit tolerance"
+     "the tree has :map-each but no :aggregate AND a downstream node expects per-key flat data"
+     "the input document is less than ~5KB AND the work fits in a single :llm context window"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.182481-05:00"},
+    :content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :rank 7,
+    :reasoning
+    "Low fitness. The task is a specific diagnostic and optimization problem, not a chunked extraction from a large document. While the query plan or logs might be long, the core task is 'generation' (rewrite) rather than 'extraction', which is a listed weakness.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded :max-concurrency on the :map-each exhausts sub-LLM rate limits on documents with 6+ chunks",
+      :avoid-when
+      "input is a document with >6 chunks AND :max-concurrency is unset OR set higher than provider rate-limit tolerance",
+      :recommended-alternative
+      "always set :max-concurrency to 3 on the :map-each parent (safe default across major LLM providers); tune higher only after measuring against the specific provider's rate limit"}
+     {:trait
+      "skipping the :aggregate step means downstream consumers see a raw vector of per-iteration maps — usually not the shape they want",
+      :avoid-when
+      "the tree has :map-each but no :aggregate AND a downstream node expects per-key flat data",
+      :recommended-alternative
+      "always include :aggregate after :map-each (or use :code with explicit merge logic for non-default consolidation)"}
+     {:trait
+      "very small documents (<5KB) don't benefit from chunking — chunked-extraction adds overhead with no win",
+      :avoid-when
+      "the input document is less than ~5KB AND the work fits in a single :llm context window",
+      :recommended-alternative
+      "use a single :llm node directly without :chunk-document / :map-each / :aggregate"}],
+    :cos-good 0.9943913996794702,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9925758172852126,
+    :score 434.4481674054425,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.2,
+    :document-id
+    ":tree-class:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9943913996794702,
+    :cos-avoid 1.0}],
+  :confidence 0.9,
+  :ranked-candidates
+  [{:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.9,
+    :score 435.1592895139334}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.89,
+    :score 435.1592895139334}
+   {:target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.6,
+    :score 435.05383287612017}
+   {:target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.58,
+    :score 435.05383287612017}
+   {:target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.2,
+    :score 434.4481674054425}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 8497,
+ :parent-chain []}

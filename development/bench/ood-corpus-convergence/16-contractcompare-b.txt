@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: contractcompare (in-domain sanity); variant b of 3 — the same domain re-asked with a different concrete instance.
+Compare the 2024 and 2025 versions of a supplier's master services agreement and report: an executive summary of the changes, each changed section with the old and new text quoted, an analysis of what the changes mean for the buyer (payment terms, service levels, indemnities, IP ownership, audit rights), and a recommendation with negotiation points. Output: {:summary ... :diffs [...] :impact ... :recommendation ...}

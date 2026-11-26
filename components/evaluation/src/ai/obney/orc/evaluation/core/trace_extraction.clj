@@ -81,7 +81,7 @@
      :node-type — what kind of node (:leaf, :map-each, :repl-researcher …).
                   :llm-condition and :repl-researcher call an LLM by
                   definition.
-     :executor  — how a LEAF runs (:ai, :code, :tool). A leaf is :leaf
+     :executor  — how a LEAF runs (:ai, :decision, :code, :tool). A leaf is :leaf
                   whether it calls a model or runs Clojure; only :executor
                   distinguishes them.
 
@@ -96,7 +96,7 @@
   ([node-trace node-metadata]
    (let [executor (or (:executor node-trace) (:executor node-metadata))
          node-type (or (:node-type node-trace) (:type node-metadata))]
-     (boolean (or (= :ai executor)
+     (boolean (or (contains? #{:ai :decision} executor)
                   (contains? llm-node-types node-type))))))
 
 (defn- extract-node-trace-data

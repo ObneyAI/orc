@@ -29,12 +29,13 @@
              :evidence-bundle {:value ["a" "b"]}
              :unrelated {:value "should not appear"}})))))
 
-(deftest extract-read-inputs-skips-missing-and-nil
-  (testing "missing keys and nil values are dropped, not emitted as {} entries"
-    (is (= {:present "x"}
+(deftest extract-read-inputs-distinguishes-missing-and-explicit-null
+  (testing "only actual values are captured, including an explicitly present null"
+    (is (= {:present "x" :nilval nil}
            (extract-read-inputs
-            [:present :absent :nilval]
+            [:present :absent :unwritten :nilval]
             {:present {:value "x"}
+             :unwritten {:schema [:maybe :string]}
              :nilval {:value nil}})))))
 
 (deftest extract-read-inputs-empty-reads

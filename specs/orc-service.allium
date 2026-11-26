@@ -26,8 +26,9 @@ value DataSchema {
 
     @invariant StructuralSpecificity
         -- A schema is not specific when it contains :any or :some, uses a
-        -- standalone or fieldless map, or declares a collection without a
-        -- specific item/value schema. Specificity applies recursively.
+        -- standalone or open fieldless map, or declares a collection without a
+        -- specific item/value schema. A closed fieldless map is specific:
+        -- it admits exactly the empty record. Specificity applies recursively.
 }
 
 value BlackboardValue {
@@ -93,6 +94,29 @@ contract LeafExecutor {
         -- workflow consumer. Successful execution does not require that the
         -- callable be owned by ORC.
 
+    @invariant ModelLeafRecordsResolvedModel
+        -- Every model-backed leaf durably records the model it was configured
+        -- to use, when one was configured, and separately the model the
+        -- provider reports it actually used, when one was reported. Neither
+        -- stands in for the other, and a failed call does not invent a
+        -- resolved model.
+
+    @invariant RejectedCompletionFailsTheNode
+        -- A completion the engine cannot record fails the node visibly, naming
+        -- what was rejected and keeping the attempted outcome as detail; a node
+        -- never waits for its run's deadline because its completion was refused.
+
+    @invariant JudgedCompositesAreDurable
+        -- A run whose composite nodes carry judges records those composites'
+        -- completions durably so they can be assessed; a run with no judged
+        -- composite keeps its ephemeral evaluation.
+
+    @invariant ProviderMetadataIsNeverOutput
+        -- Prediction metadata (usage, model identity, response text, provider
+        -- evidence) is never written to the blackboard as though it were a
+        -- declared output. A provider that finished with an error fails the
+        -- node with that classification and its evidence, and writes nothing.
+
     @invariant ConfiguredConsumerToolGateIsAuthoritative
         -- When a researcher names a consumer-supplied tool gate, every inline
         -- tool call and every tool call from its generated subtree uses that
@@ -100,6 +124,75 @@ contract LeafExecutor {
         -- that cannot be resolved or constructed fails the node; it never falls
         -- back to an ungated caller. With no configured gate, the ordinary tool
         -- caller remains available for backwards compatibility.
+
+    @invariant SandboxOutputBelongsToCurrentEvaluation
+        -- Permitted standard printing in ordinary researcher evaluation,
+        -- recursive researcher evaluation and generated code uses the current
+        -- evaluation's output destination. It must not fail solely because the
+        -- sandbox printer lacks that destination. A failed evaluation retains
+        -- its already captured output and original failure; it does not become
+        -- successful. Later evaluations and their enclosing caller retain their
+        -- own output destinations after either success or failure. Authored
+        -- code's existing caller output behavior is preserved. This does not
+        -- add a persisted stdout field to code-leaf results or grant new I/O.
+
+    @invariant CodeLeafToolGateIsPreserved
+        -- A code leaf authored by a consumer may name a consumer-supplied tool
+        -- gate, exactly as a generated code leaf may. The named gate survives
+        -- authoring, building, the stored workflow definition and its
+        -- round-trip, and every tool call that leaf makes uses that gate. A
+        -- configured gate that cannot be resolved or constructed fails the
+        -- node; it never falls back to an ungated caller.
+
+    @invariant ToolGateSeesInvocationIdentity
+        -- A code or tool leaf's tool gate is constructed with the identity of
+        -- the invocation it serves: the execution, the node and the effective
+        -- remaining deadline, alongside the execution's durable consumer
+        -- context.
+
+    @invariant DeclaredToolContractsAreEnforced
+        -- When a tool's argument or result contract is declared for the node
+        -- calling it, that contract is enforced at every call, not only shown
+        -- to the model. Arguments that violate it never reach the tool and a
+        -- checkpointed researcher claims no effect for them; a result that
+        -- violates it is never handed to the caller as a successful value.
+        -- A side with no declared contract stays untyped, as before. The tool
+        -- receives the caller's arguments exactly as given. A researcher's
+        -- declared contracts govern the tool calls of its generated subtree
+        -- exactly as they govern its own; generated code may add contracts
+        -- for tools the researcher did not declare but can never relax,
+        -- replace or remove the researcher's.
+
+    @invariant ToolArgumentIdentityIsExact
+        -- On a side with a declared contract, an argument or result field
+        -- supplied under two spellings of the same name is rejected as invalid
+        -- rather than collapsed into one, so normalisation can never silently
+        -- replace a supplied value.
+
+    @invariant ToolOutcomesAreStructured
+        -- Every tool call that fails its declared contract, or whose tool
+        -- itself fails, has one stable outcome kind: invalid arguments,
+        -- invalid result, or tool error. A message names the tool and where
+        -- the contract failed using only declared field names, never a
+        -- supplied value or a supplied undeclared name. A researcher receives
+        -- every one of them, for typed and untyped tools alike, as data it can
+        -- act on: the kind and a safe message that never echoes the rejected
+        -- values or the tool's own error text, except a message the tool's host
+        -- explicitly declares safe to share. A code leaf receives a contract
+        -- violation as a failure carrying its kind, which fails the node unless
+        -- the consumer code handles it; a tool's own failure reaches the
+        -- consumer code that owns that tool unchanged.
+
+    @invariant ToolLeafCallsOnlyAuthoredTools
+        -- A tool leaf names one tool when the workflow is authored and calls
+        -- it through the node's tool caller, with arguments taken from its
+        -- declared read keys, applying any gate and declared contract exactly
+        -- as a code leaf does, and writes the tool's result to its single
+        -- declared write key (when the result is a map holding that key, the
+        -- value under it, as for a single-write code leaf). A tool name
+        -- supplied at run time, by a model or
+        -- by the blackboard, is never an executable identity. A tool leaf with
+        -- no tool caller available fails explicitly.
 
     @invariant ResearcherSeesBoundToolContracts
         -- Before calling a bound tool, a researcher's Phase-1 model receives
@@ -122,9 +215,17 @@ contract LeafExecutor {
         -- A leaf receives only the blackboard values named by its read contract.
 
     @invariant DeclaredOutputsOnly
-        -- A successful leaf supplies a non-null value for every required key
+        -- Missing required outputs remain absent and carry explicit missing-write
+        -- key evidence through completion events and trace projections. This
+        -- diagnostic never fabricates a rejected or accepted output value.
+        -- A successful leaf supplies a present value for every required key
         -- named by its write contract, supplies no undeclared keys, and every
-        -- supplied value satisfies the key's declared schema. A leaf may name
+        -- supplied value satisfies the key's declared schema. Explicit null is
+        -- valid only when that required key's schema accepts null; absence is
+        -- distinct and never synthesized as null. A metadata envelope whose outputs
+        -- are absent or null cannot supply a required nullable value. Provider
+        -- observations remain metadata and never become authored writes. Nested all-null maps and empty
+        -- maps are judged by their full schema rather than a nil heuristic. A leaf may name
         -- top-level writes as optional according to that executor's documented
         -- absence-normalization policy; a value normalized to absence is not
         -- written durably.
@@ -139,8 +240,115 @@ contract LeafExecutor {
     @invariant ResearcherFinalizationUsesDeclaredSchemas
         -- Values supplied through a researcher's finalization operation cross
         -- the same declared-output validation boundary as every other leaf.
-        -- Invalid values fail the node with attributable schema evidence and
-        -- never become durable execution values.
+        -- The complete nested candidate is validated before final completion.
+        -- An invalid attempt is refused with attributable schema evidence and
+        -- never becomes a durable execution value. While normal iteration,
+        -- call and deadline allowance remains, the researcher receives that
+        -- evidence and may correct its candidate without repeating completed
+        -- child work. Refusal does not extend any allowance. Exhausted work
+        -- fails honestly rather than accepting an invalid or partial candidate.
+        -- A later refused final attempt in one iteration clears an earlier
+        -- pending final capture rather than completing from that stale capture.
+
+    @invariant GeneratedChildrenReuseDeclaredContracts
+        -- A generated child's shared read and write keys inherit their complete
+        -- authored contracts, including nested meanings and schema properties,
+        -- whether or not the parent currently has a value for the key. Declaring
+        -- an absent output does not seed it with null. Generated code may omit
+        -- or identically repeat an inherited declaration, but a conflicting
+        -- redeclaration fails before child execution rather than weakening the
+        -- authored contract. New computed keys retain explicit specific schemas;
+        -- conflicting declarations for one new key also fail, never silently
+        -- selecting whichever declaration happens to occur last.
+
+    @invariant ResearcherGuidanceMatchesCallableContracts
+        -- The researcher is told which displayed values are previews and that
+        -- selected specialist reads receive complete values. Lexical bindings
+        -- are not automatically keyed sandbox inputs; the supplied guidance
+        -- explains the supported storage operation before reading them by key.
+        -- Available declared intermediate key contracts remain discoverable
+        -- with their complete nested meanings, separately from final-write
+        -- obligations. Inline calls reuse their authoritative declared output
+        -- contracts; emitted nodes inherit existing declarations and use their
+        -- supported declaration mechanism for new computed keys.
+        -- Examples follow those same rules and never silently require an
+        -- unconstrained output. Guidance does not invent a model-specific API.
+        -- Every researcher mode receives the same evidence-ownership principle:
+        -- authoritative identifiers, observations and literal values remain
+        -- native data while semantic work produces interpretations. Ordinary
+        -- code assembles those values into the declared final shape without
+        -- asking a model to reproduce unchanged evidence or introducing fuzzy
+        -- matching, identifier repair or task-specific output parsing.
+        -- This is construction guidance, not an automatic output rewrite or a
+        -- guarantee that a model follows it. Intentional task transformations
+        -- remain possible. Exact-fidelity requirements are distinct from
+        -- optional polishing and do not prescribe a fixed tree or extra call.
+
+    @invariant ResearcherFeedbackMatchesCurrentState
+        -- Before each iteration, variable availability describes the values
+        -- currently readable by the researcher, including completed child
+        -- writes carried across a checkpoint. An older parent placeholder does
+        -- not hide a newer local value. Missing values remain distinct from
+        -- present null, false, zero and empty values; their source is explicit.
+        -- Child outcome feedback survives a quantum boundary and describes the
+        -- actual child's status and completed writes, including intermediates,
+        -- rather than treating the researcher's unproduced final output as a
+        -- missing child result. Valid completed null or empty writes are not
+        -- described as writes that failed to land. Previews are identified as
+        -- previews and full values remain available through inspection.
+        -- A child refused at execution admission contributes its exact refusal
+        -- reason to the next iteration, even when no leaf event exists. Feedback
+        -- distinguishes refused admission from executed work and does not invent
+        -- a failed leaf or a completed child output for that refusal.
+        -- A generated child refused during setup likewise reports the rejected
+        -- command and the available field-level schema explanation before the
+        -- next iteration, including after a checkpoint. The diagnostic keeps
+        -- its refusal category and reason separate from executed child results.
+        -- Only diagnostic fields are carried: no raw command, authorization,
+        -- source values or unrelated handler data. When the refusal provides no
+        -- field explanation, feedback does not invent one. Bounded summaries
+        -- identify the affected field before optional explanatory detail; full
+        -- safe details remain inspectable in the durable child outcome.
+        -- Feedback supplies evidence for the next decision; it does not force
+        -- the researcher to repeat work or finalize a result.
+
+    @invariant MapEachAggregateHasCanonicalProducer
+        -- A map-each aggregate write belongs to the map-each parent execution
+        -- that completes it. Canonical write resolution for that completion
+        -- returns the aggregate, including a partial aggregate with separately
+        -- reported item failures. Item outputs retain their own execution
+        -- ownership; neither seeded inputs nor the last item's value stand in
+        -- for the parent's aggregate. Researcher feedback uses this canonical
+        -- producer evidence rather than guessing from a flat blackboard.
+        -- Before the parent records an aggregate, it validates that value
+        -- against the declared output contract. An invalid aggregate records
+        -- parent failure with the exact validation reason and no canonical
+        -- aggregate write. Valid completed per-item work remains inspectable;
+        -- aggregate refusal does not undo or repeat those effects.
+        -- The rejected candidate remains diagnostic evidence, separate from
+        -- canonical values, with the parent's execution identity.
+
+    @invariant ResearcherSyntaxFeedbackFollowsParserEvidence
+        -- Syntax feedback preserves the parser's expected/unexpected delimiter
+        -- evidence. A matching opening delimiter's position is not described
+        -- as the position of an unexpected closing character. Generic guidance
+        -- never asserts an emitted-tree or map-brace cause merely because the
+        -- error mentions an unmatched delimiter. The same rule applies to
+        -- inline and emitted generated programs, independent of model choice.
+
+    @invariant EmittedTreeStructureIsValidatedBeforeExecution
+        -- Every emitted node is a vector with a recognized tag. The fixed
+        -- nodes llm, code, final, chunk-document and aggregate take exactly
+        -- one options map; map-each takes one options map and one child.
+        -- Sequence and parallel retain their variadic child grammar. Validate
+        -- every nested node before requesting child execution: no extra
+        -- operand is silently discarded. Invalid structure produces feedback
+        -- identifying the offending node path and expected structure, retains
+        -- the original generated source, and dispatches no child model call.
+        -- With iteration and execution budget remaining the researcher may
+        -- submit a corrected tree through the normal next iteration. Structural
+        -- rejection is distinct from a reader or delimiter error. Supported
+        -- option values and Unicode data in valid positions remain intact.
 
     @invariant ResearcherOptionalWritesPreserveNestedSchemas
         -- A researcher may omit a declared top-level optional write, or supply
@@ -157,6 +365,164 @@ contract LeafExecutor {
         -- consume the ordinary iteration budget and fail clearly when that
         -- budget is exhausted. Provider, security, cancellation, and execution
         -- budget failures retain their existing terminal semantics.
+
+    @invariant AuthoredModelOptionsReachEveryNodeKind
+        -- A condition or decision retains its authored generation and structured
+        -- output options when it is executed, just as an ordinary model leaf
+        -- does. This includes the completion allowance and configured provider
+        -- routing restrictions. Choosing a finite answer does not discard them.
+        -- A default response protocol applies only when no explicit effective
+        -- protocol was supplied. Runtime-owned accounting, ownership and absolute
+        -- execution limits remain authoritative over authored options.
+        -- Configuring or omitting backup models does not erase the primary
+        -- request's authored options. Compatible backup overrides follow the
+        -- existing candidate policy without weakening execution limits.
+
+    @invariant ConfiguredModelAlternativesAreOneTask
+        -- Existing generation, condition, decision and researcher nodes may
+        -- configure ordered backup models and registered providers, with
+        -- compatible generation overrides. An empty list disables inheritance.
+        -- Running executions retain their original candidate configuration even
+        -- when a successor workflow configuration is built concurrently.
+        -- All candidates retain the same instruction and described input and
+        -- output contracts. Invalid candidate or policy configuration is
+        -- rejected before execution. No candidate can change the task or run
+        -- preceding completed effects again.
+
+    @invariant OrdinaryModelProfilesSurviveRegistryChanges
+        -- An ordinary call with configured alternatives retains one versioned candidate
+        -- profile before dispatch. Its stable authored scope is independent of
+        -- current provider defaults and resolved configuration hashes. Competing
+        -- preparations choose one plan through current execution ownership.
+        -- The same described contract and selected conversational profile apply
+        -- to compatible backup candidates; native decisions retain their native
+        -- protocol. Credentials and source inputs are not retained as plan data.
+        -- An alternative whose provider defaults cannot preserve the selected
+        -- legacy conversational profile is incompatible: refuse before provider
+        -- work rather than silently changing the response protocol. This is a
+        -- deliberate tightening of older cross-provider fallback compatibility.
+        -- Before each fresh physical attempt, check that today's registry can
+        -- still express the retained profile, before reserving a call or starting
+        -- its observation. Exact completed receipts and terminal results bypass
+        -- this current-registry check so they can replay after provider removal.
+        -- Retain supported nonsecret request controls, including stopping rules,
+        -- reasoning effort and thinking budgets, across candidates and recovery.
+        -- Unknown request controls and credential overrides are rejected rather
+        -- than silently omitted from a retained plan. Provider-specific adapter
+        -- restrictions still apply; retention is not proof of remote support.
+        -- Locate historical operation facts before consulting today's provider
+        -- registry. An identifiable terminal outcome replays under its original
+        -- identity without another provider reservation or HTTP request, even
+        -- when the registry entry changed or disappeared. Completed request
+        -- receipts remain reachable. Incomplete legacy work whose effective
+        -- profile was not retained, or ambiguous historical association, fails
+        -- with a typed compatibility reason before another request rather than
+        -- guessing, resetting the journal or repeating a completed request.
+        -- Retention includes the profile version and effective call controls;
+        -- changing library defaults must not silently change an existing plan.
+        -- Researcher prime and specialist recovery require their own integration
+        -- and are not established by ordinary leaf coverage.
+
+    @invariant ModelAlternativeAdmissionUsesOwnedFailure
+        -- The default model-alternative policy advances only after a final
+        -- failed candidate attempt has typed, consistent temporary transport
+        -- evidence. Unknown evidence, authentication, quota, configuration and
+        -- output-schema failures are not temporary outages. An explicitly
+        -- selected all-transport policy may admit permanent transport failures.
+        -- Neither policy treats a valid negative answer, cancellation, a
+        -- permission block or exhausted execution limits as an outage.
+        -- Admission belongs to the exact tenant, tick, candidate and execution
+        -- context, including mapped item and iteration. Duplicate or stale
+        -- completion delivery cannot advance the chain again or borrow another
+        -- execution's failure. Candidate retries finish before advancement.
+
+    @invariant ModelAlternativesRetainLimitsAndEvidence
+        -- Every candidate consumes the existing family call budget and original
+        -- absolute deadline. Switching models cannot renew either limit.
+        -- Attempted model identities, safe failure evidence and successful
+        -- selection remain retrievable through canonical execution traces.
+        -- Denial or candidate exhaustion preserves a useful terminal reason.
+        -- A failed request never invents a resolved model identity. Ordinary
+        -- and streaming alternatives may advance only before visible model output.
+        -- Once output is exposed, a failed stream terminates without replacement.
+
+    @invariant ResearcherModelFallbackPreservesProgress
+        -- Prime and specialist roles have separate defaults. Inline and emitted
+        -- specialists inherit specialist options and backups unless overridden;
+        -- a primary-only override retains backups and an empty list disables them.
+        -- A failed model call switches inside its logical action, never by
+        -- restarting the researcher or replaying completed external actions.
+        -- Successful backup selection persists for that run, role and effective
+        -- configuration. Later calls start there; concurrent older completions
+        -- cannot move selection backwards. Recovery retains recorded transitions.
+        -- New runs start at their primary. No selection crosses tenant/run scope.
+
+    @invariant ResearcherModelProfilesSurviveRegistryChanges
+        -- With configured alternatives, prime and specialist calls preserve the
+        -- selected conversational response profile and supported nonsecret
+        -- request controls across compatible candidates. Changing a registry
+        -- default cannot silently switch an active role's response protocol.
+        -- An unchanged authored configuration keeps its effective candidate
+        -- plan and monotonic role selection across iterations and saved quanta.
+        -- Individual requests and effects still have their own input, iteration
+        -- and ownership identity; another request's result is never substituted.
+        -- Historical outcomes are located before current-provider resolution.
+        -- An identifiable completed effect or physical response replays under
+        -- its original identity without another reservation or provider call,
+        -- even when that provider is no longer registered. A saved physical
+        -- response and a completed enclosing effect are separate boundaries.
+        -- A saved predictor response is not itself declared-output acceptance.
+        -- Replay validates required keys and native values against the original
+        -- leaf contract and respects an explicit recorded schema rejection.
+        -- A uniquely identifiable accepted native response may be recovered at
+        -- a later physical attempt without inventing missing earlier responses
+        -- or usage; incomplete accounting is labeled as runtime-derived.
+        -- Equal local retry ordinals across different node executions are not
+        -- proof of the same physical request. Conflicting physical identity or
+        -- multiple unresolved accepted responses cannot be chosen by event order.
+        -- Fresh work requires a supported retained profile and current ownership.
+        -- Incomplete legacy work without an identifiable effective profile, or
+        -- ambiguous history, refuses with a typed compatibility reason before
+        -- another call rather than creating a new configuration bucket.
+        -- These obligations cover prime, inline and emitted specialist roles;
+        -- proof for one role does not establish the others or hard-kill recovery.
+
+    @invariant RejoinedGeneratedChildFreshModelAuthority
+        -- A generated child interrupted before its model response was saved is
+        -- rejoined under its original tick, plan and request context. Its exact
+        -- resumed node execution may acquire fresh-call authority from the
+        -- current parent's matching generated-child claim and iteration.
+        -- That binding is durable and identifies both executions; it cannot be
+        -- replaced by reading the newest parent epoch. One child execution
+        -- cannot inherit a later parent authority after its binding is revoked.
+        -- A superseded child start, parent claim or configuration grants no
+        -- reservation or fresh journal write. Child and parent resume ordering
+        -- cannot turn a pending eligible binding into a permanent model failure;
+        -- coordination remains bounded by the original deadline and cancellation.
+        -- Original child options, family cap and deadline remain unchanged.
+        -- An uncertain prior physical request remains spent; new dispatch has
+        -- its own reservation and request identity. Exact saved-response replay
+        -- requires no fresh-call authority, provider lookup or reservation.
+        -- Uncapped children retain the same ownership checks without a cap;
+        -- ordinary and checkpoint-opted-out work acquire no campaign authority.
+        -- A genuinely first descendant starting after a proven newer parent
+        -- start is distinct from an older unresumed execution. It may retain
+        -- its exact nonspending model plan while the current frontier or claim
+        -- is pending. Retention never grants provider reservation, request or
+        -- dispatch authority. The actual matching current frontier and claim,
+        -- exact original configuration and selected facts must still be current
+        -- at the append boundary. Stale/superseded/completed ownership and a
+        -- conflicting retained plan cannot acquire a new authority binding.
+
+    @invariant ConfiguredFallbackHasBoundedPhysicalAttempts
+        -- Configured fallback defaults to one physical request per candidate.
+        -- Explicit bounded same-model retries precede switching. Exhaustion does
+        -- not restart the chain through implicit outer node retries. Every request
+        -- reserves remaining family budget and time before dispatch. A request
+        -- interrupted before its outcome is recorded may be repeated on recovery
+        -- only as a new counted attempt; completed tool effects are not replayed.
+        -- Compatible providers preserve the effective task and decision contract;
+        -- protocol conversion never invents confidence or weakens strict output.
 
     @invariant ProviderRetryCoversSchemaFailure
         -- The default provider retry applies when a returned structured output
@@ -206,6 +572,170 @@ contract LeafExecutor {
         -- schema-invalid decoded arguments have distinct stable failure kinds.
         -- Evidence retains available usage and finish reason even when no text
         -- exists, and excludes arbitrary provider payloads and tool arguments.
+        -- Ordinary and researcher executions retain an available typed failure
+        -- kind, sanitized provider evidence and model-fallback metadata in their
+        -- canonical completion and public execution-family failure projection.
+        -- Admission refused for incomplete durable budget history is classified
+        -- as budget_history_unavailable before any provider invocation; it never
+        -- invents provider response evidence or reports ordinary cap exhaustion.
+}
+
+contract ProviderAttemptObservation {
+    start_attempt: (execution: Any, attempt: Any) -> Any
+    complete_attempt: (identity: Any, outcome: Any) -> Any
+    inspect_attempts: (execution: Any) -> Any
+
+    @invariant ExactExecutionOwnership
+        -- An observed physical provider invocation belongs to a canonical node
+        -- start event, tenant, sheet, tick, node and execution context. Internal
+        -- retries have distinct invocation identities and attempt ordinals;
+        -- identical parallel content is never used to infer ownership.
+    @invariant DurableAttemptLifecycle
+        -- Start is recorded before provider dispatch; the returned outcome is
+        -- recorded before any retry. A matching duplicate transition is idempotent;
+        -- conflicting reuse fails. An unmatched start remains incomplete evidence.
+        -- A completion cannot attach to a missing or foreign execution/attempt.
+    @invariant ObservationsRemainSeparate
+        -- Available provider observations retain exact presence, choice ordering,
+        -- opaque details and reported usage. Absent observations remain absent.
+        -- These records neither populate authored blackboard writes nor increment
+        -- existing token accounting. Invalid task output does not erase a received
+        -- observation. No credentials, request dumps or exception dumps are stored.
+    @invariant InspectableAfterReplay
+        -- Authorized tenant-scoped inspection reconstructs the same attempts and
+        -- observations from events, including failed attempts before a later
+        -- success. Downstream authors deliberately select typed evidence inputs.
+        -- Embedded command/query calls use the host's trusted Grain context and
+        -- require a tenant, not fabricated authentication claims. Request adapters
+        -- enforce the registered authorization predicate before invoking them.
+}
+
+contract ModelBackedCondition {
+    assess: (configuration: NodeConfiguration, inputs: Any) -> Boolean
+
+    @invariant ModelConditionPreservesItsAnswer
+        -- A model-backed condition succeeds exactly when the model's valid
+        -- answer is true and fails exactly when it is false. A missing, null
+        -- or non-boolean answer is never read as false: it fails the node as
+        -- a structured provider failure whose kind differs from a semantic
+        -- negative, so a consumer can tell "the proposition is false" from
+        -- "no valid answer was obtained".
+
+    @invariant ModelConditionSharesLeafExecutionPolicy
+        -- A model-backed condition is a provider invocation under the same
+        -- execution policy as a model leaf: each invocation consumes the
+        -- shared LLM-call budget and remaining wall-clock budget, a per-node
+        -- model choice reaches the provider, the default provider retry
+        -- applies, and cancellation or timeout of the execution stops it
+        -- before any further invocation begins.
+
+    @invariant ModelConditionEvidenceIsDurable
+        -- A completed model-backed condition durably records the declared
+        -- blackboard values it read, the boolean answer it obtained, the
+        -- resolved model and the provider usage, retrievable through the same
+        -- trace-detail surfaces as a model leaf. A failed one records
+        -- structured provider failure evidence instead of only an error text.
+}
+
+contract ModelDecision {
+    decide: (configuration: NodeConfiguration, inputs: Any) -> Any
+
+    @invariant DecisionKindFollowsDeclaredWrite
+        -- A model decision writes its answer to exactly one declared
+        -- blackboard key, and that key's schema determines the decision: a
+        -- boolean schema asks whether a proposition holds; a finite enum
+        -- schema asks which one of its members applies; a banded decision asks
+        -- which ordered band of a rubric applies, reading the rubric's
+        -- described bands from a declared read key so the rubric can be
+        -- changed without changing the workflow. Options may instead be
+        -- supplied at run time by a declared read key holding identified,
+        -- described options. A decision whose answer key is neither boolean
+        -- nor finite is rejected when the workflow is built.
+
+    @invariant DecisionOffersEveryOptionWithItsMeaning
+        -- The model is offered every allowed option together with its
+        -- description, and the decision's instruction. An answer that is not
+        -- a member of the set actually offered is never written; it fails the
+        -- node as a structured provider failure. Option identities are kept
+        -- verbatim, including identities discovered at run time.
+
+    @invariant ValidAssessmentSucceeds
+        -- Obtaining a valid answer is success, whatever the answer is: false
+        -- and a declared none or other option are successful assessments that
+        -- write their value. A missing, malformed or unavailable answer fails
+        -- the node with a structured failure kind and writes nothing to the
+        -- answer key, so routing guards never see a fabricated answer.
+
+    @invariant ConfidenceFloorIsExplicit
+        -- With no configured confidence floor, a valid answer is written as
+        -- obtained. When a floor is configured, a choice whose reported
+        -- confidence is below it, or that reports none, writes the decision's
+        -- declared abstention option instead and records the answer that was
+        -- set aside. The abstention option must be one of the offered options,
+        -- and false is an offered option of a yes/no decision.
+        -- A confidence value is the provider's own reported statistic for that
+        -- primitive; it is never synthesised from a bare answer.
+
+    @invariant DecisionSharesLeafExecutionPolicy
+        -- A model decision is a provider invocation under the same execution
+        -- policy as a model leaf: shared LLM-call and wall-clock budgets,
+        -- per-node model choice, default provider retry, and cancellation or
+        -- timeout stopping it before any further invocation begins.
+
+    @invariant DecisionRecordIsDurable
+        -- Each completed decision durably records the options offered, the
+        -- answer obtained, any distribution or confidence the provider
+        -- reported, whether the answer was set aside for abstention, the
+        -- resolved model and the provider usage, retrievable through the same
+        -- trace-detail surfaces as a model leaf.
+}
+
+contract DelegationBoundary {
+    delegate: (configuration: NodeConfiguration, inputs: Any) -> Any
+
+    @invariant FamilyBudgetIsShared
+        -- Every delegated child execution, whatever its target, draws on the
+        -- root execution's LLM-call budget and remaining wall-clock budget; no
+        -- provider invocation anywhere in the family begins once the family
+        -- budget is spent.
+        -- A child's recorded absolute deadline is no later than its parent's
+        -- deadline. Dispatch delay cannot renew the inherited time allowance;
+        -- a shorter local allowance may tighten it. An already spent parent
+        -- deadline remains spent when the child starts.
+
+    @invariant DelegateToolContextCrosses
+        -- The parent execution's durable consumer tool context reaches the
+        -- child execution, so a gated tool in the child sees the same consumer
+        -- context as the parent.
+
+    @invariant DelegateInputIdentityIsExact
+        -- Parent values reach the child's inputs by name. Two distinct parent
+        -- keys that would supply the same child input are rejected when the
+        -- workflow is built, never silently collapsed into one.
+
+    @invariant ExecutionFamilyIsQueryable
+        -- Every node execution beneath an execution, including the executions
+        -- of delegated workflows, is retrievable through the public interface
+        -- in order, each with its node, instruction, status, resolved inputs and
+        -- outputs, failure and tool evidence, so a consumer can read what a
+        -- whole behaviour did.
+        -- Resolved values preserve presence: a canonical explicit null remains
+        -- present, as do false and zero. A missing or dangling value source
+        -- cannot manufacture a null value. Seeded inputs and nested delegated
+        -- or generated executions follow the same rule.
+
+    @invariant AssessmentWorkIsMarked
+        -- An execution started to perform an assessment, and every execution it
+        -- delegates to, is durably marked as assessment work, so the mark can
+        -- be read from the execution record after any asynchronous hand-off or
+        -- process restart.
+
+    @invariant FamilyUsageIsQueryable
+        -- The total provider usage of an execution together with all of its
+        -- descendants is retrievable through the public interface, separately
+        -- from the execution's own usage, with every provider call counted
+        -- exactly once even where a node's own reported usage already folds in
+        -- the usage of executions it started.
 }
 
 contract WorkflowDefinitionConstruction {
@@ -235,6 +765,14 @@ contract WorkflowDefinitionConstruction {
         -- configuration field exactly. Tool contracts, consumer tool gates,
         -- browser tools, ontology context, and execution options never
         -- disappear or widen permissions at a serialization boundary.
+        -- An explicitly positive total-work timeout reaches persisted researcher
+        -- configuration and survives fresh and changed builds, public data
+        -- export/import and executable source rendering. Omission retains the
+        -- existing node, enclosing execution and fallback precedence; preserving
+        -- the value never resets the original campaign deadline. Public authored
+        -- construction rejects invalid non-null timeout values. Absent execution
+        -- options remain absent, while an explicitly empty options map and a
+        -- supplied map retain their declared presence through both round trips.
 }
 
 contract ExecutionEventStream {
@@ -316,6 +854,10 @@ contract ExecutionDurability {
         -- durable source evidence beyond the canonical trace. A delayed, stale
         -- or duplicate publication adds no fact; a newer revision never removes
         -- evidence or changes the canonical order of retained executions.
+        -- A late generated-tree completion bookend refreshes its own completed
+        -- child execution, including the new source fact in the trace revision.
+        -- Its separate source-campaign link does not redirect that refresh to
+        -- the campaign. Repeated delivery creates no duplicate trace revision.
 }
 
 contract ExecutionRecovery {
@@ -333,6 +875,50 @@ contract ExecutionRecovery {
     @invariant IdempotentResume
         -- Repeated recovery requests converge on the same frontier and do not
         -- duplicate resumptions, completions, or externally visible effects.
+
+    @invariant OwnedWorkIsNotAbandoned
+        -- Every start of a leaf, delegate or researcher carries a durable
+        -- ownership lease
+        -- naming the worker that owns it, from the moment the start is
+        -- recorded, including while the work is queued. The owning worker
+        -- renews the lease while the work runs, however long it takes.
+        -- Recovery, whether automatic, periodic or requested, resumes a start
+        -- only once its latest lease has expired and the recovering worker is
+        -- not itself running it; a start recorded before leases existed counts
+        -- as expired. Work under a live lease, whether running or still queued
+        -- for its owner, is left to finish, so recovery never begins a second
+        -- invocation of healthy work, in one process or across many sharing
+        -- the same execution record.
+
+    @invariant AbandonedWorkStaysRecoverable
+        -- A start whose lease has expired without a completion, because its
+        -- owner stopped, is resumed under the same execution and node
+        -- identity. A resumed start is itself leased, so work whose resumer
+        -- also stops remains recoverable in turn; each start is resumed at
+        -- most once.
+
+    @invariant PeriodicRecoveryWritesOnlyWhenWorkIsAbandoned
+        -- The periodic recovery scan keeps its cadence and its run at startup,
+        -- but it decides before it writes. It records its trigger only when the
+        -- tenant has at least one start that recovery would resume now: an
+        -- unfinished start whose latest lease has expired and that the scanning
+        -- worker is not itself running, by the same lease decision recovery
+        -- uses, or an in-progress map coordinator that recovery has not yet
+        -- rebuilt (recovery rebuilds each coordinator once). With no unfinished work, or with only work under a live lease,
+        -- a scan records nothing, so no trigger, processor checkpoint or
+        -- transaction marker follows. When abandoned work exists, the scan
+        -- records the trigger as before and recovery resumes it as before; work
+        -- is never left unrecovered for longer than one scan interval after its
+        -- lease expires. When the scan cannot read the execution state, it
+        -- records the trigger as before rather than risk leaving work
+        -- unrecovered. The scan reads execution state through a context the
+        -- consumer registers at runtime start (the same context it gives
+        -- recovery); until a consumer registers one, every scan records its
+        -- trigger as before.
+        -- Found in a consumer's deployment: an idle tenant wrote 480 events an
+        -- hour from the scan alone (a trigger, a checkpoint and their two
+        -- transaction markers every 30 seconds), none of which recovered
+        -- anything.
 }
 
 contract CheckpointedResearcherExecution {
@@ -378,6 +964,24 @@ contract CheckpointedResearcherExecution {
         -- tree crosses the emit boundary before inline function forms are
         -- compiled for execution; source is not recovered from closure metadata
         -- and code nodes are not rewritten into a string-authored DSL.
+        -- An admitted source-bound generated callable can be reconstructed in a
+        -- new runtime lifetime under its original identity and declared context.
+        -- Its source/version/integrity and absence of unsupported captured
+        -- authority are validated before use, including when a binding already
+        -- exists. Malformed, shadowed/captured or conflicting definitions refuse
+        -- without widening execution capabilities. Cleanup releases only the
+        -- matching terminal binding when no live execution still needs it;
+        -- unrelated or shared live bindings remain. A saved completed child
+        -- result is consumed without invoking its callable again. Saved source,
+        -- pending callable recovery and completed-result reuse are distinct facts.
+
+    @invariant GeneratedChildSetupMustSucceedBeforeExecution
+        -- A generated child may run only after its blackboard declarations,
+        -- nodes and input/output bindings have been accepted and persisted.
+        -- A rejected setup operation stops compilation and returns its reason
+        -- to the researcher. No provider request may run with missing bindings
+        -- as a consequence of that rejection. An invalid schema remains invalid;
+        -- it is never replaced by an unconstrained or empty output contract.
 
     @invariant StableLogicalActionsPreventDuplicateWork
         -- Every provider call, inline provider primitive, inline tool call,
@@ -396,6 +1000,17 @@ contract CheckpointedResearcherExecution {
         -- stays attributable; a recorded result is never returned for a
         -- different call.
 
+    @invariant GeneratedChildToolCallsAreCheckpointed
+        -- A tool call made by a checkpointed campaign's generated child tree
+        -- is a campaign effect exactly like an inline tool call: it has a
+        -- stable logical action identity that also names the child node, it
+        -- is claimed under the campaign's ownership epoch before it begins,
+        -- it requires the tool to be declared checkpoint-safe, and it
+        -- completes with a durable receipt. When the child runs again after a
+        -- restart, a call whose receipt is complete returns the recorded
+        -- result without calling the tool; a claim without a completed
+        -- receipt is treated as an inline call's unresolved claim is.
+
     @invariant EffectsAreClaimedBeforeTheyHappen
         -- A campaign durably claims an effect, under its ownership epoch, before
         -- that effect begins. A claim that a later epoch has superseded is
@@ -404,6 +1019,23 @@ contract CheckpointedResearcherExecution {
         -- and commits its claim in the store's one atomic append boundary. The
         -- same claim is the record that makes an effect's outcome knowable
         -- afterwards.
+
+    @invariant ClassificationEffectsCommitAsOneBoundedSet
+        -- A checkpointed campaign's classification is prepared as a set of
+        -- effects and published in one atomic append under the campaign epoch:
+        -- exactly one outcome (an assignment or a fitness-axis deferral), at
+        -- most one injection record, at most one convergence capture (required
+        -- by, and only allowed with, a fresh-mint assignment naming the same
+        -- class), at most one domain-child mint (required by, and only allowed
+        -- with, a domain-child assignment naming the same child — the concept
+        -- and its parent edge exist before anything references the child), and
+        -- at most one domain-axis deferral, which is not an outcome but the
+        -- same occurrence's domain axis and may only ride an assignment under
+        -- the same campaign epoch. The set commits in one order — mint, capture,
+        -- injection, assignment, then the domain-axis deferral — the same order
+        -- the non-checkpointed wedge dispatches them, so an effect that
+        -- references another never lands before it. A timeout anywhere in
+        -- preparation leaves no partial set behind.
 
     @invariant CheckpointSafeToolsShareIdempotencyKeys
         -- A checkpointed researcher may invoke an effectful inline tool only
@@ -443,6 +1075,12 @@ contract CheckpointedResearcherExecution {
         -- explicitly, naming the value that could not be made durable; they are
         -- never silently dropped or stringified, and they never fail the campaign
         -- in a way that discards the iterations already completed.
+        -- If checkpointed recursive SCI code emits a tree and then fails before
+        -- dispatch, pending emission markers return to their pre-iteration
+        -- values before checkpointing. The rejected tree never dispatches;
+        -- prior completed tree provenance, ordinary durable scratch values and
+        -- actual tool effect receipts survive. This does not filter unsupported
+        -- user values or change terminal or checkpoint-opt-out behavior.
 
     @invariant TimeoutScopesRemainIndependent
         -- Provider-call, iteration, generated-child, researcher-campaign and
@@ -468,6 +1106,12 @@ contract CheckpointedResearcherExecution {
         -- and yields a retry of the same iteration from the last checkpoint,
         -- retaining its stable logical action identities. Exhausting the
         -- configured iteration-attempt limit terminates the campaign as timeout.
+        -- A raw, wrapped or safely normalized provider deadline retains the
+        -- same meaning through request capture, durable response and replay
+        -- without its live cause. Explicit non-timeout categories beat a stale
+        -- provider marker. Configured model-policy exhaustion remains terminal
+        -- and does not create a fresh iteration retry allowance. Classification
+        -- alone grants no call, deadline extension or budget.
 
     @invariant BlockedChildPreservesPriorProgress
         -- A blocked generated child truthfully blocks the parent researcher and
@@ -582,7 +1226,7 @@ contract CheckpointedResearcherExecution {
 enum ExecutionMode { draft | published }
 
 enum NodeKind {
-    llm | code | tool | condition | llm_condition | sequence | fallback |
+    llm | code | tool | condition | llm_condition | llm_decision | sequence | fallback |
     parallel | map_each | repl_researcher | delegate
 }
 
@@ -611,7 +1255,8 @@ enum EffectClaimStatus { claimed | completed | indeterminate }
 
 enum StructuredFailureKind {
     transport_failure | missing_forced_tool_call | tool_call_parsing_failed |
-    schema_validation_failed | empty_provider_response
+    schema_validation_failed | empty_provider_response | provider_finish_error |
+    provider_not_configured | budget_history_unavailable | undecided
 }
 
 ------------------------------------------------------------
@@ -840,13 +1485,24 @@ entity ProviderCallReservation {
     budget_execution: WorkflowExecution
     invoking_execution: WorkflowExecution
     node_execution: NodeExecution
-    campaign: Campaign
-    iteration: CampaignIteration
+    kind: NodeProviderCallReservation | CampaignProviderCallReservation
     logical_action_identity: String
     invocation_identity: String
     provider_attempt_ordinal: Integer
-    ownership_epoch: Integer
     reserved_at: Timestamp
+}
+
+-- Ordinary generation, conditions, decisions and checkpoint-opt-out researcher
+-- calls are owned by their actual node execution, without a fictional campaign.
+-- A shared delegate target containing a checkpointed researcher does not grant
+-- its ordinary producer or consumer siblings that researcher's campaign identity.
+variant NodeProviderCallReservation : ProviderCallReservation {
+}
+
+variant CampaignProviderCallReservation : ProviderCallReservation {
+    campaign: Campaign
+    iteration: CampaignIteration
+    ownership_epoch: Integer
 }
 
 entity ExecutionValue {
@@ -1092,6 +1748,7 @@ rule NodePartiallySucceeds {
     when: MapEachPartiallyCompletes(node_execution, aligned_outputs, failure_details)
     requires: node_execution.status = running
     requires: node_execution.node.kind = map_each
+    requires: outputs_valid_for(node_execution.node, aligned_outputs)
 
     ensures: node_execution.status = partial
     ensures: node_execution.completed_at = now
@@ -1488,6 +2145,10 @@ rule ProviderCallIsReservedBeforeInvocation {
         ownership_epoch
     )
     requires: budget_execution.options.llm_call_budget != null
+    requires: provider_budget_history_is_complete(budget_execution)
+    requires: budget_execution.status = running
+    requires: invoking_execution.status = running
+    requires: node_execution.status = running
     requires: invoking_execution = budget_execution
               or execution_is_descendant_of(invoking_execution, budget_execution)
     requires: node_execution.execution = invoking_execution
@@ -1506,7 +2167,7 @@ rule ProviderCallIsReservedBeforeInvocation {
               < budget_execution.options.llm_call_budget
 
     ensures:
-        let reservation = ProviderCallReservation.created(
+        let reservation = CampaignProviderCallReservation.created(
             budget_execution: budget_execution,
             invoking_execution: invoking_execution,
             node_execution: node_execution,
@@ -1516,6 +2177,48 @@ rule ProviderCallIsReservedBeforeInvocation {
             invocation_identity: invocation_identity,
             provider_attempt_ordinal: provider_attempt_ordinal,
             ownership_epoch: ownership_epoch,
+            reserved_at: now
+        )
+        InvokeProvider(
+            node_execution: node_execution,
+            reservation: reservation
+        )
+}
+
+-- The same family capacity applies to provider calls whose authority comes
+-- directly from a node execution, including a non-checkpointed researcher.
+rule NodeProviderCallIsReservedBeforeInvocation {
+    when: NodeProviderInvocationRequested(
+        budget_execution,
+        invoking_execution,
+        node_execution,
+        logical_action_identity,
+        invocation_identity,
+        provider_attempt_ordinal
+    )
+    requires: budget_execution.options.llm_call_budget != null
+    requires: provider_budget_history_is_complete(budget_execution)
+    requires: budget_execution.status = running
+    requires: invoking_execution.status = running
+    requires: node_execution.status = running
+    requires: invoking_execution = budget_execution
+              or execution_is_descendant_of(invoking_execution, budget_execution)
+    requires: node_execution.execution = invoking_execution
+    requires: provider_attempt_ordinal >= 0
+    requires: not exists ProviderCallReservation{
+        invocation_identity: invocation_identity
+    }
+    requires: provider_call_reservation_count(budget_execution)
+              < budget_execution.options.llm_call_budget
+
+    ensures:
+        let reservation = NodeProviderCallReservation.created(
+            budget_execution: budget_execution,
+            invoking_execution: invoking_execution,
+            node_execution: node_execution,
+            logical_action_identity: logical_action_identity,
+            invocation_identity: invocation_identity,
+            provider_attempt_ordinal: provider_attempt_ordinal,
             reserved_at: now
         )
         InvokeProvider(
@@ -1670,7 +2373,7 @@ invariant ProviderCallReservationAttemptsAreNonNegative {
 }
 
 invariant CampaignProviderCallReservationsAreAttributable {
-    for reservation in ProviderCallReservations:
+    for reservation in CampaignProviderCallReservations:
         (reservation.campaign.node_execution.execution = reservation.budget_execution
          or execution_is_descendant_of(
              reservation.campaign.node_execution.execution,
@@ -1775,6 +2478,34 @@ surface WorkflowAuthoring {
         fulfils WorkflowDefinitionConstruction
 }
 
+-- Internal boundary used by the native executor's injected provider-admission
+-- callbacks. The caller is an actual node execution, not an application user;
+-- exposing this boundary does not add a consumer-facing workflow command.
+surface ProviderInvocationAdmission {
+    facing node_execution: NodeExecution
+
+    provides:
+        NodeProviderInvocationRequested(
+            budget_execution,
+            invoking_execution,
+            node_execution,
+            logical_action_identity,
+            invocation_identity,
+            provider_attempt_ordinal
+        )
+        ProviderInvocationRequested(
+            budget_execution,
+            invoking_execution,
+            node_execution,
+            campaign,
+            iteration,
+            logical_action_identity,
+            invocation_identity,
+            provider_attempt_ordinal,
+            ownership_epoch
+        )
+}
+
 surface WorkflowExecutionAccess {
     facing consumer: WorkflowConsumer
     context workflow: Workflow
@@ -1795,8 +2526,12 @@ surface WorkflowExecutionAccess {
     contracts:
         fulfils ExecutionEventStream
         fulfils ExecutionDurability
+        fulfils ProviderAttemptObservation
         fulfils ExecutionRecovery
         fulfils CheckpointedResearcherExecution
+        fulfils ModelBackedCondition
+        fulfils ModelDecision
+        fulfils DelegationBoundary
         demands LeafExecutor
 
     @guarantee IsolatedBlackboard
@@ -1814,6 +2549,9 @@ surface WorkflowExecutionAccess {
     @guarantee ReferencedValueIntegrity
         -- If canonical bytes are stored outside the event record, ORC rejects
         -- missing or corrupted bytes rather than returning a partial value.
+        -- A schema-valid explicit null remains a present value through canonical
+        -- writes, forwarded references, seed inputs and public inspection. A
+        -- missing, foreign or cyclic reference must not fabricate a present null.
 
     @guarantee ExactNodeExecutionInspection
         -- Each independently durable node execution has a unique trace instance
@@ -1829,19 +2567,34 @@ surface WorkflowExecutionAccess {
         -- execution time remaining when the request begins.
 
     @guarantee SharedLlmCallBudget
-        -- An execution's LLM-call budget counts every provider invocation in
-        -- its trace family, including recursive researcher iterations, inline
-        -- researcher primitives and descendant generated-tree leaves. Once
-        -- exhausted, no branch can make a further provider call. Every physical
-        -- attempt in a checkpointed campaign first consumes a durable
-        -- provider-call reservation against the budget root. Those reservations,
-        -- rather than logical effect claims or a process-local cache, are the
-        -- authoritative count across restart. Reservations are admitted only
-        -- under the campaign's current ownership epoch. A failed durable read or
-        -- reservation append authorises no provider dispatch; it is never treated
-        -- as a zero count. An explicitly opted-out researcher retains the
-        -- non-checkpointed compatibility behavior and does not acquire the
-        -- durable reservation boundary.
+        -- An execution's LLM-call budget counts every ORC-managed provider
+        -- invocation in its trace family: ordinary generation, conditions,
+        -- decisions, recursive researcher iterations, inline primitives and
+        -- descendant generated or delegated leaves. Each retry and configured
+        -- fallback candidate consumes its own slot; a completed-effect replay
+        -- that dispatches no provider request consumes no additional slot.
+        -- Every bounded invocation first consumes one durable provider-call
+        -- reservation against the original budget execution. One authoritative
+        -- family count applies before and after restart and across competing
+        -- branches; a process-local counter cannot grant provider dispatch.
+        -- Reservations remain spent when dispatch or outcome is uncertain.
+        -- Admission requires the actual invoking node execution and family
+        -- ownership. Checkpointed campaigns additionally require their current
+        -- iteration and ownership epoch.
+        -- A rejoined generated child may use its exact durable current-parent
+        -- binding for fresh admission; its original options are not rewritten
+        -- and an older child execution cannot borrow that authority.
+        -- A generated ordinary leaf consumes
+        -- one slot, not separate ordinary and researcher slots for the same
+        -- attempt. Duplicate or invalid ownership grants no further dispatch.
+        -- Once authoritative remaining capacity is exhausted, no branch can
+        -- invoke a provider. A failed read, append or ownership check grants no
+        -- dispatch and is not reported as proven budget exhaustion.
+        -- Opting out of researcher checkpointing does not opt out of a bounded
+        -- execution's durable call budget. Unlimited executions retain their
+        -- no-cap behavior. Historical bounded executions whose complete spent
+        -- count cannot be established refuse further admission with a distinct
+        -- compatibility failure; they never infer zero or guess a remainder.
 
     @guarantee PartialTimeoutEvidence
         -- A workflow timeout preserves every independently durable node start and
@@ -1870,6 +2623,15 @@ surface WorkflowExecutionAccess {
         -- representation, including records reconstructed by replay from
         -- historically equivalent offset timestamp representations. A stored
         -- timeout remains directly retrievable by its trace identity.
+
+    @guarantee AggregateTraceMatchesCanonicalWrites
+        -- A completed map-each aggregate retains its producer identity and
+        -- its exact canonical value. Its completion and public trace report
+        -- the same written keys and value shapes, including empty and partial
+        -- aggregates. A composite forwarding those canonical values reports
+        -- their actual shapes too. Metadata cannot claim an empty output
+        -- while rehydration returns a produced aggregate. Profiles describe
+        -- values without copying their full payloads into lifecycle metadata.
 
     @guarantee TerminalCancellationFence
         -- Concurrent cancellation attempts converge on at most one durable

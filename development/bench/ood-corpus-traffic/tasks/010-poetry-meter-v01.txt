@@ -1,0 +1,5 @@
+; brief-id: b-036
+; group: poetry-meter
+; variant: 1
+
+Scansion required for the four attached poem fragments: Petrarchan sonnet, free verse, ghazal translation, and nursery rhyme. Perform line-by-line syllable marking for stressed and unstressed beats. Identify the specific form and exact rhyme scheme for each. Document all deviations from standard meter or structure, including foot substitutions and slant rhymes. Provide a two-sentence summary per piece explaining how these technical irregularities impact emotional pacing or tone. Do not add original text; restrict work to technical analysis of the provided excerpts. Ticket pending for full structural audit.

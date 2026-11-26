@@ -1,0 +1,14 @@
+; brief-id: b-006
+; group: compliance-checklist
+; variant: 6
+
+Hey there, I’m hoping you can help me dig out from under this PCI DSS 4.0 transition. We’re a small boutique retail group, and between the eight physical locations and our lean central office of about ten people, we’re spread pretty thin. Our QSA just gave us the heads-up that we need to be fully aligned with the 4.0 standards by our next assessment, and frankly, looking at the technical documentation is making my head spin. I’ve attached the full standard, but here is a quick breakdown of where we stand:
+
+{Org Size: 25 total staff, Tech Stack: Square POS / Meraki Firewalls / AWS backend, PCI Level: Level 3 Merchant}
+
+I need you to take the attached standard and translate it into a specific, actionable compliance checklist for my team. Please group the tasks strictly by the 12 primary Requirements of the PCI standard. For each control, I need three things:
+1. Owner: Assign anything related to technical implementation or network security to 'Kevin.' Anything involving policy writing, staff training, or physical site security should go to 'Maria.'
+2. Evidence Required: Tell us exactly what we need to show the auditor. Be specific, like 'Firewall configuration screenshot,' 'Signed employee training log,' or 'Attestation of Scan.' 
+3. Due Date: We need to be 100% audit-ready by November 1st. Please map out a schedule of deadlines starting from next month so we aren't rushing at the end.
+
+Please keep the output focused entirely on the checklist of controls and documentation requirements. I don’t need a high-level risk assessment matrix or a breakdown of our merchant bank contracts—I just need the "to-do" list so I can get Kevin and Maria moving on this immediately. Thanks a ton for the help!

@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: haikusecurity (off-domain); variant b of 3 — the same domain re-asked with a different concrete instance.
+Six findings from a mobile app penetration test (hard-coded API key in the binary, certificate pinning absent, insecure local storage of the refresh token, deep-link parameter injection, verbose crash logs with PII, outdated OpenSSL). Write one haiku per finding, 5-7-5 syllables, that conveys the risk through imagery and remains technically precise, never naming the vulnerability class outright. Return a vector of 6 maps {:finding "1" :haiku "..."}.

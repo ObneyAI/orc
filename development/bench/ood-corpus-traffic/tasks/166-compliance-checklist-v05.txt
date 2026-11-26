@@ -1,0 +1,13 @@
+; brief-id: b-006
+; group: compliance-checklist
+; variant: 5
+
+I’ve just been handed the full text of the GDPR requirements, and honestly, our 15-person marketing agency is nowhere near ready for this. We’re handling more European client data than ever, and I’m terrified we’re going to miss a processing requirement that leads to a massive fine. I’ve attached the regulation and our company overview—can you please turn this into a clear, actionable compliance checklist for us?
+
+Please follow these steps exactly:
+1. Break the checklist down by the specific Articles of the GDPR so we can map our progress directly to the law.
+2. For every control, assign an Owner: either 'Alex' for anything related to data processing, tech, or security, or 'Jordan' for legal, consent forms, and privacy policies.
+3. Include a column for 'Evidence Required'—specify exactly what we need to save, like a 'Data Processing Agreement' or 'Consent Log CSV.'
+4. Set a 'Due Date' column for every item, staggering them so we are 100% finished by May 15th.
+
+Keep this strictly as an implementation to-do list for our internal controls. I don't need a risk matrix, a DPIA template, or a breakdown of our service contracts. I just need to know what we have to do, who is doing it, and what proof we need to keep in our compliance folder. Thanks!

@@ -1,0 +1,18 @@
+; brief-id: b-032
+; group: worksheet-generation
+; variant: 6
+
+I’m in a bit of a rush preparing for my high school biology lab tomorrow morning, but I realized I’m severely short on practice material for the chemistry unit I’m covering with my second-period class. Specifically, we are diving into the intersection of stoichiometry and gas laws, and I really need a solid set of problems printed and ready to go before the 8:00 AM bell. 
+
+Could you generate a comprehensive practice worksheet based on these specific parameters?
+
+| Requirement | Specification |
+| :--- | :--- |
+| **Subject** | Chemistry (Stoichiometry & Gas Laws) |
+| **Focus** | Mass-to-volume and volume-to-volume at STP |
+| **Student Level** | Honors High School |
+| **Item Count** | 22 unique problems |
+
+I’d like the worksheet to include a healthy mix of standard calculation problems and at least a few conceptual "what if" scenarios to keep the honors students on their toes. Please provide the worksheet items first, followed by a separate, clearly labeled answer key. For the key, it is crucial that you include the worked-out solutions for every single problem; I need the balanced chemical equations shown alongside the specific conversion factors used for liters-to-moles. 
+
+Additionally, please tag each item with a difficulty rating: use "Tier 1" for simple one-step conversions, "Tier 2" for multi-step mass-to-gas problems, and "Tier 3" for limiting reactant problems that involve gas volumes. I don't need any fluff—no lesson plans, learning objectives, or rubrics—just the raw questions and the tagged, worked-out solutions so the students can self-check their logic. I still have a massive stack of lab reports to grade before I can even think about sleep, so I really appreciate you taking this off my plate! Thanks!

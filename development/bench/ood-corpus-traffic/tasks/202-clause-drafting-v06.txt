@@ -1,0 +1,18 @@
+; brief-id: b-005
+; group: clause-drafting
+; variant: 6
+
+I'm currently killing time in the O'Hare lounge waiting for a delayed flight to Tokyo, and I'm desperate to finalize this SaaS Master Agreement before I have to board and lose my connection. We’re finally at the finish line with a new enterprise client, but their legal team is being incredibly granular regarding uptime guarantees and support response obligations. I’ve gone through the internal technical specs from our last sync, and I need you to translate those requirements into a formal Service Level Agreement (SLA) clause to be inserted as a new Schedule to the main contract.
+
+The core technical parameters we've committed to are as follows:
+
+{
+  "Target_Availability": "99.95% per calendar month",
+  "Maintenance_Window": "Sunday 02:00-04:00 UTC",
+  "Response_Times": "P1: 1hr, P2: 4hrs, P3: 1 business day",
+  "Service_Credits": "10% of monthly fee for every 0.1% drop below target"
+}
+
+Please draft the full legal text for this clause, ensuring it is fully enforceable under New York law. Pay particular attention to the language around the service credits; they need to be framed as a liquidated damages mechanism or a price adjustment to avoid being struck down as an unenforceable penalty. 
+
+In addition to the draft, please provide a brief rationale explaining why this specific credit structure protects our recurring revenue while remaining defensible as 'market standard.' I also need two or three strategic negotiation notes on how to push back if they demand 'Termination for Cause' rights triggered by a single month’s breach. My goal is to ensure that a one-off technical hiccup doesn't give them a silver bullet to walk away from the entire multi-year contract. Thanks!

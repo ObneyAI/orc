@@ -1,0 +1,22 @@
+{:slug "002-clause-drafting-v01",
+ :group "clause-drafting",
+ :in-domain? false,
+ :variant 1,
+ :expected-output-kind
+ "the drafted clause text plus a short rationale and negotiation notes",
+ :brief-id "b-005",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of #uuid "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 324, :completion-tokens 121, :total-tokens 445},
+  :draft-prompt-sha256
+  "0ef8ad986b9c414cf1ce4ce715a62a2f1b4ab44da70fc54bf52da0aa6e3a3503",
+  :polish-usage
+  {:prompt-tokens 296, :completion-tokens 121, :total-tokens 417},
+  :polish-prompt-sha256
+  "cdac6a597b6ffcfbcbc3a65cfb5f1807f8244fe23a4667c8cb7a18eccb63ed38",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

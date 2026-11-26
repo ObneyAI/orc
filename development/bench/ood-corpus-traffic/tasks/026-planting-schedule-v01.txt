@@ -1,0 +1,5 @@
+; brief-id: b-021
+; group: planting-schedule
+; variant: 1
+
+Need a weekly maintenance schedule for zone 8b south-facing balcony. Setup: 4x 15-gallon pots and 6x window boxes. Crops: cherry tomatoes, spinach, basil, radishes. Strict 2-hour maintenance window on Sundays only. Build a full succession plan for April through October to ensure zero empty containers and max yield. Schedule must explicitly list dates for sowing, transplanting, liquid feeding, and harvest windows. Focus purely on the calendar of tasks. Do not include landscape design or pest identification. Successive planting logic required for continuous turnover within the space constraints provided.

@@ -1,0 +1,12 @@
+; brief-id: b-009
+; group: game-balance
+; variant: 6
+
+Hey, I’m currently stuck in Terminal 4 waiting for a delayed connection, and the feedback from the 'Deep Space Logistics' board game playtest just hit my inbox. To be honest, it’s a bit of a mess. The 'Asteroid Mining' faction is completely out-pacing the 'Trade Hub' strategy because the fuel-to-yield ratio is far too generous in the current build. Our testers are reporting that players are hitting the 100-VP win condition by turn 12, whereas the trade builds are lucky to hit 60 by then.
+
+I've pulled the current base values from the config file for you here:
+{Fuel_Cost: 2, Ore_Yield: 15, Mining_Drone_HP: 10, Trade_Contract_Value: 8, Warp_Gate_Tax: 5}
+
+The logs from the last 150 Tabletop Simulator sessions confirm the bias, showing a 78% win rate for Mining. I need you to run 20,000 game simulations to figure out how to bring that win rate down to a stable 49-51% range. Please focus your efforts on adjusting the Ore_Yield and Warp_Gate_Tax variables specifically. I need you to iterate the simulations until the average game length for all winning strategies—not just mining—converges at approximately 18 turns (with a tolerance of +/- 1 turn). 
+
+Once you have the results, please put together a report containing the proposed numeric adjustments for those specific keys, a summary of the simulated win/pick rates after your changes are applied, the number of iterations it took to hit the target, and a brief rationale explaining how these tweaks prevent the 'infinite fuel' loop without making the early-game mining phase feel like a tedious grind. I’ve got a meeting with the publisher as soon as I land, so please have this ready for me to review during my taxi ride to the office. Thanks!

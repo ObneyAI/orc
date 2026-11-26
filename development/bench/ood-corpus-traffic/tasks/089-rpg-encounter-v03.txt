@@ -1,0 +1,14 @@
+; brief-id: b-031
+; group: rpg-encounter
+; variant: 3
+
+Please design a high-stakes Pathfinder 2e encounter for a Level 9 party (Giant Instinct Barbarian, Maestro Bard, Thief Rogue, and Cosmic Oracle) situated in the 'Crystalline Nerve-Center' of a sentient floating fortress. The goal is to disable the core before a city-destroying weapon fires. The output must strictly follow this schema:
+
+*   **Encounter Setup:** Describe the aesthetics of the Nerve-Center and the immediate atmospheric tension.
+*   **The Opposition:** Provide full stat blocks for one 'Resonant Core Guardian' (Level 11 Elite) and three 'Neural Sentinels' (Level 7).
+*   **Hazardous Terrain:** Define mechanical effects for 'Vibrational Floor Plates' and 'Energy Leaks,' specifically regarding movement penalties and AC modifiers.
+*   **Tactical Script:** A turn-by-turn breakdown of the Guardian’s strategy, focusing on utilizing Sentinels as cover and exploiting the verticality of crystal spires.
+*   **Difficulty Rationale:** A mathematical breakdown confirming this meets the 'Severe' threat threshold for a 4-person Level 9 party.
+*   **Scaling Toggles:** Provide specific adjustments to shift the difficulty to 'Extreme' (if the party is performing too well) or 'Moderate' (if the party arrives depleted).
+
+Constraint: Keep the focus exclusively on this single chamber and ensure all mechanics are compliant with PF2e rules.

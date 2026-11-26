@@ -1,0 +1,9 @@
+; brief-id: b-005
+; group: clause-drafting
+; variant: 4
+
+Hey! Hope you're having a good one. I am absolutely swamped trying to get this new UK-based creative director onboarded before I head out for the long weekend. We’re finally at the finish line with the contract, but I realized we never actually added a solid non-compete clause, which is a big deal since they'll have access to our entire 2025 product roadmap. 
+
+I’ve uploaded the current draft and the quick bullet points I jotted down about what we need. Basically, I need them restricted from working with our direct competitors in the boutique fitness space for 6 months after they leave, but strictly within the UK market so we don't run into any 'restraint of trade' issues over there. 
+
+Can you draft a new non-compete clause that fits UK employment law? I need the specific clause text for Section 12, a quick rationale on why the 6-month window is the "sweet spot" for enforceability, and some negotiation notes for when their agent inevitably says it's too broad. Thanks a million—you’re a lifesaver!

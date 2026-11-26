@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: marathon (off-domain); variant b of 3 — the same domain re-asked with a different concrete instance.
+Design a 12-week half-marathon training programme for a 29-year-old who runs 15 miles/week and wants to finish in 1:45. She has flat feet with occasional plantar fasciitis, trains on a treadmill in winter, and can run four days a week. Give a week-by-week plan with easy, tempo, interval and long runs, target paces, weekly mileage, a two-week taper, and signs that mean she should back off. Output: {:week-by-week [...] :paces {...} :red-flags ...}

@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: recipe (off-domain); variant c of 3 — the same domain re-asked with a different concrete instance.
+A food truck's chicken tikka masala recipe serves 8. Scale it to 150 portions for a festival, holding food safely for a 6-hour service: scaled spice quantities (adjust heat and salt sub-linearly), marination in advance, cooking in two 40-litre kettles, a reheating and holding plan, and a per-portion cost. Output: {:scaled-ingredients ... :technique ... :holding-plan ... :cost-per-portion ...}

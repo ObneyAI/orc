@@ -1,0 +1,22 @@
+{:slug "204-cloud-cost-review-v06",
+ :group "cloud-cost-review",
+ :in-domain? false,
+ :variant 6,
+ :expected-output-kind
+ "ranked savings opportunities with estimated monthly saving, risk and implementation steps",
+ :brief-id "b-027",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1612, :completion-tokens 337, :total-tokens 1949},
+  :draft-prompt-sha256
+  "894c040dd3840ee32454a9749ac645bb6d5ca3eb6820b47555429cd381487e84",
+  :polish-usage
+  {:prompt-tokens 517, :completion-tokens 333, :total-tokens 850},
+  :polish-prompt-sha256
+  "2df0633059f93b125693d92c5bb3a9ad02bba93aab11801705d26bb858d87186",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: contractcompare (in-domain sanity); variant c of 3 — the same domain re-asked with a different concrete instance.
+Two drafts of a commercial lease (landlord's draft and tenant's redline) differ in rent escalation, maintenance obligations, assignment rights and renewal options. Produce an executive summary of the differences, a clause-by-clause comparison quoting both texts, an assessment of the impact on the tenant, and a recommendation on which positions to hold. Output: {:summary ... :diffs [...] :impact ... :recommendation ...}

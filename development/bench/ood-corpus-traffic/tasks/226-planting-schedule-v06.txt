@@ -1,0 +1,14 @@
+; brief-id: b-021
+; group: planting-schedule
+; variant: 6
+
+I’m working on a farm-to-table inventory update and need a concise, professional summary for our upcoming seasonal menu. Could you review the following delivery details for our English Peas—specifically looking at the yield and quality grade—and draft a short paragraph for the kitchen staff?
+
+Variety: English Peas (Garden)
+Batch ID: EP-2024-04
+Arrival Weight: 45 lbs (un-shelled)
+Estimated Yield: 18 lbs (shelled)
+Grade: Premium (AAA)
+Storage Temp: 34°F
+
+Please ensure the description notes that this batch has a high sugar content and should be blanched for no more than 90 seconds to preserve the color. We need to emphasize that because the yield is only 18 lbs after shelling, we must strictly portion them for the spring risotto rather than using them as a general side dish. Please present the final response as a clear, instructional memo.

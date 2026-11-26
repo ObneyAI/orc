@@ -1,0 +1,22 @@
+{:slug "176-worksheet-generation-v05",
+ :group "worksheet-generation",
+ :in-domain? false,
+ :variant 5,
+ :expected-output-kind
+ "the worksheet items, a separate answer key with worked solutions, and difficulty tags",
+ :brief-id "b-032",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1415, :completion-tokens 274, :total-tokens 1689},
+  :draft-prompt-sha256
+  "dfea00529827be4ece502172efb226b6ed8893bee45bc7278f369a68708a3819",
+  :polish-usage
+  {:prompt-tokens 447, :completion-tokens 275, :total-tokens 722},
+  :polish-prompt-sha256
+  "71180259ff984598fbf3725fc63039491f4d615fd443c3b86615c11fe2bad293",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

@@ -1,0 +1,9 @@
+; brief-id: b-018
+; group: content-calendar
+; variant: 6
+
+I’m finally sitting down to map out the 'Bloom & Branch' newsletter schedule for next month, and frankly, I’m drowning between the nursery expansion and the new volunteer training. I’ve been looking over our engagement metrics, and we really need to lean into that 'Community Garden' vibe—our audience responds so much better to gritty, real-world advice than polished corporate fluff. The primary goal for this month is to drive a significant increase in our 'Seedling Sponsor' sign-ups. The big catch is that our lead botanist will be in the field for the first two weeks, so I won’t have any technical experts available for live Q&A sessions or complex tutorials. We need to work strictly within these parameters: 
+
+{Newsletter_Frequency: "Every Tuesday (Deep Dive) and Friday (Flash Update)", Primary_CTA: "Donation Portal or Volunteer Signup", Content_Focus: "Sustainable urban gardening"}
+
+Could you put together a dated calendar for next month based on this? I need a specific entry for every send date that includes the Topic, the Format (like a 'How-to Guide' vs. a 'Success Story'), a compelling Hook to ensure they actually open the email, the specific Call to Action, and the specific Success Metric I should report to the board (like click-through rate or forward rate). Please just give me the strategic roadmap and the calendar structure. Do NOT write the actual email copy and definitely don't worry about any SEO auditing or keyword stuff—I just need to know what we’re sending and when so I can start coordinating the volunteer photos. Thanks a ton!

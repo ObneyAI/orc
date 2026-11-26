@@ -1,0 +1,5 @@
+; brief-id: b-017
+; group: api-migration-guide
+; variant: 1
+
+Draft a technical migration guide for moving client apps from REST v1 to v2. Use the attached API references and internal breaking changes log. Document the major SDK version bumps for Java and Python. Provide a full endpoint compatibility table and a pre-deployment checklist. Include side-by-side code samples comparing the new webhook payload structure to the old one. Specifically detail the schema changes within the GraphQL bridge. Instructions must provide actual transition logic and step-by-step migration procedures rather than just a list of updates. Keep the tone concise for developer partners.

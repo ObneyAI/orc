@@ -1,0 +1,12 @@
+; brief-id: b-002
+; group: contract-comparison
+; variant: 5
+
+Please review the 'Enterprise_SaaS_Service_Agreement_Draft_B' received from the prospect’s legal team this morning. This is their counter to the 'Standard_Sales_MSA_v4' we sent on Monday, and it includes several aggressive pivots regarding liability and data sovereignty. I need a comprehensive breakdown before our internal sync tomorrow to ensure we aren't blindsided during negotiations. Please follow these steps:
+
+1. Draft a high-level Executive Summary that outlines the major commercial shifts between our standard template and their proposed redlines.
+2. Build a granular, section-by-section comparison table. You must quote our original language alongside their proposed text for every change made to the 'Indemnification,' 'Data Security Audits,' and 'Governing Law' sections.
+3. Conduct an Impact Analysis regarding their new 'Service Level Agreements' and 'Service Credits' language. I specifically need to know how these changes increase our operational overhead and the specific risk of revenue leakage.
+4. Provide a final Recommendation list. Categorize these into three 'non-starters' that would violate our security compliance and three 'concessions' we can offer to keep this on track for our Q3 closing goals.
+
+Accuracy is critical here—I need to walk into this meeting with a clear defense for every point.

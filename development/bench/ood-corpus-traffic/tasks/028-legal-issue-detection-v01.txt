@@ -1,0 +1,9 @@
+; brief-id: b-001
+; group: legal-issue-detection
+; variant: 1
+
+Review the attached IP assignment and non-compete clauses in this California-based contractor agreement for enforceability issues and overreach. Provide a list of legal concerns categorized by severity and law area. For each issue, cite the specific text from Section 7.1 and 7.2 below and provide revisions that protect future freelance work in the fintech sector while maintaining standard confidentiality. 
+
+7.1. Ownership of Work Product. Contractor agrees that all deliverables, inventions, and work product developed during the term shall be deemed works made for hire and the sole property of the Company. 
+
+7.2. Non-Competition. For a period of twenty-four (24) months following termination, Contractor shall not engage in any business activity that competes, directly or indirectly, with the Company's current or planned business lines anywhere in North America.

@@ -183,7 +183,7 @@
           candidates [(tree-class-candidate class-id 0.65 0.8)]]
       (with-redefs [ontology/search-descriptions (fn [_ _] candidates)
                     tc/get-consolidation-total* (fn [_ _ _] 0)]
-        (let [result (ontology/classify-task {} {:task-signature "x" :threshold 0.7})]
+        (let [result (ontology/classify-task {:domain-family-parent-fn (fn [_ _] nil)} {:task-signature "x" :threshold 0.7})]
           (is (= :bundle (:assigned-via result)) "the bundle branch reports :bundle")
           (is (= class-id (:assigned-tree-id result)) "sanity: bundled onto the existing class")
           (is (false? (:was-fresh-mint? result)))
@@ -231,7 +231,12 @@
                                        [{:document-id (str child-id)
                                          :reasoning "tighter fit"
                                          :fitness-score 0.9}])]
-        (let [result (ontology/classify-task {} {:task-signature "x" :threshold 0.7})]
+        ;; CV-E: get-tree-class-children now consults :domain-family-parent-fn
+        ;; for every child (default: a real store read, fail-closed on a
+        ;; missing store) — this test's own concern is :assigned-via
+        ;; provenance, not family exclusion, so it declares no families here.
+        (let [result (ontology/classify-task {:domain-family-parent-fn (fn [_ _] nil)}
+                                              {:task-signature "x" :threshold 0.7})]
           (is (= child-id (:assigned-tree-id result)) "sanity: the walk descended to the child")
           (is (= :walk-down (:assigned-via result))
               "a descent to a deeper EXISTING class is :walk-down")

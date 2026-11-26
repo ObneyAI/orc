@@ -5,9 +5,11 @@
    and re-exports the public API."
   (:require ;; Load core namespaces for side-effect registration of commands/queries
             [ai.obney.orc.orc-service.core.commands]
+            [ai.obney.orc.orc-service.core.provider-observations :as provider-observations]
             [ai.obney.orc.orc-service.core.queries]
             [ai.obney.orc.orc-service.core.todo-processors]
             [ai.obney.orc.orc-service.core.periodic-tasks]
+            [ai.obney.orc.orc-service.core.recovery-scan :as recovery-scan]
             ;; Load schemas for registration
             [ai.obney.orc.orc-service.interface.schemas]
             ;; Re-export from interface sub-namespaces
@@ -20,13 +22,21 @@
             [ai.obney.orc.orc-service.interface.stream-schemas :as stream-schemas]
             ;; DSL for workflow building
             [ai.obney.orc.orc-service.core.dsl :as dsl]
+            [ai.obney.orc.orc-service.core.family-usage :as family-usage]
+            [ai.obney.orc.orc-service.core.execution-family :as execution-family]
             ;; Resolving blackboard values from the canonical write log
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             ;; WS-2a: the orc block-signal primitive (opaque payload)
             [ai.obney.orc.orc-service.core.block :as block]
             ;; Shape, not values — the profile lifecycle events record instead
             ;; of a blackboard value
-            [ai.obney.orc.orc-service.core.profile :as profile]))
+            [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.judge-definition :as judge-definition]))
+
+(def max-alert-window
+  "The largest trailing window a judge alert may watch (the outcomes a node
+   version's performance keeps in order)."
+  judge-definition/max-alert-window)
 
 ;; =============================================================================
 ;; Read Models
@@ -82,8 +92,23 @@
 (def get-judges rm/get-judges)
 (def get-judge rm/get-judge)
 
+;; Family usage: provider usage of an execution plus all its descendants.
+(def get-family-usage family-usage/get-family-usage)
+
+;; Execution family: every node execution of an execution and of every nested
+;; child execution, in durable completion order, with resolved values.
+(def get-execution-family execution-family/get-execution-family)
+
 ;; Tick functions
 (def get-tick rm/get-tick)
+(def assessment-origin
+  "The durable assessment origin ({:assessment-id uuid}) of a tick, or nil when
+   the tick is not work done for an assessment. Inherited by every child run."
+  rm/assessment-origin)
+(def get-tick-execution-context
+  "The execution context a snapshot-based tick runs under ({:nodes-by-id
+   :version-number :instruction-overrides ...}), or nil for a snapshot-less tick."
+  rm/get-tick-execution-context)
 (def get-researcher-campaign rm/get-researcher-campaign)
 (def get-researcher-iteration-records rm/get-researcher-iteration-records)
 (def get-researcher-effect-claims rm/get-researcher-effect-claims)
@@ -120,6 +145,9 @@
 
 (def value-log-exec-context value-log/exec-context)
 (def value-log-execution-key value-log/execution-key)
+(def value-log-engine-key? value-log/engine-key?)
+(def value-log-tick-started-event value-log/tick-started-event)
+(def value-log-tick-seeds value-log/tick-seeds)
 (def value-log-writes-for value-log/writes-for)
 (def value-log-latest-values value-log/latest-values)
 (def value-log-input-seeds-by-iteration value-log/input-seeds-by-iteration)
@@ -147,6 +175,10 @@
 
    Options:
      :timeout-ms - Max execution time in ms (default 300000 = 5 minutes)
+     :execution-deadline-ms - Optional absolute cap for provider admission.
+                              A shorter local timeout wins; a spent cap stays
+                              spent. It does not shorten the blocking wait or
+                              interrupt arbitrary code (timeout-ms is unchanged).
      :use-version - Specific version number to execute (overrides execution-mode)
      :force-draft - Force draft execution even if execution-mode is :published
      :correlation-id - Optional UUID grouping independent roots and all their
@@ -165,10 +197,27 @@
      (sheet/execute ctx sheet-id inputs :use-version 2)  ;; Execute specific version"
   runtime/execute)
 
+(def get-execution-result
+  "Read a terminal execution result from durable tenant-scoped events.
+
+   Returns nil when the tick has no terminal result. Otherwise returns its
+   original status, trace ID, canonical outputs and output sources, and the
+   executed version when recorded. This operation does not start execution,
+   register a completion waiter, resume work, or append events."
+  runtime/durable-terminal-result)
+
 (def resume-in-progress!
   "Resume abandoned leaf, delegate, and researcher frontiers after processors
    restart against the same durable event store. Repeated calls are idempotent."
   runtime/resume-in-progress!)
+
+(def register-recovery-scan-context-fn!
+  "Let the periodic recovery scan decide before it writes. `f` maps a tenant id
+   to that tenant's ORC context (the one passed to `resume-in-progress!`), or
+   nil. With it, a scan records its trigger only when a start is abandoned (or
+   the state cannot be read); without it the scan records every beat as before.
+   Returns a no-arg function that removes the registration."
+  recovery-scan/register-context-fn!)
 
 ;; =============================================================================
 ;; Live Streaming (ephemeral observation layer — see docs/STREAMING.md)
@@ -223,8 +272,10 @@
 ;; Node builders
 (def llm dsl/llm)
 (def code dsl/code)
+(def tool dsl/tool)
 (def condition dsl/condition)
 (def llm-condition dsl/llm-condition)
+(def llm-decision dsl/llm-decision)
 (def sequence dsl/sequence)
 (def fallback dsl/fallback)
 (def parallel dsl/parallel)
@@ -276,3 +327,8 @@
 ;;
 ;; See: components/gepa/
 ;; See: development/src/gepa_training_demo.clj for full examples
+
+;; Exact provider attempt observations via authorized registered commands/queries.
+(def start-provider-attempt! provider-observations/start-provider-attempt!)
+(def complete-provider-attempt! provider-observations/complete-provider-attempt!)
+(def provider-attempts provider-observations/provider-attempts)

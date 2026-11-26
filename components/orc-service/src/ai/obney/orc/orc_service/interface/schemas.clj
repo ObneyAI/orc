@@ -18,9 +18,83 @@
   "Behavior tree node types"
   [:enum :leaf :sequence :fallback :condition :llm-condition :parallel :map-each :repl-researcher :delegate])
 
+(def judge-rubric-schema
+  "A judge's declared rubric: what it grades (criterion, optional stance), the
+   integer-keyed level descriptions (contiguous, >= 2, validated by
+   `judge-definition`), and whether grading must carry written feedback."
+  [:map
+   [:criterion :string]
+   [:stance {:optional true} :string]
+   [:bands [:map-of :int :string]]
+   [:feedback [:enum :required :none]]])
+
+(def judge-config-schema
+  "A judge definition. Models resolve like any ORC model node: a declared model
+   id or a registered provider name, else the runtime provider."
+  [:map
+   [:type :keyword] ;; :grounding, :completeness, :instruction-following, :reasoning, :custom
+   [:criteria {:optional true} :string]
+   ;; Weight for aggregation. The Gap-8 composite-score normalizer accepts ANY
+   ;; non-negative number (integer or double) -- values are re-scaled per the
+   ;; share-remaining-mass policy. Negative weights are rejected because they
+   ;; are nonsensical for a probability mass.
+   [:weight {:optional true} [:and number? [:>= 0.0]]]
+   [:provider {:optional true} :keyword]
+   [:model {:optional true} :string]
+   [:timeout-ms {:optional true} :int]
+   [:rubric {:optional true} judge-rubric-schema]
+   [:purposes {:optional true} [:set [:enum :monitoring :learning]]]
+   ;; Default false: a completion whose status is :failure, :timeout or :blocked
+   ;; is recorded UNGRADABLE (:subject-failed), never judged. true judges failed
+   ;; completions like any other.
+   [:assess-failures? {:optional true} :boolean]
+   ;; Opt-in threshold watching (`judge-definition/alert-error` validates the
+   ;; values): only a judge declaring an alert has its node versions' trailing
+   ;; window watched.
+   [:alert {:optional true} [:map
+                             [:below number?]
+                             [:window :int]
+                             [:min-coverage number?]]]
+   [:sheet-id {:optional true} :uuid]]) ;; For :custom type - reference to judge sheet
+
 (def executor-type
   "Executor types for leaf nodes"
-  [:enum :ai :code :tool])
+  [:enum :ai :code :tool :decision])
+
+(def decision-record
+  "Durable record of one model decision: what was offered, what the provider
+   answered, and whether the answer was set aside for the abstention option.
+   A native decision model's own reported distribution, confidence (choice) or
+   probability (yes/no) is carried exactly as reported; none is ever
+   synthesised from a bare answer, so these keys are absent for providers that
+   report none."
+  [:map {:closed true
+         :description "Durable record of one model decision"}
+   [:offered {:description "Every option id the model was offered, verbatim"}
+    [:vector :any]]
+   [:answer {:optional true
+             :description "The answer the provider returned (present when one was obtained)"}
+    :any]
+   [:abstained? {:description "True when the answer was set aside for the abstention option"}
+    :boolean]
+   [:set-aside {:optional true
+                :description "The answer that was set aside when abstained? is true"}
+    :any]
+   [:probabilities {:optional true
+                    :description "Provider-reported probability per offered option id"}
+    [:map-of :string number?]]
+   [:confidence {:optional true
+                 :description "Provider-reported confidence of a choice, as reported"}
+    number?]
+   [:probability {:optional true
+                  :description "Provider-reported probability that a yes/no proposition holds"}
+    number?]
+   [:band-distribution {:optional true
+                        :description "A banded decision's reported distribution, exactly as reported: probabilities keyed by 0-indexed level position, the expected position, and confidence when reported"}
+    [:map {:closed true}
+     [:probabilities [:map-of :string number?]]
+     [:expected-position number?]
+     [:confidence {:optional true} number?]]]])
 
 (def node-status
   "Node execution status.
@@ -51,14 +125,43 @@
 (def structured-failure-kind
   [:enum :transport-failure :missing-forced-tool-call
    :tool-call-parsing-failed :schema-validation-failed
-   :empty-provider-response])
+   :empty-provider-response :provider-finish-error
+   ;; The call named a provider that was never configured: nothing was sent, so
+   ;; this is distinct from a transport failure and says what to fix.
+   :provider-not-configured
+   ;; Durable budget admission cannot safely reconstruct older call history.
+   ;; This rejects the request before transport, without provider evidence.
+   :budget-history-unavailable
+   ;; Historical fallback work cannot infer an unretained effective profile.
+   :model-plan-incompatible
+   ;; A banded decision whose most probable level is an exact tie: no band is
+   ;; selected (distinct from a malformed answer).
+   :undecided])
+
+(def provider-transport-evidence
+  [:and
+   [:map {:closed true}
+    [:type {:optional true}
+     [:enum :litellm/invalid-request :litellm/invalid-config
+      :litellm/authentication-error :litellm/authorization-error
+      :litellm/provider-not-found :litellm/model-not-found
+      :litellm/unsupported-feature :litellm/quota-exceeded
+      :litellm/rate-limit :litellm/timeout :litellm/connection-error
+      :litellm/server-error :litellm/provider-error
+      :litellm/invalid-response :litellm/streaming-error :litellm/content-filter
+      :litellm/internal-error :litellm/resource-exhausted]]
+    [:http-status {:optional true} [:int {:min 100 :max 599}]]]
+   ;; Absent classification is omitted, never an empty or fabricated record.
+   [:fn seq]])
 
 (def provider-failure-evidence
   [:map
    [:provider :string]
+   [:transport {:optional true} provider-transport-evidence]
    [:model {:optional true} [:maybe :string]]
    [:response-id {:optional true} [:maybe :string]]
    [:finish-reason {:optional true} [:maybe :string]]
+   [:native-finish-reason {:optional true} [:maybe :string]]
    [:tool-call-present? {:optional true} :boolean]
    [:tool-call-name {:optional true} [:maybe :string]]
    [:usage {:optional true} [:maybe [:map
@@ -268,6 +371,79 @@
 ;; Domain Schemas (for use in query results)
 ;; =============================================================================
 
+
+(def ordinary-provider-reservation
+  [:map
+    [:admission-kind [:= :ordinary]]
+    [:budget-sheet-id :uuid] [:budget-tick-id :uuid]
+    [:sheet-id :uuid] [:tick-id :uuid] [:node-id :uuid] [:node-start-id :uuid]
+    [:exec-context [:map {:closed true}
+      [:ai.obney.orc.orc-service.core.todo-processors/map-each-index {:optional true} [:and :int [:>= 0]]]
+      [:ai.obney.orc.orc-service.core.todo-processors/map-each-parent {:optional true} :uuid]
+      [:ai.obney.orc.orc-service.core.todo-processors/tick-iteration {:optional true} [:and :int [:>= 1]]]]]
+    [:candidate-index [:and :int [:>= 0]]] [:node-attempt [:and :int [:>= 1]]]
+    [:logical-action-identity :string] [:invocation-identity :string]
+    [:provider-attempt-ordinal [:and :int [:>= 0]]] [:reserved-at :string]])
+
+(def legacy-provider-reservation-command
+  [:map
+    [:budget-sheet-id :uuid]
+    [:budget-tick-id :uuid]
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:campaign-sheet-id :uuid]
+    [:campaign-tick-id :uuid]
+    [:campaign-node-id :uuid]
+    [:iteration-index [:and :int [:>= 0]]]
+    [:logical-action-identity :string]
+    [:invocation-identity :string]
+    [:provider-attempt-ordinal [:and :int [:>= 0]]]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:reserved-at :string]])
+
+(def legacy-provider-reservation-event
+  [:map
+    [:budget-sheet-id :uuid]
+    [:budget-tick-id :uuid]
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:campaign-tick-id :uuid]
+    [:campaign-node-id :uuid]
+    [:iteration-index [:and :int [:>= 0]]]
+    [:logical-action-identity :string]
+    [:invocation-identity :string]
+    [:provider-attempt-ordinal [:and :int [:>= 0]]]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:reserved-at :string]])
+
+(def campaign-provider-reservation
+  [:map
+    [:admission-kind [:= :campaign]]
+    [:budget-sheet-id :uuid]
+    [:budget-tick-id :uuid]
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:campaign-sheet-id :uuid]
+    [:campaign-tick-id :uuid]
+    [:campaign-node-id :uuid]
+    [:iteration-index [:and :int [:>= 0]]]
+    [:logical-action-identity :string]
+    [:invocation-identity :string]
+    [:provider-attempt-ordinal [:and :int [:>= 0]]]
+    [:ownership-epoch [:and :int [:>= 1]]]
+    [:reserved-at :string]
+    [:model-configuration-id {:optional true} :string]
+    [:model-logical-action-id {:optional true} :string]])
+
+(def recoverable-fn
+  [:map {:closed true}
+   [:version [:= 1]] [:context-version [:= 1]]
+   [:source :string] [:sha256 [:re #"[0-9a-f]{64}"]]
+   [:bindings [:map {:closed true}]]])
+
 (defschemas domain
   {::sheet
    [:map
@@ -290,6 +466,14 @@
     [:parent-id {:optional true} :uuid]
     [:children-ids [:vector :uuid]]
     [:status node-status]
+    [:provider {:optional true} :keyword]
+    [:fallback-models {:optional true}
+     [:vector [:map {:closed true}
+               [:model [:string {:min 1}]]
+               [:provider {:optional true} :keyword]
+               [:options {:optional true} [:map]]]]]
+    [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]
+    [:model-fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]
     ;; Leaf-only fields
     [:instruction {:optional true} :string]
     [:reads [:vector :keyword]]
@@ -298,7 +482,15 @@
     ;; Executor fields (for leaf nodes)
     [:executor {:optional true} executor-type]     ;; :ai, :code, :tool
     [:model {:optional true} :string]              ;; OpenRouter model ID (e.g., "google/gemini-2.5-flash")
+    ;; :decision executor only: read key holding run-time options, confidence
+    ;; floor and the abstention option written when the floor is not met.
+    [:options-from {:optional true} :keyword]
+    [:bands-from {:optional true} :keyword]
+    [:min-confidence {:optional true} :double]
+    [:abstain {:optional true} :any]
     [:fn {:optional true} :string]                 ;; Fully-qualified fn symbol for :code executor
+    [:recoverable-fn {:optional true} recoverable-fn]
+    [:tool {:optional true} :string]               ;; Authored tool name for :tool executor
     [:tools {:optional true} [:vector :keyword]]   ;; Tools available to AI for :ai executor
     [:options {:optional true} :map]               ;; Per-node executor/ORC LLM options
     [:retry {:optional true} [:map
@@ -385,6 +577,18 @@
 
    ::node-trace
    [:map
+    [:model-fallback {:optional true}
+     [:map [:policy [:enum :temporary-transport :all-transport]]
+      [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused :output-exposed]]
+      [:candidate-index :int] [:candidate-node-id {:optional true} :uuid]
+      [:requested-model [:maybe :string]] [:provider {:optional true} :keyword]
+      [:attempts {:optional true} [:vector :map]]
+      [:recovery-accounting {:optional true}
+       [:map [:source [:= :runtime-receipts]] [:coverage [:enum :complete :partial]]
+        [:completed-receipts [:and :int [:>= 0]]]
+        [:missing-earlier-receipts [:and :int [:>= 0]]]
+        [:incomplete-receipts {:optional true} [:and :int [:>= 0]]]]]
+      [:predecessor-event-id {:optional true} :uuid]]]
     [:node-id :uuid]
     [:delegate-child-tick-id {:optional true} :uuid]
     [:delegate-child-status {:optional true} :keyword]
@@ -423,6 +627,7 @@
     ;; :sheet/node-trace-detail query, which rehydrates on demand.
     [:read-keys {:optional true} [:vector :keyword]]     ;; keys read
     [:write-keys {:optional true} [:vector :keyword]]    ;; keys written
+    [:missing-write-keys {:optional true} [:vector :keyword]]
     [:rejected-write-keys {:optional true} [:vector :keyword]]
     [:input-profile {:optional true} [:map-of :keyword :map]]
     [:output-profile {:optional true} [:map-of :keyword :map]]
@@ -494,12 +699,26 @@
   #{:ontology/assign-task-class
     :ontology/record-task-classification-deferral})
 
+(def ^:private domain-mint-assignment-vias
+  #{:mint-domain-child :mint-sibling-domain-child})
+
+(defn- domain-axis-deferral?
+  "RS-3: the domain-axis deferral recorded BESIDE a structural assignment
+   (the wedge's :domain-classification-deferral effect). It reuses the
+   deferral command with :fallback-source :domain-coverage, so by name it
+   looks like a second outcome — it is not; it is the domain axis of the
+   same outcome."
+  [effect]
+  (and (= :ontology/record-task-classification-deferral (:command/name effect))
+       (= :domain-coverage (:fallback-source effect))))
+
 (defn- valid-researcher-classification-commit?
   [{:keys [sheet-id tick-id node-id ownership-epoch effects]}]
   (let [outcomes
         (filterv
-         #(contains? researcher-classification-outcome-command-names
-                     (:command/name %))
+         #(and (contains? researcher-classification-outcome-command-names
+                          (:command/name %))
+               (not (domain-axis-deferral? %)))
          effects)
         outcome (first outcomes)
         injections
@@ -509,11 +728,31 @@
         fresh-mint-assignment?
         (and (= :ontology/assign-task-class (:command/name outcome))
              (true? (:was-fresh-mint? outcome)))
-        convergence-capture (first convergence-captures)]
+        convergence-capture (first convergence-captures)
+        ;; RS-3: the domain-child mint and the domain-axis deferral.
+        assignment? (= :ontology/assign-task-class (:command/name outcome))
+        domain-mint-assignment?
+        (and assignment?
+             (contains? domain-mint-assignment-vias (:assigned-via outcome)))
+        mints (filterv #(= :ontology/mint-domain-child (:command/name %)) effects)
+        mint (first mints)
+        domain-deferrals (filterv domain-axis-deferral? effects)
+        domain-deferral (first domain-deferrals)
+        ;; CV-A item 5: a genuine tenant-wide family birth (the outcome
+        ;; carries a :merge-verdict — the merge judge ran, never the legacy
+        ;; per-parent sibling mint) embeds the minted concept SYNCHRONOUSLY
+        ;; inside the SAME :ontology/mint-domain-child event batch (never a
+        ;; separate staged effect — a checkpointed commit prepares every
+        ;; effect from one pre-commit snapshot, so a second command could
+        ;; never read back a concept this same commit is creating). No
+        ;; :ontology/embed-concept effect is ever staged by this wedge.
+        bound-to-campaign?
+        (fn [effect]
+          (and (= sheet-id (:source-sheet-id effect))
+               (= tick-id (:source-tick-id effect))
+               (= node-id (:source-node-id effect))))]
     (and (= 1 (count outcomes))
-         (= sheet-id (:source-sheet-id outcome))
-         (= tick-id (:source-tick-id outcome))
-         (= node-id (:source-node-id outcome))
+         (bound-to-campaign? outcome)
          (= ownership-epoch (:researcher-ownership-epoch outcome))
          (<= (count injections) 1)
          (every? #(and (= sheet-id (:sheet-id %))
@@ -525,7 +764,23 @@
                 (= :tree-class (:granularity convergence-capture))
                 (= (:assigned-tree-id outcome)
                    (:target-identifier convergence-capture)))
-           (empty? convergence-captures)))))
+           (empty? convergence-captures))
+         ;; A domain-mint assignment carries exactly one mint naming the same
+         ;; child (the concept + edge exist before the classification refers
+         ;; to them — MintDomainChild); any other outcome carries none.
+         (if domain-mint-assignment?
+           (and (= 1 (count mints))
+                (bound-to-campaign? mint)
+                (= (:assigned-tree-id outcome) (:child-tree-id mint)))
+           (empty? mints))
+         ;; At most one domain-axis deferral, only beside an assignment, bound
+         ;; to the same campaign epoch (DeferralIsVisible on the domain axis).
+         (<= (count domain-deferrals) 1)
+         (or (nil? domain-deferral)
+             (and assignment?
+                  (bound-to-campaign? domain-deferral)
+                  (= ownership-epoch
+                     (:researcher-ownership-epoch domain-deferral)))))))
 
 (defschemas commands
   {;; -------------------------------------------------------------------------
@@ -619,11 +874,29 @@
     [:executor executor-type]
     [:model {:optional true} :string]
     [:fn {:optional true} :string]
+    [:recoverable-fn {:optional true} recoverable-fn]
+    [:tool {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
+    [:options-from {:optional true} :keyword]
+    [:bands-from {:optional true} :keyword]
+    [:min-confidence {:optional true} :double]
+    [:abstain {:optional true} :any]
     ;; Phase 4B: opt-in gated tool-caller builder FQN for :code nodes inside
     ;; generated (Phase-2) trees. Mirrors the node-level :tool-caller-fn hook.
-    [:tool-caller-fn {:optional true} :string]]
+    [:tool-caller-fn {:optional true} :string]
+    [:tool-contracts {:optional true} tool-contracts]]
+
+   :sheet/set-node-model-policy
+   [:map [:sheet-id :uuid] [:node-id :uuid]
+    [:options {:optional true} [:map]]
+    [:provider {:optional true} :keyword]
+    [:fallback-models {:optional true}
+     [:vector [:map {:closed true}
+               [:model [:string {:min 1}]]
+               [:provider {:optional true} :keyword]
+               [:options {:optional true} [:map]]]]]
+    [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]]
 
    :sheet/set-node-retry
    [:map
@@ -734,18 +1007,15 @@
    [:map
     [:sheet-id :uuid]
     [:judge-name :string]
-    [:judge-config [:map
-                    [:type :keyword]  ;; :grounding, :completeness, :instruction-following, :reasoning, :custom
-                    [:criteria {:optional true} :string]  ;; Custom criteria description
-                    ;; Weight for aggregation. The Gap-8 composite-score
-                    ;; normalizer accepts ANY non-negative number (integer
-                    ;; or double) — values are re-scaled per the share-
-                    ;; remaining-mass policy. Negative weights are rejected
-                    ;; because they're nonsensical for a probability mass.
-                    [:weight {:optional true} [:and number? [:>= 0.0]]]
-                    [:provider {:optional true} :keyword]
-                    [:model {:optional true} :string]
-                    [:sheet-id {:optional true} :uuid]]]] ;; For :custom type - reference to judge sheet
+    [:judge-config judge-config-schema]]
+
+   :sheet/revise-judge
+   [:map
+    [:sheet-id :uuid]
+    [:judge-name :string]
+    ;; The complete new definition (not a patch). Identical to the current
+    ;; definition is a conflict: it is not a new revision.
+    [:judge-config judge-config-schema]]
 
    :sheet/set-node-judges
    [:map
@@ -798,6 +1068,16 @@
    [:original-start-event-id :uuid]
     [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]
     [:inputs [:map-of :keyword :any]]]
+
+   :sheet/renew-node-execution-lease
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:exec-context {:optional true} [:map-of :keyword :any]]
+    [:start-event-id :uuid]
+    [:lease-owner :uuid]
+    [:lease-expires-at :string]]
 
    :sheet/checkpoint-researcher-iteration
    ;; Preserve strict version-1 validation while admitting the split version-2
@@ -865,21 +1145,7 @@
     [:claimed-at :string]]
 
    :sheet/reserve-provider-call
-   [:map
-    [:budget-sheet-id :uuid]
-    [:budget-tick-id :uuid]
-    [:sheet-id :uuid]
-    [:tick-id :uuid]
-    [:node-id :uuid]
-    [:campaign-sheet-id :uuid]
-    [:campaign-tick-id :uuid]
-    [:campaign-node-id :uuid]
-    [:iteration-index [:and :int [:>= 0]]]
-    [:logical-action-identity :string]
-    [:invocation-identity :string]
-    [:provider-attempt-ordinal [:and :int [:>= 0]]]
-    [:ownership-epoch [:and :int [:>= 1]]]
-    [:reserved-at :string]]
+   [:or ordinary-provider-reservation campaign-provider-reservation legacy-provider-reservation-command]
 
    :sheet/complete-researcher-effect
    [:map
@@ -919,6 +1185,7 @@
     ;; Values rejected by blackboard schema validation. They are persisted as
     ;; trace-only :sheet/execution-value-rejected events and never projected
     ;; into canonical blackboard state.
+    [:missing-write-keys {:optional true} [:vector :keyword]]
     [:rejected-writes {:optional true} [:map-of :keyword :any]]
     [:write-sources {:optional true} [:map-of :keyword
                                       [:map [:tick-id :uuid] [:event-id :uuid]]]]
@@ -945,6 +1212,10 @@
     ;; for declared writes). Persisted so (node-output <node-id>) can
     ;; retrieve the full text post-hoc.
     [:raw-response {:optional true} :string]
+    ;; Model-backed condition: the boolean answer, present only when a valid
+    ;; answer was obtained (absent on provider failure).
+    [:condition-answer {:optional true} :boolean]
+    [:decision {:optional true} decision-record]
     [:failure-kind {:optional true} structured-failure-kind]
     [:provider-evidence {:optional true} provider-failure-evidence]
     ;; Gap-7: carry through to the event body. See :completion-kind on
@@ -956,10 +1227,27 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
+    ;; The part of :usage this node spent itself. Present only when :usage
+    ;; also folds in generated child ticks (a repl-researcher's Phase-2
+    ;; tree), which record the same tokens on their own completions.
+    [:own-usage {:optional true}
+     [:map
+      [:prompt-tokens {:optional true} :int]
+      [:completion-tokens {:optional true} :int]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     ;; Resolved provider model for durable LLM-call provenance. Present on
     ;; every model-backed leaf completion; absent on deterministic leaves.
     [:model {:optional true} :string]
+    ;; ModelLeafRecordsResolvedModel: the model the node was configured with
+    ;; (absent when it runs on the provider's default) and the model the
+    ;; provider reported using (absent when none was reported, and on failures
+    ;; that carry no provider evidence). :model above is the resolved one when
+    ;; reported, else the configured one.
+    [:requested-model {:optional true} :string]
+    [:resolved-model {:optional true} :string]
     ;; D-008: present when a map-each terminates in :partial or :failure.
     [:partial-summary {:optional true} partial-summary]
     ;; C-2a-2: node-type keyword (:llm, :code, :map-each, :parallel, ...).
@@ -994,7 +1282,8 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     ;; Optional :input-profile keyed by node :reads — describes input
     ;; characteristics so future judges/pattern-matchers can correlate
     ;; outcomes to input shape.
@@ -1312,15 +1601,37 @@
     [:executor executor-type]
     [:model {:optional true} :string]
     [:fn {:optional true} :string]
+    [:recoverable-fn {:optional true} recoverable-fn]
+    [:tool {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
+    [:options-from {:optional true} :keyword]
+    [:bands-from {:optional true} :keyword]
+    [:min-confidence {:optional true} :double]
+    [:abstain {:optional true} :any]
     ;; Phase 4B: opt-in gated tool-caller builder FQN (see set-node-executor).
     [:tool-caller-fn {:optional true} :string]
+    [:tool-contracts {:optional true} tool-contracts]
     [:previous-executor {:optional true} executor-type]
     [:previous-model {:optional true} :string]
     [:previous-fn {:optional true} :string]
     [:previous-tools {:optional true} [:vector :keyword]]
     [:previous-options {:optional true} :map]]
+
+   :sheet/node-model-policy-set
+   [:map [:sheet-id :uuid] [:node-id :uuid]
+    [:options {:optional true} [:map]]
+    [:provider {:optional true} :keyword]
+    [:fallback-models {:optional true}
+     [:vector [:map {:closed true}
+               [:model [:string {:min 1}]]
+               [:provider {:optional true} :keyword]
+               [:options {:optional true} [:map]]]]]
+    [:fallback-policy {:optional true} [:enum :temporary-transport :all-transport]]]
+
+   :sheet/model-fallback-policy-set
+   [:map [:sheet-id :uuid] [:node-id :uuid]
+    [:model-fallback-policy [:enum :temporary-transport :all-transport]]]
 
    :sheet/node-retry-set
    [:map
@@ -1449,15 +1760,17 @@
    [:map
     [:sheet-id :uuid]
     [:judge-name :string]
-    [:judge-config [:map
-                    [:type :keyword]
-                    [:criteria {:optional true} :string]
-                    ;; Mirror of :sheet/declare-judge :weight constraint.
-                    [:weight {:optional true} [:and number? [:>= 0.0]]]
-                    [:provider {:optional true} :keyword]
-                    [:model {:optional true} :string]
-                    [:sheet-id {:optional true} :uuid]]]
+    [:judge-config judge-config-schema]
+    ;; Always present on the new commands' events; absent on legacy events.
+    [:revision-number {:optional true} :int]
     [:criteria-version {:optional true} :int]]
+
+   :sheet/judge-revised
+   [:map
+    [:sheet-id :uuid]
+    [:judge-name :string]
+    [:judge-config judge-config-schema]
+    [:revision-number :int]]
 
    :sheet/node-judges-set
    [:map
@@ -1505,7 +1818,22 @@
     [:resumed-from-event-id {:optional true} :uuid]
     ;; Candidate ownership is carried only by a recovered checkpointed
     ;; researcher start. Ordinary starts and leaf/delegate recovery omit it.
-    [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]]
+    [:researcher-ownership-epoch {:optional true} [:and :int [:> 0]]]
+    ;; OwnedWorkIsNotAbandoned: a leaf or delegate start names the worker that
+    ;; owns it and when that ownership lapses unless renewed. Absent on
+    ;; historical starts, which recovery treats as an expired lease.
+    [:lease-owner {:optional true} :uuid]
+    [:lease-expires-at {:optional true} :string]]
+
+   :sheet/node-execution-lease-renewed
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:exec-context {:optional true} [:map-of :keyword :any]]
+    [:start-event-id :uuid]
+    [:lease-owner :uuid]
+    [:lease-expires-at :string]]
 
    :sheet/ephemeral-evaluations-recorded
    [:map
@@ -1519,8 +1847,28 @@
               [:status [:enum :success :failure :running :partial :timeout :blocked]]
               [:node-type [:enum :condition :sequence :fallback]]]]]]
 
+   :sheet/model-fallback-transition-recorded
+   [:map [:sheet-id :uuid] [:tick-id :uuid] [:node-id :uuid]
+    [:candidate-node-id :uuid] [:candidate-index :int] [:predecessor-event-id :uuid]
+    [:next-node-id {:optional true} :uuid]
+    [:policy [:enum :temporary-transport :all-transport]]
+    [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused :eligible-transport]]
+    [:advanced? :boolean] [:inputs {:optional true} :map]]
+
    :sheet/node-execution-completed
    [:map
+    [:model-fallback {:optional true}
+     [:map [:policy [:enum :temporary-transport :all-transport]]
+      [:reason [:enum :selected :blocked :timeout :candidates-exhausted :policy-refused :output-exposed]]
+      [:candidate-index :int] [:candidate-node-id {:optional true} :uuid]
+      [:requested-model [:maybe :string]] [:provider {:optional true} :keyword]
+      [:attempts {:optional true} [:vector :map]]
+      [:recovery-accounting {:optional true}
+       [:map [:source [:= :runtime-receipts]] [:coverage [:enum :complete :partial]]
+        [:completed-receipts [:and :int [:>= 0]]]
+        [:missing-earlier-receipts [:and :int [:>= 0]]]
+        [:incomplete-receipts {:optional true} [:and :int [:>= 0]]]]]
+      [:predecessor-event-id {:optional true} :uuid]]]
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
@@ -1534,6 +1882,7 @@
     ;; Resolve them with core/value-log.
     [:write-keys {:optional true} [:vector :keyword]]
     [:write-profile {:optional true} [:map-of :keyword :map]]
+    [:missing-write-keys {:optional true} [:vector :keyword]]
     [:rejected-write-keys {:optional true} [:vector :keyword]]
     [:rejected-write-profile {:optional true} [:map-of :keyword :map]]
     [:write-sources {:optional true} [:map-of :keyword
@@ -1565,6 +1914,10 @@
     ;; completions. Source for the (node-output <node-id>) drill-down
     ;; when a failed LLM leaf has no successful writes to show.
     [:raw-response {:optional true} :string]
+    ;; Model-backed condition: the boolean answer, present only when a valid
+    ;; answer was obtained (absent on provider failure).
+    [:condition-answer {:optional true} :boolean]
+    [:decision {:optional true} decision-record]
     [:failure-kind {:optional true} structured-failure-kind]
     [:provider-evidence {:optional true} provider-failure-evidence]
     ;; Optional per-node token usage when the node was an LLM call.
@@ -1572,8 +1925,20 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
+    ;; See :sheet/complete-node-execution :own-usage. Family-usage sums
+    ;; (or :own-usage :usage) so descendants are never counted twice.
+    [:own-usage {:optional true}
+     [:map
+      [:prompt-tokens {:optional true} :int]
+      [:completion-tokens {:optional true} :int]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     [:model {:optional true} :string]
+    ;; See :sheet/complete-node-execution :requested-model / :resolved-model.
+    [:requested-model {:optional true} :string]
+    [:resolved-model {:optional true} :string]
     ;; D-008: present on map-each completion events when status is :partial or :failure.
     [:partial-summary {:optional true} partial-summary]
     ;; C-2a-2: node-type keyword carried through from the command for the
@@ -1607,7 +1972,8 @@
      [:map
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
-      [:total-tokens {:optional true} :int]]]
+      [:total-tokens {:optional true} :int]
+      [:cost {:optional true :description "Provider-reported cost of the calls, when reported"} number?]]]
     ;; :input-profile keyed by :reads keys. Each value is
     ;; {:length N :word-count N :line-count N}. Captures input shape
     ;; so future judges can correlate quality outcomes to inputs.
@@ -2022,20 +2388,7 @@
     [:resolved-at [:maybe :string]]]
 
    :sheet/provider-call-reserved
-   [:map
-    [:budget-sheet-id :uuid]
-    [:budget-tick-id :uuid]
-    [:sheet-id :uuid]
-    [:tick-id :uuid]
-    [:node-id :uuid]
-    [:campaign-tick-id :uuid]
-    [:campaign-node-id :uuid]
-    [:iteration-index [:and :int [:>= 0]]]
-    [:logical-action-identity :string]
-    [:invocation-identity :string]
-    [:provider-attempt-ordinal [:and :int [:>= 0]]]
-    [:ownership-epoch [:and :int [:>= 1]]]
-    [:reserved-at :string]]
+   [:or ordinary-provider-reservation campaign-provider-reservation legacy-provider-reservation-event]
 
    :rlm/researcher-effect-completed
    [:map
@@ -2347,7 +2700,13 @@
     [:outputs {:optional true} [:maybe :map]]
     [:rejected-outputs {:optional true} [:maybe :map]]
     [:failure-kind {:optional true} [:maybe structured-failure-kind]]
-    [:provider-evidence {:optional true} [:maybe provider-failure-evidence]]]
+    [:condition-answer {:optional true} [:maybe :boolean]]
+    [:decision {:optional true} [:maybe decision-record]]
+    [:provider-evidence {:optional true} [:maybe provider-failure-evidence]]
+    ;; ModelLeafRecordsResolvedModel, from the node's completion event.
+    [:model {:optional true} [:maybe :string]]
+    [:requested-model {:optional true} [:maybe :string]]
+    [:resolved-model {:optional true} [:maybe :string]]]
 
    ;; Run Detail Screen Query (single trace with full data)
    :sheet/run-detail-screen

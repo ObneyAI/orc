@@ -1,0 +1,148 @@
+WARNING: sequence already refers to: #'clojure.core/sequence in namespace: ai.obney.orc.orc-service.core.dsl, being replaced by: #'ai.obney.orc.orc-service.core.dsl/sequence
+WARNING: sequence already refers to: #'clojure.core/sequence in namespace: ai.obney.orc.orc-service.interface, being replaced by: #'ai.obney.orc.orc-service.interface/sequence
+WARNING: run! already refers to: #'clojure.core/run! in namespace: runner, being replaced by: #'runner/run!
+21:05:43.919 [main] INFO litellm.config -- Registered configuration {:config-name :openrouter}
+21:05:43.920 [main] INFO litellm.config -- Registered configuration {:config-name :openrouter/google/gemini-3-flash-preview}
+21:05:43.920 [main] INFO litellm.config -- Registered configuration {:config-name :openrouter/qwen/qwen3.5-flash-02-23}
+Emitting synthetic padding (80 entries for FAISS clustering floor)...
+Seeding description corpus (45 hand-authored seeds)...
+Driving concept-graph projectors...
+Building ColBERT description index (one-time, expect 2-4 min)...
+21:05:49.793 [async-thread-macro-42] INFO ai.djl.util.Platform -- Found matching platform from: jar:file:/Users/darylroberts/.m2/repository/ai/djl/huggingface/tokenizers/0.31.1/tokenizers-0.31.1.jar!/native/lib/tokenizers.properties
+21:05:49.795 [async-thread-macro-42] DEBUG ai.djl.huggingface.tokenizers.jni.LibUtils -- Using cache dir: /Users/darylroberts/.djl.ai/tokenizers/0.20.3-0.31.1-cpu-osx-aarch64
+21:05:49.795 [async-thread-macro-42] DEBUG ai.djl.huggingface.tokenizers.jni.LibUtils -- Loading huggingface library from: /Users/darylroberts/.djl.ai/tokenizers/0.20.3-0.31.1-cpu-osx-aarch64
+21:05:49.795 [async-thread-macro-42] DEBUG ai.djl.huggingface.tokenizers.jni.LibUtils -- Loading native library: /Users/darylroberts/.djl.ai/tokenizers/0.20.3-0.31.1-cpu-osx-aarch64/libtokenizers.dylib
+21:05:49.886 [async-thread-macro-42] DEBUG ai.djl.repository.zoo.DefaultModelZoo -- Scanning models in repo: class ai.djl.repository.SimpleRepository, file:/Users/darylroberts/.cache/orc/colbert/answerai-colbert-small-v1/model.onnx
+21:05:49.886 [async-thread-macro-42] DEBUG ai.djl.repository.zoo.ModelZoo -- Loading model with Criteria:
+	Application: UNDEFINED
+	Input: class ai.djl.ndarray.NDList
+	Output: class ai.djl.ndarray.NDList
+	Engine: OnnxRuntime
+	ModelZoo: ai.djl.localmodelzoo
+	No translator supplied
+
+21:05:49.886 [async-thread-macro-42] DEBUG ai.djl.repository.zoo.ModelZoo -- Searching model in specified model zoo: ai.djl.localmodelzoo
+21:05:49.888 [async-thread-macro-42] DEBUG ai.djl.engine.Engine -- Registering EngineProvider: Rust
+21:05:49.888 [async-thread-macro-42] DEBUG ai.djl.engine.Engine -- Registering EngineProvider: OnnxRuntime
+21:05:49.889 [async-thread-macro-42] DEBUG ai.djl.engine.Engine -- Registering EngineProvider: PyTorch
+21:05:49.889 [async-thread-macro-42] DEBUG ai.djl.engine.Engine -- Found default engine: PyTorch
+21:05:49.889 [async-thread-macro-42] DEBUG ai.djl.repository.zoo.ModelZoo -- Checking ModelLoader: ai.djl.localmodelzoo:model.onnx UNDEFINED [
+	ai.djl.localmodelzoo/model.onnx/model.onnx {}
+]
+21:05:49.890 [async-thread-macro-42] DEBUG ai.djl.repository.MRL -- Preparing artifact: file:/Users/darylroberts/.cache/orc/colbert/answerai-colbert-small-v1/model.onnx, ai.djl.localmodelzoo/model.onnx/model.onnx {}
+21:05:49.890 [async-thread-macro-42] DEBUG ai.djl.repository.SimpleRepository -- Skip prepare for local repository.
+21:05:50.460 [async-thread-macro-42] WARN ai.djl.onnxruntime.engine.OrtEngine -- CUDA is not supported OnnxRuntime engine: Error code - ORT_EP_FAIL - message: Failed to find CUDA shared provider
+21:05:50.464 [async-thread-macro-42] DEBUG ai.djl.pytorch.jni.LibUtils -- Using cache dir: /Users/darylroberts/.djl.ai/pytorch/2.5.1-cpu-osx-aarch64
+21:05:50.468 [async-thread-macro-42] DEBUG ai.djl.pytorch.jni.LibUtils -- Loading native library: /Users/darylroberts/.djl.ai/pytorch/2.5.1-cpu-osx-aarch64/libomp.dylib
+21:05:50.470 [async-thread-macro-42] DEBUG ai.djl.pytorch.jni.LibUtils -- Loading native library: /Users/darylroberts/.djl.ai/pytorch/2.5.1-cpu-osx-aarch64/libc10.dylib
+21:05:50.472 [async-thread-macro-42] DEBUG ai.djl.pytorch.jni.LibUtils -- Loading native library: /Users/darylroberts/.djl.ai/pytorch/2.5.1-cpu-osx-aarch64/libtorch_cpu.dylib
+21:05:50.589 [async-thread-macro-42] DEBUG ai.djl.pytorch.jni.LibUtils -- Loading native library: /Users/darylroberts/.djl.ai/pytorch/2.5.1-cpu-osx-aarch64/libtorch.dylib
+21:05:50.590 [async-thread-macro-42] DEBUG ai.djl.pytorch.jni.LibUtils -- Loading native library: /Users/darylroberts/.djl.ai/pytorch/2.5.1-cpu-osx-aarch64/0.31.1-libdjl_torch.dylib
+21:05:50.599 [async-thread-macro-42] INFO ai.djl.pytorch.engine.PtEngine -- PyTorch graph executor optimizer is enabled, this may impact your inference latency and throughput. See: https://docs.djl.ai/master/docs/development/inference_performance_optimization.html#graph-executor-optimization
+21:05:50.601 [async-thread-macro-42] INFO ai.djl.pytorch.engine.PtEngine -- Number of inter-op threads is 14
+21:05:50.601 [async-thread-macro-42] INFO ai.djl.pytorch.engine.PtEngine -- Number of intra-op threads is 10
+21:05:50.604 [async-thread-macro-42] INFO ai.djl.onnxruntime.engine.OrtModel -- Onnx extension not found in classpath.
+Index state: {:events-since-last-rebuild 0, :last-rebuild-timestamp "2026-09-16T02:05:55.240873Z", :index-built? true}
+
+ ============================================================ 
+
+  ORC RLM Benchmark Runner started (corpus seeded, index built)
+
+ ============================================================ 
+
+:started
+:reindex-state-after-settle {:events-since-last-rebuild 0, :last-rebuild-timestamp "2026-09-16T02:05:55.240873Z", :index-built? true}
+WARNING: run! already refers to: #'clojure.core/run! in namespace: rs-p1-coverage-probe, being replaced by: #'rs-p1-coverage-probe/run!
+  pass 1 behavioral-fresh-mint-001-haiku-audit          outcome=:matched fit=0.60 cov=partial label=security-audit-haiku valid=2/2
+  pass 1 behavioral-fresh-mint-002-melody-encoding-pi   outcome=:matched fit=0.90 cov=uncovered label=algorithmic-melody-generation valid=6/6
+  pass 1 behavioral-fresh-mint-003-recipe-iambic-pentameter outcome=:matched fit=0.92 cov=partial label=metered-recipe-generation valid=8/8
+  pass 1 code-001-refactor-auth-middleware              outcome=:matched fit=0.92 cov=partial label=middleware-refactoring-design valid=4/4
+  pass 1 code-002-investigate-flaky-test                outcome=:matched fit=0.80 cov=partial label=ci-test-flakiness-diagnosis valid=4/4
+  pass 1 code-003-generate-property-tests               outcome=:matched fit=0.95 cov=partial label=property-based-test-generation valid=4/4
+  pass 1 code-004-debug-memory-leak                     outcome=:matched fit=0.92 cov=partial label=jvm-performance-diagnostics valid=5/5
+  pass 1 conv-001-vector-vs-sql-tradeoffs               outcome=:matched fit=0.95 cov=partial label=technical-infrastructure-comparison valid=6/6
+  pass 1 conv-002-architecture-recommendation           outcome=:matched fit=0.95 cov=partial label=software-architecture-recommendation valid=6/6
+  pass 1 conv-003-junior-debug-strategy                 outcome=:matched fit=0.60 cov=uncovered label=debugging-mentorship-guide valid=4/4
+  pass 1 conv-004-defend-controversial-choice           outcome=:matched fit=0.95 cov=uncovered label=paas-migration-memo valid=6/6
+  pass 1 data-001-schema-migration                      outcome=:matched fit=0.90 cov=uncovered label=database-migration-planning valid=4/4
+  pass 1 data-002-etl-cdc-to-dim                        outcome=:matched fit=0.92 cov=covered label=data-warehouse-etl-design valid=5/5
+  pass 1 data-003-optimize-slow-query                   outcome=:matched fit=0.90 cov=partial label=database-query-optimization valid=7/7
+  pass 1 data-004-streaming-aggregation                 outcome=:matched fit=0.85 cov=partial label=streaming-inventory-aggregation valid=7/7
+  pass 1 domain-001-game-balance                        outcome=:matched fit=0.85 cov=partial label=game-balance-tuning valid=7/7
+  pass 1 domain-002-recipe-scaling                      outcome=:matched fit=0.90 cov=partial label=commercial-recipe-scaling valid=5/5
+  pass 1 domain-003-marathon-training                   outcome=:matched fit=0.90 cov=uncovered label=marathon-training-plan valid=4/4
+  pass 1 domain-004-symphony-to-quartet                 outcome=:matched fit=0.95 cov=partial label=musical-score-arrangement valid=7/7
+  pass 1 extra-001-legal-issue-sanity                   outcome=:matched fit=1.00 cov=covered label=legal-issue-detection valid=6/6
+  pass 1 extra-002-contract-comparison-sanity           outcome=:matched fit=1.00 cov=covered label=saas-contract-comparison valid=9/9
+siblings seeded for pass 2: {":tree-fingerprint:\"seed:tree:SequentialPipeline\"" #{"game-balance-tuning"}, ":tree-class:\"seed:tree:ParallelIndependent\"" #{"property-based-test-generation"}, ":tree-class:\"seed:tree:FallbackRecovery\"" #{"debugging-mentorship-guide"}, ":tree-class:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"" #{"technical-infrastructure-comparison"}, ":tree-class:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"" #{"commercial-recipe-scaling" "marathon-training-plan" "streaming-inventory-aggregation" "middleware-refactoring-design"}, ":tree-class:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"" #{"musical-score-arrangement" "metered-recipe-generation" "algorithmic-melody-generation"}, ":tree-class:#uuid \"00000000-c1c1-4001-b002-d0c0a0a0a0a2\"" #{"security-audit-haiku"}, ":tree-class:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"" #{"jvm-performance-diagnostics"}, ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"" #{"database-migration-planning" "paas-migration-memo" "software-architecture-recommendation" "ci-test-flakiness-diagnosis" "database-query-optimization"}}
+  pass 2 behavioral-fresh-mint-001-haiku-audit          outcome=:matched fit=1.00 cov=covered label=security-audit-haiku valid=2/2
+  pass 2 behavioral-fresh-mint-002-melody-encoding-pi   outcome=:matched fit=0.95 cov=covered label=algorithmic-melody-generation valid=6/6
+  pass 2 behavioral-fresh-mint-003-recipe-iambic-pentameter outcome=:matched fit=1.00 cov=covered label=metered-recipe-generation valid=8/8
+  pass 2 code-001-refactor-auth-middleware              outcome=:matched fit=1.00 cov=covered label=middleware-refactoring-design valid=4/4
+  pass 2 code-002-investigate-flaky-test                outcome=:matched fit=0.95 cov=covered label=ci-test-flakiness-diagnosis valid=4/4
+  pass 2 code-003-generate-property-tests               outcome=:matched fit=0.95 cov=covered label=property-based-test-generation valid=4/4
+  pass 2 code-004-debug-memory-leak                     outcome=:matched fit=0.95 cov=covered label=jvm-performance-diagnostics valid=5/5
+  pass 2 conv-001-vector-vs-sql-tradeoffs               outcome=:matched fit=0.95 cov=covered label=technical-infrastructure-comparison valid=6/6
+  pass 2 conv-002-architecture-recommendation           outcome=:matched fit=1.00 cov=covered label=software-architecture-recommendation valid=6/6
+  pass 2 conv-003-junior-debug-strategy                 outcome=:matched fit=0.95 cov=covered label=debugging-mentorship-guide valid=4/4
+  pass 2 conv-004-defend-controversial-choice           outcome=:matched fit=0.95 cov=covered label=paas-migration-memo valid=6/6
+  pass 2 data-001-schema-migration                      outcome=:matched fit=0.95 cov=covered label=database-migration-planning valid=4/4
+  pass 2 data-002-etl-cdc-to-dim                        outcome=:matched fit=1.00 cov=covered label=data-warehouse-etl-design valid=5/5
+  pass 2 data-003-optimize-slow-query                   outcome=:matched fit=1.00 cov=covered label=database-query-optimization valid=7/7
+  pass 2 data-004-streaming-aggregation                 outcome=:matched fit=1.00 cov=covered label=streaming-inventory-aggregation valid=7/7
+  pass 2 domain-001-game-balance                        outcome=:matched fit=0.95 cov=covered label=game-balance-tuning valid=7/7
+  pass 2 domain-002-recipe-scaling                      outcome=:matched fit=1.00 cov=covered label=commercial-recipe-scaling valid=5/5
+  pass 2 domain-003-marathon-training                   outcome=:uncertain fit=0.00 cov=null label=null valid=0/0
+  pass 2 domain-004-symphony-to-quartet                 outcome=:matched fit=0.95 cov=covered label=musical-score-arrangement valid=7/7
+  pass 2 extra-001-legal-issue-sanity                   outcome=:matched fit=1.00 cov=covered label=legal-issue-detection valid=6/6
+  pass 2 extra-002-contract-comparison-sanity           outcome=:matched fit=1.00 cov=covered label=contract-comparison valid=9/9
+
+=== RS-P1 summary ===
+valid verdicts: 228 / 228 candidates
+label agreement between passes: 19 / 21
+coverage agreement between passes: 3 / 21
+sibling-label reuse in pass 2: 16 / 17 eligible (top candidate carried siblings)
+  data-002-etl-cdc-to-dim                        siblings=#{"commercial-recipe-scaling" "marathon-training-plan" "streaming-inventory-aggregation" "middleware-refactoring-design"} -> chose data-warehouse-etl-design
+  conv-004-defend-controversial-choice           siblings=#{"database-migration-planning" "paas-migration-memo" "software-architecture-recommendation" "ci-test-flakiness-diagnosis" "database-query-optimization"} -> chose paas-migration-memo
+  domain-004-symphony-to-quartet                 siblings=#{"musical-score-arrangement" "metered-recipe-generation" "algorithmic-melody-generation"} -> chose musical-score-arrangement
+  behavioral-fresh-mint-002-melody-encoding-pi   siblings=#{"musical-score-arrangement" "metered-recipe-generation" "algorithmic-melody-generation"} -> chose algorithmic-melody-generation
+  conv-001-vector-vs-sql-tradeoffs               siblings=#{"technical-infrastructure-comparison"} -> chose technical-infrastructure-comparison
+  conv-003-junior-debug-strategy                 siblings=#{"debugging-mentorship-guide"} -> chose debugging-mentorship-guide
+  code-002-investigate-flaky-test                siblings=#{"database-migration-planning" "paas-migration-memo" "software-architecture-recommendation" "ci-test-flakiness-diagnosis" "database-query-optimization"} -> chose ci-test-flakiness-diagnosis
+  data-004-streaming-aggregation                 siblings=#{"commercial-recipe-scaling" "marathon-training-plan" "streaming-inventory-aggregation" "middleware-refactoring-design"} -> chose streaming-inventory-aggregation
+  behavioral-fresh-mint-001-haiku-audit          siblings=#{"security-audit-haiku"} -> chose security-audit-haiku
+  data-001-schema-migration                      siblings=#{"database-migration-planning" "paas-migration-memo" "software-architecture-recommendation" "ci-test-flakiness-diagnosis" "database-query-optimization"} -> chose database-migration-planning
+  domain-002-recipe-scaling                      siblings=#{"commercial-recipe-scaling" "marathon-training-plan" "streaming-inventory-aggregation" "middleware-refactoring-design"} -> chose commercial-recipe-scaling
+  conv-002-architecture-recommendation           siblings=#{"database-migration-planning" "paas-migration-memo" "software-architecture-recommendation" "ci-test-flakiness-diagnosis" "database-query-optimization"} -> chose software-architecture-recommendation
+  code-004-debug-memory-leak                     siblings=#{"jvm-performance-diagnostics"} -> chose jvm-performance-diagnostics
+  code-003-generate-property-tests               siblings=#{"property-based-test-generation"} -> chose property-based-test-generation
+  code-001-refactor-auth-middleware              siblings=#{"commercial-recipe-scaling" "marathon-training-plan" "streaming-inventory-aggregation" "middleware-refactoring-design"} -> chose middleware-refactoring-design
+  data-003-optimize-slow-query                   siblings=#{"database-migration-planning" "paas-migration-memo" "software-architecture-recommendation" "ci-test-flakiness-diagnosis" "database-query-optimization"} -> chose database-query-optimization
+  behavioral-fresh-mint-003-recipe-iambic-pentameter siblings=#{"musical-score-arrangement" "metered-recipe-generation" "algorithmic-melody-generation"} -> chose metered-recipe-generation
+verdicts pass1: {"partial" 13, "uncovered" 5, "covered" 3} pass2: {"covered" 20, nil 1}
+per-task (pass1 cov/label | pass2 cov/label):
+  behavioral-fresh-mint-001-haiku-audit          partial   security-audit-haiku             | covered   security-audit-haiku
+  behavioral-fresh-mint-002-melody-encoding-pi   uncovered algorithmic-melody-generation    | covered   algorithmic-melody-generation
+  behavioral-fresh-mint-003-recipe-iambic-pentameter partial   metered-recipe-generation        | covered   metered-recipe-generation
+  code-001-refactor-auth-middleware              partial   middleware-refactoring-design    | covered   middleware-refactoring-design
+  code-002-investigate-flaky-test                partial   ci-test-flakiness-diagnosis      | covered   ci-test-flakiness-diagnosis
+  code-003-generate-property-tests               partial   property-based-test-generation   | covered   property-based-test-generation
+  code-004-debug-memory-leak                     partial   jvm-performance-diagnostics      | covered   jvm-performance-diagnostics
+  conv-001-vector-vs-sql-tradeoffs               partial   technical-infrastructure-comparison | covered   technical-infrastructure-comparison
+  conv-002-architecture-recommendation           partial   software-architecture-recommendation | covered   software-architecture-recommendation
+  conv-003-junior-debug-strategy                 uncovered debugging-mentorship-guide       | covered   debugging-mentorship-guide
+  conv-004-defend-controversial-choice           uncovered paas-migration-memo              | covered   paas-migration-memo
+  data-001-schema-migration                      uncovered database-migration-planning      | covered   database-migration-planning
+  data-002-etl-cdc-to-dim                        covered   data-warehouse-etl-design        | covered   data-warehouse-etl-design
+  data-003-optimize-slow-query                   partial   database-query-optimization      | covered   database-query-optimization
+  data-004-streaming-aggregation                 partial   streaming-inventory-aggregation  | covered   streaming-inventory-aggregation
+  domain-001-game-balance                        partial   game-balance-tuning              | covered   game-balance-tuning
+  domain-002-recipe-scaling                      partial   commercial-recipe-scaling        | covered   commercial-recipe-scaling
+  domain-003-marathon-training                   uncovered marathon-training-plan           | null      null
+  domain-004-symphony-to-quartet                 partial   musical-score-arrangement        | covered   musical-score-arrangement
+  extra-001-legal-issue-sanity                   covered   legal-issue-detection            | covered   legal-issue-detection
+  extra-002-contract-comparison-sanity           covered   saas-contract-comparison         | covered   contract-comparison
+saved development/bench/ood-stress-results/rs-p1b2-sibling-reuse-separated-probe/probe-results.edn
+Benchmark system stopped.
+:stopped
+exit=0

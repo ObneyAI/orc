@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: schemamigration (off-domain); variant b of 3 — the same domain re-asked with a different concrete instance.
+Plan a MySQL 8 migration that changes an orders table's integer primary key to a UUID while a Rails app keeps serving traffic. Give the ordered steps (new column, backfill in batches, dual writes, index swap, foreign-key rewrites in three child tables), a cut-over window, rollback, and the queries that prove no rows were lost. Output: {:steps [...] :backfill ... :rollback ... :verification [...]}

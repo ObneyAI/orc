@@ -1,0 +1,9 @@
+; brief-id: b-029
+; group: research-synthesis
+; variant: 4
+
+Hey, I’m drowning in my inbox after that B2B pricing workshop, but I finally managed to dump all the raw data into this thread for you. There are about 22 interview transcripts here, along with a stack of support tickets from our latest consumer onboarding pilot. It’s a real mess of feedback ranging from enterprise churn threats to general frustration with the new billing tiers. 
+
+Can you dig through this and pull out the recurring themes? I need a few solid quotes for each one so I have something to show the UI team during our sprint planning. Once you’ve got the themes, could you rank the opportunities based on what you think will actually stop people from cancelling? I also need your specific recommendations for fixing the sign-up flow and the pricing page layout—please tag each one with a confidence rating (High/Med/Low) so I know which ones are backed by a ton of mentions versus just a few one-offs. 
+
+Just a heads up: I definitely don't need any personas or a plan for a follow-up survey. We just need to act on what we already have. Let me know when this is ready!

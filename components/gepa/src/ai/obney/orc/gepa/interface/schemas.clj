@@ -23,7 +23,13 @@
 ;; =============================================================================
 
 (defschemas types
-  {;; Matches Python's Candidate dataclass
+  {:gepa/metric-descriptor
+   [:map
+    [:kind [:enum :default :judges :custom :exact-match :contains]]
+    [:metric-id :string] [:revision :string] [:configuration :map]
+    [:retry-safe? :boolean] [:max-attempts pos-int?] [:timeout-ms pos-int?]]
+
+   ;; Matches Python's Candidate dataclass
    :gepa/candidate
    [:map
     [:candidate-id :uuid]
@@ -66,6 +72,9 @@
     [:max-metric-calls {:default 50} :int]
     [:reflection-minibatch-size {:default 3} :int]
     [:reflection-lm {:default "anthropic/claude-sonnet-4"} :string]
+    [:reflection-options {:optional true} :map]
+    [:reflection-prompt-template {:optional true} [:or :string [:map-of :string :string]]]
+    [:max-reflection-tokens {:optional true} [:maybe :int]]
     [:use-merge {:default true} :boolean]
     [:crossover-rate {:default 0.3} :double]
     [:val-overlap-floor {:default 5} :int]
@@ -90,15 +99,24 @@
 ;; =============================================================================
 
 (defschemas events
-  {;; Optimization lifecycle
+  {:gepa/recovery-scan-triggered [:map [:triggered-at :string]]
+   :gepa/optimization-recovery-requested [:map [:optimization-id :uuid]]
+   :gepa/metric-selected
+   [:map [:optimization-id :uuid] [:metric-descriptor :gepa/metric-descriptor]]
+
+   ;; Optimization lifecycle
    :gepa/optimization-started
    [:map
+    [:metric-descriptor {:optional true} :gepa/metric-descriptor]
     [:optimization-id :uuid]
     [:sheet-id :uuid]
     [:config [:map
               [:max-metric-calls :int]
               [:reflection-minibatch-size :int]
               [:reflection-lm :string]
+              [:reflection-options {:optional true} :map]
+              [:reflection-prompt-template {:optional true} [:or :string [:map-of :string :string]]]
+              [:max-reflection-tokens {:optional true} [:maybe :int]]
               [:use-merge :boolean]
               [:crossover-rate :double]
               [:val-overlap-floor {:optional true} :int]
@@ -138,6 +156,8 @@
 
    :gepa/candidate-evaluated
    [:map
+    [:accounting-mode {:optional true} [:enum :tasks]]
+    [:task-call-ids {:optional true} [:vector :uuid]]
     [:optimization-id :uuid]
     [:candidate-id :uuid]
     [:scores [:vector :double]]
@@ -201,7 +221,8 @@
     [:usage [:map
              [:prompt-tokens :int]
              [:completion-tokens :int]
-             [:total-tokens :int]]]
+             [:total-tokens :int]
+             [:cost {:optional true} :double]]]
     [:prompt :string]
     [:response :string]
     [:prompt-sha256 :string]
@@ -226,6 +247,16 @@
     [:model {:optional true} [:maybe :string]]
     [:usage {:optional true} [:maybe :map]]
     [:completed-at :any]]
+
+   :gepa/parent-minibatch-evaluation-requested
+   [:map
+    [:optimization-id :uuid]
+    [:request-id :uuid]
+    [:parent-id :uuid]
+    [:component :string]
+    [:iteration :int]
+    [:subsample-indices [:vector :int]]
+    [:requested-at :any]]
 
    :gepa/proposal-ready
    [:map
@@ -263,6 +294,9 @@
 
    :gepa/subsample-evaluated
    [:map
+    [:parent-perfect-skip? {:optional true} :boolean]
+    [:accounting-mode {:optional true} [:enum :tasks]]
+    [:task-call-ids {:optional true} [:vector :uuid]]
     [:optimization-id :uuid]
     [:parent-id :uuid]
     [:proposed-instructions [:map-of :string :string]]
@@ -330,8 +364,13 @@
 ;; =============================================================================
 
 (defschemas commands
-  {:gepa/start-optimization
+  {:gepa/request-recovery [:map [:optimization-id :uuid]]
+   :gepa/select-metric
+   [:map [:optimization-id :uuid] [:metric-descriptor :gepa/metric-descriptor]]
+
+   :gepa/start-optimization
    [:map
+    [:metric-descriptor {:optional true} :gepa/metric-descriptor]
     [:optimization-id {:optional true} :uuid]
     [:sheet-id :uuid]
     [:trainset [:vector [:map-of :string :any]]]
@@ -340,6 +379,9 @@
               [:max-metric-calls {:optional true :default 50} :int]
               [:reflection-minibatch-size {:optional true :default 3} :int]
               [:reflection-lm {:optional true :default "anthropic/claude-sonnet-4"} :string]
+              [:reflection-options {:optional true} :map]
+              [:reflection-prompt-template {:optional true} [:or :string [:map-of :string :string]]]
+              [:max-reflection-tokens {:optional true} [:maybe :int]]
               [:use-merge {:optional true :default true} :boolean]
               [:crossover-rate {:optional true :default 0.3} :double]
               [:val-overlap-floor {:optional true :default 5} :int]
@@ -378,6 +420,9 @@
    ;; Record the result of subsample evaluation
    :gepa/record-subsample-result
    [:map
+    [:parent-perfect-skip? {:optional true} :boolean]
+    [:accounting-mode {:optional true} [:enum :tasks]]
+    [:task-call-ids {:optional true} [:vector :uuid]]
     [:optimization-id :uuid]
     [:parent-id :uuid]
     [:proposed-instructions [:map-of :string :string]]
@@ -391,6 +436,8 @@
 
    :gepa/record-evaluation-result
    [:map
+    [:accounting-mode {:optional true} [:enum :tasks]]
+    [:task-call-ids {:optional true} [:vector :uuid]]
     [:optimization-id :uuid]
     [:candidate-id :uuid]
     [:scores [:vector :double]]
@@ -418,7 +465,8 @@
     [:usage [:map
              [:prompt-tokens :int]
              [:completion-tokens :int]
-             [:total-tokens :int]]]
+             [:total-tokens :int]
+             [:cost {:optional true} :double]]]
     [:prompt :string]
     [:response :string]
     [:prompt-sha256 :string]
@@ -440,6 +488,14 @@
     [:feedback {:optional true} [:maybe :string]]
     [:model {:optional true} [:maybe :string]]
     [:usage {:optional true} [:maybe :map]]]
+
+   :gepa/request-parent-minibatch-evaluation
+   [:map
+    [:optimization-id :uuid]
+    [:parent-id :uuid]
+    [:component :string]
+    [:iteration :int]
+    [:subsample-indices [:vector :int]]]
 
    :gepa/record-proposal-ready
    [:map
@@ -498,7 +554,10 @@
 ;; =============================================================================
 
 (defschemas queries
-  {:gepa/get-optimization-state
+  {:gepa/get-optimization-progress
+   [:map [:optimization-id :uuid]]
+
+   :gepa/get-optimization-state
    [:map
     [:optimization-id :uuid]]
 

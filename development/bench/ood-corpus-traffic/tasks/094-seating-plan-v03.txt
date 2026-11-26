@@ -1,0 +1,19 @@
+; brief-id: b-020
+; group: seating-plan
+; variant: 3
+
+Please generate a seating chart for the 'Future of Tech' academic gala next Friday based on the attached spreadsheet of 112 confirmed attendees, their university affiliations, and research fields. The venue provides 14 tables, each seating exactly 8 guests. Ensure the final output adheres to the following structural schema and constraints:
+
+**REQUIRED CONSTRAINTS:**
+*   **Interdisciplinary Mix:** Each table must feature representatives from at least three different departments.
+*   **Platinum Seating:** Tables 1 and 14 are reserved for VIPs; each must contain at least two Department Heads and two guest speakers.
+*   **Conflict Mitigation:** Dr. Aris and Dr. Sterling cannot be seated at the same table or at numerically adjacent tables (e.g., if one is at Table 4, the other cannot be at 3, 4, or 5).
+*   **Mentorship Pairing:** Every Post-Doc must be seated adjacent to at least one Tenured Faculty member from a different university.
+*   **Fixed Grouping:** The 8-member Robotics Lab team must be assigned in its entirety to Table 8.
+
+**OUTPUT SCHEMA:**
+*   **Section 1: Assignment Table:** A numbered list (Table 1 through Table 14) specifying the names of the 8 guests assigned to each.
+*   **Section 2: Constraint Validation:** A checklist confirming compliance with each rule above. Any unavoidable violations must include a specific justification (e.g., "Conflict Mitigation: Violated due to Dr. Aris at Table 4 and Dr. Sterling at Table 5").
+*   **Section 3: Flexibility Options:** Provide three distinct placement scenarios for the three 'VIP-TBD' guests that maintain the interdisciplinary requirements.
+
+Note: Exclude all details regarding stage layout, floral arrangements, or menu selections. Required by 4:00 PM for printing.

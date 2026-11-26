@@ -1,0 +1,9 @@
+; brief-id: b-028
+; group: experiment-plan
+; variant: 4
+
+Hey, I’m running between meetings all afternoon and could really use a hand getting this research plan together. We’re looking at our customer churn predictor and trying to answer one big question: "Can we significantly improve the hit rate for 'at-risk' users by incorporating tabular sequence data from the last 30 days of app sessions, rather than just using static profile snapshots?" 
+
+I’ve attached the schema for our 'UserPulse-2024' dataset—it’s mostly tabular features like login frequency, feature usage counts, and support ticket history for 2 million subscribers. Our current baseline is a simple XGBoost model using aggregate totals. We have a $3,500 GCP credit limit for this project.
+
+Can you put together an experiment plan for me? I need a few hypotheses (maybe comparing a 1D-CNN, an LSTM, and a Temporal Fusion Transformer), a full experiment matrix, and the specific metrics we should track—obviously AUC-ROC, but let's look at precision-recall curves too. Include an evaluation protocol, a breakdown of how to spend that $3,500 on training vs. tuning, and clear decision criteria for when we'd actually switch models. Just the strategy and roadmap, please—I don't need the actual Python code yet. Thanks!

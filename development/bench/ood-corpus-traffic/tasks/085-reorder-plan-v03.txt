@@ -1,0 +1,14 @@
+; brief-id: b-035
+; group: reorder-plan
+; variant: 3
+
+Please generate a procurement and inventory replenishment plan for the ward's central supply room based on the provided dataset (approximately 280 SKUs, including surgical kits, IV fluids, and specialty dressings). You must synthesize the last quarter's usage logs, current logistics lead times, and the most recent shelf-count export. Due to significant volatility in lead times for sterile disposables, ensure safety stock calculations are adjusted upward to mitigate stockout risks.
+
+The output must be formatted as a bulleted list for each item according to this specific schema:
+* [SKU ID]: [Item Name]
+* Reorder Point: [Units]
+* Recommended Order Quantity: [Units] (Must be optimized for supplier pallet/case tiers)
+* Scheduled Order Date: [YYYY-MM-DD]
+* Estimated Capital Outlay: [$ Amount]
+
+Following the itemized list, include a "Purchase Schedule" that summarizes the total capital outlay by week for a 45-day window. This summary is critical for ensuring we remain within the floor's liquid operational limit for the month. Note that a strict Minimum Order Quantity (MOQ) of 10 cases applies to all saline solutions to control freight costs. Provide only the actionable data for procurement; do not include supplier negotiation notes or budget forecasts.

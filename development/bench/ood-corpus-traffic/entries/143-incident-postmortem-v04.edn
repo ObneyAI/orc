@@ -1,0 +1,22 @@
+{:slug "143-incident-postmortem-v04",
+ :group "incident-postmortem",
+ :in-domain? false,
+ :variant 4,
+ :expected-output-kind
+ "a timeline, root cause and contributing factors, impact, what went well, and prioritised action items with owners",
+ :brief-id "b-016",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1223, :completion-tokens 245, :total-tokens 1468},
+  :draft-prompt-sha256
+  "ecb670e8825b491b226bebd9712331682af3e4aed5ac95f498267734f744d05e",
+  :polish-usage
+  {:prompt-tokens 414, :completion-tokens 245, :total-tokens 659},
+  :polish-prompt-sha256
+  "a6dbd980e0ae01b3264e59a8adf8865787c4ed72b34032995fc94e8fa1a96677",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

@@ -53,6 +53,13 @@
                   (seq (:reads tree-node)) (assoc :reads (:reads tree-node))
                   (seq (:writes tree-node)) (assoc :writes (:writes tree-node))
                   (:retry tree-node) (assoc :retry (:retry tree-node))
+                  (= :decision (:executor tree-node))
+                  (merge (cond-> {}
+                           (:options-from tree-node) (assoc :options-from (:options-from tree-node))
+                           (:bands-from tree-node) (assoc :bands-from (:bands-from tree-node))
+                           (:min-confidence tree-node) (assoc :min-confidence (:min-confidence tree-node))
+                           (some? (:abstain tree-node)) (assoc :abstain (:abstain tree-node))
+                           (:options tree-node) (assoc :options (:options tree-node))))
                   ;; Condition fields
                   (:check tree-node) (assoc :check (:check tree-node))
                   (:on-fail tree-node) (assoc :on-fail (:on-fail tree-node))
@@ -194,7 +201,14 @@
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (seq (:writes node)) (assoc :writes (:writes node))
-                   (:retry node) (assoc :retry (:retry node))))
+                   (:retry node) (assoc :retry (:retry node))
+                   (= :decision (:executor node))
+                   (merge (cond-> {}
+                            (:options-from node) (assoc :options-from (:options-from node))
+                            (:bands-from node) (assoc :bands-from (:bands-from node))
+                            (:min-confidence node) (assoc :min-confidence (:min-confidence node))
+                            (some? (:abstain node)) (assoc :abstain (:abstain node))
+                            (:options node) (assoc :options (:options node))))))
           ;; Condition-specific
           (= :condition (:type node))
           (merge (cond-> {}
@@ -514,6 +528,7 @@
                                %)
                             tick-events)]
         {:query/result
+         (merge
          {:node-id node-id
           :trace-instance-id trace-instance-id
           :exec-context (:exec-context node-trace)
@@ -530,7 +545,12 @@
                               (not-empty
                                (value-log/rejected-writes-for tick-events completed)))
           :failure-kind (:failure-kind completed)
-          :provider-evidence (:provider-evidence completed)}})
+          :condition-answer (:condition-answer completed)
+          :decision (:decision completed)
+          :provider-evidence (:provider-evidence completed)}
+         ;; ModelLeafRecordsResolvedModel: each present only when recorded, so
+         ;; an absent configured or reported model reads as absent.
+         (select-keys completed [:model :requested-model :resolved-model]))})
       {::anom/category ::anom/not-found
        ::anom/message (str "Node trace not found: " trace-instance-id)})))
 
@@ -574,6 +594,7 @@
   "Compare two nodes and return a list of changes."
   [from-node to-node]
   (let [fields-to-compare [:type :name :executor :model :instruction :fn
+                           :options-from :bands-from :min-confidence :abstain
                            :reads :writes :check :on-fail
                            :success-policy :failure-policy
                            :source-key :item-key :output-key :max-concurrency

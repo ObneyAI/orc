@@ -1,0 +1,261 @@
+{:assigned-tree-id #uuid "23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9",
+ :tick-id #uuid "45636ab1-3ae4-4c41-b2b6-3e582bcaea0b",
+ :slug "code-002-investigate-flaky-test",
+ :parent-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+ :domain-label nil,
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict nil,
+ :node-id #uuid "c9644a22-2b6a-4f9c-a73d-2506ecc02284",
+ :top-1
+ {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :fitness-score 0.8,
+  :rerank-source :reranker,
+  :domain-coverage :uncovered,
+  :domain-label "ci-test-flakiness-root-cause"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9",
+  :parent-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :classified-at "2026-09-16T05:46:03.511760-05:00",
+  :reasoning
+  "This candidate matches the structural shape of recommending complex systems based on specific constraints and trade-offs. The intent asks for a best-matching tree-class for classification, and this candidate represents a class focused on architectural decision-making with specific technical components and validation steps.",
+  :outcome :matched,
+  :source-node-id #uuid "c9644a22-2b6a-4f9c-a73d-2506ecc02284",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "225be622-6cc2-3359-8c18-024bdf08548d",
+    :confidence 1.0,
+    :was-fresh-mint? false,
+    :reasoning
+    "This is the strongest behavioral fit because the task is a classic 'this test is broken, find why' scenario involving a flaky (intermittent) failure. The candidate's specific strength of 'enumerating candidate causes upfront and ruling them out with evidence' directly matches the query's requirement to produce a ranked list of hypotheses with falsifiability tests. Its recommendation to 'establish a DETERMINISTIC reproduction' is the exact engineering principle needed for a test that fails 5% of the time in CI but passes locally.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "45636ab1-3ae4-4c41-b2b6-3e582bcaea0b",
+  :event/tags
+  #{[:tick #uuid "45636ab1-3ae4-4c41-b2b6-3e582bcaea0b"]
+    [:description-target
+     #uuid "23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:46:03.511978Z",
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :existing-domain-children
+    ["game-balance-simulation" "software-architecture-recommendation"],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.989512-05:00"},
+    :domain-label "ci-test-flakiness-root-cause",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :uncovered,
+    :rank 5,
+    :reasoning
+    "The task is a classic 'propose hypotheses then select the best one' loop. While not a code-generation task, it follows the Producer/Validator shape: the LLM must generate multiple candidate hypotheses (producer) and then evaluate them against the specific constraints of the prompt (CI environment, noisy neighbor, polling library update) to select the most likely next action (validator). The content's emphasis on formal rules and explicit reasoning chains matches the multi-part requirements of the prompt.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The task involves debugging flaky software tests and CI infrastructure. None of the representative uses (game-balance, architecture) match this domain.",
+    :cos-good 0.996593277283787,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9875688219731629,
+    :score 430.30911717171045,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.8,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.996593277283787,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.974326-05:00"},
+    :domain-label "ci-test-flakiness-root-cause",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :uncovered,
+    :rank 4,
+    :reasoning
+    "Matches the same Producer/Validator structural shape as the tree-class but at a fingerprint level. It fits the intent of generating and then selecting a best-fit hypothesis based on specific evidence (the 'rules' of the provided context).",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The task involves debugging flaky software tests and CI infrastructure. No representative uses match.",
+    :cos-good 0.996593277283787,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9875688219731629,
+    :score 430.30911717171045,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.78,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.996593277283787,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit recovery path captures real-world fragility — primary may fail; backup absorbs",
+      :good-when
+      "the primary approach has a known failure mode AND the backup produces equivalent :writes",
+      :recommended-pattern
+      "[:fallback [:llm {:model \"openai/gpt-5\" :reads [:input] :writes [:result]}] [:llm {:model \"google/gemini-2.5-flash\" :reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["all children would succeed — just use the primary (no recovery needed)"
+     "you want both children's results compared — use :parallel"
+     "you want only one child to run based on a known condition — use :condition (when supported) or upfront branching at the parent level"
+     "designing an emit-tree! pattern AND wanting recovery-style branching"
+     "the primary has high token cost AND fails often"
+     "the primary is the canonical path AND silent fallback would hide degradation"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.972294-05:00"},
+    :domain-label "ci-test-flakiness-root-cause",
+    :content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :domain-coverage :uncovered,
+    :rank 10,
+    :reasoning
+    "The task is a creative brainstorming and ranking exercise, not a graceful degradation or error-handling sequence. The 'avoid-when' for 'designing an emit-tree! pattern' and 'silent fallback would hide degradation' applies as the user is looking for explicit analysis, not a hidden backup mechanism.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "RLM models cannot emit :fallback in emit-tree! today — pattern is canonical-DSL-only",
+      :avoid-when
+      "designing an emit-tree! pattern AND wanting recovery-style branching",
+      :recommended-alternative
+      "use a single :llm with an instruction that includes fallback guidance ('if X cannot be done, instead produce Y'); OR design the pipeline as :sequence with a downstream node that handles the missing-output case"}
+     {:trait
+      "each failed primary still runs to completion before failure is detected — total cost includes the wasted primary attempt",
+      :avoid-when "the primary has high token cost AND fails often",
+      :recommended-alternative
+      "switch the order — put the cheaper backup first; OR use a guard upstream that predicts which approach to try based on input shape"}
+     {:trait
+      "silently masks real bugs — if the primary always fails and the backup always covers, the regression is invisible",
+      :avoid-when
+      "the primary is the canonical path AND silent fallback would hide degradation",
+      :recommended-alternative
+      "add a downstream :code or judge that logs/alerts when the backup fires; OR track per-tree-run which child succeeded so degradation is visible in metrics"}],
+    :domain-reasoning
+    "The domain of CI test failure analysis is not covered by the 'cost-tiered model fallback' or 'schema-strict-then-loose' examples.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.98437091617287,
+    :score 429.6122039281724,
+    :cos-avoid-sans-content 0.9961106953301603,
+    :fitness-score 0.2,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9961106953301603}],
+  :event/type :ontology/task-classified,
+  :event/id #uuid "01a0a9d2-dbf7-7003-8ad5-8dd4e7440fa3",
+  :confidence 0.8,
+  :source-sheet-id #uuid "53a1953b-1394-4a39-81e0-b37e3a90953c",
+  :ranked-candidates
+  [{:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.8,
+    :score 430.30911717171045}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.78,
+    :score 430.30911717171045}
+   {:target-id "seed:tree:FallbackRecovery",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.2,
+    :score 429.6122039281724}],
+  :was-fresh-mint? false,
+  :assigned-via :walk-down},
+ :deferred-events [],
+ :domain-children-considered nil,
+ :sheet-id #uuid "53a1953b-1394-4a39-81e0-b37e3a90953c",
+ :payload-domain nil,
+ :pass 2,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 2 from corpus retrieval)\n#### Top match — Producer/validator (confidence: 0.80)\nWhy this fits: The task is a classic 'propose hypotheses then select the best one' loop. While not a code-generation task, it follows the Producer/Validator shape: the LLM must generate multiple candidate hypotheses (producer) and then evaluate them against the specific constraints of the prompt (CI environment, noisy neighbor, polling library update) to select the most likely next action (validator). The content's emphasis on formal rules and explicit reasoning chains matches the multi-part requirements of the prompt.\n\nPattern guidance (seed `:summary`):\nProducer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).\n\nCapabilities:\n  - :sequence with a producer :llm + a validator :code (or :llm with structured :output-schemas) + an explicit retry budget\n  - natural for any 'generate-then-check' work: code generation + type-check, JSON output + schema validation, claim + grounding check\n  - outputs typically include the validated artifact, the validation result (pass/fail with reasons), and the retry count consumed\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted (confidence 1.00, evidence-count 1)\n    - Good when: the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]\n      ```\n\n  - **Trait:** always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again (confidence 1.00, evidence-count 1)\n    - Good when: the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint) (confidence 1.00, evidence-count 1)\n    - Avoid when: :max-retries is not set OR is set above ~5 AND the producer is :llm-driven\n    - Recommended fix: always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate\n\n  - **Failure mode:** using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw (confidence 1.00, evidence-count 1)\n    - Avoid when: the validation rules can be expressed in code AND the validator is being implemented as another :llm node\n    - Recommended fix: always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - JSON output generation + schema validation: produce JSON → parse + validate against Malli → retry with errors\n  - code generation + compile check: produce Clojure expression → eval in sandbox → retry with stack trace\n  - regex/grammar generation + sample-input parse: produce regex → run on test inputs → retry with mismatch sample\n\n#### Alternative #1 — Producer/validator (confidence: 0.78)\nWhy this fits: Matches the same Producer/Validator structural shape as the tree-class but at a fingerprint level. It fits the intent of generating and then selecting a best-fit hypothesis based on specific evidence (the 'rules' of the provided context).\n\nPattern guidance (seed `:summary`):\nProducer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).\n\nCapabilities:\n  - :sequence with a producer :llm + a validator :code (or :llm with structured :output-schemas) + an explicit retry budget\n  - natural for any 'generate-then-check' work: code generation + type-check, JSON output + schema validation, claim + grounding check\n  - outputs typically include the validated artifact, the validation result (pass/fail with reasons), and the retry count consumed\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted (confidence 1.00, evidence-count 1)\n    - Good when: the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]\n      ```\n\n  - **Trait:** always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again (confidence 1.00, evidence-count 1)\n    - Good when: the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint) (confidence 1.00, evidence-count 1)\n    - Avoid when: :max-retries is not set OR is set above ~5 AND the producer is :llm-driven\n    - Recommended fix: always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate\n\n  - **Failure mode:** using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw (confidence 1.00, evidence-count 1)\n    - Avoid when: the validation rules can be expressed in code AND the validator is being implemented as another :llm node\n    - Recommended fix: always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - JSON output generation + schema validation: produce JSON → parse + validate against Malli → retry with errors\n  - code generation + compile check: produce Clojure expression → eval in sandbox → retry with stack trace\n  - regex/grammar generation + sample-input parse: produce regex → run on test inputs → retry with mismatch sample\n\n### Behavioral competencies (top 1 from corpus retrieval)\n1. Behavioral: Bug-diagnosis explains WHY code (confidence: 1.00)\n   Why this fits: This is the strongest behavioral fit because the task is a classic 'this test is broken, find why' scenario involving a flaky (intermittent) failure. The candidate's specific strength of 'enumerating candidate causes upfront and ruling them out with evidence' directly matches the query's requirement to produce a ranked list of hypotheses with falsifiability tests. Its recommendation to 'establish a DETERMINISTIC reproduction' is the exact engineering principle needed for a test that fails 5% of the time in CI but passes locally.\n\n   Guidance (seed `:summary`):\n   Bug-diagnosis explains WHY code is broken and fixes it — a reproduce-then-bisect-then-fix loop sharpening the Investigation parent for the code-bug case. The load-bearing traits are establishing a DETERMINISTIC reproduction before attempting a fix (a flaky symptom must be pinned to a reliable trigger or you can't know the fix worked) and enumerating candidate causes to rule out with evidence before converging (don't fix the first plausible guess). Prefer this child of Investigation whenever the task is 'this test/behavior is broken, find why and fix it'. Avoid when building new functionality from a spec (code-building, no failure to diagnose) or doing exploratory research with no specific failure (Research).\n\nCapabilities:\n  - given a failing/flaky test or a wrong-behavior bug report + the relevant code, reproduce it deterministically, isolate the root cause, and produce the minimal fix\n  - natural fit when the goal is 'this code is broken, find WHY and fix it' — a reproduce-then-bisect-then-fix loop, distinct from greenfield code-building\n  - outputs are typically a deterministic repro, a root-cause statement tied to a specific code location, and the minimal change that makes the repro pass\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** establish a DETERMINISTIC reproduction before attempting a fix — a flaky/intermittent symptom must be pinned to a reliable trigger first, or you cannot know the fix worked (confidence 0.70, evidence-count 1)\n    - Good when: the bug is intermittent or its trigger is not yet understood (e.g. an intermittent nil from shared state / timing)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:symptom :code] :writes [:candidate-causes]}] [:code {:reads [:candidate-causes] :writes [:repro] :fn (fn [{:keys [inputs]}] {:repro :deterministic-failing-case})}] [:llm {:reads [:repro :code] :writes [:root-cause :fix]}] [:final {:keys [:root-cause :fix]}]]\n      ```\n\n  - **Trait:** enumerate candidate causes upfront and rule them out with evidence before converging — bisect the search space rather than fixing the first plausible guess (which often masks the real cause) (confidence 0.70, evidence-count 1)\n    - Good when: the symptom has multiple plausible causes (timing, shared state, environment, off-by-one)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:writes [:hypotheses]}] [:llm {:reads [:hypotheses :evidence] :writes [:ruled-out :remaining]}] [:llm {:reads [:remaining] :writes [:root-cause :minimal-fix]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** jumping straight to a code edit on the first hypothesis (a code-building instinct) without a deterministic repro produces a fix that may paper over the symptom while the real defect remains — and you cannot prove it is fixed (confidence 0.70, evidence-count 1)\n    - Avoid when: the symptom is intermittent OR the root cause is not yet evidenced\n    - Recommended fix: reproduce deterministically first, name the root cause with evidence, then make the minimal change and re-run the repro\n\n  - **Failure mode:** an over-broad 'fix' that rewrites surrounding code while chasing a bug introduces new regressions and obscures which change actually resolved the defect (confidence 0.70, evidence-count 1)\n    - Avoid when: the bug is localized and a targeted change suffices\n    - Recommended fix: scope the fix to the proven root cause; keep unrelated code untouched so the repro pinpoints the effective change\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - debug why the integration test checkout-flow-test fails intermittently with a nil cart-id and make it deterministic\n  - fix the off-by-one bug in the pagination loop so the final page renders its last row instead of dropping it\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 225be622-6cc2-3359-8c18-024bdf08548d)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nA Python integration test `test_user_signup_flow` fails ~5% of the time in CI\nbut never on local development. The test creates a user, sends a verification\nemail, polls the email-mock service for delivery, then asserts the user can\nlog in. CI output for failing runs shows the polling step times out at 30s.\nLocal runs of the same test complete in ~2s.\n\nRecent context:\n- The CI workers run on shared k8s nodes with a noisy-neighbor problem\n- The email-mock service runs as a sidecar container with no resource limits\n- Tests were stable until 3 weeks ago when the team upgraded the polling\n  library from v2.1 → v2.4\n\nProduce a RANKED list (most likely → least likely) of hypotheses for the\nflakiness, with each entry containing:\n- `:hypothesis` — one-sentence description\n- `:why-this-cause` — the reasoning chain from observed symptoms\n- `:falsifiability-test` — a SPECIFIC experiment that would PROVE this is\n  NOT the cause (e.g., \"if we revert the polling library to v2.1 and the\n  flakiness rate drops to 0%, hypothesis X is confirmed\")\n- `:effort-to-test` — `:low | :medium | :high`\n\nReturn at least 5 hypotheses. End with `:next-action` — which hypothesis\nto test first and why.",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 22381,
+ :confidence 0.8,
+ :was-fresh-mint? false,
+ :assigned-via :walk-down}

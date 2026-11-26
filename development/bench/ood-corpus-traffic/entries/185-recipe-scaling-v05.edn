@@ -1,0 +1,22 @@
+{:slug "185-recipe-scaling-v05",
+ :group "recipe-scaling",
+ :in-domain? false,
+ :variant 5,
+ :expected-output-kind
+ "scaled ingredients with non-linear adjustments, a revised technique for the batch size, a workflow or timeline, and a per-portion cost",
+ :brief-id "b-008",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1170, :completion-tokens 330, :total-tokens 1500},
+  :draft-prompt-sha256
+  "33c7e5fc542f60d13f97ec872a92184629cdd901cc9dcac807ee62e8da19bf71",
+  :polish-usage
+  {:prompt-tokens 503, :completion-tokens 321, :total-tokens 824},
+  :polish-prompt-sha256
+  "9659ebe5f0b06ac78f63863516171e87b2fcee7889668c0a61e08936fd9610ec",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

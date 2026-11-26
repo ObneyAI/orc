@@ -1,0 +1,5 @@
+; brief-id: b-034
+; group: run-of-show
+; variant: 1
+
+Build a minute-by-minute run of show for Thursday’s 3-hour livestream product launch using the attached agenda, speaker list, and technical rider. Format with columns for time, cues, owner, and specific AV needs including lighting transitions, mic swaps, and screen shares. Note the venue contract’s 15-minute buffer before the 5 PM hard stop. I need specific contingency notes for every segment that runs over by two minutes or more, clearly identifying which filler clips to cut to stay on track. Ensure the transition between the CEO keynote and the live demo is timed to the second for the switcher operator. Do not include marketing copy or seating charts; focus strictly on production flow and technical execution.

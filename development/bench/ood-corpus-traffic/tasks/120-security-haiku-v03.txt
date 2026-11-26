@@ -1,0 +1,23 @@
+; brief-id: b-011
+; group: security-haiku
+; variant: 3
+
+I’m currently rushing to finish the quarterly risk summary for the steering committee before my flight takes off. I need to take the four primary findings from our recent web and mobile penetration test and translate them into a format that’s memorable for our non-technical stakeholders. 
+
+Please convert each of the four technical findings listed below into a haiku, adhering to the following output schema:
+* [Haiku for Finding 1: Broken Object Level Authorization]
+* [Haiku for Finding 2: Insecure Data Storage]
+* [Haiku for Finding 3: Cross-Site Scripting]
+* [Haiku for Finding 4: Server-Side Request Forgery]
+
+Constraint Checklist:
+* Syllable Count: You must strictly follow the 5-7-5 syllable structure for every poem.
+* Content: Describe the technical behavior or root cause accurately.
+* Redaction: Do not use official vulnerability names or acronyms (e.g., no "IDOR," "XSS," or "SSRF").
+* Objective Tone: Focus exclusively on the behavior; do not include remediation advice or risk ratings.
+
+Findings to Process:
+1. The web app’s URL structure uses sequential integers for account IDs, letting any logged-in user view other customers' private profiles by changing the number.
+2. The mobile app stores the user's full credit card number and CVV in the local application logs which are accessible via ADB.
+3. The search bar reflects scripts provided in the query string back into the page without escaping, causing them to execute in the browser.
+4. The server-side image processor fetches files from internal network metadata IP addresses when a user provides a remote URL.

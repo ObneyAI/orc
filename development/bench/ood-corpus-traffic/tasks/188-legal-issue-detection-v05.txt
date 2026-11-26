@@ -1,0 +1,20 @@
+; brief-id: b-001
+; group: legal-issue-detection
+; variant: 5
+
+I’m trying to finalize an influencer partnership for our new skincare line, but the "Exclusivity" and "Usage Rights" sections in their management's counter-offer are far too restrictive for our budget. We are operating under Florida law, and I’m concerned we’re paying for content we can only use for a month, while the talent is free to promote a competitor the moment the term ends.
+
+Please review the two clauses provided below and provide a breakdown following these steps:
+
+1. Identify each specific issue and label its severity as Critical, High, or Moderate based on our marketing needs.
+2. Categorize the legal area involved (e.g., Intellectual Property, Contractual Restraint).
+3. Quote the exact language from the draft that creates the risk for our brand.
+4. Provide a suggested revision for each clause that grants us more flexibility (especially regarding paid social and longer-term usage) while remaining fair to the talent.
+
+Contract Text for Review:
+
+5. Exclusivity. During the Term of thirty (30) days, Talent shall not promote any other skincare products. Upon expiration of the Term, Talent shall be free to enter into agreements with any third party, including direct competitors of Company, without restriction.
+
+8. Grant of Rights. Company is granted a non-exclusive license to post the Content on its official Instagram account for a period of thirty (30) days following the initial post date. Any use of the Content beyond this period, or on other platforms (including paid social ads or the Company website), requires a separate negotiation and additional fee.
+
+I need to get these notes back to their agent by EOD, so I appreciate the quick turnaround.

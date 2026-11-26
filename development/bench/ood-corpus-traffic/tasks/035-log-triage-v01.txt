@@ -1,0 +1,5 @@
+; brief-id: b-026
+; group: log-triage
+; variant: 1
+
+Investigate 504 Gateway Timeouts in production K8s. 500 lines of ingress-nginx logs attached show latency spikes and upstream resets. Correlate these logs against the provided pod events and the PostgreSQL slow query log from the same timeframe. I need a ranked list of hypotheses backed by specific evidence lines and a recommended next diagnostic step for each. Determine the primary root cause. We need to confirm if we are hitting connection pool exhaustion or a specific locking issue on the database. Report back immediately.

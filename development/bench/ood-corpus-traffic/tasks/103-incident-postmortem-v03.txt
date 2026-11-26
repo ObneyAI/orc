@@ -1,0 +1,13 @@
+; brief-id: b-016
+; group: incident-postmortem
+; variant: 3
+
+Please draft a comprehensive postmortem report for today's 'Lumina' microservice deployment failure, which resulted in a three-hour frontend blackout. Utilize the provided Jenkins deployment logs, Sentry error stack traces, and PromQL memory utilization graphs (highlighting the OOM container crashes) to populate the report. The final document must strictly adhere to the following schema:
+
+- **Incident Timeline**: A chronological bulleted list (in UTC) starting from the initial canary push at 14:00 through to the final rollback completion.
+- **Root Cause & Contributing Factors**: A technical analysis of the blue/green switch failure, specifically focusing on the misconfigured health check parameters and the lack of rate-limiting in the service's retry logic.
+- **Impact Analysis**: A quantitative assessment of the 504 Gateway Timeout errors served to users and an estimate of session data lost during guest checkout flows.
+- **What Went Well**: A summary of positive responses, specifically mentioning our MTTR (Mean Time to Resolution) for detection and the performance of the emergency kill-switch.
+- **Action Items**: A three-column table (Task, Priority, Owner). Include 'Update deployment manifest validation' (High, @DevOps) and 'Refactor session persistence' (Med, @Backend-Core).
+
+Maintain a technical, blameless tone suitable for an internal engineering retrospective. The document should serve as the primary source of truth for tomorrow’s post-incident review meeting.

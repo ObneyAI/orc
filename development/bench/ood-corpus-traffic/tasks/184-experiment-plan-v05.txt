@@ -1,0 +1,14 @@
+; brief-id: b-028
+; group: experiment-plan
+; variant: 5
+
+I’m tied up with the logistics for the upcoming board retreat, so I need you to step in and finalize the strategy for the "MedScan-AI" diagnostic assistant project. We need a definitive answer on whether replacing our current U-Net medical imaging backbone with a Diffusion-based generative refinement layer will significantly reduce false-negative rates in early-stage tumor detection. Please put together a formal experiment plan covering these specific requirements:
+
+1. Formulate three distinct hypotheses regarding how diffusion models will handle edge-case texture gradients in comparison to our existing baseline.
+2. Construct an experiment matrix that compares the performance of our baseline "SafeScan-Alpha" (U-Net), a standard Latent Diffusion Model, and a refined "Iterative-U-Net" hybrid.
+3. Define the evaluation metrics, focusing on the sensitivity/specificity balance, Dice coefficients, and pixel-wise intersection-over-union, using the "OncoImage-v4" dataset (80,000 high-res MRI scans).
+4. Outline a triple-blind testing protocol specifically utilizing the "rare-pathology" holdout set.
+5. Provide a line-item budget allocation for the $18,000 compute limit, breaking down costs for pre-training, denoising-step optimization, and final validation runs.
+6. Establish clear decision criteria, including the exact statistical significance and GPU-cost thresholds required to justify replacing the current clinical pipeline.
+
+I just need the strategic roadmap for the steering committee—don’t worry about the model scripts or training code for now.

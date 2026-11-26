@@ -1,0 +1,408 @@
+{:assigned-tree-id #uuid "23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9",
+ :tick-id #uuid "f6225f10-7d66-41b6-b9c4-877576ebf56a",
+ :slug "conv-002-architecture-recommendation",
+ :parent-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+ :domain-label "software-architecture-recommendation",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "software-architecture-recommendation",
+  :domain-reasoning
+  "The candidate contains an existing-domain-child 'software-architecture-recommendation' which matches the task subject exactly."},
+ :node-id #uuid "a74ac75e-6e37-43d1-bf82-ff143700ac3d",
+ :top-1
+ {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :fitness-score 1.0,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "software-architecture-recommendation"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9",
+  :parent-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :domain-label "software-architecture-recommendation",
+  :classified-at "2026-09-16T05:47:18.949557-05:00",
+  :reasoning
+  "This candidate explicitly lists 'software-architecture-recommendation' as an existing domain child. The Producer/validator pattern is structurally ideal for complex recommendation tasks where a producer (LLM) generates a technical plan and a validator (can be :code for budget/constraint checking or :llm for qualitative review) ensures the plan meets the specific latency, cost, and team constraints before finalizing. This aligns with the task's requirement for a multi-faceted architectural decision with specific constraints and failure mode analysis.",
+  :outcome :matched,
+  :source-node-id #uuid "a74ac75e-6e37-43d1-bf82-ff143700ac3d",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "abe48812-ad0f-3a27-a142-806558801fc0",
+    :confidence 0.95,
+    :was-fresh-mint? false,
+    :reasoning
+    "This candidate is the strongest match because it explicitly handles producing a 'committable plan/spec/architecture from inputs (goal + constraints)'. The query provides high-stakes constraints (latency budget, cost, scale) and interacting decisions (transport vs. state authority). The recommended pattern of 'draft → critique → refined-spec' and the requirement for a ':risks' section directly address the intent's need for failure mode analysis and mitigation strategies.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.85,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task requires integrating multiple constraints (latency, budget, team skill) into a 'cohesive artifact' (the recommendation report). Synthesis is a strong fit for the 'recommendation' output kind. However, it is slightly less fit than Design because it focuses more on integration than the trade-off logic required for architectural decisions.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "1b1480f1-66b3-399a-8715-e5b8f023a71b",
+    :confidence 0.747271094184659,
+    :was-fresh-mint? false,
+    :reasoning
+    "The query asks for specific tech choices across five categories. Ideation is relevant for generating the 'options/alternatives' for transport, data tier, etc., especially using the 'per-perspective' strength (e.g., cost-optimized vs. performance-optimized). It matches the need for 'tradeoff declarations', but the overall task is a final recommendation (Design), not just generating a list of ideas.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "f6225f10-7d66-41b6-b9c4-877576ebf56a",
+  :event/tags
+  #{[:description-target #uuid "23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9"]
+    [:tick #uuid "f6225f10-7d66-41b6-b9c4-877576ebf56a"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:47:18.949781Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "software-architecture-recommendation",
+   :domain-reasoning
+   "The candidate contains an existing-domain-child 'software-architecture-recommendation' which matches the task subject exactly."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :existing-domain-children
+    ["game-balance-simulation" "software-architecture-recommendation"],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.989512-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :covered,
+    :rank 2,
+    :reasoning
+    "This candidate explicitly lists 'software-architecture-recommendation' as an existing domain child. The Producer/validator pattern is structurally ideal for complex recommendation tasks where a producer (LLM) generates a technical plan and a validator (can be :code for budget/constraint checking or :llm for qualitative review) ensures the plan meets the specific latency, cost, and team constraints before finalizing. This aligns with the task's requirement for a multi-faceted architectural decision with specific constraints and failure mode analysis.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The candidate contains an existing-domain-child 'software-architecture-recommendation' which matches the task subject exactly.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9888888057962177,
+    :score 433.87119394913964,
+    :cos-avoid-sans-content 0.9991316836892337,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9991316836892337}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.974326-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :partial,
+    :rank 1,
+    :reasoning
+    "This is the fingerprint for the Producer/validator tree-class. It provides the same structural fit—generating a complex technical candidate and validating it against rules—which is necessary to ensure the architecture recommendation adheres to the 200ms p99 latency and $3K/mo cost constraints.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The content describes generating and checking candidates against formal rules, which fits the 'recommendation + constraint checking' nature of the task, though the fingerprint lacks the explicit domain label found in the class.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9888888057962177,
+    :score 433.87119394913964,
+    :cos-avoid-sans-content 0.9991316836892337,
+    :fitness-score 0.95,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9991316836892337}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit validation step catches downstream-consumer-breaking errors early",
+      :good-when
+      "the producer output is structurally fragile (free-form text destined for downstream :code parsing) AND a quick validator can flag obvious problems",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:input] :writes [:candidate]}] [:llm {:reads [:candidate] :writes [:valid? :validation-notes] :output-schemas {:valid? :boolean :validation-notes :string}}]]"}],
+    :avoid-when
+    ["the producer is already constrained by :output-schemas — that IS the validation; no separate validator needed"
+     ":code can do the validation deterministically — use a :code validator instead of an :llm one (faster, cheaper, no judgment ambiguity)"
+     "the pipeline can tolerate occasional bad outputs — adding validation overhead may not be worth it"
+     "designing an emit-tree! pattern AND wanting true conditional retry behavior"
+     "the validator is given a vague instruction OR the validation criteria aren't enumerable"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ValidationLoop",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.986183-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "ValidationLoop is a producer-then-validator pattern where one node emits a candidate output and a second node checks it. The classical 'loop' form (produce → validate → conditional retry on failure) requires :condition for branching — NOT emit-able by RLM's tree-DSL today. The constrained variant the model CAN author: producer → validator emitting a :valid? flag → downstream consumer reading the flag. Always prefer :code validators with explicit schema checks over :llm validators when validation criteria are deterministic — faster, cheaper, no judgment ambiguity.",
+    :domain-coverage :uncovered,
+    :rank 9,
+    :reasoning
+    "ValidationLoop is a simpler version of the producer-validator pattern. While it lacks the explicit 'software-architecture' domain metadata of the top candidate, its shape (producer -> validator with flag) fits the requirement to verify if the proposed tech choices meet the startup's constraints. However, it is weaker because it notes that the classical 'loop' form is restricted in the current DSL.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "the classical 'loop' form needs :condition for the retry/accept branch — not currently emit-able by RLM",
+      :avoid-when
+      "designing an emit-tree! pattern AND wanting true conditional retry behavior",
+      :recommended-alternative
+      "use the CONSTRAINED variant above (producer → validator-with-flag); downstream :code or :llm reads the :valid? flag and acts on it; OR use :fallback for retry-style behavior when supported"}
+     {:trait
+      "the validator itself can be wrong — false positives (rejecting valid output) or false negatives (accepting bad output) both poison the pipeline",
+      :avoid-when
+      "the validator is given a vague instruction OR the validation criteria aren't enumerable",
+      :recommended-alternative
+      "tighten the validator's instruction to enumerate concrete pass/fail criteria; OR use a :code validator with explicit schema checks (deterministic, no LLM-judgment ambiguity)"}],
+    :domain-reasoning
+    "The task requires evaluating architectural choices against constraints, which is a form of validation, but the candidate lacks specific domain mentions for architecture.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9921470228028264,
+    :score 433.11068539299504,
+    :cos-avoid-sans-content 0.9989717969873092,
+    :fitness-score 0.7,
+    :document-id ":tree-class:\"seed:tree:ValidationLoop\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9989717969873092}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit validation step catches downstream-consumer-breaking errors early",
+      :good-when
+      "the producer output is structurally fragile (free-form text destined for downstream :code parsing) AND a quick validator can flag obvious problems",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:input] :writes [:candidate]}] [:llm {:reads [:candidate] :writes [:valid? :validation-notes] :output-schemas {:valid? :boolean :validation-notes :string}}]]"}],
+    :avoid-when
+    ["the producer is already constrained by :output-schemas — that IS the validation; no separate validator needed"
+     ":code can do the validation deterministically — use a :code validator instead of an :llm one (faster, cheaper, no judgment ambiguity)"
+     "the pipeline can tolerate occasional bad outputs — adding validation overhead may not be worth it"
+     "designing an emit-tree! pattern AND wanting true conditional retry behavior"
+     "the validator is given a vague instruction OR the validation criteria aren't enumerable"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ValidationLoop",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.971965-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "ValidationLoop is a producer-then-validator pattern where one node emits a candidate output and a second node checks it. The classical 'loop' form (produce → validate → conditional retry on failure) requires :condition for branching — NOT emit-able by RLM's tree-DSL today. The constrained variant the model CAN author: producer → validator emitting a :valid? flag → downstream consumer reading the flag. Always prefer :code validators with explicit schema checks over :llm validators when validation criteria are deterministic — faster, cheaper, no judgment ambiguity.",
+    :domain-coverage :uncovered,
+    :rank 10,
+    :reasoning
+    "Same structural match as the class; useful for checking if the architecture candidate matches the startup's requirements, but less specialized than the top recommendation.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "the classical 'loop' form needs :condition for the retry/accept branch — not currently emit-able by RLM",
+      :avoid-when
+      "designing an emit-tree! pattern AND wanting true conditional retry behavior",
+      :recommended-alternative
+      "use the CONSTRAINED variant above (producer → validator-with-flag); downstream :code or :llm reads the :valid? flag and acts on it; OR use :fallback for retry-style behavior when supported"}
+     {:trait
+      "the validator itself can be wrong — false positives (rejecting valid output) or false negatives (accepting bad output) both poison the pipeline",
+      :avoid-when
+      "the validator is given a vague instruction OR the validation criteria aren't enumerable",
+      :recommended-alternative
+      "tighten the validator's instruction to enumerate concrete pass/fail criteria; OR use a :code validator with explicit schema checks (deterministic, no LLM-judgment ambiguity)"}],
+    :domain-reasoning
+    "No domain match in the representative uses or metadata.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9921470228028264,
+    :score 433.11068539299504,
+    :cos-avoid-sans-content 0.9989717969873092,
+    :fitness-score 0.65,
+    :document-id ":tree-fingerprint:\"seed:tree:ValidationLoop\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9989717969873092}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the cheap path handles the common case at fractional cost — typical economics are 10-20x cheaper per call than always-expensive",
+      :good-when
+      "the work has a long-tail difficulty distribution AND the expensive model is materially more capable on hard cases",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:model :gemini-flash :max-retries 1}}] [:llm {:reads [:input] :writes [:result] :options {:model :claude-opus :max-retries 2}}]]"}
+     {:trait
+      "wire a confidence-check (validator) between the two LLM tiers to escalate on LOW confidence, not just on outright failure — the cheap model's confident-but-wrong answers are the main risk",
+      :good-when
+      "the cheap model has a measurable tendency to be confidently wrong on hard cases",
+      :recommended-pattern
+      "[:sequence [:llm {:options {:model :gemini-flash} :writes [:result :confidence]}] [:fallback [:condition {:predicate (fn [{:keys [confidence]}] (>= confidence 0.8))}] [:llm {:options {:model :claude-opus} :writes [:result]}]]]"}],
+    :avoid-when
+    ["the backup path is deterministic (regex, template, cache) — use primary-backup instead"
+     "the cheap model is roughly capable of the full distribution — single cheap model with :max-retries is simpler"
+     "you can't measure confidence on cheap-model output — escalation won't fire correctly"
+     "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence"
+     "both tiers use the same upstream provider AND availability is a concern"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.990653-05:00"},
+    :domain-label "software-architecture-recommendation",
+    :content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :domain-coverage :uncovered,
+    :rank 4,
+    :reasoning
+    "Model cascade is primarily for cost-optimization and handling long-tail difficulty by escalating to a more expensive model. While the startup is cost-conscious, the task is a one-off complex reasoning/design task rather than a high-volume traffic pipeline where cheap-to-expensive escalation of architectural design is the primary concern.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "without a confidence-check between tiers, the cheap model's confident-but-wrong outputs ship without ever escalating — :fallback only catches outright failure (:status :failure), not bad answers",
+      :avoid-when
+      "the cheap model's outputs are graded only by structural validation (parses OK / matches schema) without semantic confidence",
+      :recommended-alternative
+      "always require a :confidence field on the cheap model's output schema AND escalate to expensive model on confidence < threshold (e.g., 0.7)"}
+     {:trait
+      "cascade with both tiers using the SAME provider correlates failures — when the provider has an outage, both tiers fail together",
+      :avoid-when
+      "both tiers use the same upstream provider AND availability is a concern",
+      :recommended-alternative
+      "use different providers for the two tiers (e.g., gemini for cheap, claude for expensive) so a provider outage degrades one tier but not both"}],
+    :domain-reasoning
+    "The task is about software design, not high-volume traffic processing with cost-economics escalation.",
+    :cos-good 0.9929707626083855,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9908403354994256,
+    :score 433.7223896328397,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.4,
+    :document-id
+    ":tree-class:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9929707626083855,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered
+  ["software-architecture-recommendation" "game-balance-simulation"],
+  :event/id #uuid "01a0a9d4-02a5-706e-a9ef-2b9a57163284",
+  :confidence 1.0,
+  :source-sheet-id #uuid "e794ce63-90df-48bd-a5ce-0ecf589fb264",
+  :ranked-candidates
+  [{:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 433.87119394913964}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.95,
+    :score 433.87119394913964}
+   {:target-id "seed:tree:ValidationLoop",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.7,
+    :score 433.11068539299504}
+   {:target-id "seed:tree:ValidationLoop",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.65,
+    :score 433.11068539299504}
+   {:target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.4,
+    :score 433.7223896328397}],
+  :was-fresh-mint? false,
+  :assigned-via :land-on-domain-child},
+ :deferred-events [],
+ :domain-children-considered
+ ["software-architecture-recommendation" "game-balance-simulation"],
+ :sheet-id #uuid "e794ce63-90df-48bd-a5ce-0ecf589fb264",
+ :payload-domain
+ {:assigned-via :land-on-domain-child,
+  :parent-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :child-tree-id #uuid "23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9",
+  :domain-label "software-architecture-recommendation"},
+ :pass 2,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: software-architecture-recommendation); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 4 from corpus retrieval)\n#### Top match — Producer/validator (confidence: 1.00)\nWhy this fits: This candidate explicitly lists 'software-architecture-recommendation' as an existing domain child. The Producer/validator pattern is structurally ideal for complex recommendation tasks where a producer (LLM) generates a technical plan and a validator (can be :code for budget/constraint checking or :llm for qualitative review) ensures the plan meets the specific latency, cost, and team constraints before finalizing. This aligns with the task's requirement for a multi-faceted architectural decision with specific constraints and failure mode analysis.\n\nPattern guidance (seed `:summary`):\nProducer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).\n\nCapabilities:\n  - :sequence with a producer :llm + a validator :code (or :llm with structured :output-schemas) + an explicit retry budget\n  - natural for any 'generate-then-check' work: code generation + type-check, JSON output + schema validation, claim + grounding check\n  - outputs typically include the validated artifact, the validation result (pass/fail with reasons), and the retry count consumed\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted (confidence 1.00, evidence-count 1)\n    - Good when: the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]\n      ```\n\n  - **Trait:** always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again (confidence 1.00, evidence-count 1)\n    - Good when: the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint) (confidence 1.00, evidence-count 1)\n    - Avoid when: :max-retries is not set OR is set above ~5 AND the producer is :llm-driven\n    - Recommended fix: always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate\n\n  - **Failure mode:** using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw (confidence 1.00, evidence-count 1)\n    - Avoid when: the validation rules can be expressed in code AND the validator is being implemented as another :llm node\n    - Recommended fix: always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - JSON output generation + schema validation: produce JSON → parse + validate against Malli → retry with errors\n  - code generation + compile check: produce Clojure expression → eval in sandbox → retry with stack trace\n  - regex/grammar generation + sample-input parse: produce regex → run on test inputs → retry with mismatch sample\n\n#### Alternative #1 — Producer/validator (confidence: 0.95)\nWhy this fits: This is the fingerprint for the Producer/validator tree-class. It provides the same structural fit—generating a complex technical candidate and validating it against rules—which is necessary to ensure the architecture recommendation adheres to the 200ms p99 latency and $3K/mo cost constraints.\n\nPattern guidance (seed `:summary`):\nProducer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).\n\nCapabilities:\n  - :sequence with a producer :llm + a validator :code (or :llm with structured :output-schemas) + an explicit retry budget\n  - natural for any 'generate-then-check' work: code generation + type-check, JSON output + schema validation, claim + grounding check\n  - outputs typically include the validated artifact, the validation result (pass/fail with reasons), and the retry count consumed\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted (confidence 1.00, evidence-count 1)\n    - Good when: the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]\n      ```\n\n  - **Trait:** always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again (confidence 1.00, evidence-count 1)\n    - Good when: the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint) (confidence 1.00, evidence-count 1)\n    - Avoid when: :max-retries is not set OR is set above ~5 AND the producer is :llm-driven\n    - Recommended fix: always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate\n\n  - **Failure mode:** using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw (confidence 1.00, evidence-count 1)\n    - Avoid when: the validation rules can be expressed in code AND the validator is being implemented as another :llm node\n    - Recommended fix: always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - JSON output generation + schema validation: produce JSON → parse + validate against Malli → retry with errors\n  - code generation + compile check: produce Clojure expression → eval in sandbox → retry with stack trace\n  - regex/grammar generation + sample-input parse: produce regex → run on test inputs → retry with mismatch sample\n\n#### Alternative #2 — ValidationLoop (confidence: 0.70)\nWhy this fits: ValidationLoop is a simpler version of the producer-validator pattern. While it lacks the explicit 'software-architecture' domain metadata of the top candidate, its shape (producer -> validator with flag) fits the requirement to verify if the proposed tech choices meet the startup's constraints. However, it is weaker because it notes that the classical 'loop' form is restricted in the current DSL.\n\nPattern guidance (seed `:summary`):\nValidationLoop is a producer-then-validator pattern where one node emits a candidate output and a second node checks it. The classical 'loop' form (produce → validate → conditional retry on failure) requires :condition for branching — NOT emit-able by RLM's tree-DSL today. The constrained variant the model CAN author: producer → validator emitting a :valid? flag → downstream consumer reading the flag. Always prefer :code validators with explicit schema checks over :llm validators when validation criteria are deterministic — faster, cheaper, no judgment ambiguity.\n\n\n#### Alternative #3 — ValidationLoop (confidence: 0.65)\nWhy this fits: Same structural match as the class; useful for checking if the architecture candidate matches the startup's requirements, but less specialized than the top recommendation.\n\nPattern guidance (seed `:summary`):\nValidationLoop is a producer-then-validator pattern where one node emits a candidate output and a second node checks it. The classical 'loop' form (produce → validate → conditional retry on failure) requires :condition for branching — NOT emit-able by RLM's tree-DSL today. The constrained variant the model CAN author: producer → validator emitting a :valid? flag → downstream consumer reading the flag. Always prefer :code validators with explicit schema checks over :llm validators when validation criteria are deterministic — faster, cheaper, no judgment ambiguity.\n\n\nAssigned to domain child 23af8d1d-44bc-3ff8-8e97-862b4ba6b1a9 (label: software-architecture-recommendation) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral: Design (confidence: 0.95)\n   Why this fits: This candidate is the strongest match because it explicitly handles producing a 'committable plan/spec/architecture from inputs (goal + constraints)'. The query provides high-stakes constraints (latency budget, cost, scale) and interacting decisions (transport vs. state authority). The recommended pattern of 'draft → critique → refined-spec' and the requirement for a ':risks' section directly address the intent's need for failure mode analysis and mitigation strategies.\n\n   Guidance (seed `:summary`):\n   Design produces a single committable plan/spec/architecture from inputs (goal + constraints + optional candidate options). Always structure as :map with named sections (decisions / open-questions / risks) — downstream automated stages bind on these. For non-trivial designs with interacting decisions, iterate via draft → critique → refined-spec. ALWAYS require an :open-questions field — empty means 'I'm confident', non-empty surfaces the gap before downstream stages run against an implicit guess. Composes into iterative-refinement (draft → critique → finalize) and sequential-pipeline (analysis → design → code-building) shells. Avoid when the task is option generation (use ideation) or execution against a known plan (use code-building).\n\nCapabilities:\n  - given a goal + constraints + (optionally) candidate options, produce a single concrete plan/spec/architecture as the chosen direction\n  - natural fit as the convergence stage after research/extraction/analysis/ideation; the gate before code-building or execution\n  - outputs are typically a single structured spec (sections / decisions / open-questions) with explicit decisions rather than a list of options\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** structure the design output as :map with named sections (decisions / open-questions / risks) — downstream code-building or execution can :read specific sections without re-parsing prose (confidence 1.00, evidence-count 1)\n    - Good when: the design will feed automated downstream stages (code-building, validation, execution)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:goal :constraints :options] :writes [:spec] :output-schemas {:spec [:map [:decisions [:vector :string]] [:open-questions [:vector :string]] [:risks [:vector :string]]]}}]\n      ```\n\n  - **Trait:** iterate design via draft → critique → refined-spec when the design is non-trivial — single-pass design tends to leave decisions implicit (confidence 1.00, evidence-count 1)\n    - Good when: the design has multiple interacting decisions AND the cost of a wrong call is high\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:goal] :writes [:draft-spec]}] [:llm {:reads [:draft-spec :goal] :writes [:critique]}] [:llm {:reads [:draft-spec :critique] :writes [:refined-spec]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** designs that leave open-questions implicit force the downstream stage to either fail or guess — both produce drift between intended and actual outcome (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages will execute against the design\n    - Recommended fix: require an explicit :open-questions field in the spec output — empty means 'I'm confident'; non-empty surfaces the gap\n\n  - **Failure mode:** design without explicit consideration of the constraints (as part of :reads) tends to produce specs that look reasonable but violate the constraints in subtle ways (confidence 1.00, evidence-count 1)\n    - Avoid when: the task has hard constraints (budget / API limits / shape requirements)\n    - Recommended fix: always include constraints as a separate :reads input on the design stage AND require the spec output to reference how each constraint was honored\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical architecture spec from a problem brief + constraints\n  - experiment design from a research question + dataset constraints\n  - API contract design from a feature spec + backwards-compat requirements\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent abe48812-ad0f-3a27-a142-806558801fc0)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Synthesis (confidence: 0.85)\n   Why this fits: The task requires integrating multiple constraints (latency, budget, team skill) into a 'cohesive artifact' (the recommendation report). Synthesis is a strong fit for the 'recommendation' output kind. However, it is slightly less fit than Design because it focuses more on integration than the trade-off logic required for architectural decisions.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral: Ideation (confidence: 0.75)\n   Why this fits: The query asks for specific tech choices across five categories. Ideation is relevant for generating the 'options/alternatives' for transport, data tier, etc., especially using the 'per-perspective' strength (e.g., cost-optimized vs. performance-optimized). It matches the need for 'tradeoff declarations', but the overall task is a final recommendation (Design), not just generating a list of ideas.\n\n   Guidance (seed `:summary`):\n   Ideation generates divergent candidate options/alternatives. The proven shape uses :parallel per-perspective :llm stages with distinct prompt framings (cost-optimized / robustness-optimized / contrarian) — parallelism enforces genuine divergence rather than variations on one anchor. ALWAYS require per-candidate tradeoff declarations so the downstream selection stage is actionable. NEVER ship ideation without a downstream convergence stage (selection / critique-and-pick / synthesis) — orphan candidates produce no value. Composes into parallel-independent shells (parallel candidate generation) and sequential-pipeline shells (ideation → critique → select). Avoid for tasks with one obvious answer or no downstream selector.\n\nCapabilities:\n  - given a goal or constraint set, generate N distinct candidate options/approaches/designs\n  - natural fit at the head of a tree when the work needs exploration before convergence\n  - outputs are typically a vector of N candidate entries, each with rationale + risk + expected-outcome\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** fan out per-perspective :llm calls in :parallel — different prompt framings (cost-optimized / robustness-optimized / contrarian) produce genuinely distinct candidates rather than minor variations of one anchor (confidence 1.00, evidence-count 1)\n    - Good when: the task benefits from genuine divergence rather than N close-together suggestions\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:parallel [:llm {:reads [:goal] :writes [:cost-opt-options]}] [:llm {:reads [:goal] :writes [:robust-options]}] [:llm {:reads [:goal] :writes [:contrarian-options]}]]\n      ```\n\n  - **Trait:** require each candidate to declare the explicit tradeoff it makes (lower X for higher Y) — the per-candidate tradeoff field is what makes the downstream selection stage actionable (confidence 1.00, evidence-count 1)\n    - Good when: downstream stage will pick one of the candidates\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:goal] :writes [:options] :output-schemas {:options [:vector [:map [:option :string] [:rationale :string] [:tradeoff :string] [:risk :string]]]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** asking a single :llm for 'N options' produces variations on the model's first guess — the options cluster around one local optimum and miss genuinely different approaches (confidence 1.00, evidence-count 1)\n    - Avoid when: the value depends on having genuinely different approaches\n    - Recommended fix: fan out :parallel per-perspective stages with distinct prompts; merge afterward; the parallelism enforces divergence\n\n  - **Failure mode:** ideation without a downstream convergence stage produces options that never get selected — the tree generates value the next stage doesn't use (confidence 1.00, evidence-count 1)\n    - Avoid when: no downstream stage exists to pick / score / synthesize the candidates\n    - Recommended fix: always pair ideation with a downstream convergence (selection :llm / critique-and-pick / synthesis); ideation alone is incomplete\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - product-feature brainstorming: 5 candidate features with rationale + tradeoff + risk\n  - approach exploration for a hard problem: 3 architectural sketches with cost-vs-robustness tradeoff\n  - creative variation generation: N candidate names/taglines/copy variants\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 1b1480f1-66b3-399a-8715-e5b8f023a71b)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nA consumer-app startup needs an architecture recommendation for their next\n6-month build:\n\n- Product: real-time multiplayer trivia game, expected scale 50K concurrent\n  users at launch, 500K within 6 months\n- Latency budget: question-broadcast to all participants in a match must\n  arrive within 200 ms p99\n- Team: 6 engineers, 2 of whom have GraphQL experience, none with WebRTC\n- Existing infra: AWS, terraform-managed, RDS Postgres for user data,\n  Cloudflare on the edge\n- Cost budget: $3K/mo at 50K users, scaling sublinearly thereafter\n\nRecommend an architecture with specific tech choices for:\n- Real-time message transport (WebSocket vs Server-Sent Events vs polling)\n- Game-state authority (server-authoritative vs hybrid)\n- Match orchestration (single-process matchmaker vs distributed)\n- Data tier (Postgres alone vs Postgres + Redis vs separate write/read)\n- Observability stack\n\nFor EACH choice include:\n- The decision\n- Why it fits the constraints\n- What FAILURE MODE it creates and how it's mitigated\n- A plausibility test the team can run in week 1 to validate the choice\n  before sinking implementation effort",
+ :june-flags
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 19963,
+ :confidence 1.0,
+ :was-fresh-mint? false,
+ :assigned-via :land-on-domain-child}

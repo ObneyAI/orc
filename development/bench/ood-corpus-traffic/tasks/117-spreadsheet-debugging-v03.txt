@@ -1,0 +1,11 @@
+; brief-id: b-040
+; group: spreadsheet-debugging
+; variant: 3
+
+Please perform a deep-dive audit of my 'Semester_Gradebook_Final' dashboard. I have provided the raw formula exports from both the 'Student_Weights' and 'Final_Calculations' tabs, a dataset containing 20 anonymized student records, and a log of the current erroneous GPA outputs where values are exceeding the 4.0 cap. I need you to identify the logic errors—specifically within the VLOOKUPs tied to the 'Extra_Credit' table, which appear to be double-counting—and ensure the solution is compatible with both desktop Excel and Google Sheets.
+
+Your audit report must be structured according to the following schema:
+*   **Error Location:** Specify the exact cell coordinates and the sheet name where each flaw is located.
+*   **Root Cause:** Provide a technical breakdown of the failure (e.g., circular references, incorrect range indexing, or flawed arithmetic logic) causing the inflated GPA or weighted averages.
+*   **Corrected Formula:** Provide the finalized, platform-agnostic code string ready for immediate deployment.
+*   **Regression Check:** Include a specific validation wrapper (such as a MIN/MAX constraint or an IF condition) to guarantee that outputs are capped strictly between 0.0 and 4.0 moving forward.

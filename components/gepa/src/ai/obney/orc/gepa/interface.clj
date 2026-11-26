@@ -56,6 +56,9 @@
             [ai.obney.orc.gepa.core.todo-processors :as todo]
             [ai.obney.orc.gepa.core.metrics :as metrics]
             [ai.obney.orc.gepa.core.optimization :as optimization]
+            [ai.obney.orc.gepa.core.recovery :as recovery]
+            [ai.obney.orc.gepa.core.periodic-tasks]
+            [ai.obney.orc.gepa.core.metric-runtime :as metric-runtime]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.grain.command-processor-v2.interface :as command-processor]
             [ai.obney.grain.query-processor.interface :as query-processor]
@@ -117,6 +120,12 @@
   "EXACT copy of Python GEPA's InstructionProposalSignature.default_prompt_template.
    Use this for custom integrations requiring the exact prompt."
   proposer/python-gepa-prompt-template)
+
+(def general-rules-prompt-template
+  "Optional reflection prompt: GEPA's default template plus three sentences that
+   ask for general rules instead of copied example texts. Pass it as
+   `:reflection-prompt-template`; nothing selects it by default."
+  proposer/general-rules-prompt-template)
 
 ;; =============================================================================
 ;; Metric Functions
@@ -258,13 +267,7 @@
          :source-fingerprint source-fingerprint
          :target-fingerprint target-fingerprint}))))
 
-(defn resume!
-  "Resume one incomplete GEPA transition from immutable state.
-
-   The function deliberately advances only the first missing transition. It is
-   safe to call repeatedly (or after process reconstruction): command guards
-   and terminal events remain authoritative, and completed proposer calls are
-   never invoked again merely to reconstruct their proposal."
+(defn- resume-step!
   [ctx optimization-id]
   (let [summary (rm/get-optimization-summary ctx optimization-id)
         remaining-budget (- (get-in summary [:config :max-metric-calls] 0)
@@ -288,6 +291,12 @@
                            (remove #(contains? subsample-starts
                                                [(:parent-id %) (:iteration %)])
                                    (get by-type :gepa/proposal-ready)))
+        round-decided (set (concat (map (juxt :parent-id :iteration)
+                                        (get by-type :gepa/proposal-ready))
+                                   subsample-results))
+        pending-round (last
+                        (remove #(contains? round-decided [(:parent-id %) (:iteration %)])
+                                (get by-type :gepa/parent-minibatch-evaluation-requested)))
         pending-subsample (last
                             (remove #(contains? subsample-results
                                                 [(:parent-id %) (:iteration %)])
@@ -339,6 +348,15 @@
            :remaining-budget remaining-budget
            :parent-id (:parent-id pending-proposal)})
 
+      ;; A recorded mutation round whose parent evaluation was interrupted:
+      ;; re-run it from the record (same parent, component and minibatch).
+      ;; Completed parent tasks are reused; unfinished ones are recovered.
+      pending-round
+      (do (todo/on-parent-minibatch-evaluation-requested (assoc ctx :event pending-round))
+          {:optimization-id optimization-id :status :resumed
+           :boundary :parent-minibatch-evaluation
+           :parent-id (:parent-id pending-round)})
+
       pending-evaluation
       (do (todo/on-candidate-evaluation-started (assoc ctx :event pending-evaluation))
           {:optimization-id optimization-id :status :resumed
@@ -353,6 +371,20 @@
 
       :else
       {:optimization-id optimization-id :status :no-recoverable-boundary})))
+
+(defn resume!
+  "Resume one incomplete GEPA transition from immutable state.
+
+   The function deliberately advances only the first missing transition. It is
+   safe to call repeatedly (or after process reconstruction): command guards
+   and terminal events remain authoritative, and completed proposer calls are
+   never invoked again merely to reconstruct their proposal.
+
+   The result also reports `:reflection-tokens-used`, the tokens recorded by
+   the optimization's proposer calls."
+  [ctx optimization-id]
+  (assoc (resume-step! ctx optimization-id)
+         :reflection-tokens-used (rm/get-reflection-tokens-used ctx optimization-id)))
 
 (defn get-progress
   "Get progress of an optimization run.
@@ -369,7 +401,9 @@
   [context optimization-id]
   (query-processor/process-query
     (assoc context
-           :query {:query/name :gepa/get-optimization-progress
+           :query {:query/id (random-uuid)
+                   :query/timestamp (time/now)
+                   :query/name :gepa/get-optimization-progress
                    :optimization-id optimization-id})))
 
 (defn get-best-candidate
@@ -391,7 +425,9 @@
   [context optimization-id]
   (query-processor/process-query
     (assoc context
-           :query {:query/name :gepa/get-population
+           :query {:query/id (random-uuid)
+                   :query/timestamp (time/now)
+                   :query/name :gepa/get-population
                    :optimization-id optimization-id})))
 
 (defn get-pareto-frontier
@@ -406,7 +442,9 @@
   [context optimization-id]
   (query-processor/process-query
     (assoc context
-           :query {:query/name :gepa/get-pareto-frontier
+           :query {:query/id (random-uuid)
+                   :query/timestamp (time/now)
+                   :query/name :gepa/get-pareto-frontier
                    :optimization-id optimization-id})))
 
 (defn list-optimizations
@@ -423,7 +461,9 @@
   [context & {:keys [sheet-id status limit]}]
   (query-processor/process-query
     (assoc context
-           :query {:query/name :gepa/list-optimizations
+           :query {:query/id (random-uuid)
+                   :query/timestamp (time/now)
+                   :query/name :gepa/list-optimizations
                    :sheet-id sheet-id
                    :status status
                    :limit limit})))
@@ -660,3 +700,11 @@
   "Manually complete an optimization (for testing)."
   [context optimization-id]
   (commands/complete-optimization! context optimization-id))
+
+(def recover-in-progress!
+  "Request tenant-scoped recovery for abandoned GEPA tasks through Grain processors."
+  recovery/recover-in-progress!)
+
+(def register-metric!
+  "Restore a custom metric by its persisted tenant-scoped identity and revision."
+  metric-runtime/register!)

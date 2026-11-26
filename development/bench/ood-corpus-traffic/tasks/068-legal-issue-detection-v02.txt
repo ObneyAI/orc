@@ -1,0 +1,15 @@
+; brief-id: b-001
+; group: legal-issue-detection
+; variant: 2
+
+Hi there, hope you're having a decent week so far. I am absolutely buried under this move—trying to get the new office space set up while also managing the transition for the team has been a total nightmare. The landlord finally sent over the draft for the new commercial lease in Austin, and I’m just staring at this one section about the 'Operating Expense Passthroughs' and it’s giving me a massive headache. I don’t want to get stuck paying for their roof repairs or some crazy administrative fee that they haven't capped, especially since the HVAC unit in this building looks like it’s from the 80s.
+
+Could you take a look at the text I’m pasting below? It’s Section 12.4 and 12.5 of the draft. I need you to break down any red flags you see. Specifically, I’d like a list of issues, and for each one, please tell me the severity (like, is this a dealbreaker or just a 'nice to fix'?), what area of real estate law we’re talking about, the exact sentence that’s the problem, and then give me a suggested revision that’s more tenant-friendly. I really need to make sure we aren't liable for capital improvements.
+
+Here is the text:
+
+12.4. Operating Expenses. Tenant shall pay to Landlord, as Additional Rent, Tenant's Proportionate Share of all Operating Expenses incurred by Landlord in the operation, repair, replacement, and maintenance of the Building and Common Areas. Operating Expenses shall include, without limitation, all costs of utilities, insurance premiums, taxes, property management fees (up to 10% of gross rents), and all costs associated with maintaining the structural integrity of the Building, including foundation and roof replacements.
+
+12.5. Audit Rights. Tenant shall have the right, at its sole cost and expense, to audit Landlord’s books and records regarding Operating Expenses once per calendar year, provided that Tenant gives at least sixty (60) days' prior written notice. If the audit reveals an overcharge of less than 10%, Tenant shall reimburse Landlord for all costs incurred by Landlord in connection with such audit.
+
+Thanks so much for the help. Once I get this sorted, I might finally be able to sleep for more than four hours. Talk soon, Sarah.

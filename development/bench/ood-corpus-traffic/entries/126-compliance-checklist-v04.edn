@@ -1,0 +1,22 @@
+{:slug "126-compliance-checklist-v04",
+ :group "compliance-checklist",
+ :in-domain? false,
+ :variant 4,
+ :expected-output-kind
+ "a checklist of controls with owner, evidence required and due date, grouped by article or section",
+ :brief-id "b-006",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of #uuid "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1318, :completion-tokens 275, :total-tokens 1593},
+  :draft-prompt-sha256
+  "0724264df465b52c7a6f5b08edd575f937bc41f19fde46105afd142fd3f12992",
+  :polish-usage
+  {:prompt-tokens 444, :completion-tokens 275, :total-tokens 719},
+  :polish-prompt-sha256
+  "ad9318bfeddd913efbe752750590b49ea4482f5b80b78cd32645fb595d275430",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

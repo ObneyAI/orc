@@ -1,0 +1,12 @@
+; brief-id: b-026
+; group: log-triage
+; variant: 5
+
+1. Scour the attached log dump and K8s events from the checkout-service pods to isolate every 'upstream request timeout' and 'readiness probe failure' entry.
+2. Cross-reference these errors against the pod restart timestamps to determine if the 15% failure rate aligns with specific nodes or deployment cycles.
+3. Generate a ranked list of potential root causes, specifically evaluating whether this is an OOMKill, an Istio sidecar configuration error, or a downstream gRPC timeout.
+4. For every hypothesis you propose, cite the exact log lines and timestamps that act as supporting evidence so I don't have to hunt for them.
+5. Provide a 'Next Diagnostic Step' for each theory, including the precise kubectl commands or resource limit parameters I should verify next.
+6. Give me a definitive "Most Likely Cause" conclusion based on the log patterns.
+
+I'm in a leadership sync right now and need to know immediately if I should pull the trigger on rolling back the latest HPA scaling policy or if we are looking at a genuine memory leak in the new Node.js runtime. I'll be checking for this summary in ten minutes.

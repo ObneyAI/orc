@@ -1,0 +1,18 @@
+; brief-id: b-015
+; group: lesson-plan
+; variant: 5
+
+I’ve just been put in charge of the "Professional Communications" module for our upcoming new hire onboarding, and I need to get the full schedule over to the HR Director for approval by EOD. We’re dealing with a cohort of 15 entry-level associates who will be moving into high-pressure, client-facing roles, so the training needs to be practical and fast-paced. Specifically, they need to master internal Slack etiquette, professional email drafting, and the basics of leading a stand-up meeting.
+
+Please build out a detailed 6-session unit plan according to these specifications:
+
+1. Logistics: Each session must fit into a 75-minute block held in a standard conference room equipped with a TV for screen mirroring.
+2. Materials: Incorporate the use of our official company style guide and my folder of "bad" email examples for critique exercises.
+3. Session Breakdown: For every one of the 6 sessions, you must provide:
+   - A specific, measurable behavioral objective.
+   - A timed agenda (e.g., 0-15m Intro/Review, 15-45m Interactive Lecture, etc.).
+   - A hands-on activity, such as a mock Slack thread, email rewrite, or roleplayed stand-up.
+   - A list of all physical or digital resources required for that lesson.
+   - A "Check for Understanding" task to verify competency before they leave the room.
+
+I don’t need the actual slide decks or the final feedback forms yet—just the structured, lesson-by-lesson sequence to prove we have a robust training path in place.

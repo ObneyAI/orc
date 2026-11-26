@@ -1,0 +1,25 @@
+; brief-id: b-033
+; group: nutrition-labels
+; variant: 3
+
+I need you to process the nutritional data for our 'On-The-Go' snack line production run. Using the provided 10kg batch recipes and the supplier's nutrient reference sheet, calculate the per-serving values and generate a technical specification for the following four SKUs:
+
+- Savory Trail Mix: 45g per pouch
+- Dehydrated Beet Chips: 28g per bag
+- Protein Clusters: 3 units per serving
+- Honey Roasted Chickpeas: 40g per pouch
+
+Please provide the output following this explicit schema for each product:
+
+* **Product Identity:** The official flavor name.
+* **Serving Definition:** A string formatted as "Quantity (Weight)" (e.g., "1 pouch (45g)").
+* **Nutritional Breakdown (Per Serving):**
+    - Total Calories (rounded to the nearest 10 kcal)
+    - Total Fat (grams)
+    - Total Carbohydrates (grams)
+    - Dietary Fiber (grams)
+    - Total Protein (grams)
+* **Allergen Audit:** A comma-separated list identifying any presence of sesame, wheat, or tree nuts based on the ingredient deck.
+* **Compliance Panel:** A standard FDA-compliant vertical nutrition facts panel formatted as a code block.
+
+Important: You must convert the 10kg bulk batch totals down to the individual retail unit sizes listed above. Do not provide batch-level analysis; I only need the consumer-facing label data for the final packaging.

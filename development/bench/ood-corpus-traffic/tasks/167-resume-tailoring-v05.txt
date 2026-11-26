@@ -1,0 +1,13 @@
+; brief-id: b-039
+; group: resume-tailoring
+; variant: 5
+
+I’m applying for a Project Coordinator position at a wind energy firm in Toronto and need help pivoting my professional materials from residential construction to large-scale renewable infrastructure. Please review my attached CV and the job posting, then complete the following steps:
+
+1. Revise my CV to emphasize transferable skills such as site safety protocols, vendor management, and municipal permit navigation, ensuring the language shifts from residential building to industrial energy projects.
+2. Provide a detailed summary of these revisions, explaining the logic behind how specific construction tasks were reworded to better align with the energy sector's expectations.
+3. Draft a tailored cover letter that addresses this career transition, highlighting my passion for sustainable energy and my proven track record of maintaining project budgets.
+4. Create a "Gap List" that directly compares my current qualifications against the technical requirements listed in the posting, specifically looking for discrepancies in certifications like PMP or proficiency in CAD software.
+5. For every gap identified, suggest a concrete action plan, such as a specific short-term certification or a way to frame my current experience to mitigate the deficiency.
+
+Please provide only the revised documents and the gap analysis; I do not need interview coaching or hiring rubrics at this time.

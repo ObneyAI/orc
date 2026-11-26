@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: marathon (off-domain); variant a of 3 — the same domain re-asked with a different concrete instance.
+Build a 16-week marathon training plan for a 38-year-old recreational runner at 25 miles/week aiming for 4:00, with an Achilles history, no track access, living at 6,200 ft. Week-by-week schedule, calibrated paces, two strength sessions a week, cutback weeks, a 3-week taper and red-flag warning signs. Output: {:week-by-week [...] :paces {...} :strength-program ... :red-flags ...}

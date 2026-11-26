@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: schemamigration (off-domain); variant c of 3 — the same domain re-asked with a different concrete instance.
+Plan a schema migration for a DynamoDB single-table design that adds a new access pattern (orders by customer and status) requiring a new GSI and a re-keyed sort key, without downtime for a 500 request/second API. Produce the phased rollout (create GSI, backfill via parallel scan, switch reads, switch writes), throughput budgeting, rollback and verification. Output: {:steps [...] :backfill ... :rollback ... :verification [...]}

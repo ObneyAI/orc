@@ -1,0 +1,9 @@
+; brief-id: b-006
+; group: compliance-checklist
+; variant: 4
+
+Hey! Hope you're doing well. I’m currently staring at this massive PDF of the new national procurement rules that just dropped, and my head is spinning. Our team is tiny—only 12 of us handling logistics for regional government contracts—and we have to align with these new standards by year-end or we’ll lose our preferred vendor status. It's a lot of pressure for a group this size.
+
+I've uploaded the full regulation text and our company profile. Could you please digest this and build out a practical compliance checklist for us? I need it organized by the specific articles in the regulation so we stay compliant with the legal structure. For each control, please include columns for the 'Owner' (either 'Jasmine' for procurement/ops or 'Leo' for finance/records), the 'Evidence Required' (like specific tender logs, signed affidavits, or audit trails), and a 'Due Date' set for the end of November. 
+
+Just a clean checklist of implementation controls and what we need to document to prove we're following the rules. I don't need a risk matrix or any contract analysis right now—just the raw "to-do" list so I can get Jasmine and Leo moving on this. Thanks!

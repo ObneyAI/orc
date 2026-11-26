@@ -26,6 +26,15 @@
                                                                   :git/sha "dbf5b5229aad09785e40f71e96adf65c90f971d5"
                                                                   :deps/root "projects/grain-event-store-sqlite-v3"}
 
+                              ;; Dev only (RS7-PS): Postgres event store, so the
+                              ;; hours-long RS-7 traffic-sweep arms can persist
+                              ;; to a durable store that survives a crash and
+                              ;; stays queryable afterward, instead of the
+                              ;; in-memory store's /tmp LMDB cache alone.
+                              obneyai/grain-event-store-postgres-v3 {:git/url "https://github.com/ObneyAI/grain.git"
+                                                                    :git/sha "dbf5b5229aad09785e40f71e96adf65c90f971d5"
+                                                                    :deps/root "projects/grain-event-store-postgres-v3"}
+
                               ;; Base
                               orc/orc-dev           {:local/root "bases/orc-dev"}
 

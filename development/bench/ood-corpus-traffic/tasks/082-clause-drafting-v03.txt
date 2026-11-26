@@ -1,0 +1,14 @@
+; brief-id: b-005
+; group: clause-drafting
+; variant: 3
+
+Please draft a formal Limitation of Liability clause for a Master Purchase Agreement with a Singapore-based logistics partner specializing in high-value pharmaceutical transport. The output must adhere to the following schema:
+
+* **Clause Text**: A complete, legally enforceable provision drafted in accordance with Singapore law, specifically addressing the Unfair Contract Terms Act (UCTA). It must include an uncapped liability provision for gross negligence/willful misconduct and a defined cap for standard operational errors.
+* **Liability Rationale**: A 2-3 sentence justification for the selected liability cap (e.g., a multiple of service fees vs. a fixed dollar amount) based on the specific risk profile of pharmaceutical logistics.
+* **Negotiation Playbook**: A structured strategy section containing exactly three bullet points:
+    1. Framing for the exclusion of indirect, special, and consequential damages.
+    2. Legal and commercial defense for the gross negligence carve-out.
+    3. A specific fallback position regarding reciprocal aggregate liability limits if the partner pushes back.
+
+Reference the attached draft MPA and insurance broker’s risk brief to ensure the financial thresholds align with our current coverage. The tone should be professional, precise, and suitable for immediate insertion into the 'Miscellaneous' or 'Liability' sections of the contract.

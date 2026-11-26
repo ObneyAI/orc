@@ -1,0 +1,215 @@
+;; RS-7 traffic briefs — hand-authored by the orchestrator (2026-09-22). Ground truth for the realistic-traffic
+;; convergence experiment: every generated instruction inherits its brief's :group, :in-domain? and
+;; :expected-seed-id. The generator never sees :group or :brief-id. Fields: subject matter (what the task is about),
+;; material (what is read), output kind (what is produced), instance space (how variants may differ), must-not-be
+;; (the neighbouring domain a variant must not drift into). Seed ids: document-analysis
+;; 00000000-c1c1-4001-b001-d0c0a0a0a0a1, risk-analysis …b002-…a2, contract-comparison …b003-…a3,
+;; legal-issue-detection …b004-…a4.
+[;; ---- in-domain (must match the seed; zero mints expected) ----
+ {:brief-id "b-001" :group "legal-issue-detection" :in-domain? true
+  :expected-seed-id #uuid "00000000-c1c1-4001-b004-d0c0a0a0a0a4"
+  :subject-matter "reviewing a contract or agreement for legal concerns" :material "the clause or agreement text, pasted"
+  :output-kind "a list of issues, each with severity, area of law, a citation of the offending text and a suggested revision"
+  :instance-space "employment, contractor, NDA, SaaS terms, lease, licensing; one clause or a whole short agreement; varied jurisdictions"
+  :must-not-be "drafting a new clause from scratch, or comparing two versions"}
+ {:brief-id "b-002" :group "contract-comparison" :in-domain? true
+  :expected-seed-id #uuid "00000000-c1c1-4001-b003-d0c0a0a0a0a3"
+  :subject-matter "comparing two versions or two drafts of a contract" :material "two contract texts or two versions of one"
+  :output-kind "an executive summary, a section-by-section diff quoting both texts, an impact analysis and a recommendation"
+  :instance-space "SaaS agreements, MSAs, leases, supplier terms, employment offers; version-vs-version or party-vs-party drafts"
+  :must-not-be "reviewing one contract alone for issues"}
+ {:brief-id "b-003" :group "risk-analysis" :in-domain? true
+  :expected-seed-id #uuid "00000000-c1c1-4001-b002-d0c0a0a0a0a2"
+  :subject-matter "identifying risks and obligations in a long document" :material "an RFP, contract, regulatory filing or policy, long enough to chunk"
+  :output-kind "obligations and penalties extracted per section, a risk matrix rated HIGH/MEDIUM/LOW with justification, and an executive summary"
+  :instance-space "public-sector RFPs, vendor contracts, compliance regulations, insurance policies; varied lengths and sectors"
+  :must-not-be "a general summary with key dates and entities, or a legal-issue review with revisions"}
+ {:brief-id "b-004" :group "document-analysis" :in-domain? true
+  :expected-seed-id #uuid "00000000-c1c1-4001-b001-d0c0a0a0a0a1"
+  :subject-matter "extracting a summary, key dates and named entities from one large document" :material "a single long document (RFP, report, filing, transcript)"
+  :output-kind "a summary, a list of key dates with what happens on each, and the entities (organisations, people, places, amounts)"
+  :instance-space "RFPs, annual reports, court filings, meeting transcripts, grant calls; varied length and register"
+  :must-not-be "a risk matrix, or an issue review"}
+ ;; ---- near-domain confounders (off-domain by construction; report mints under a seed separately) ----
+ {:brief-id "b-005" :group "clause-drafting" :in-domain? false :confounder-of #uuid "00000000-c1c1-4001-b004-d0c0a0a0a0a4"
+  :subject-matter "drafting a new contract clause to a requirement" :material "a plain-language requirement and the surrounding agreement context"
+  :output-kind "the drafted clause text plus a short rationale and negotiation notes"
+  :instance-space "non-compete, IP assignment, SLA, limitation of liability, data processing; varied jurisdictions"
+  :must-not-be "reviewing an existing clause for issues"}
+ {:brief-id "b-006" :group "compliance-checklist" :in-domain? false :confounder-of #uuid "00000000-c1c1-4001-b002-d0c0a0a0a0a2"
+  :subject-matter "turning a regulation or standard into an actionable compliance checklist for one organisation" :material "the regulation or standard text and a description of the organisation"
+  :output-kind "a checklist of controls with owner, evidence required and due date, grouped by article or section"
+  :instance-space "GDPR, SOC 2, HIPAA, PCI DSS, ISO 27001, a national procurement rule; varied organisation sizes"
+  :must-not-be "a risk matrix over a contract"}
+ ;; ---- off-domain: the six existing convergence groups ----
+ {:brief-id "b-007" :group "marathon-training" :in-domain? false
+  :subject-matter "an endurance running training plan for one runner" :material "the runner's profile, goal, constraints and history"
+  :output-kind "a week-by-week schedule with paces, strength work, cutback weeks, a taper and warning signs"
+  :instance-space "marathon, half, 10k, ultra; beginners to sub-3 runners; injuries, altitude, treadmill-only, travel"
+  :must-not-be "a diet plan or a race-day logistics plan"}
+ {:brief-id "b-008" :group "recipe-scaling" :in-domain? false
+  :subject-matter "scaling a tested recipe to a much larger or smaller batch" :material "the recipe (ingredients + technique) and the target yield and setting"
+  :output-kind "scaled ingredients with non-linear adjustments, a revised technique for the batch size, a workflow or timeline, and a per-portion cost"
+  :instance-space "restaurant, catering, bakery, food truck, home-to-event; varied cuisines and equipment limits"
+  :must-not-be "inventing a new recipe or writing a menu"}
+ {:brief-id "b-009" :group "game-balance" :in-domain? false
+  :subject-matter "balancing the numbers of a game system using simulated play" :material "current unit/card/weapon/economy stats and observed win or pick rates"
+  :output-kind "proposed numeric adjustments, a described simulation with estimated outcomes, iteration until targets are met, and a rationale"
+  :instance-space "deckbuilders, shooters, city-builders, MOBAs, board games; varied stat systems and targets"
+  :must-not-be "designing new game content or writing lore"}
+ {:brief-id "b-010" :group "schema-migration" :in-domain? false
+  :subject-matter "migrating a database schema with zero or minimal downtime" :material "current and target schema definitions plus traffic and constraints"
+  :output-kind "ordered migration steps, a backfill and dual-write strategy, a cut-over and rollback plan, and verification queries"
+  :instance-space "PostgreSQL, MySQL, SQL Server, DynamoDB, MongoDB; splits, key changes, new access patterns"
+  :must-not-be "query performance tuning or designing a fresh schema"}
+ {:brief-id "b-011" :group "security-haiku" :in-domain? false
+  :subject-matter "rendering security findings as haiku" :material "a list of security audit or pentest findings"
+  :output-kind "one 5-7-5 haiku per finding that stays technically accurate without naming the vulnerability class"
+  :instance-space "web, mobile, cloud, IoT, supply-chain findings; 3 to 8 findings"
+  :must-not-be "a remediation plan or a severity ranking"}
+ {:brief-id "b-012" :group "query-optimisation" :in-domain? false
+  :subject-matter "diagnosing and fixing a slow database query" :material "the query, its execution plan and table statistics"
+  :output-kind "a diagnosis, proposed indexes and rewrites, an estimated improvement and the final query with its expected plan"
+  :instance-space "PostgreSQL, MySQL, SQL Server, BigQuery, Snowflake; reports, dashboards, stored procedures"
+  :must-not-be "a schema migration or a data-quality audit"}
+ ;; ---- off-domain: new groups spanning the shape seeds ----
+ {:brief-id "b-013" :group "travel-itinerary" :in-domain? false
+  :subject-matter "planning a multi-day travel itinerary under constraints" :material "destination, dates, budget, party, interests and constraints"
+  :output-kind "a day-by-day itinerary with timings, bookings to make, costs and contingency options"
+  :instance-space "city breaks, road trips, family holidays, business trips with free days; varied budgets and mobility needs"
+  :must-not-be "a packing list or a visa guide"}
+ {:brief-id "b-014" :group "budget-forecast" :in-domain? false
+  :subject-matter "building a monthly cash-flow forecast for a small organisation" :material "historic income and expenses, known commitments and assumptions"
+  :output-kind "a 12-month forecast table with assumptions stated, a sensitivity analysis and a list of risks to the plan"
+  :instance-space "a café, a nonprofit, a SaaS startup, a freelancer, a school club; varied currencies and seasonality"
+  :must-not-be "a tax return or a pricing strategy"}
+ {:brief-id "b-015" :group "lesson-plan" :in-domain? false
+  :subject-matter "designing a sequence of lessons for a course unit" :material "the learning objectives, the learners' level, available time and resources"
+  :output-kind "a lesson-by-lesson plan with objectives, activities, timings, materials and assessment"
+  :instance-space "primary maths, secondary biology, adult language classes, corporate onboarding, coding bootcamp; 3 to 12 sessions"
+  :must-not-be "a single worksheet or an exam paper"}
+ {:brief-id "b-016" :group "incident-postmortem" :in-domain? false
+  :subject-matter "writing a blameless postmortem of a production incident" :material "the incident timeline, chat logs, alerts and metrics"
+  :output-kind "a timeline, root cause and contributing factors, impact, what went well, and prioritised action items with owners"
+  :instance-space "outages, data loss, security incidents, failed deploys; varied stacks and severities"
+  :must-not-be "an on-call runbook or a status-page message"}
+ {:brief-id "b-017" :group "api-migration-guide" :in-domain? false
+  :subject-matter "writing a migration guide from one API version to another" :material "the old and new API references and a list of breaking changes"
+  :output-kind "a step-by-step migration guide with before/after code samples, a compatibility table and a checklist"
+  :instance-space "REST v1→v2, SDK major versions, GraphQL schema changes, webhook payload changes; varied languages"
+  :must-not-be "a changelog or a database migration"}
+ {:brief-id "b-018" :group "content-calendar" :in-domain? false
+  :subject-matter "planning a month of content for a brand channel" :material "the brand, audience, goals, past performance and constraints"
+  :output-kind "a dated calendar of posts with topic, format, hook, call to action and success metric"
+  :instance-space "LinkedIn for a B2B startup, Instagram for a bakery, a newsletter for a nonprofit, YouTube for a tutor; varied cadences"
+  :must-not-be "writing the posts themselves or an SEO audit"}
+ {:brief-id "b-019" :group "hiring-rubric" :in-domain? false
+  :subject-matter "designing a structured interview rubric for a role" :material "the job description, team context and must-have vs nice-to-have skills"
+  :output-kind "competencies with behavioural indicators, scoring anchors, interview questions per competency and a decision rule"
+  :instance-space "engineer, nurse manager, sales rep, teacher, product designer; varied seniority"
+  :must-not-be "screening actual candidates or writing the job ad"}
+ {:brief-id "b-020" :group "seating-plan" :in-domain? false
+  :subject-matter "assigning guests or attendees to tables under relationship constraints" :material "the guest list, table sizes, must-sit-together and must-not-sit-together rules"
+  :output-kind "a table-by-table assignment, the constraints satisfied and violated, and alternatives for the hard cases"
+  :instance-space "weddings, conference dinners, classroom groups, team offsites; 30 to 200 people"
+  :must-not-be "a venue plan or a menu"}
+ {:brief-id "b-021" :group "planting-schedule" :in-domain? false
+  :subject-matter "a seasonal planting and care schedule for a garden or plot" :material "location and climate, space, sun, what to grow and the grower's time"
+  :output-kind "a week-by-week sowing, transplanting, feeding and harvesting schedule with succession plans"
+  :instance-space "balcony containers, allotments, school gardens, a market-garden bed; varied climates"
+  :must-not-be "a landscape design or a pest identification guide"}
+ {:brief-id "b-022" :group "chess-study" :in-domain? false
+  :subject-matter "a study plan for one chess opening or endgame for a player" :material "the player's rating, style, time and the opening or endgame chosen"
+  :output-kind "a structured study plan with key lines, model games to review, drills and a weekly schedule"
+  :instance-space "Sicilian, London, Caro-Kann, rook endgames; 800 to 2000 rated players; club or online"
+  :must-not-be "annotating a single game or an engine analysis"}
+ {:brief-id "b-023" :group "tax-estimate" :in-domain? false
+  :subject-matter "estimating an individual's or small business's annual tax and quarterly payments" :material "income sources, deductions, entity type, jurisdiction and prior year"
+  :output-kind "an estimate with the calculation shown, quarterly payment amounts and dates, and assumptions to verify with a professional"
+  :instance-space "US freelancers, UK sole traders, a Canadian small corporation, an Australian contractor; varied incomes"
+  :must-not-be "a budget forecast or investment advice"}
+ {:brief-id "b-024" :group "translation-glossary" :in-domain? false
+  :subject-matter "building a bilingual terminology glossary for a document set" :material "source documents in one language and any existing translations"
+  :output-kind "a glossary of terms with approved translations, definitions, usage notes and forbidden variants"
+  :instance-space "medical device manuals, legal filings, game localisation, marketing sites; varied language pairs"
+  :must-not-be "translating the documents themselves"}
+ {:brief-id "b-025" :group "release-notes" :in-domain? false
+  :subject-matter "turning a set of merged changes into customer-facing release notes" :material "commit messages, PR descriptions and ticket titles for a release"
+  :output-kind "grouped release notes (new, improved, fixed, breaking) in customer language with upgrade notes"
+  :instance-space "a mobile app, a CLI, a SaaS dashboard, an SDK; 10 to 80 changes"
+  :must-not-be "an API migration guide or an internal changelog"}
+ {:brief-id "b-026" :group "log-triage" :in-domain? false
+  :subject-matter "triaging anomalies in application or infrastructure logs" :material "a window of log lines or metrics with a reported symptom"
+  :output-kind "ranked hypotheses with the evidence lines for each, the recommended next check for each, and the most likely cause"
+  :instance-space "web servers, Kubernetes, databases, mobile crash logs, CI pipelines; varied volumes"
+  :must-not-be "a postmortem or a monitoring dashboard design"}
+ {:brief-id "b-027" :group "cloud-cost-review" :in-domain? false
+  :subject-matter "reviewing a cloud bill to cut cost without harming reliability" :material "a cost breakdown by service and usage metrics"
+  :output-kind "ranked savings opportunities with estimated monthly saving, risk and implementation steps"
+  :instance-space "AWS, GCP, Azure; startups to enterprises; compute-heavy, storage-heavy, data-egress-heavy"
+  :must-not-be "an architecture redesign or a budget forecast"}
+ {:brief-id "b-028" :group "experiment-plan" :in-domain? false
+  :subject-matter "designing a machine-learning experiment plan to answer one question" :material "the question, the dataset description, compute budget and baseline"
+  :output-kind "hypotheses, the experiment matrix, metrics, evaluation protocol, budget allocation and decision criteria"
+  :instance-space "tabular, NLP, vision, recommender; academic or product; small to large budgets"
+  :must-not-be "writing the training code or a literature review"}
+ {:brief-id "b-029" :group "research-synthesis" :in-domain? false
+  :subject-matter "synthesising user-research notes into themes and recommendations" :material "interview notes, survey responses or support tickets"
+  :output-kind "themes with supporting quotes, an opportunity ranking, and recommendations with confidence"
+  :instance-space "5 to 40 interviews; B2B and consumer products; churn, onboarding, pricing studies"
+  :must-not-be "a survey design or a persona document"}
+ {:brief-id "b-030" :group "meeting-actions" :in-domain? false
+  :subject-matter "turning a meeting transcript into decisions and action items" :material "a raw meeting transcript or long notes"
+  :output-kind "decisions made, action items with owner and due date, open questions, and a short summary for absentees"
+  :instance-space "engineering standups, board meetings, client calls, school committees; 15 to 120 minutes"
+  :must-not-be "a document summary with key dates and entities"}
+ {:brief-id "b-031" :group "rpg-encounter" :in-domain? false
+  :subject-matter "designing a balanced tabletop role-playing encounter" :material "party level and composition, the setting and the story goal"
+  :output-kind "the encounter setup, enemies with stats, terrain and tactics, difficulty rationale and scaling options"
+  :instance-space "D&D 5e, Pathfinder, Call of Cthulhu, homebrew; combat, social, exploration encounters"
+  :must-not-be "a full campaign outline or game-balance tuning of a published system"}
+ {:brief-id "b-032" :group "worksheet-generation" :in-domain? false
+  :subject-matter "generating a practice worksheet with an answer key for a topic" :material "the topic, level, number of items and format constraints"
+  :output-kind "the worksheet items, a separate answer key with worked solutions, and difficulty tags"
+  :instance-space "fractions, quadratic equations, French verbs, chemistry stoichiometry, reading comprehension; 10 to 30 items"
+  :must-not-be "a lesson plan or an exam rubric"}
+ {:brief-id "b-033" :group "nutrition-labels" :in-domain? false
+  :subject-matter "computing per-serving nutrition information for recipes" :material "recipes with quantities and a nutrient reference for ingredients"
+  :output-kind "per-serving calories and macronutrients, allergens, and a formatted label per recipe"
+  :instance-space "restaurant menus, meal-prep services, school cafeterias, packaged snacks; varied serving definitions"
+  :must-not-be "scaling a recipe or a diet plan"}
+ {:brief-id "b-034" :group "run-of-show" :in-domain? false
+  :subject-matter "producing a minute-by-minute run of show for a live event" :material "the agenda, speakers, venue constraints and technical needs"
+  :output-kind "a timed run of show with cues, owners, AV needs and contingency for overruns"
+  :instance-space "conferences, weddings, product launches, school plays, livestreams; 1 to 8 hours"
+  :must-not-be "a seating plan or a marketing plan"}
+ {:brief-id "b-035" :group "reorder-plan" :in-domain? false
+  :subject-matter "planning inventory reorders to avoid stockouts and overstock" :material "sales history, lead times, stock on hand and supplier terms"
+  :output-kind "reorder points and quantities per item, a purchase schedule and the cash tied up"
+  :instance-space "a bike shop, a hospital ward, a coffee roaster, an e-commerce store; 20 to 500 SKUs"
+  :must-not-be "a budget forecast or a supplier negotiation brief"}
+ {:brief-id "b-036" :group "poetry-meter" :in-domain? false
+  :subject-matter "analysing the meter, rhyme and form of poems" :material "one or more poems, pasted"
+  :output-kind "a scansion per line, the identified form and rhyme scheme, deviations noted, and a short reading of their effect"
+  :instance-space "sonnets, free verse, ghazals, song lyrics, children's rhymes; varied languages in translation"
+  :must-not-be "writing new poems"}
+ {:brief-id "b-037" :group "rehab-programme" :in-domain? false
+  :subject-matter "a progressive rehabilitation exercise programme after an injury" :material "the injury, stage of recovery, clinician guidance and available equipment"
+  :output-kind "a phased programme with exercises, sets, progression criteria and stop signs, plus a weekly schedule"
+  :instance-space "ACL, ankle sprain, rotator cuff, lower back, post-surgery; athletes and desk workers"
+  :must-not-be "a marathon training plan or a diagnosis"}
+ {:brief-id "b-038" :group "property-comps" :in-domain? false
+  :subject-matter "valuing a property from comparable sales" :material "the subject property details and a list of recent nearby sales"
+  :output-kind "adjusted comparables with the adjustments explained, a value range and the confidence and caveats"
+  :instance-space "flats, houses, small commercial units, land; varied markets"
+  :must-not-be "a mortgage affordability calculation"}
+ {:brief-id "b-039" :group "resume-tailoring" :in-domain? false
+  :subject-matter "tailoring a CV and cover letter to one job posting" :material "the current CV and the job posting"
+  :output-kind "a revised CV with the changes explained, a cover letter, and a gap list with how to address each"
+  :instance-space "engineers, nurses, teachers, career changers, new graduates; varied countries"
+  :must-not-be "a hiring rubric or interview coaching"}
+ {:brief-id "b-040" :group "spreadsheet-debugging" :in-domain? false
+  :subject-matter "finding and fixing errors in spreadsheet formulas and models" :material "the sheet's formulas, sample data and the wrong outputs observed"
+  :output-kind "the located errors with cause, corrected formulas, and checks to prevent regression"
+  :instance-space "Excel and Google Sheets; financial models, grade books, inventory sheets, dashboards"
+  :must-not-be "a database query fix or building a new model"}]

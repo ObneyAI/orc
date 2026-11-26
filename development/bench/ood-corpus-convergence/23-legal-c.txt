@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: legal (in-domain sanity); variant c of 3 — the same domain re-asked with a different concrete instance.
+Review the following termination and severance clause from an executive employment agreement and identify all legal concerns, each with a concise statement, severity and justification, area of law, a direct quote of the clause, and a proposed revision: 'The Company may terminate this Agreement at any time without cause and without notice. Upon any termination, all unvested equity is forfeited and no severance is payable. Executive agrees not to disparage the Company at any time, without limitation.'

@@ -12,6 +12,8 @@
 
    Uses defreadmodel + rmp/project for L1/L2 cached projections."
   (:require [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.gepa.core.task-ledger :as task-ledger]
             [clojure.set :as set]
             [com.brunobonacci.mulog :as u]))
 
@@ -30,6 +32,7 @@
     :gepa/reflective-dataset-built    ;; Track reflection data
     :gepa/proposer-call-completed     ;; Durable real-model provenance/usage
     :gepa/task-call-completed         ;; Restart-safe evaluated example ledger
+    :gepa/parent-minibatch-evaluation-requested ;; Durable mutation-round request
     :gepa/proposal-ready              ;; Durable proposer/evaluation boundary
     :gepa/winner-applied              ;; Winner-to-workflow publication link
     :gepa/mutation-proposed
@@ -57,6 +60,7 @@
 (def optimization-state-event-types
   "Events that affect the optimization state read model."
   #{:gepa/optimization-started
+    :gepa/metric-selected
     :gepa/candidate-created
     :gepa/candidate-evaluated
     :gepa/subsample-evaluated
@@ -133,16 +137,22 @@
           (let [{:keys [candidate-id instructions parent-ids generation]} event
               idx (count (:program-candidates s))
               ;; Extract predictor names from first candidate
-              pred-names (or (:predictor-names s) (vec (keys instructions)))
+              ;; Component names in a stable (sorted) order: the rotation
+              ;; must visit them identically on every replay.
+              pred-names (or (:predictor-names s) (vec (sort (keys instructions))))
               ;; Map parent UUIDs to indices
               parent-indices (mapv (fn [pid]
                                      (get (:candidate-id->idx s) pid))
-                                   parent-ids)]
+                                   parent-ids)
+              ;; A new candidate continues from the furthest rotation among
+              ;; its parents (0 with none).
+              inherited-pointer (reduce max 0 (keep #(get (:round-robin-state s) %)
+                                                    parent-indices))]
           (-> s
               (update :program-candidates conj instructions)
               (update :agg-scores conj nil)  ;; Will be set on evaluation
               (update :parent-list conj parent-indices)
-              (update :round-robin-state assoc idx 0)  ;; Initialize round-robin
+              (update :round-robin-state assoc idx inherited-pointer)
               (assoc :predictor-names pred-names)
               (assoc-in [:candidate-id->idx candidate-id] idx)
               (assoc-in [:candidate-details idx]
@@ -181,6 +191,15 @@
                               :else acc)))
                         s'
                         (zipmap (range) scores))))))
+
+        ;; A round that reached reflection advances its parent's rotation by
+        ;; one; a round skipped for a perfect parent records no proposal.
+        :gepa/proposal-ready
+          (let [idx (get (:candidate-id->idx s) (:parent-id event))
+                n (count (:predictor-names s))]
+            (if (and idx (pos? n))
+              (update-in s [:round-robin-state idx] #(mod (inc (or % 0)) n))
+              s))
 
         :gepa/example-evaluated
           (let [{:keys [candidate-id example-id score]} event
@@ -246,7 +265,7 @@
     events))
 
 (defreadmodel :gepa gepa-state
-  {:events gepa-event-types :version 1}
+  {:events gepa-event-types :version 2}
   [state event] (gepa-state state [event]))
 
 ;; =============================================================================
@@ -399,6 +418,7 @@
           :gepa/optimization-started
           {:optimization-id (:optimization-id event)
            :sheet-id (:sheet-id event)
+           :metric-descriptor (:metric-descriptor event)
            :config (:config event)
            :status :running
            :started-at (str (:started-at event))
@@ -407,6 +427,9 @@
            :best-candidate-id nil
            :total-candidates 0
            :total-metric-calls 0}
+
+          :gepa/metric-selected
+          (assoc opt :metric-descriptor (:metric-descriptor event))
 
           :gepa/candidate-created
           (update opt :total-candidates inc)
@@ -443,7 +466,7 @@
     events))
 
 (defreadmodel :gepa optimization-state
-  {:events optimization-state-event-types :version 1}
+  {:events optimization-state-event-types :version 3}
   [state event] (optimization-state state [event]))
 
 ;; =============================================================================
@@ -506,15 +529,29 @@
 ;; Query Helpers
 ;; =============================================================================
 
+(defn- with-accounting
+  "Compose completed-evaluation statistics with authoritative attempt spend.
+   The internal domain reducers retain historical aggregate counters; callers
+   must use these getters for budget accounting, including unfinished work."
+  [ctx optimization-id state]
+  (if (:optimization-id state)
+    (let [{:keys [spent reserved available]} (task-ledger/get-accounting ctx optimization-id)]
+      (assoc state :total-metric-calls spent
+                   :reserved-metric-calls reserved
+                   :available-metric-calls available))
+    state))
+
 (defn get-gepa-state
   "Get the full GEPA state for an optimization (Python-compatible)."
   [ctx optimization-id]
-  (rmp/project ctx :gepa/gepa-state {:tags #{[:optimization optimization-id]}}))
+  (with-accounting ctx optimization-id
+    (rmp/project ctx :gepa/gepa-state {:tags #{[:optimization optimization-id]}})))
 
 (defn get-population-state
   "Get the current population state for an optimization."
   [ctx optimization-id]
-  (rmp/project ctx :gepa/population {:tags #{[:optimization optimization-id]}}))
+  (with-accounting ctx optimization-id
+    (rmp/project ctx :gepa/population {:tags #{[:optimization optimization-id]}})))
 
 (defn get-pareto-frontier-state
   "Get the current Pareto frontier for an optimization."
@@ -524,7 +561,8 @@
 (defn get-optimization-summary
   "Get the overall optimization state summary."
   [ctx optimization-id]
-  (rmp/project ctx :gepa/optimization-state {:tags #{[:optimization optimization-id]}}))
+  (with-accounting ctx optimization-id
+    (rmp/project ctx :gepa/optimization-state {:tags #{[:optimization optimization-id]}})))
 
 (defn get-candidate
   "Get a specific candidate from the population."
@@ -784,20 +822,27 @@
 ;; =============================================================================
 
 (defn get-next-component-to-update
-  "Get the next component to update for a candidate using round-robin."
+  "Get the next component to update for a candidate using round-robin.
+   The rotation is derived from recorded events (see `gepa-state`): it advances
+   once for each of the candidate's rounds that reached reflection, and a child
+   starts at the furthest rotation among its parents."
   [state candidate-idx]
   (let [predictor-names (:predictor-names state)
+        n (count predictor-names)
         round-robin-idx (get (:round-robin-state state) candidate-idx 0)]
     (when (seq predictor-names)
-      (nth predictor-names round-robin-idx))))
+      (nth predictor-names (mod round-robin-idx n)))))
 
-(defn advance-round-robin
-  "Advance the round-robin state for a candidate after mutation."
-  [state candidate-idx]
-  (let [num-predictors (count (:predictor-names state))
-        current (get (:round-robin-state state) candidate-idx 0)
-        next-idx (mod (inc current) num-predictors)]
-    (assoc-in state [:round-robin-state candidate-idx] next-idx)))
+(defn get-reflection-tokens-used
+  "Tokens spent by the optimization's reflection-model calls: the sum of
+   `:total-tokens` over its durable proposer-call evidence. A completed call
+   that is reused on resume appends no evidence, so it is counted once."
+  [ctx optimization-id]
+  (transduce (map #(get-in % [:usage :total-tokens] 0)) + 0
+             (into [] (es/read (:event-store ctx)
+                               {:tenant-id (:tenant-id ctx)
+                                :types #{:gepa/proposer-call-completed}
+                                :tags #{[:optimization optimization-id]}}))))
 
 ;; =============================================================================
 ;; Evaluation Cache Helpers

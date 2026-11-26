@@ -1,0 +1,22 @@
+{:slug "191-document-analysis-v05",
+ :group "document-analysis",
+ :in-domain? true,
+ :variant 5,
+ :expected-output-kind
+ "a summary, a list of key dates with what happens on each, and the entities (organisations, people, places, amounts)",
+ :brief-id "b-004",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id #uuid "00000000-c1c1-4001-b001-d0c0a0a0a0a1",
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1013, :completion-tokens 280, :total-tokens 1293},
+  :draft-prompt-sha256
+  "0aa9b901bcd5bc458ca790fd101250ba778013bc826eff7c08c150eeb0f35431",
+  :polish-usage
+  {:prompt-tokens 453, :completion-tokens 266, :total-tokens 719},
+  :polish-prompt-sha256
+  "8e699c576e7744073b92e639aae051b3a45d326a9ecd3f9cfc549f0c03b5f032",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

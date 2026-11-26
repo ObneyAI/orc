@@ -231,3 +231,28 @@
   (doseq [[_ work] (get @active-work tick-id)]
     (future-cancel work))
   (swap! active-work dissoc tick-id))
+
+(defn run-owned-cancellation!
+  "Finish coordinated terminal writes independently of the model Future they
+   cancel. This scoped task returns only after joining its actual raw thread;
+   caller interruption is deferred and restored, never treated as task exit.
+
+   There is no separate helper deadline or detached fallback. Event-store I/O
+   retains its own bounds; if it never settles, this scope cannot claim cleanup.
+   Task failures propagate after the join, preserving command fault evidence."
+  [task]
+  (let [interrupted? (volatile! (Thread/interrupted))
+        work (FutureTask. ^Callable task)
+        thread (Thread. work "orc-budget-cancellation")]
+    (try
+      (.start thread)
+      (loop []
+        (when (.isAlive thread)
+          (try (.join thread)
+               (catch InterruptedException _ (vreset! interrupted? true)))
+          (recur)))
+      (try (.get work)
+           (catch java.util.concurrent.ExecutionException e
+             (throw (.getCause e))))
+      (finally
+        (when @interrupted? (.interrupt (Thread/currentThread)))))))

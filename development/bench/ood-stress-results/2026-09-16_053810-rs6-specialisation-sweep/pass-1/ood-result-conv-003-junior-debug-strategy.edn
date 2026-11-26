@@ -1,0 +1,202 @@
+{:assigned-tree-id #uuid "6e2ef015-ff3c-4955-bf98-d8f6212cb10f",
+ :tick-id #uuid "8b7004b6-0753-42f0-9443-d5a7d16c418b",
+ :slug "conv-003-junior-debug-strategy",
+ :parent-tree-id nil,
+ :domain-label nil,
+ :outcome :novel,
+ :domain-deferral nil,
+ :domain-verdict nil,
+ :node-id #uuid "e1e8c911-f972-480c-9121-7457117779ec",
+ :top-1
+ {:target-id "seed:tree:FallbackRecovery",
+  :fitness-score 0.3,
+  :rerank-source :reranker,
+  :domain-coverage :uncovered,
+  :domain-label "software-debugging-mentorship"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "6e2ef015-ff3c-4955-bf98-d8f6212cb10f",
+  :classified-at "2026-09-16T05:41:04.667743-05:00",
+  :reasoning
+  "The task asks for a debugging strategy where a primary attempt (the junior solving it) has reached a wall, and a secondary approach (the senior's guidance/strategy) is required to ensure success. This matches the 'primary fails, backup runs' shape of FallbackRecovery. However, the fitness is low because the task is a mentorship/instructional prompt about technical troubleshooting, whereas this class is designed for system reliability and graceful degradation in code execution. The 'avoid-when' regarding 'silently masking bugs' is highly relevant here, as the task specifically addresses how to *unmask* a bug rather than let a system fallback hide it.",
+  :outcome :novel,
+  :source-node-id #uuid "e1e8c911-f972-480c-9121-7457117779ec",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "225be622-6cc2-3359-8c18-024bdf08548d",
+    :confidence 1.0,
+    :was-fresh-mint? false,
+    :reasoning
+    "This candidate is the perfect behavioral match for a debugging mentor task. It explicitly mandates 'establishing a DETERMINISTIC reproduction before attempting a fix' and 'enumerating candidate causes to rule out with evidence'—directly mirroring the query's requirements for testable hypotheses and minimum-reproducible cases. Its focus on 'intermittent' symptoms (like a checkout flow charging 'occasionally') makes its specific recommended-pattern for bisecting the search space highly applicable.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "760be698-0bb8-3a5a-a2bd-1d45445a5861",
+    :confidence 0.85,
+    :was-fresh-mint? false,
+    :reasoning
+    "As the parent of Bug-diagnosis, this provides the fundamental 'hypothesis-then-evidence' structure required by the task. It emphasizes enumerating causes 'UPFRONT' from symptoms, which aligns with the instruction to break the problem space into hypotheses. However, it lacks the specific 'deterministic reproduction' emphasis found in its child node, which is critical for the 'occasionally' intermittent bug described.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "b3597aa7-3957-3734-90c6-531d27c08f67",
+    :confidence 0.6,
+    :was-fresh-mint? false,
+    :reasoning
+    "The query asks to 'break the problem space into testable hypotheses' and 'reason' over the docs/logs. Analysis's strength in producing 'structured findings... with per-finding evidence' and using 'affected-items' fits the need to frame escalation and progress efficiently. It is a useful component for the 'Investigation' phase the junior is stuck in.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "8b7004b6-0753-42f0-9443-d5a7d16c418b",
+  :event/tags
+  #{[:description-target #uuid "6e2ef015-ff3c-4955-bf98-d8f6212cb10f"]
+    [:tick #uuid "8b7004b6-0753-42f0-9443-d5a7d16c418b"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:41:04.667910Z",
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit recovery path captures real-world fragility — primary may fail; backup absorbs",
+      :good-when
+      "the primary approach has a known failure mode AND the backup produces equivalent :writes",
+      :recommended-pattern
+      "[:fallback [:llm {:model \"openai/gpt-5\" :reads [:input] :writes [:result]}] [:llm {:model \"google/gemini-2.5-flash\" :reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["all children would succeed — just use the primary (no recovery needed)"
+     "you want both children's results compared — use :parallel"
+     "you want only one child to run based on a known condition — use :condition (when supported) or upfront branching at the parent level"
+     "designing an emit-tree! pattern AND wanting recovery-style branching"
+     "the primary has high token cost AND fails often"
+     "the primary is the canonical path AND silent fallback would hide degradation"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.986631-05:00"},
+    :domain-label "software-debugging-mentorship",
+    :content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :domain-coverage :uncovered,
+    :rank 5,
+    :reasoning
+    "The task asks for a debugging strategy where a primary attempt (the junior solving it) has reached a wall, and a secondary approach (the senior's guidance/strategy) is required to ensure success. This matches the 'primary fails, backup runs' shape of FallbackRecovery. However, the fitness is low because the task is a mentorship/instructional prompt about technical troubleshooting, whereas this class is designed for system reliability and graceful degradation in code execution. The 'avoid-when' regarding 'silently masking bugs' is highly relevant here, as the task specifically addresses how to *unmask* a bug rather than let a system fallback hide it.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "RLM models cannot emit :fallback in emit-tree! today — pattern is canonical-DSL-only",
+      :avoid-when
+      "designing an emit-tree! pattern AND wanting recovery-style branching",
+      :recommended-alternative
+      "use a single :llm with an instruction that includes fallback guidance ('if X cannot be done, instead produce Y'); OR design the pipeline as :sequence with a downstream node that handles the missing-output case"}
+     {:trait
+      "each failed primary still runs to completion before failure is detected — total cost includes the wasted primary attempt",
+      :avoid-when "the primary has high token cost AND fails often",
+      :recommended-alternative
+      "switch the order — put the cheaper backup first; OR use a guard upstream that predicts which approach to try based on input shape"}
+     {:trait
+      "silently masks real bugs — if the primary always fails and the backup always covers, the regression is invisible",
+      :avoid-when
+      "the primary is the canonical path AND silent fallback would hide degradation",
+      :recommended-alternative
+      "add a downstream :code or judge that logs/alerts when the backup fires; OR track per-tree-run which child succeeded so degradation is visible in metrics"}],
+    :domain-reasoning
+    "The candidate's representative uses cover technical system recovery (cost-tiered models, schema fallback) but do not cover the domain of 'software-mentorship' or 'debugging-methodology'. The output kind (instructional guide) is also not represented.",
+    :cos-good 0.9989280299191443,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.990208270218598,
+    :score 436.3467967805191,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.3,
+    :document-id ":tree-class:\"seed:tree:FallbackRecovery\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9989280299191443,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit recovery path captures real-world fragility — primary may fail; backup absorbs",
+      :good-when
+      "the primary approach has a known failure mode AND the backup produces equivalent :writes",
+      :recommended-pattern
+      "[:fallback [:llm {:model \"openai/gpt-5\" :reads [:input] :writes [:result]}] [:llm {:model \"google/gemini-2.5-flash\" :reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["all children would succeed — just use the primary (no recovery needed)"
+     "you want both children's results compared — use :parallel"
+     "you want only one child to run based on a known condition — use :condition (when supported) or upfront branching at the parent level"
+     "designing an emit-tree! pattern AND wanting recovery-style branching"
+     "the primary has high token cost AND fails often"
+     "the primary is the canonical path AND silent fallback would hide degradation"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.972294-05:00"},
+    :domain-label "software-debugging-mentorship",
+    :content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :domain-coverage :uncovered,
+    :rank 4,
+    :reasoning
+    "This candidate shares the same low fitness as the tree-class version. While the structural concept of 'if initial path fails, provide a secondary path' (the strategy guide) loosely maps to FallbackRecovery, the specific content is for system architecture, not for generating human-to-human instructional content on debugging workflows.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "RLM models cannot emit :fallback in emit-tree! today — pattern is canonical-DSL-only",
+      :avoid-when
+      "designing an emit-tree! pattern AND wanting recovery-style branching",
+      :recommended-alternative
+      "use a single :llm with an instruction that includes fallback guidance ('if X cannot be done, instead produce Y'); OR design the pipeline as :sequence with a downstream node that handles the missing-output case"}
+     {:trait
+      "each failed primary still runs to completion before failure is detected — total cost includes the wasted primary attempt",
+      :avoid-when "the primary has high token cost AND fails often",
+      :recommended-alternative
+      "switch the order — put the cheaper backup first; OR use a guard upstream that predicts which approach to try based on input shape"}
+     {:trait
+      "silently masks real bugs — if the primary always fails and the backup always covers, the regression is invisible",
+      :avoid-when
+      "the primary is the canonical path AND silent fallback would hide degradation",
+      :recommended-alternative
+      "add a downstream :code or judge that logs/alerts when the backup fires; OR track per-tree-run which child succeeded so degradation is visible in metrics"}],
+    :domain-reasoning
+    "Nothing in the representative uses names the subject matter of debugging pedagogy or the specific material of payment gateway (Stripe) troubleshooting.",
+    :cos-good 0.9989280299191443,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.990208270218598,
+    :score 436.3467967805191,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.3,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9989280299191443,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :event/id #uuid "01a0a9ce-4c9b-7076-9ecf-f4b604e5d14b",
+  :confidence 0.3,
+  :source-sheet-id #uuid "04c753ca-3a81-4a86-bfd0-5d9998aefafe",
+  :ranked-candidates
+  [{:target-id "seed:tree:FallbackRecovery",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 436.3467967805191}
+   {:target-id "seed:tree:FallbackRecovery",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.3,
+    :score 436.3467967805191}],
+  :was-fresh-mint? true,
+  :assigned-via :mint},
+ :deferred-events [],
+ :domain-children-considered nil,
+ :sheet-id #uuid "04c753ca-3a81-4a86-bfd0-5d9998aefafe",
+ :payload-domain nil,
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns\nNo high-confidence structural match was returned by the classifier. Design at the abstract pattern level — the structural shape is the primary signal you have. The behavioral suggestions below reflect what the task ACCOMPLISHES.\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral: Bug-diagnosis explains WHY code (confidence: 1.00)\n   Why this fits: This candidate is the perfect behavioral match for a debugging mentor task. It explicitly mandates 'establishing a DETERMINISTIC reproduction before attempting a fix' and 'enumerating candidate causes to rule out with evidence'—directly mirroring the query's requirements for testable hypotheses and minimum-reproducible cases. Its focus on 'intermittent' symptoms (like a checkout flow charging 'occasionally') makes its specific recommended-pattern for bisecting the search space highly applicable.\n\n   Guidance (seed `:summary`):\n   Bug-diagnosis explains WHY code is broken and fixes it — a reproduce-then-bisect-then-fix loop sharpening the Investigation parent for the code-bug case. The load-bearing traits are establishing a DETERMINISTIC reproduction before attempting a fix (a flaky symptom must be pinned to a reliable trigger or you can't know the fix worked) and enumerating candidate causes to rule out with evidence before converging (don't fix the first plausible guess). Prefer this child of Investigation whenever the task is 'this test/behavior is broken, find why and fix it'. Avoid when building new functionality from a spec (code-building, no failure to diagnose) or doing exploratory research with no specific failure (Research).\n\nCapabilities:\n  - given a failing/flaky test or a wrong-behavior bug report + the relevant code, reproduce it deterministically, isolate the root cause, and produce the minimal fix\n  - natural fit when the goal is 'this code is broken, find WHY and fix it' — a reproduce-then-bisect-then-fix loop, distinct from greenfield code-building\n  - outputs are typically a deterministic repro, a root-cause statement tied to a specific code location, and the minimal change that makes the repro pass\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** establish a DETERMINISTIC reproduction before attempting a fix — a flaky/intermittent symptom must be pinned to a reliable trigger first, or you cannot know the fix worked (confidence 0.70, evidence-count 1)\n    - Good when: the bug is intermittent or its trigger is not yet understood (e.g. an intermittent nil from shared state / timing)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:symptom :code] :writes [:candidate-causes]}] [:code {:reads [:candidate-causes] :writes [:repro] :fn (fn [{:keys [inputs]}] {:repro :deterministic-failing-case})}] [:llm {:reads [:repro :code] :writes [:root-cause :fix]}] [:final {:keys [:root-cause :fix]}]]\n      ```\n\n  - **Trait:** enumerate candidate causes upfront and rule them out with evidence before converging — bisect the search space rather than fixing the first plausible guess (which often masks the real cause) (confidence 0.70, evidence-count 1)\n    - Good when: the symptom has multiple plausible causes (timing, shared state, environment, off-by-one)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:writes [:hypotheses]}] [:llm {:reads [:hypotheses :evidence] :writes [:ruled-out :remaining]}] [:llm {:reads [:remaining] :writes [:root-cause :minimal-fix]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** jumping straight to a code edit on the first hypothesis (a code-building instinct) without a deterministic repro produces a fix that may paper over the symptom while the real defect remains — and you cannot prove it is fixed (confidence 0.70, evidence-count 1)\n    - Avoid when: the symptom is intermittent OR the root cause is not yet evidenced\n    - Recommended fix: reproduce deterministically first, name the root cause with evidence, then make the minimal change and re-run the repro\n\n  - **Failure mode:** an over-broad 'fix' that rewrites surrounding code while chasing a bug introduces new regressions and obscures which change actually resolved the defect (confidence 0.70, evidence-count 1)\n    - Avoid when: the bug is localized and a targeted change suffices\n    - Recommended fix: scope the fix to the proven root cause; keep unrelated code untouched so the repro pinpoints the effective change\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - debug why the integration test checkout-flow-test fails intermittently with a nil cart-id and make it deterministic\n  - fix the off-by-one bug in the pagination loop so the final page renders its last row instead of dropping it\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 225be622-6cc2-3359-8c18-024bdf08548d)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Investigation explains WHY a system (confidence: 0.85)\n   Why this fits: As the parent of Bug-diagnosis, this provides the fundamental 'hypothesis-then-evidence' structure required by the task. It emphasizes enumerating causes 'UPFRONT' from symptoms, which aligns with the instruction to break the problem space into hypotheses. However, it lacks the specific 'deterministic reproduction' emphasis found in its child node, which is critical for the 'occasionally' intermittent bug described.\n\n   Guidance (seed `:summary`):\n   Investigation explains WHY a system is misbehaving. Best implemented as an explicit hypothesis-then-evidence shape: enumerate candidate causes from the symptom UPFRONT, then collect evidence to rule out alternatives, then converge on the root cause + recommended fix. ALWAYS pass ambient context (logs / code / tests / stack traces) in :reads — context-free investigation produces vacuous output. For large evidence sets (multi-file logs, large codebases), compose into chunked-extraction shells so per-chunk evidence collection parallelizes. Composes into sequential-pipeline (canonical hypothesis chain), fallback-recovery (try-one-path-then-another when initial hypothesis fails), and chunked-extraction (investigating large evidence sets). Distinct from Research (which gathers external material to seed new work, not explain existing breakage) and Analysis (which reasons over already-extracted items, not raw symptoms). Avoid when the task is exploration without a specific failure to explain.\n\nCapabilities:\n  - given symptoms + ambient context (logs, code, test artifacts, stack traces), produce a structured hypothesis with supporting evidence and a recommended fix or next step\n  - natural fit when the goal is to explain WHY something is broken — distinct from Research (gather new material) and Analysis (reason over already-extracted items)\n  - outputs are typically a single root-cause statement + supporting evidence references + a recommended-fix or next-step\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** enumerate candidate hypotheses UPFRONT from the symptom before collecting evidence — separates 'what could be wrong' from 'what is wrong' so evidence rules out rather than confirms the first guess (confidence 1.00, evidence-count 1)\n    - Good when: the failure mode space is bounded AND the model can enumerate likely causes from the symptom alone\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:symptom :context] :writes [:candidate-hypotheses]}] [:llm {:reads [:candidate-hypotheses :context] :writes [:ruled-out :remaining]}] [:llm {:reads [:remaining :context] :writes [:root-cause :recommended-fix]}] [:final {:keys [:root-cause :recommended-fix]}]]\n      ```\n\n  - **Trait:** for investigations over large evidence sets (multi-file logs, large codebases), chunk the evidence and run per-chunk hypothesis-evidence collection via :map-each so per-chunk reasoning parallelizes and the aggregator sees per-chunk findings tagged with their source (confidence 1.00, evidence-count 1)\n    - Good when: evidence is too large to fit in a single :llm context AND per-chunk findings can be aggregated without losing per-chunk attribution\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :evidence-chunks :as :chunk :max-concurrency 3 :writes [:per-chunk-findings]} [:llm {:reads [:chunk :symptom] :writes [:per-chunk-findings] :output-schemas {:per-chunk-findings [:vector [:map [:hypothesis :string] [:supporting-evidence :string] [:chunk-id :string]]]}}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** single-pass investigation on a complex symptom converges on the first plausible hypothesis without ruling out alternatives — produces overconfident root-cause claims that fail when the true cause was the second hypothesis (confidence 1.00, evidence-count 1)\n    - Avoid when: the symptom has multiple plausible causes AND the cost of acting on the wrong root cause is high\n    - Recommended fix: explicit multi-hypothesis enumeration upfront; an intermediate :llm stage must rule out at least ONE candidate hypothesis with evidence before convergence to a root cause is allowed\n\n  - **Failure mode:** investigation without ambient context (just the symptom + nothing else) produces vacuous 'could be X / could be Y' output the consumer can't act on — the model has no evidence to rule anything in or out (confidence 1.00, evidence-count 1)\n    - Avoid when: context (logs / code / tests / stack traces) is available in the system but not passed in :reads\n    - Recommended fix: always pass ambient context explicitly in :reads; if the context is too large for a single :llm node, compose into chunked-extraction via :map-each so per-chunk evidence reaches the hypothesis-evidence stage\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - investigate why an integration test is flaky: enumerate timing / shared-state / environment hypotheses; rule out via test logs + run history; recommend the deterministic fix\n  - generate property-based tests that exercise edge cases — property test generation IS investigation, finding inputs that break invariants\n  - debug a memory leak in a long-running service: enumerate allocator / reference-cycle / cache-bloat hypotheses; rule out via heap snapshots + allocation profiles; recommend the targeted fix\n  - review a post-incident report for missing root-cause analysis: enumerate plausible causes the report didn't address; surface the gap with evidence from the timeline\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 760be698-0bb8-3a5a-a2bd-1d45445a5861)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral: Analysis (confidence: 0.60)\n   Why this fits: The query asks to 'break the problem space into testable hypotheses' and 'reason' over the docs/logs. Analysis's strength in producing 'structured findings... with per-finding evidence' and using 'affected-items' fits the need to frame escalation and progress efficiently. It is a useful component for the 'Investigation' phase the junior is stuck in.\n\n   Guidance (seed `:summary`):\n   Analysis reasons over already-extracted items to produce structured findings (patterns / problems / opportunities) with per-finding evidence. Always tie findings to specific items via :affected-items references for downstream auditability. For multi-dimensional analysis, fan out per-dimension :llm stages via :parallel — each stage gets a tighter focus. NEVER skip the extraction stage: analyzing raw documents conflates extraction and reasoning, degrading both. Composes into comparative-summary (multi-source structured findings), chunked-extraction (per-chunk parallel analysis), and sequential-pipeline (extract → analyze → synthesize). Avoid when the task is summarizing (use synthesis) or generating options (use ideation).\n\nCapabilities:\n  - given a vector/map of pre-extracted items, produce a structured set of findings (patterns / problems / opportunities) with per-finding evidence\n  - natural fit as a mid-tree stage between extraction (upstream) and synthesis/critique/code-building (downstream)\n  - outputs are typically a vector of findings, each with :type / :evidence / :confidence / :affected-items\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** tie each finding to the specific extracted item(s) that triggered it via an :affected-items reference field — downstream stages can audit, drill down, or prioritize findings by evidence weight (confidence 1.00, evidence-count 1)\n    - Good when: downstream stages need to attribute findings to evidence OR rank findings by support\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:extracts] :writes [:findings] :output-schemas {:findings [:vector [:map [:type :string] [:evidence :string] [:confidence :double] [:affected-items [:vector :string]]]]}}]\n      ```\n\n  - **Trait:** for multi-dimensional analysis (e.g., risk / opportunity / blocker across the same items), use :parallel one-:llm-per-dimension stages — each stage has a tight focus and can produce richer per-dimension reasoning (confidence 1.00, evidence-count 1)\n    - Good when: the analysis has 2-4 orthogonal dimensions that benefit from separate prompts\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:parallel [:llm {:reads [:extracts] :writes [:risks]}] [:llm {:reads [:extracts] :writes [:opportunities]}] [:llm {:reads [:extracts] :writes [:blockers]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** analyzing raw documents (skipping extraction) forces the analysis :llm to do BOTH extraction and reasoning — quality degrades on both since the model can't optimize attention for either (confidence 1.00, evidence-count 1)\n    - Avoid when: the input is raw documents AND the analysis needs to attribute findings to specific items\n    - Recommended fix: two-stage: extract structured items first, then analyze over the extracts; preserves analyzability of findings\n\n  - **Failure mode:** single-pass analysis over a long flat list of items loses signal on per-item nuance — findings cluster around the most prominent items (confidence 1.00, evidence-count 1)\n    - Avoid when: item count is high AND each item deserves per-item attention\n    - Recommended fix: use :map-each per-item analysis with bounded :max-concurrency, then aggregate findings — preserves per-item granularity\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - risk analysis over extracted contract clauses: per-clause risk score + reasoning + mitigation\n  - pattern detection across log events: clusters of related events + frequency + suspected cause\n  - gap analysis over a feature list: required-vs-present + missing-items + priority\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent b3597aa7-3957-3734-90c6-531d27c08f67)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nA junior engineer on your team has been stuck for two days on a bug: a\ncheckout flow occasionally charges a customer twice. They've added logging,\nre-read the Stripe docs, and stared at the code. They're frustrated and\nconsidering asking you to \"just take a look at it.\"\n\nInstead of solving the bug yourself, walk the junior through a debugging\nstrategy they can apply NEXT TIME they hit a similar wall. Make it\nactionable — explain the principles AND the specific steps you'd take if\nyou were them on THIS bug.\n\nCover:\n- How to break the problem space into testable hypotheses\n- How to construct minimum-reproducible cases\n- When to add logging vs. attach a debugger vs. read the upstream library\n  source\n- How to recognize you're at a wall vs. genuinely making progress\n- When to escalate (and how to frame the escalation so the senior can help\n  efficiently)\n- The specific FIRST 2-3 steps you'd take TONIGHT on this checkout-double-\n  charge bug\n\nTone: warm, concrete, no condescension. The junior is smart and motivated;\nthey just haven't built the troubleshooting reflexes yet.",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? false},
+ :elapsed-ms 19462,
+ :confidence 0.3,
+ :was-fresh-mint? true,
+ :assigned-via :mint}

@@ -1,0 +1,12 @@
+; brief-id: b-037
+; group: rehab-programme
+; variant: 5
+
+Please develop a 4-week clinical rehabilitation roadmap for my Grade 2 MCL sprain, following these specific requirements:
+
+1. Create a phased exercise breakdown for weeks 4 through 8 post-injury. Focus specifically on medial stability and proprioception. For each movement, I need precise sets, reps, and hold times using my available equipment (cable machines, dumbbells, bosu ball, and mini-bands).
+2. Establish clear progression criteria. Define the exact balance and strength milestones I must achieve before I can safely transition from isometric holds to dynamic lateral movements.
+3. Identify safety 'stop signs.' Detail the specific types of medial joint pain, swelling, or 'giving way' sensations that should trigger an immediate cessation of the session.
+4. Design a weekly integration schedule that accounts for my job as a field sales rep. Since I'm in and out of the car all day, please include 'car-side' mobility drills that I can perform during client breaks to manage afternoon tightness and instability.
+
+The goal is to move beyond 'functional loading' toward pitch-readiness without violating the valgus stress limitations outlined in my specialist’s guidance. Avoid generic leg day routines; this needs to be a structured medical recovery plan.

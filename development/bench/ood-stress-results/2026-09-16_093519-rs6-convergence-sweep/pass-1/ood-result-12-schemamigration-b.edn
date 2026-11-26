@@ -1,0 +1,422 @@
+{:assigned-tree-id #uuid "4d12814c-6cf7-3277-9d52-8c39878ea669",
+ :tick-id #uuid "cc43700c-bbc5-46a1-9539-076cb77c70fe",
+ :slug "12-schemamigration-b",
+ :parent-tree-id #uuid "aef71f08-76bf-373c-862a-1250ef23f450",
+ :domain-label "database-migration-planning",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :partial,
+  :domain-label "database-migration-planning",
+  :domain-reasoning
+  "The task involves planning a database migration (MySQL/Rails), which is a high-nuance engineering task involving technical precision. This matches the 'factual precision' and 'nuance' strengths of iterative-refinement."},
+ :node-id #uuid "13484438-f8aa-4e67-84f6-62df27a0fd04",
+ :top-1
+ {:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+  :fitness-score 0.9,
+  :rerank-source :reranker,
+  :domain-coverage :partial,
+  :domain-label "database-migration-planning"},
+ :minted-events
+ [{:parent-tree-id #uuid "aef71f08-76bf-373c-862a-1250ef23f450",
+   :child-tree-id #uuid "4d12814c-6cf7-3277-9d52-8c39878ea669",
+   :domain-label "database-migration-planning"}],
+ :classified-event
+ {:assigned-tree-id #uuid "4d12814c-6cf7-3277-9d52-8c39878ea669",
+  :parent-tree-id #uuid "aef71f08-76bf-373c-862a-1250ef23f450",
+  :domain-label "database-migration-planning",
+  :classified-at "2026-09-16T09:39:01.491440-05:00",
+  :reasoning
+  "The task requires a high-nuance, multi-step technical migration plan (database engineering). Iterative refinement's recommended-pattern of draft -> critique -> revise is the best fit for ensuring the complexity of foreign-key rewrites and dual-write logic is accurate and high-quality, which a single pass might miss. The output is significantly more than 200 tokens and highly technical.",
+  :outcome :matched,
+  :source-node-id #uuid "13484438-f8aa-4e67-84f6-62df27a0fd04",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "86275302-0c3d-35ae-b74e-abd4f27984eb",
+    :confidence 0.92,
+    :was-fresh-mint? false,
+    :reasoning
+    "The core of the task is a 'data reshape' (Integer to UUID) and a multi-step migration process. The Transformation behavioral subtree is the best fit for the primary operation, especially with its emphasis on deterministic shapes and the use of :code for high-fidelity changes. Its strengths in :map-each are highly relevant for the 'backfill in batches' requirement.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "9880798a-8487-3a24-93e4-b59c5ae5d789",
+    :confidence 0.6361592672452182,
+    :was-fresh-mint? false,
+    :reasoning
+    "While this candidate matches the 'ordered steps' and 'identifying references' (foreign keys) aspect of the query, it is explicitly a code refactor subtree. Its avoid-when guard ('the change is a data reshape rather than an identity refactor of code symbols — that is the Transformation behavior') specifically points to the Transformation candidate as a better fit for this task.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.6,
+    :was-fresh-mint? false,
+    :reasoning
+    "Synthesis fits the structural need to integrate multiple migration components (steps, backfill, rollback, verification) into a single cohesive plan. The recommended pattern of 'scaffolding via a :code-built outline' is an excellent match for producing the specific structured output format requested.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "cc43700c-bbc5-46a1-9539-076cb77c70fe",
+  :event/tags
+  #{[:description-target #uuid "4d12814c-6cf7-3277-9d52-8c39878ea669"]
+    [:tick #uuid "cc43700c-bbc5-46a1-9539-076cb77c70fe"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T14:39:01.491597Z",
+  :domain-verdict
+  {:domain-coverage :partial,
+   :domain-label "database-migration-planning",
+   :domain-reasoning
+   "The task involves planning a database migration (MySQL/Rails), which is a high-nuance engineering task involving technical precision. This matches the 'factual precision' and 'nuance' strengths of iterative-refinement."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit",
+      :good-when
+      "the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]"}
+     {:trait
+      "pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique",
+      :good-when
+      "the critique stage tends to focus on style/issues and might lose sight of the original requirement",
+      :recommended-pattern
+      "[:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]"}],
+    :avoid-when
+    ["the output is short and direct — single :llm with a careful instruction wins"
+     "the task needs unbounded iteration until convergence — use validation-loop"
+     "the work has clear validation rules (formal/syntactic) — use validation-loop with a code-based validator"
+     "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough"
+     "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.733805-05:00"},
+    :domain-label "database-migration-planning",
+    :content
+    "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+    :domain-coverage :partial,
+    :rank 7,
+    :reasoning
+    "The task requires a high-nuance, multi-step technical migration plan (database engineering). Iterative refinement's recommended-pattern of draft -> critique -> revise is the best fit for ensuring the complexity of foreign-key rewrites and dual-write logic is accurate and high-quality, which a single pass might miss. The output is significantly more than 200 tokens and highly technical.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward",
+      :avoid-when
+      "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough",
+      :recommended-alternative
+      "use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality"}
+     {:trait
+      "open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's",
+      :avoid-when
+      "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics",
+      :recommended-alternative
+      "use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes"}],
+    :domain-reasoning
+    "The task involves planning a database migration (MySQL/Rails), which is a high-nuance engineering task involving technical precision. This matches the 'factual precision' and 'nuance' strengths of iterative-refinement.",
+    :cos-good 0.9986690751703557,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9944339857171541,
+    :score 443.345451562433,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.9,
+    :document-id
+    ":tree-class:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9986690751703557,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit",
+      :good-when
+      "the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]"}
+     {:trait
+      "pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique",
+      :good-when
+      "the critique stage tends to focus on style/issues and might lose sight of the original requirement",
+      :recommended-pattern
+      "[:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]"}],
+    :avoid-when
+    ["the output is short and direct — single :llm with a careful instruction wins"
+     "the task needs unbounded iteration until convergence — use validation-loop"
+     "the work has clear validation rules (formal/syntactic) — use validation-loop with a code-based validator"
+     "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough"
+     "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.716259-05:00"},
+    :domain-label "database-migration-planning",
+    :content
+    "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+    :domain-coverage :partial,
+    :rank 8,
+    :reasoning
+    "Identical reasoning to the tree-class; the fixed-N polish pattern is ideal for generating complex migration steps where a critique pass can catch missing requirements like the 'rollback' or 'verification' steps.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward",
+      :avoid-when
+      "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough",
+      :recommended-alternative
+      "use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality"}
+     {:trait
+      "open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's",
+      :avoid-when
+      "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics",
+      :recommended-alternative
+      "use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes"}],
+    :domain-reasoning
+    "The task involves planning a database migration (MySQL/Rails), which is a high-nuance engineering task involving technical precision. This matches the 'factual precision' and 'nuance' strengths of iterative-refinement.",
+    :cos-good 0.9986690751703557,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9944339857171541,
+    :score 443.345451562433,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.9,
+    :document-id
+    ":tree-fingerprint:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9986690751703557,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :existing-domain-children
+    ["game-balance-simulation" "security-vulnerability-haikus"],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.734873-05:00"},
+    :domain-label "database-migration-planning",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :uncovered,
+    :rank 6,
+    :reasoning
+    "While the query mentions 'verification' queries, the task itself is the *generation* of a plan, not the execution/validation of a candidate against formal syntactic rules. The 'avoid-when' for 'no formal validation rules' applies here because a migration plan is evaluated on technical judgment, not a regex or code-based parser.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The task involves database engineering, but the candidate's representative uses (like game-balance) are for systems with formal/computable rules. Migration planning requires deep judgment.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9933447072444387,
+    :score 443.4253988857233,
+    :cos-avoid-sans-content 0.9993887201576724,
+    :fitness-score 0.4,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9993887201576724}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.717018-05:00"},
+    :domain-label "database-migration-planning",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :uncovered,
+    :rank 5,
+    :reasoning
+    "Similar to the tree-class, the lack of formal/syntactic validation rules for a natural-language migration plan makes this a poor fit compared to refinement.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The task involves database engineering, but the candidate's representative uses are for systems with formal/computable rules. Migration planning requires deep judgment.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9933447072444387,
+    :score 443.4253988857233,
+    :cos-avoid-sans-content 0.9993887201576724,
+    :fitness-score 0.4,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9993887201576724}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the :fallback node returns on the FIRST child that succeeds — primary's :status :success short-circuits the backup; primary's failure transparently activates backup",
+      :good-when
+      "the primary path is preferred (cheaper, more accurate, faster) but has a non-trivial failure rate AND a backup exists that's strictly less preferred but reliable",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:max-retries 2}}] [:code {:reads [:input] :writes [:result] :fn (fn [{:keys [input]}] {:result (str \"backup: \" input)})}]]"}
+     {:trait
+      "the backup child should be :code (deterministic) — if backup is also an :llm call, you've doubled the failure surface, not reduced it",
+      :good-when
+      "a deterministic fallback exists (string template, default value, last-known-good cache lookup)",
+      :recommended-pattern
+      "[:fallback [:llm ...] [:code {:reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["the backup path is also an LLM — that's not a fallback, it's a model-cascade (use the model-cascade child instead)"
+     "both paths must run unconditionally — use :parallel instead"
+     "the failure mode requires retry-with-context — use validation-loop instead"
+     ":fallback has more than 2 children"
+     "no observability is wired to surface fallback activation rate to operators"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.717752-05:00"},
+    :domain-label "database-migration-planning",
+    :content
+    "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+    :domain-coverage :uncovered,
+    :rank 10,
+    :reasoning
+    "This is a generation task, not a request for a high-availability fallback system. The structural shape of primary-backup (try A, then B) does not apply to the process of planning a migration.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "stacking 3+ :fallback children silently masks systemic failures — if primary AND backup both fail, the third option papers over a real problem the operator should see",
+      :avoid-when ":fallback has more than 2 children",
+      :recommended-alternative
+      "exactly 2 children in :fallback (primary + backup); if a third option is needed, fail loudly to the operator instead of cascading further"}
+     {:trait
+      "no usage tracking of which child fired silently hides the primary's failure rate from operators — primary degrades quietly while backup serves traffic",
+      :avoid-when
+      "no observability is wired to surface fallback activation rate to operators",
+      :recommended-alternative
+      "always wire a usage event or write a marker (e.g., :path :primary | :backup) so operators see the activation rate trend"}],
+    :domain-reasoning
+    "No overlap between database migration planning and transient failure recovery systems.",
+    :cos-good 0.9975518728248962,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9961180065704475,
+    :score 443.2215233562577,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.1,
+    :document-id
+    ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9975518728248962,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered [],
+  :event/id #uuid "01a0aaa8-2573-70ca-bf1e-ab27a7e3afb5",
+  :confidence 0.9,
+  :source-sheet-id #uuid "f6c37be1-8bcd-4ce2-b425-2c4fe7448049",
+  :ranked-candidates
+  [{:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.9,
+    :score 443.345451562433}
+   {:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.9,
+    :score 443.345451562433}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.4,
+    :score 443.4253988857233}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.4,
+    :score 443.4253988857233}
+   {:target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.1,
+    :score 443.2215233562577}],
+  :was-fresh-mint? true,
+  :assigned-via :mint-domain-child},
+ :deferred-events [],
+ :domain-children-considered [],
+ :sheet-id #uuid "f6c37be1-8bcd-4ce2-b425-2c4fe7448049",
+ :payload-domain
+ {:assigned-via :mint-domain-child,
+  :parent-tree-id #uuid "aef71f08-76bf-373c-862a-1250ef23f450",
+  :child-tree-id #uuid "4d12814c-6cf7-3277-9d52-8c39878ea669",
+  :domain-label "database-migration-planning"},
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: database-migration-planning); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 2 from corpus retrieval)\n#### Top match — Iterative refinement (confidence: 0.90)\nWhy this fits: The task requires a high-nuance, multi-step technical migration plan (database engineering). Iterative refinement's recommended-pattern of draft -> critique -> revise is the best fit for ensuring the complexity of foreign-key rewrites and dual-write logic is accurate and high-quality, which a single pass might miss. The output is significantly more than 200 tokens and highly technical.\n\nPattern guidance (seed `:summary`):\nIterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.\n\nCapabilities:\n  - :sequence of typically 3 stages: initial draft → critic feedback → revised draft (sometimes repeated for a fixed N)\n  - natural for content quality improvement where each pass identifies and addresses specific defects from the previous pass\n  - stages share the same content key but transform it forward — :draft → :critique → :revised-draft\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit (confidence 1.00, evidence-count 1)\n    - Good when: the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]\n      ```\n\n  - **Trait:** pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique (confidence 1.00, evidence-count 1)\n    - Good when: the critique stage tends to focus on style/issues and might lose sight of the original requirement\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward (confidence 1.00, evidence-count 1)\n    - Avoid when: output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough\n    - Recommended fix: use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality\n\n  - **Failure mode:** open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's (confidence 1.00, evidence-count 1)\n    - Avoid when: the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics\n    - Recommended fix: use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical writing improvement: draft documentation → critique for clarity/missing-context → revise\n  - creative writing polish: draft scene → critique for pacing/voice → revise\n  - executive summary tightening: draft summary → critique for jargon/specificity → revise\n\n#### Alternative #1 — Iterative refinement (confidence: 0.90)\nWhy this fits: Identical reasoning to the tree-class; the fixed-N polish pattern is ideal for generating complex migration steps where a critique pass can catch missing requirements like the 'rollback' or 'verification' steps.\n\nPattern guidance (seed `:summary`):\nIterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.\n\nCapabilities:\n  - :sequence of typically 3 stages: initial draft → critic feedback → revised draft (sometimes repeated for a fixed N)\n  - natural for content quality improvement where each pass identifies and addresses specific defects from the previous pass\n  - stages share the same content key but transform it forward — :draft → :critique → :revised-draft\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit (confidence 1.00, evidence-count 1)\n    - Good when: the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]\n      ```\n\n  - **Trait:** pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique (confidence 1.00, evidence-count 1)\n    - Good when: the critique stage tends to focus on style/issues and might lose sight of the original requirement\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward (confidence 1.00, evidence-count 1)\n    - Avoid when: output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough\n    - Recommended fix: use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality\n\n  - **Failure mode:** open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's (confidence 1.00, evidence-count 1)\n    - Avoid when: the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics\n    - Recommended fix: use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical writing improvement: draft documentation → critique for clarity/missing-context → revise\n  - creative writing polish: draft scene → critique for pacing/voice → revise\n  - executive summary tightening: draft summary → critique for jargon/specificity → revise\n\nAssigned to domain child 4d12814c-6cf7-3277-9d52-8c39878ea669 (label: database-migration-planning) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral: Transformation (confidence: 0.92)\n   Why this fits: The core of the task is a 'data reshape' (Integer to UUID) and a multi-step migration process. The Transformation behavioral subtree is the best fit for the primary operation, especially with its emphasis on deterministic shapes and the use of :code for high-fidelity changes. Its strengths in :map-each are highly relevant for the 'backfill in batches' requirement.\n\n   Guidance (seed `:summary`):\n   Transformation is mechanical reshape of data between deterministic shapes. ALWAYS use :code (not :llm) for deterministic transformations — preserves fidelity, costs nothing, runs in ms; :llm for transformation produces non-deterministic output. For per-item independent transformations, :map-each isolates per-item failures. ALWAYS declare :output-schemas on transformation output and :input-schemas on downstream :reads so shape mismatch fails at the boundary, not deep in the consumer. Composes into etl-pipeline (sequential transform chain), parallel-sum (map-reduce transformation), sequential-pipeline shells, and map-reduce shells. Avoid for transformations that need judgment (semantic rephrasing / style shift — use :llm) or for unstructured input (extract first).\n\nCapabilities:\n  - given input data + a target shape spec, emit the input restructured to the target shape\n  - natural fit anywhere a tree needs to change data shape without semantic interpretation\n  - outputs are typically a single restructured value or a vector of per-item transformations\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** implement transformations in :code (NOT :llm) when the mapping is deterministic — preserves byte-for-byte fidelity, costs zero tokens, runs in milliseconds (confidence 1.00, evidence-count 1)\n    - Good when: the transformation rule can be expressed as a pure function over the input\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:input] :writes [:output] :fn (fn [{:keys [inputs]}] {:output (mapv (fn [r] (select-keys r [:a :b])) (:input inputs))})}]\n      ```\n\n  - **Trait:** for per-item independent transformations over a vector, use :map-each rather than a single batch :code call when the per-item work is non-trivial — supports per-item failure isolation (confidence 1.00, evidence-count 1)\n    - Good when: items can fail independently AND partial success has value\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :records :as :record :writes [:transformed]} [:code {:reads [:record] :writes [:transformed] :fn (fn [{:keys [inputs]}] {:transformed (assoc (:record inputs) :stamp \"x\")})}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** using :llm for a deterministic transformation (CSV → JSON, snake_case → camelCase) produces non-deterministic output AND wastes tokens (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation rule is fully specifiable\n    - Recommended fix: always :code for deterministic transformations; reserve :llm for transformations that need judgment (semantic-rephrasing / style-shift / domain-translation)\n\n  - **Failure mode:** transformations without :output-schemas on the downstream :reads break silently when an upstream change shifts the output shape — the consumer gets garbage instead of an error (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation feeds another stage that binds on specific fields\n    - Recommended fix: declare :output-schemas on the transformation output AND :input-schemas on the downstream :reads — shape mismatch fails loudly at the boundary, not deep in the consumer\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - CSV row → JSON object mapping per-field\n  - extracted entity records → DB-row shape with derived fields\n  - input list → output list with N filters / projections applied\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 86275302-0c3d-35ae-b74e-abd4f27984eb)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Rename-move-symbol (confidence: 0.64)\n   Why this fits: While this candidate matches the 'ordered steps' and 'identifying references' (foreign keys) aspect of the query, it is explicitly a code refactor subtree. Its avoid-when guard ('the change is a data reshape rather than an identity refactor of code symbols — that is the Transformation behavior') specifically points to the Transformation candidate as a better fit for this task.\n\n   Guidance (seed `:summary`):\n   Rename-move-symbol is a behavior-preserving, EXHAUSTIVE cross-file identity refactor — rename a function everywhere, move a symbol to another namespace — changing NOTHING else. The load-bearing traits are enumerating EVERY reference (definition, callers, tests, docs) before editing so the change is exhaustive (a missed reference is a compile/runtime break) and gating on a compile/test run to confirm exhaustiveness and behavior preservation. Prefer this child of Code-building whenever the task is a pure rename/move with behavior preserved: the parent's spec->emit instinct stops at the first file and leaves stale references, and sneaking a logic change in destroys the refactor's no-op safety. Avoid when the task adds/changes behavior (code-building) or is a data reshape (Transformation).\n\nCapabilities:\n  - given a symbol to rename or relocate, change its definition and EVERY reference across the codebase (including tests) while preserving behavior exactly\n  - natural fit when the task is a pure refactor of identity — rename calc -> compute-tax everywhere, move a fn to another namespace — with zero behavior change\n  - outputs are typically a set of coordinated edits across all referencing files + evidence that no call site was missed and behavior is unchanged\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** ENUMERATE every reference before editing — find all call sites (definition, callers, tests, docs) so the rename/move is exhaustive; a missed reference is a compile/runtime break (confidence 0.70, evidence-count 1)\n    - Good when: the symbol is referenced from multiple files including tests\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:symbol :repo] :writes [:references] :fn (fn [{:keys [inputs]}] {:references :all-call-sites})}] [:map-each {:items :references :as :ref :writes [:edits]} [:llm {:reads [:ref :new-name] :writes [:edit]}]] [:final {:keys [:edits]}]]\n      ```\n\n  - **Trait:** gate the change on a compile/test run after editing — a behavior-preserving rename/move is correct ONLY if everything still resolves and the existing tests stay green (confidence 0.70, evidence-count 1)\n    - Good when: a build or test command exists to confirm exhaustiveness and behavior preservation\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:writes [:edits]}] [:code {:reads [:edits] :writes [:build-result] :fn (fn [{:keys [inputs]}] {:build-result :compiles-tests-green})}] [:final {:keys [:edits :build-result]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** editing only the definition and the obvious callers (a code-building instinct that stops at the first file) leaves stale references in tests/docs/secondary namespaces — the rename is half-applied and the build breaks (confidence 0.70, evidence-count 1)\n    - Avoid when: the symbol is referenced beyond the file that defines it\n    - Recommended fix: first enumerate ALL references repo-wide (grep/AST), then map-each an edit over every site, then compile to confirm none was missed\n\n  - **Failure mode:** sneaking a behavior change into a rename/move (renaming AND tweaking logic) destroys the refactor's safety — reviewers can no longer trust it as a no-op and regressions hide in the diff (confidence 0.70, evidence-count 1)\n    - Avoid when: the task is strictly a rename/move with behavior preserved\n    - Recommended fix: keep the change behavior-identical; if logic must change too, do it as a separate, reviewable step after the rename lands green\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - rename the function calc to compute-tax across the billing namespace and update every caller, including the test files\n  - move a shared helper from the request handler into a pure pricing namespace and repoint every import\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 9880798a-8487-3a24-93e4-b59c5ae5d789)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral: Synthesis (confidence: 0.60)\n   Why this fits: Synthesis fits the structural need to integrate multiple migration components (steps, backfill, rollback, verification) into a single cohesive plan. The recommended pattern of 'scaffolding via a :code-built outline' is an excellent match for producing the specific structured output format requested.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nPlan a MySQL 8 migration that changes an orders table's integer primary key to a UUID while a Rails app keeps serving traffic. Give the ordered steps (new column, backfill in batches, dual writes, index swap, foreign-key rewrites in three child tables), a cut-over window, rollback, and the queries that prove no rows were lost. Output: {:steps [...] :backfill ... :rollback ... :verification [...]}",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? false},
+ :elapsed-ms 16342,
+ :confidence 0.9,
+ :was-fresh-mint? true,
+ :assigned-via :mint-domain-child}

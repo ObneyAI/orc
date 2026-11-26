@@ -1,0 +1,5 @@
+; brief-id: fx-legal
+; group: legal-issue-detection
+; variant: 2
+
+Reviewing a software licensing agreement: Clause 5 auto-renews annually unless we cancel 90 days out, Clause 9 caps the vendor's liability at one month's fees even for data-loss incidents. What should legal push back on before we sign?

@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: gamebalance (off-domain); variant c of 3 — the same domain re-asked with a different concrete instance.
+Tune the economy of a city-builder game where players reach the end-game in 4 hours instead of the intended 12: resource yields, building costs and upkeep across five tiers. Propose multipliers, simulate a typical progression curve, iterate until median completion sits between 10 and 14 hours without a dead zone longer than 30 minutes, and report the final numbers. Output: {:adjustments [...] :progression-curve ... :rationale ...}

@@ -14,12 +14,56 @@
    - Storable in ontology for learning
    - Safe to transmit and analyze")
 
-(declare rlm-dsl->orc-dsl)
+(declare transform-node)
+
+(defn- validate-tree!
+  "Validate the entire vector grammar before transforming any node.
+   Paths are vector indexes in the original emitted tree, not execution IDs."
+  [tree path]
+  (let [fail! (fn [expected prefix]
+                (throw (ex-info (str (when prefix (str prefix "; "))
+                                     "Invalid emitted tree at " (pr-str path)
+                                     ": expected " expected)
+                                {:node-path path :expected expected :tree tree
+                                 :preflight-rejected? true
+                                 :failure-kind :invalid-emitted-tree})))]
+    (when (nil? tree)
+      (fail! "a node vector" "Cannot transform nil tree"))
+    (when-not (vector? tree)
+      (fail! "a node vector" nil))
+    (let [tag (first tree)
+          fixed-arity ({:llm 1 :code 1 :final 1 :chunk-document 1
+                        :aggregate 1 :map-each 2} tag)]
+      (cond
+        (#{:sequence :parallel} tag)
+        (doseq [i (range 1 (count tree))]
+          (validate-tree! (nth tree i) (conj path i)))
+
+        fixed-arity
+        (do
+          (when-not (= (inc fixed-arity) (count tree))
+            (fail! (if (= 1 fixed-arity)
+                     "exactly 1 options map"
+                     "exactly 1 options map and 1 child node") nil))
+          (when-not (map? (second tree))
+            (fail! "an options map at operand 1" nil))
+          (when (= :map-each tag)
+            (validate-tree! (nth tree 2) (conj path 2))))
+
+        :else (fail! "a recognized node tag"
+                     (str "Unknown node type: " tag))))))
+
+(defn validate-emitted-tree!
+  "Validate the existing emitted vector grammar before quoted source becomes
+   executable. Returns the original data tree; adds no node or option support."
+  [tree]
+  (validate-tree! tree [])
+  tree)
 
 (defn- transform-children
   "Transform a sequence of child nodes."
   [children]
-  (map rlm-dsl->orc-dsl children))
+  (mapv transform-node children))
 
 (defn- opts-map->keyword-args
   "Convert an options map to a flat keyword argument list.
@@ -40,7 +84,7 @@
     opts  ;; Explicit config takes precedence
     (assoc opts :retry default-llm-retry)))
 
-(defn rlm-dsl->orc-dsl
+(defn- transform-node
   "Transform S-expr RLM DSL to canonical ORC DSL.
 
    Input: [:sequence [:llm {...}] [:final {...}]]
@@ -65,14 +109,13 @@
         (apply list 'sheet/sequence (transform-children children)))
 
       :llm
-      (let [opts (-> (first args)
-                     (add-default-retry))]
+      (let [opts (first args)]
         (apply list 'sheet/llm (opts-map->keyword-args opts)))
 
       :map-each
       (let [opts (first args)
             child (second args)
-            transformed-child (rlm-dsl->orc-dsl child)]
+            transformed-child (transform-node child)]
         (apply list 'sheet/map-each (concat (opts-map->keyword-args opts)
                                             [transformed-child])))
 
@@ -143,7 +186,7 @@
       ;;       — resolved at execution time via ns-resolve.
       ;; Code nodes let the model design transforms (counts, joins, simple
       ;; reductions) without spending sub-LLM tokens on deterministic work.
-      (let [{:keys [reads writes tool-caller-fn output-schemas] :as opts} (first args)
+      (let [{:keys [reads writes tool-caller-fn tool-contracts output-schemas] :as opts} (first args)
             fn-ref (:fn opts)]
         (when-not (or (and (string? fn-ref) (seq fn-ref))
                       (fn? fn-ref))
@@ -157,8 +200,18 @@
                       :reads reads
                       :writes writes)
           tool-caller-fn (concat (list :tool-caller-fn tool-caller-fn))
+          (seq tool-contracts) (concat (list :tool-contracts tool-contracts))
           output-schemas (concat (list :output-schemas output-schemas))))
 
       ;; Default: unknown node type
       (throw (ex-info (str "Unknown node type: " node-type)
                       {:node-type node-type :tree tree})))))
+
+
+(defn rlm-dsl->orc-dsl
+  "Validate the complete emitted vector tree, then transform to canonical DSL.
+   Fixed nodes consume exactly their documented operands; composite children
+   remain variadic. Option values are left to their existing contract checks."
+  [tree]
+  (validate-emitted-tree! tree)
+  (transform-node tree))

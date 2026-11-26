@@ -1,0 +1,5 @@
+; brief-id: b-008
+; group: recipe-scaling
+; variant: 4
+
+Hey, I’m in a bit of a spot with a bakery order and could really use your help. Can you take my 8-inch 'Midnight Espresso' cake recipe and scale it up so I can make 150 mini-cupcakes for a wedding? Since the original is just one deep layer, I’m stressed about the leavening and bake times—can you specifically adjust the baking powder and salt? Please don't just do a straight multiplication; I’m terrified they’ll rise too fast and collapse in those tiny liners. I’ll be using the commercial convection oven, so I need to know the exact temp and fan speed settings to keep them from drying out. Also, I need a solid workflow for Tuesday morning because I only have two 24-slot pans and need to cycle them through fast. Lastly, could you break down the cost per cupcake? Espresso beans are $16/lb, dark cocoa is $9/lb, and butter is $5.50/lb. Let me know if you can get this to me by tonight!

@@ -43,6 +43,25 @@ Read all the assistant responses and the corresponding feedback. Identify all ni
 
 Provide the new instructions within ``` blocks.")
 
+(def general-rules-prompt-template
+  "Optional reflection prompt for callers to pass as `:reflection-prompt-template`.
+
+   GEPA's default template with three sentences inserted before its last line.
+   GEPA's default asks the rewrite to include the niche and domain facts the
+   examples show; this template asks for general rules instead of copied
+   example texts, and leaves out values that each input already carries.
+   Nothing selects it unless a caller passes it."
+  (str/replace
+    python-gepa-prompt-template
+    "\n\nProvide the new instructions within ``` blocks."
+    (str "\n\nThe new instruction will be used on many inputs you have not seen. "
+         "Turn what the feedback shows into general rules: describe the kind of input or "
+         "mistake, and do not copy these examples' exact texts, names or answers into the "
+         "instruction. Include domain knowledge the inputs do not provide; leave out "
+         "values that each input already provides, since they can differ from one input "
+         "to the next."
+         "\n\nProvide the new instructions within ``` blocks.")))
+
 ;; =============================================================================
 ;; Output Extraction - Matches Python's output_extractor
 ;; =============================================================================

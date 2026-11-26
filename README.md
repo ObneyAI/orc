@@ -10,6 +10,8 @@ Add ORC as a git dependency. [Choose a package](#pick-your-package) for workflow
 
 ## New here?
 
+Building with an AI coding agent? Start with the **[ORC skills contents](orc-skills/CONTENTS.md)** for focused guidance on tree design, typed contracts, models, tools, debugging and production operation. Point your agent at that file and ask it to select the skills relevant to your task.
+
 Start with [Getting Started](docs/GETTING-STARTED.md), a contract-analysis walkthrough that adds evaluation, optimization, and memory to a basic workflow. The [documentation index](docs/README.md) lists the available guides.
 
 ## Behavior trees for AI workflows

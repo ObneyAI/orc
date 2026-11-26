@@ -1,0 +1,13 @@
+; brief-id: b-019
+; group: hiring-rubric
+; variant: 5
+
+I'm preparing for the final round of interviews for the 8th Grade Science Department Lead position and need to ensure the panel remains consistent and objective with their feedback. We specifically need a candidate who can navigate the transition to NGSS standards while effectively managing a few outspoken veteran teachers in the department. Please use the attached job description and my notes on our current needs to build a structured interview rubric based on these requirements:
+
+1. Identify four core competencies: Instructional Leadership, Differentiated Instruction, Conflict Resolution, and Curriculum Alignment.
+2. For every competency, list three specific behavioral indicators that demonstrate mastery in both classroom and staff meeting settings.
+3. Develop a 1-4 scoring scale (1: Unsatisfactory, 2: Developing, 3: Proficient, 4: Distinguished) featuring detailed descriptive anchors for each level.
+4. Draft three behavioral interview questions per competency designed to force candidates to reflect on specific pedagogical and leadership challenges they have faced.
+5. Define a "Decision Rule" for the committee: Establish the minimum scores required in 'Instructional Leadership' and 'Conflict Resolution' for a candidate to move forward.
+
+Keep in mind that the ideal candidate needs at least 5 years of classroom experience and a valid state certification; bilingual learner experience is a plus. Focus strictly on the evaluation framework—do not draft a job ad or review resumes at this stage.

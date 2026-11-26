@@ -1,0 +1,22 @@
+{:slug "144-experiment-plan-v04",
+ :group "experiment-plan",
+ :in-domain? false,
+ :variant 4,
+ :expected-output-kind
+ "hypotheses, the experiment matrix, metrics, evaluation protocol, budget allocation and decision criteria",
+ :brief-id "b-028",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1309, :completion-tokens 290, :total-tokens 1599},
+  :draft-prompt-sha256
+  "56e1a31620fb57862c95b32e3f6c1c529f7b63b8c11314288674f6b0963c41dd",
+  :polish-usage
+  {:prompt-tokens 459, :completion-tokens 290, :total-tokens 749},
+  :polish-prompt-sha256
+  "a02abab144a8813bfd12ac8a79f1d54ea4c70c25a67f62d88ad8e59c44eeb95e",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

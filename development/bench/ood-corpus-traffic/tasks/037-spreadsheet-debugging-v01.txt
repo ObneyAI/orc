@@ -1,0 +1,5 @@
+; brief-id: b-040
+; group: spreadsheet-debugging
+; variant: 1
+
+Audit attached 'Q3_Financial_Model' and 'Inventory_Master' tabs for formula errors. Consolidated dashboard is throwing #REF! errors and ending inventory values are negative despite positive stock counts. I've uploaded current cell formulas for rows 10-50, a CSV of raw transaction data, and the incorrect output totals. Identify every broken reference causing the #REF! error and fix the SUMIFS logic in the inventory sheet miscalculating outflows. Supply corrected formulas for copy-pasting and include a verification check for each to reconcile against the manual ledger. Fix must be compatible with both Excel and Google Sheets. Urgent.

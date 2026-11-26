@@ -1,0 +1,22 @@
+{:slug "175-marathon-training-v05",
+ :group "marathon-training",
+ :in-domain? false,
+ :variant 5,
+ :expected-output-kind
+ "a week-by-week schedule with paces, strength work, cutback weeks, a taper and warning signs",
+ :brief-id "b-007",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1623, :completion-tokens 313, :total-tokens 1936},
+  :draft-prompt-sha256
+  "a043dba7c171cc77ac8eee8e86e0d2afd45d353c8d9fce2d643a80f9349d6dc2",
+  :polish-usage
+  {:prompt-tokens 486, :completion-tokens 304, :total-tokens 790},
+  :polish-prompt-sha256
+  "7862a7227b51f3bfea74d5fa93e86e6db444cf9f916f6ce0b1a698041a943079",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

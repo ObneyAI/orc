@@ -1,0 +1,5 @@
+; brief-id: b-005
+; group: clause-drafting
+; variant: 1
+
+Draft new IP assignment clause for the attached MSA. Freelancer retains ownership of pre-existing framework code but must grant us a perpetual, global, royalty-free license for use and modification. All custom project components must transfer to us immediately upon payment. Ensure clause is enforceable under California law. Output the specific clause text, a brief rationale for this ownership split, and two negotiation notes addressing potential pushback on 'work made for hire' definitions. Keep the language legally robust but concise. Required for contract finalization by EOD.

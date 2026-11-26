@@ -1,0 +1,326 @@
+{:index-id-at-classify #uuid "962b40ef-3dcd-4455-906c-902bdc5c582b",
+ :assigned-tree-id #uuid "b41117ea-da98-31d3-a4cf-d98b78882a44",
+ :tick-id #uuid "d083a67e-a959-4ea4-bea3-24e4972d3d74",
+ :slug "006-legal-issue-detection-v02",
+ :parent-tree-id nil,
+ :domain-label nil,
+ :timed-out? false,
+ :outcome :matched,
+ :reached-via :index-match,
+ :domain-deferral nil,
+ :rerank-calls 2,
+ :newborn-in-index? true,
+ :usage
+ {:prompt-tokens 17622, :completion-tokens 2396, :total-tokens 20018},
+ :confounder-of nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "contract-clause-review",
+  :domain-reasoning
+  "The representative use explicitly names the subject matter (vendor services agreement), the material (sections/clauses), and the output kind (issues to flag before signing)."},
+ :corpus-in-domain? true,
+ :status :ok,
+ :node-id #uuid "84dec311-5672-4c3c-8b8f-dcd5d2cc8fa5",
+ :top-1
+ {:target-id "b41117ea-da98-31d3-a4cf-d98b78882a44",
+  :fitness-score 1.0,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "contract-clause-review"},
+ :corpus-group "legal-issue-detection",
+ :expected-seed-id :legal-issue-detection,
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "b41117ea-da98-31d3-a4cf-d98b78882a44",
+  :classified-at "2026-09-22T09:57:10.640707-05:00",
+  :reasoning
+  "This candidate is an exact domain match. Its representative use case describes the analysis of specific clauses in a vendor agreement (subcontracting, indemnity) to identify issues before signing, which perfectly mirrors the task of reviewing licensing agreement clauses (auto-renewal, liability caps) for legal pushback.",
+  :outcome :matched,
+  :source-node-id #uuid "84dec311-5672-4c3c-8b8f-dcd5d2cc8fa5",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "0f11dba5-c331-3cdf-81fa-8ee114fc224f",
+    :confidence 0.95,
+    :was-fresh-mint? false,
+    :reasoning
+    "Critique is the best fit because the task is to evaluate a software licensing agreement against specific legal/business interests. The recommended-pattern of scoring against an explicit rubric and producing located issues with suggested fixes (pushback points) directly matches the legal review workflow.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "1361eafc-6a90-391a-97a9-b558118f1f57",
+    :confidence 0.85,
+    :was-fresh-mint? false,
+    :reasoning
+    "Validation is a strong fit for the 'Clause 5' and 'Clause 9' checks, as these are comparisons against specific policy rules (e.g., liability caps, renewal terms). The recommended-pattern of pass/fail + per-rule reasons for semantic-fit matches the goal of identifying violations of company policy.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.6,
+    :was-fresh-mint? false,
+    :reasoning
+    "Synthesis is relevant if the final output needs to be a cohesive report or recommendation list based on the findings from the review of multiple clauses. The trait of attributing findings to source-ids (clause numbers) is useful here.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "d083a67e-a959-4ea4-bea3-24e4972d3d74",
+  :event/tags
+  #{[:description-target #uuid "b41117ea-da98-31d3-a4cf-d98b78882a44"]
+    [:tick #uuid "d083a67e-a959-4ea4-bea3-24e4972d3d74"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-22T14:57:10.640872Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "contract-clause-review",
+   :domain-reasoning
+   "The representative use explicitly names the subject matter (vendor services agreement), the material (sections/clauses), and the output kind (issues to flag before signing)."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "b41117ea-da98-31d3-a4cf-d98b78882a44",
+     :confidence 0.0,
+     :last-update "2026-09-22T09:56:15.334799-05:00"},
+    :domain-label "contract-clause-review",
+    :content
+    "Representative uses: INSTRUCTION:\n\nHere is an excerpt from a vendor services agreement: Section 4.2 lets the vendor subcontract any portion of the work without notice; Section 7.1 has the client indemnify the vendor for any third-party claim regardless of fault. What issues should I flag before signing?\n\nREADS: (none)\nWRITES: (none)\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none).",
+    :domain-coverage :covered,
+    :rank 1,
+    :reasoning
+    "This candidate is an exact domain match. Its representative use case describes the analysis of specific clauses in a vendor agreement (subcontracting, indemnity) to identify issues before signing, which perfectly mirrors the task of reviewing licensing agreement clauses (auto-renewal, liability caps) for legal pushback.",
+    :cos-good-with-content 1.0,
+    :domain-reasoning
+    "The representative use explicitly names the subject matter (vendor services agreement), the material (sections/clauses), and the output kind (issues to flag before signing).",
+    :cos-good 0.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.0,
+    :score 450.6152051325682,
+    :cos-avoid-sans-content 0.0,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-class:#uuid \"b41117ea-da98-31d3-a4cf-d98b78882a44\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.0,
+    :cos-avoid 0.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit",
+      :good-when
+      "the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]"}
+     {:trait
+      "pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique",
+      :good-when
+      "the critique stage tends to focus on style/issues and might lose sight of the original requirement",
+      :recommended-pattern
+      "[:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]"}],
+    :avoid-when
+    ["the output is short and direct — single :llm with a careful instruction wins"
+     "the task needs unbounded iteration until convergence — use validation-loop"
+     "the work has clear validation rules (formal/syntactic) — use validation-loop with a code-based validator"
+     "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough"
+     "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+     :confidence 1.0,
+     :last-update "2026-09-22T09:55:14.642422-05:00"},
+    :domain-label "contract-clause-review",
+    :content
+    "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+    :domain-coverage :uncovered,
+    :rank 10,
+    :reasoning
+    "The task involves analyzing legal nuances and providing reasoning for pushback, which fits the 'draft -> critique -> revise' pattern of iterative refinement. The strength regarding 'nuance' and 'factual precision' is relevant here, although the domain is general rather than specific to legal review.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward",
+      :avoid-when
+      "output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough",
+      :recommended-alternative
+      "use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality"}
+     {:trait
+      "open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's",
+      :avoid-when
+      "the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics",
+      :recommended-alternative
+      "use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes"}],
+    :domain-reasoning
+    "The candidate is a general-purpose structural pattern for refinement; it does not mention legal or contract review in its representative uses.",
+    :cos-good 0.9977537218973285,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9997033129910929,
+    :score 447.459648888251,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.7,
+    :document-id
+    ":tree-class:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9977537218973285,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-22T09:55:14.643834-05:00"},
+    :domain-label "contract-clause-review",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :uncovered,
+    :rank 4,
+    :reasoning
+    "This candidate is a poor fit because the task requires 'deep judgment' and 'legal pushback' rather than checking against 'formal/syntactic rules' or 'code-based validation'. The avoid-when specifically warns against using this when 'validation requires deep judgment', which applies to legal analysis.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The task requires deep legal judgment, which matches the avoid-when guard: 'the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead'.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9965903986768143,
+    :score 447.85051496594855,
+    :cos-avoid-sans-content 0.9986698053724773,
+    :fitness-score 0.2,
+    :document-id
+    ":tree-class:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9986698053724773}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the validator stage being :code (not :llm) gives the loop a CORRECTNESS oracle — the producer can be creative, the validator is trusted",
+      :good-when
+      "the validation rules are formal/syntactic AND can be expressed in code (schema validation, regex match, parse-and-check)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:prompt] :writes [:candidate] :options {:max-retries 3}}] [:code {:reads [:candidate] :writes [:valid? :issues] :fn (fn [{:keys [candidate]}] (let [ok? (string? candidate)] {:valid? ok? :issues (if ok? [] [\"not a string\"])}))}] [:final {:keys [:candidate :valid? :issues]}]]"}
+     {:trait
+      "always pass the validator's :issues back to the producer on retry so the model can address specific failures, not just guess again",
+      :good-when
+      "the validator can articulate WHY a candidate failed (specific missing key, specific malformed value)",
+      :recommended-pattern
+      "[:llm {:reads [:prompt :previous-candidate :issues] :writes [:candidate] :options {:max-retries 3}}]"}],
+    :avoid-when
+    ["the output doesn't have formal validation rules — use iterative-refinement instead (fixed-N polish)"
+     "the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead"
+     "the retry rate is expected to be near zero — direct :llm with :max-retries on its own retry budget is simpler"
+     ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven"
+     "the validation rules can be expressed in code AND the validator is being implemented as another :llm node"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-09-22T09:55:14.628640-05:00"},
+    :domain-label "contract-clause-review",
+    :content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :domain-coverage :uncovered,
+    :rank 3,
+    :reasoning
+    "Identical reasoning to the tree-class version of this ID: the task of legal review is a judgment-based activity, which contradicts this candidate's focus on formal, syntactic code-based validation. The guard against 'deep judgment' applies.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "unbounded retry burns LLM tokens when the producer is structurally incapable of satisfying the validator (asked for an impossible constraint)",
+      :avoid-when
+      ":max-retries is not set OR is set above ~5 AND the producer is :llm-driven",
+      :recommended-alternative
+      "always set :max-retries 3 on the producer; surface 'budget exhausted' as a distinct outcome so the caller can choose to relax constraints or escalate"}
+     {:trait
+      "using :llm for the validator (instead of :code) creates correlated failure — the same LLM that produced a flawed candidate may not catch its own flaw",
+      :avoid-when
+      "the validation rules can be expressed in code AND the validator is being implemented as another :llm node",
+      :recommended-alternative
+      "always prefer :code for the validator. Use :llm validator only when validation requires natural-language judgment (e.g., 'is this politically neutral?')"}],
+    :domain-reasoning
+    "The task requires deep legal judgment, which matches the avoid-when guard: 'the validation requires deep judgment (taste, factuality) — use a tree-level judge or LLM evaluation instead'.",
+    :cos-good 1.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9965903986768143,
+    :score 447.85051496594855,
+    :cos-avoid-sans-content 0.9986698053724773,
+    :fitness-score 0.2,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 1.0,
+    :cos-avoid 0.9986698053724773}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered [],
+  :event/id #uuid "01a0c99e-ebf0-70b1-89b8-a470c5da1975",
+  :confidence 1.0,
+  :source-sheet-id #uuid "a8aa66d1-f9c2-490c-860f-d4ce5d38c3a0",
+  :ranked-candidates
+  [{:target-id "b41117ea-da98-31d3-a4cf-d98b78882a44",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 450.6152051325682}
+   {:target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.7,
+    :score 447.459648888251}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.2,
+    :score 447.85051496594855}
+   {:target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.2,
+    :score 447.85051496594855}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :deferred-events [],
+ :domain-children-considered [],
+ :sheet-id #uuid "a8aa66d1-f9c2-490c-860f-d4ce5d38c3a0",
+ :payload-domain nil,
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 2 from corpus retrieval)\n#### Top match (confidence: 1.00)\nWhy this fits: This candidate is an exact domain match. Its representative use case describes the analysis of specific clauses in a vendor agreement (subcontracting, indemnity) to identify issues before signing, which perfectly mirrors the task of reviewing licensing agreement clauses (auto-renewal, liability caps) for legal pushback.\n\nPattern guidance (seed `:summary`):\nRepresentative uses: INSTRUCTION:\n\nHere is an excerpt from a vendor services agreement: Section 4.2 lets the vendor subcontract any portion of the work without notice; Section 7.1 has the client indemnify the vendor for any third-party claim regardless of fault. What issues should I flag before signing?\n\nREADS: (none)\nWRITES: (none)\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none).\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - INSTRUCTION:\n\nHere is an excerpt from a vendor services agreement: Section 4.2 lets the vendor subcontract any portion of the work without notice; Section 7.1 has the client indemnify the vendor for any third-party claim regardless of fault. What issues should I flag before signing?\n\nREADS: (none)\nWRITES: (none)\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none)\n\n#### Alternative #1 — Iterative refinement (confidence: 0.70)\nWhy this fits: The task involves analyzing legal nuances and providing reasoning for pushback, which fits the 'draft -> critique -> revise' pattern of iterative refinement. The strength regarding 'nuance' and 'factual precision' is relevant here, although the domain is general rather than specific to legal review.\n\nPattern guidance (seed `:summary`):\nIterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.\n\nCapabilities:\n  - :sequence of typically 3 stages: initial draft → critic feedback → revised draft (sometimes repeated for a fixed N)\n  - natural for content quality improvement where each pass identifies and addresses specific defects from the previous pass\n  - stages share the same content key but transform it forward — :draft → :critique → :revised-draft\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit critique stage between draft and revision forces the model to articulate specific defects before fixing them — outputs are higher quality than single-pass with self-edit (confidence 1.00, evidence-count 1)\n    - Good when: the output requires nuance, factual precision, or stylistic care AND a single :llm pass tends to miss issues that re-reading would catch\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:prompt] :writes [:draft]}] [:llm {:reads [:draft :prompt] :writes [:critique]}] [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}] [:final {:keys [:revised-draft]}]]\n      ```\n\n  - **Trait:** pass the original prompt into the revision stage's :reads alongside the critique — ensures the revision doesn't drift away from the original ask while addressing critique (confidence 1.00, evidence-count 1)\n    - Good when: the critique stage tends to focus on style/issues and might lose sight of the original requirement\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:draft :critique :prompt] :writes [:revised-draft]}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** fixed 3-stage refinement burns 3x the tokens of a single pass — overkill when the output is short or the prompt is straightforward (confidence 1.00, evidence-count 1)\n    - Avoid when: output is under 200 tokens AND the prompt is concrete (no nuance) — single :llm with a careful instruction is enough\n    - Recommended fix: use a single :llm with an instruction that explicitly tells the model 'draft, then critique, then revise inline' — much cheaper and often comparable quality\n\n  - **Failure mode:** open-ended (unbounded N iterations until convergence) is the wrong tool here — that's validation-loop's job, not iterative-refinement's (confidence 1.00, evidence-count 1)\n    - Avoid when: the loop needs to repeat until quality threshold is met OR the work needs explicit retry-on-fail semantics\n    - Recommended fix: use validation-loop (with a producer + a validator + a retry budget) for unbounded-quality scenarios; iterative-refinement is for fixed-N refinement passes\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical writing improvement: draft documentation → critique for clarity/missing-context → revise\n  - creative writing polish: draft scene → critique for pacing/voice → revise\n  - executive summary tightening: draft summary → critique for jargon/specificity → revise\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral: Critique (confidence: 0.95)\n   Why this fits: Critique is the best fit because the task is to evaluate a software licensing agreement against specific legal/business interests. The recommended-pattern of scoring against an explicit rubric and producing located issues with suggested fixes (pushback points) directly matches the legal review workflow.\n\n   Guidance (seed `:summary`):\n   Critique evaluates an artifact against quality criteria, producing per-criterion grades + located issues + suggested fixes. Always require per-issue location references AND per-issue :suggested-fix — vague critiques produce vague refinements. Score against an explicit per-dimension rubric, NOT a single overall grade, so refinement knows where to focus. NEVER use the same prompt persona for critique as for the original producer — self-critique ratifies. Use adversarial framing (skeptical reviewer / safety auditor) or an explicit checklist. Composes into draft-critique (validation-loop child) and iterative-refinement (sequential-pipeline child) shells; also into validation-loop pattern when paired with a producer. Avoid for formal rule-checking (use validation) or for orphan critiques with no downstream consumer.\n\nCapabilities:\n  - given an artifact + quality criteria, produce a structured critique — per-criterion grade + list of specific issues + suggested fixes\n  - natural fit downstream of synthesis/design/code-building, upstream of refinement loops or human review\n  - outputs are typically a map with per-criterion scores + a vector of specific issues with locations + a vector of suggested improvements\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** require per-issue location references (line number / section name / item id) so the downstream refinement stage knows exactly what to address — vague issues produce vague fixes (confidence 1.00, evidence-count 1)\n    - Good when: the artifact is structured and references are addressable\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:artifact :criteria] :writes [:issues] :output-schemas {:issues [:vector [:map [:location :string] [:problem :string] [:severity :string] [:suggested-fix :string]]]}}]\n      ```\n\n  - **Trait:** score against an explicit per-criterion rubric (not a single overall grade) so the refinement stage knows which dimension needs work — overall-grade-only critiques produce regressions in unscored dimensions (confidence 1.00, evidence-count 1)\n    - Good when: quality has multiple distinct dimensions (correctness / clarity / completeness / efficiency)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:artifact :rubric] :writes [:scores] :output-schemas {:scores [:map-of :string :double]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** self-critique on the same model (no prompt-framing change) tends to ratify the original artifact — the model is biased toward consistency with its prior output (confidence 1.00, evidence-count 1)\n    - Avoid when: the critique stage uses the same :llm with the same role framing as the producer\n    - Recommended fix: use a different prompt persona (skeptical reviewer / safety auditor) OR a different model OR an explicit checklist that forces specific question forms — adversarial framing improves catch rate\n\n  - **Failure mode:** critiques that don't produce actionable per-issue fixes leave the refinement stage with nothing to act on — issues phrased as 'unclear' don't tell the writer what to do (confidence 1.00, evidence-count 1)\n    - Avoid when: the critique feeds a refinement stage\n    - Recommended fix: every issue must include a :suggested-fix — explicit phrasing of how to address it; not 'consider revising' but 'replace X with Y because Z'\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - draft review: per-section grade + specific issues + suggested rewrites\n  - code review: per-file findings + severity + suggested fix\n  - design review: per-decision check + risks + open questions\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 0f11dba5-c331-3cdf-81fa-8ee114fc224f)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Validation (confidence: 0.85)\n   Why this fits: Validation is a strong fit for the 'Clause 5' and 'Clause 9' checks, as these are comparisons against specific policy rules (e.g., liability caps, renewal terms). The recommended-pattern of pass/fail + per-rule reasons for semantic-fit matches the goal of identifying violations of company policy.\n\n   Guidance (seed `:summary`):\n   Validation checks an artifact against formal rules, producing pass/fail + per-rule reasons. ALWAYS implement mechanical rules (schema / regex / field presence) in :code — deterministic and cheap. Only use :llm for judgment-requiring rules (semantic-fit / policy-intent). Structure failures as {:rule :reason :location} entries so the upstream producer in a validation-loop gets actionable retry signal. Wrap external rule sources in :fallback when the gate is on the critical path — silent failure of validation blocks the tree. Composes into producer-validator (validation-loop child), validation-loop pattern (with producer), and fallback-recovery shells (primary + backup validators). Avoid for judgment-based quality assessment (use critique) or for option selection (use convergent stage).\n\nCapabilities:\n  - given an artifact + a formal rule set (schema / spec / policy), produce a pass/fail decision per rule + reasons for any failures\n  - natural fit as a gate node before downstream commitment (publish / merge / execute)\n  - outputs are typically {:passed? boolean :violations [...]} or a per-rule pass-fail map with reasons\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** implement the rule check itself in :code when the rule is mechanical (schema validation / regex match / field presence) — :code is deterministic and cheap; only fall back to :llm for rules that need judgment (confidence 1.00, evidence-count 1)\n    - Good when: the rules are objective and machine-checkable\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:artifact :schema] :writes [:result] :fn (fn [{:keys [inputs]}] {:result {:passed? true :violations []}})}]\n      ```\n\n  - **Trait:** structure the failure output as a vector of {:rule :reason :affected-location} entries — gives the upstream producer (validation-loop) actionable retry signal (confidence 1.00, evidence-count 1)\n    - Good when: validation feeds a retry/refinement loop where the producer needs to know what to fix\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:artifact :rules] :writes [:result] :output-schemas {:result [:map [:passed? :boolean] [:violations [:vector [:map [:rule :string] [:reason :string] [:location :string]]]]]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** single :llm-based validation on a mechanical rule (schema match / field presence) is non-deterministic AND wastes tokens — the same artifact gets different pass/fail across runs (confidence 1.00, evidence-count 1)\n    - Avoid when: the rule is fully expressible as code\n    - Recommended fix: implement mechanical rules in :code; use :llm only for judgment-requiring rules (semantic-fit / policy-intent / tone)\n\n  - **Failure mode:** validation without a fallback path silently blocks the tree when external rule sources fail — the gate never opens (confidence 1.00, evidence-count 1)\n    - Avoid when: validation depends on an external service (policy API, schema registry) AND the rest of the tree can't degrade\n    - Recommended fix: wrap external validation in :fallback with a local cached rule set OR a 'human review queue' branch — gate fails gracefully\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - schema validation against a JSON Schema / Malli spec\n  - policy compliance check against an org's content rules\n  - completeness check: required sections present, required fields populated\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 1361eafc-6a90-391a-97a9-b558118f1f57)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral: Synthesis (confidence: 0.60)\n   Why this fits: Synthesis is relevant if the final output needs to be a cohesive report or recommendation list based on the findings from the review of multiple clauses. The trait of attributing findings to source-ids (clause numbers) is useful here.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\n\nReviewing a software licensing agreement: Clause 5 auto-renews annually unless we cancel 90 days out, Clause 9 caps the vendor's liability at one month's fees even for data-loss incidents. What should legal push back on before we sign?",
+ :june-flags
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 20717,
+ :confidence 1.0,
+ :was-fresh-mint? false,
+ :assigned-via :match}

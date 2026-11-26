@@ -1,0 +1,22 @@
+{:slug "226-planting-schedule-v06",
+ :group "planting-schedule",
+ :in-domain? false,
+ :variant 6,
+ :expected-output-kind
+ "a week-by-week sowing, transplanting, feeding and harvesting schedule with succession plans",
+ :brief-id "b-021",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1651, :completion-tokens 333, :total-tokens 1984},
+  :draft-prompt-sha256
+  "0b1e5d1367397b6967ad9ac4f5fb88cfc0e75c728d0bdb8a9784d35753cd7dc4",
+  :polish-usage
+  {:prompt-tokens 201, :completion-tokens 216, :total-tokens 417},
+  :polish-prompt-sha256
+  "0ee2991b0045d28a1e2df502b44d574824c6f60da7dc9045f36825dc7fd8f8f0",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

@@ -1,0 +1,14 @@
+; brief-id: b-021
+; group: planting-schedule
+; variant: 5
+
+Please draft a structured weekly operations manual for our new school garden club, formatted as a step-by-step checklist. We are working with six 4x8 raised beds in a semi-arid Zone 8 climate, receiving roughly 7 hours of daily sun. Please follow these specific requirements:
+
+1. Create a week-by-week action calendar beginning the first week of February and concluding at the end of the school year in late June.
+2. Designate exact dates for both direct sowing and transplanting for our specific crop list: sugar snap peas, strawberries, cherry tomatoes, and bell peppers.
+3. Develop a succession planting strategy for the pea sections, identifying specific heat-tolerant crops to replace them once temperatures rise in May.
+4. Outline a liquid seaweed fertilization schedule and a deep-watering protocol that a group of students can realistically complete within two 45-minute sessions per week.
+5. Provide estimated harvest windows for each vegetable so the students can track their progress and plan for a final harvest party.
+6. Keep the document strictly focused on the chronological timeline of tasks; omit general gardening theory, bed construction guides, or pest/disease diagnostics.
+
+The final output should serve as a primary directive for student volunteers to ensure the beds remain productive and well-maintained throughout the semester.

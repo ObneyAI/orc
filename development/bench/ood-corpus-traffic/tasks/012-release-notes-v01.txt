@@ -1,0 +1,5 @@
+; brief-id: b-025
+; group: release-notes
+; variant: 1
+
+Draft v2.4.0 SDK release notes using the provided 45 commit messages and PR titles. Categorize into New Features, Improvements, Bug Fixes, and Breaking Changes. Convert technical jargon into benefit-driven language for external developers. Include a dedicated Upgrade Notes section covering migration from v2.3, specifically detailing the new authentication flow. Do not include raw commit hashes. Ensure the final output is readable for clients without internal repo access. Professional tone required. Logs: [Paste logs here]

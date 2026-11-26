@@ -1,0 +1,20 @@
+; brief-id: b-014
+; group: budget-forecast
+; variant: 2
+
+Hi there,
+
+Hope you're having a decent week. I’m currently hiding in the back office because the espresso machine decided to start leaking right in the middle of the lunch rush, and honestly, if it isn't one thing, it's another. My toddler also didn't sleep last night, so if I'm sounding a bit scattered, that's why! 
+
+I really need to get my head around the finances for "The Daily Grind" for the next year. We’ve been open for eighteen months now, but with the way electricity prices are going and the fact that we’re thinking about finally hiring a second full-time baker, I need to see if the numbers actually work. I’ve attached our historical income and expense spreadsheets from the last year in EUR. You'll see the big spike in December because of the holiday hampers, but then that painful dip in February when everyone in town seemingly goes on a diet at the same time.
+
+Can you put together a 12-month cash-flow forecast for me? Please lay it out in a table so I can actually read it. I’m assuming we can grow our catering side by about 5% month-on-month, but I’m worried about the cost of coffee beans—our supplier mentioned another price hike might be coming in Q3. Also, we have a fixed loan repayment of €850 every month that doesn't show up in the daily overheads but definitely hits the bank account.
+
+I need you to include a sensitivity analysis—specifically, what happens if our foot traffic drops by 15% during the summer months when people head to the coast, or if the cost of milk/oats goes up by another 20%. Please also list out the main risks you see to our cash position and clearly state all the assumptions you’re using. 
+
+This isn't for a tax filing or anything like that—I just need to know if we can afford the new oven without going into the red by October.
+
+Thanks a million,
+
+Sarah
+Owner, The Daily Grind

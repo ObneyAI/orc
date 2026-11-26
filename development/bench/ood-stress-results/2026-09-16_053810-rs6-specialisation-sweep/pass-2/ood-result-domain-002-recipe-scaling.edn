@@ -1,0 +1,459 @@
+{:assigned-tree-id #uuid "f44659cf-2420-3e77-aad3-564d4735f516",
+ :tick-id #uuid "da2cfb4f-29c7-4cd3-83c9-ab46e46d1aa0",
+ :slug "domain-002-recipe-scaling",
+ :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+ :domain-label "recipe-scaling-and-logistics",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :covered,
+  :domain-label "recipe-scaling-and-logistics",
+  :domain-reasoning
+  "The candidate explicitly lists 'recipe-scaling-and-logistics' as an existing domain child, which directly matches the task of scaling a restaurant recipe for catering."},
+ :node-id #uuid "249d93a2-fd97-4ed7-8acb-746e3f873798",
+ :top-1
+ {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :fitness-score 1.0,
+  :rerank-source :reranker,
+  :domain-coverage :covered,
+  :domain-label "recipe-scaling-and-logistics"},
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "f44659cf-2420-3e77-aad3-564d4735f516",
+  :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :domain-label "recipe-scaling-and-logistics",
+  :classified-at "2026-09-16T05:49:52.477682-05:00",
+  :reasoning
+  "This task requires a sequence of distinct transformation passes: scaling ingredients (transformation), designing a workflow/station setup (enrichment), and calculating costs (mechanical/deterministic calculation). The ETL pipeline's recommended pattern of using :llm for content transformation followed by :code for deterministic output (like the cost-estimate) perfectly matches the requirement to produce a multi-keyed output map. Crucially, this candidate explicitly lists 'recipe-scaling-and-logistics' as an existing domain child.",
+  :outcome :matched,
+  :source-node-id #uuid "249d93a2-fd97-4ed7-8acb-746e3f873798",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.9,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task is fundamentally about integrating multiple constraints (scaling factors, equipment limits, logistics, costs) into a single cohesive output (the scaled recipe and workflow). This matches the Synthesis behavior of integrating multiple structured inputs into a single artifact. The recommended pattern for long artifacts (scaffolding via a structured outline) fits the specific required output keys like :revised-technique and :pitfalls-and-mitigations.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "b3597aa7-3957-3734-90c6-531d27c08f67",
+    :confidence 0.75,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task requires reasoning over a set of 'items' (the ingredients and techniques) to identify specific scaling 'problems' and 'opportunities' (e.g., heat distribution, texture preservation). The strength of 'multi-dimensional analysis' fits the requirement to look at the recipe through different lenses (cost, timing, chemistry). However, the output needs to be a new recipe, not just a list of findings.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "8ad38e72-05e4-3201-bac7-3ed9c54a2791",
+    :confidence 0.6,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task requires external grounding for 'typical restaurant supplier pricing' and potentially for scaling factors like salt non-linearity. The 'research-then-synthesize' shell is a good fit for gathering the cost data before generating the recipe. However, the core of the task is the scaling logic, not just the data gathering.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "da2cfb4f-29c7-4cd3-83c9-ab46e46d1aa0",
+  :event/tags
+  #{[:tick #uuid "da2cfb4f-29c7-4cd3-83c9-ab46e46d1aa0"]
+    [:description-target
+     #uuid "f44659cf-2420-3e77-aad3-564d4735f516"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T10:49:52.477921Z",
+  :domain-verdict
+  {:domain-coverage :covered,
+   :domain-label "recipe-scaling-and-logistics",
+   :domain-reasoning
+   "The candidate explicitly lists 'recipe-scaling-and-logistics' as an existing domain child, which directly matches the task of scaling a restaurant recipe for catering."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :existing-domain-children
+    ["backend-middleware-refactoring"
+     "data-warehouse-etl-design"
+     "database-migration-runbook"
+     "jvm-service-diagnosis"
+     "recipe-scaling-and-logistics"
+     "security-audit-haikus"
+     "sql-query-optimization"
+     "streaming-etl-design"],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.988167-05:00"},
+    :domain-label "recipe-scaling-and-logistics",
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :domain-coverage :covered,
+    :rank 5,
+    :reasoning
+    "This task requires a sequence of distinct transformation passes: scaling ingredients (transformation), designing a workflow/station setup (enrichment), and calculating costs (mechanical/deterministic calculation). The ETL pipeline's recommended pattern of using :llm for content transformation followed by :code for deterministic output (like the cost-estimate) perfectly matches the requirement to produce a multi-keyed output map. Crucially, this candidate explicitly lists 'recipe-scaling-and-logistics' as an existing domain child.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :domain-reasoning
+    "The candidate explicitly lists 'recipe-scaling-and-logistics' as an existing domain child, which directly matches the task of scaling a restaurant recipe for catering.",
+    :cos-good 0.9964784168151324,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9946472744492676,
+    :score 430.1671475625918,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-class:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9964784168151324,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate",
+      :good-when
+      "input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)",
+      :recommended-pattern
+      "[:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]"}
+     {:trait
+      "use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names",
+      :good-when
+      "the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)",
+      :recommended-pattern
+      "[:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]"}],
+    :avoid-when
+    ["the work is per-chunk independent — use chunked-extraction instead"
+     "stages can run in parallel writing to distinct keys — use :parallel instead"
+     "the chain is 1 stage — just use a single :llm or :code node directly"
+     "intermediate stages don't declare :output-schemas and downstream stages assume specific keys"
+     "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.973273-05:00"},
+    :domain-label "recipe-scaling-and-logistics",
+    :content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :domain-coverage :covered,
+    :rank 6,
+    :reasoning
+    "This fingerprint shares the same ETL pipeline structure and domain associations as the class, making it a perfect fit for a multi-stage transformation task that culminates in a deterministic cost estimate. The :sequence of :llm stages for logic (technique, pitfalls) and :code for math (costing) is the correct structural match.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage",
+      :avoid-when
+      "intermediate stages don't declare :output-schemas and downstream stages assume specific keys",
+      :recommended-alternative
+      "always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer"}
+     {:trait
+      "5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short",
+      :avoid-when
+      "individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates",
+      :recommended-alternative
+      "collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate"}],
+    :domain-reasoning
+    "Matches the existing-domain-child 'recipe-scaling-and-logistics'.",
+    :cos-good 0.9964784168151324,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9946472744492676,
+    :score 430.1671475625918,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 1.0,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9964784168151324,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "separating per-chunk research from cross-chunk synthesis lets each :llm focus on a narrower job",
+      :good-when
+      "the input is a large document AND the answer requires reasoning across the whole document AND the final answer is a narrative/recommendation (not a flat extraction)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Extract anything relevant to the research question in this chunk.\"}]] [:aggregate {:from :per-chunk-notes :writes [:all-notes]}] [:llm {:reads [:all-notes] :writes [:synthesis] :instruction \"Integrate the per-chunk notes into a cohesive answer to the research question.\"}] [:final {:keys [:synthesis]}]]"}
+     {:trait
+      "the synthesis :llm sees the aggregated notes rather than the raw document — fits long documents into a single final context",
+      :good-when
+      "the raw document would exceed the synthesis :llm's context window AND the aggregated per-chunk notes are concise enough to fit",
+      :recommended-pattern
+      "[:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Summarize this chunk in <300 tokens, retaining only material relevant to the research question.\"}]]"}],
+    :avoid-when
+    ["the cross-chunk combine is mechanical — use MapReduce (:code reducer) instead"
+     "the :aggregate alone is the answer (flat extraction across chunks) — use ChunkedExtraction instead"
+     "the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win"
+     "the answer must be strictly traceable to source material AND no grounding judge follows — synthesis :llm can hallucinate at the integration step"
+     "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks"
+     "the answer must be strictly traceable to source material AND no grounding judge / citation step follows"
+     "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.987739-05:00"},
+    :domain-label "recipe-scaling-and-logistics",
+    :content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :domain-coverage :uncovered,
+    :rank 2,
+    :reasoning
+    "The task is not based on a large document requiring chunking or cross-chunk narrative synthesis. The input is a short recipe that fits easily into a single context. ResearchThenSynthesize's structural overhead (chunking and map-each) is explicitly warned against in its 'avoid-when' list ('the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win').",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "if per-chunk extraction is too aggressive, the aggregated material can itself exceed the synthesis :llm's context window",
+      :avoid-when
+      "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks",
+      :recommended-alternative
+      "constrain the per-chunk :llm via :output-schemas + a token-budget instruction ('summarize in <300 tokens'); OR add an intermediate :map-each [:llm] compression pass before final synthesis; OR split the synthesis into a 2-stage reduce-tree"}
+     {:trait
+      "the synthesis :llm can introduce claims not grounded in any per-chunk note — hallucination risk at the integration step",
+      :avoid-when
+      "the answer must be strictly traceable to source material AND no grounding judge / citation step follows",
+      :recommended-alternative
+      "add :output-schemas requiring per-claim citations on the synthesis :llm; OR add a downstream grounding judge that scores synthesis claims against the aggregated notes; OR ask the synthesis :llm to quote source notes verbatim for each claim"}
+     {:trait
+      "two :llm passes per chunk's worth of work (per-chunk extract + final synthesize) costs more than a single :llm or a :code reducer",
+      :avoid-when
+      "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill",
+      :recommended-alternative
+      "use MapReduce instead (:code reducer for mechanical aggregation); OR use ChunkedExtraction if the :aggregate merge alone is enough"}],
+    :domain-reasoning
+    "The task is a logistics and scaling problem, not a document synthesis or research problem. The material is a short recipe, not a large corpus.",
+    :cos-good 0.9944314936534085,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9982770067101773,
+    :score 430.29375021397937,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.1,
+    :document-id ":tree-class:\"seed:tree:ResearchThenSynthesize\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9944314936534085,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "separating per-chunk research from cross-chunk synthesis lets each :llm focus on a narrower job",
+      :good-when
+      "the input is a large document AND the answer requires reasoning across the whole document AND the final answer is a narrative/recommendation (not a flat extraction)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Extract anything relevant to the research question in this chunk.\"}]] [:aggregate {:from :per-chunk-notes :writes [:all-notes]}] [:llm {:reads [:all-notes] :writes [:synthesis] :instruction \"Integrate the per-chunk notes into a cohesive answer to the research question.\"}] [:final {:keys [:synthesis]}]]"}
+     {:trait
+      "the synthesis :llm sees the aggregated notes rather than the raw document — fits long documents into a single final context",
+      :good-when
+      "the raw document would exceed the synthesis :llm's context window AND the aggregated per-chunk notes are concise enough to fit",
+      :recommended-pattern
+      "[:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Summarize this chunk in <300 tokens, retaining only material relevant to the research question.\"}]]"}],
+    :avoid-when
+    ["the cross-chunk combine is mechanical — use MapReduce (:code reducer) instead"
+     "the :aggregate alone is the answer (flat extraction across chunks) — use ChunkedExtraction instead"
+     "the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win"
+     "the answer must be strictly traceable to source material AND no grounding judge follows — synthesis :llm can hallucinate at the integration step"
+     "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks"
+     "the answer must be strictly traceable to source material AND no grounding judge / citation step follows"
+     "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.972948-05:00"},
+    :domain-label "recipe-scaling-and-logistics",
+    :content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :domain-coverage :uncovered,
+    :rank 3,
+    :reasoning
+    "Matches the ResearchThenSynthesize class's poor fit. The task does not involve analyzing a large document for themes or contradictions, and the 'avoid-when' regarding single-context inputs applies here.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "if per-chunk extraction is too aggressive, the aggregated material can itself exceed the synthesis :llm's context window",
+      :avoid-when
+      "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks",
+      :recommended-alternative
+      "constrain the per-chunk :llm via :output-schemas + a token-budget instruction ('summarize in <300 tokens'); OR add an intermediate :map-each [:llm] compression pass before final synthesis; OR split the synthesis into a 2-stage reduce-tree"}
+     {:trait
+      "the synthesis :llm can introduce claims not grounded in any per-chunk note — hallucination risk at the integration step",
+      :avoid-when
+      "the answer must be strictly traceable to source material AND no grounding judge / citation step follows",
+      :recommended-alternative
+      "add :output-schemas requiring per-claim citations on the synthesis :llm; OR add a downstream grounding judge that scores synthesis claims against the aggregated notes; OR ask the synthesis :llm to quote source notes verbatim for each claim"}
+     {:trait
+      "two :llm passes per chunk's worth of work (per-chunk extract + final synthesize) costs more than a single :llm or a :code reducer",
+      :avoid-when
+      "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill",
+      :recommended-alternative
+      "use MapReduce instead (:code reducer for mechanical aggregation); OR use ChunkedExtraction if the :aggregate merge alone is enough"}],
+    :domain-reasoning
+    "Gap: The task domain is culinary logistics/scaling; the candidate covers document research and narrative synthesis.",
+    :cos-good 0.9944314936534085,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9982770067101773,
+    :score 430.29375021397937,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.1,
+    :document-id
+    ":tree-fingerprint:\"seed:tree:ResearchThenSynthesize\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9944314936534085,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the synthesis stage's :llm has access to ALL per-chunk extracted material in :reads — produces a narrative that reasons across chunks rather than concatenating per-chunk summaries",
+      :good-when
+      "the briefing needs to identify cross-chunk patterns (recurring themes, contradictions, progression of an argument)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :source :size 4000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :extracts :max-concurrency 3} [:llm {:reads [:chunk] :writes [:key-points :quotes]}]] [:aggregate {:from :extracts :writes [:all-points :all-quotes]}] [:llm {:reads [:all-points :all-quotes :briefing-prompt] :writes [:briefing]}] [:final {:keys [:briefing]}]]"}
+     {:trait
+      "extract specific QUOTES alongside summaries in the per-chunk step — the synthesis stage can then ground claims to source quotes, supporting traceability",
+      :good-when
+      "the briefing audience may verify claims against source material AND traceability matters",
+      :recommended-pattern
+      "[:llm {:reads [:chunk] :writes [:key-points :supporting-quotes] :output-schemas {:key-points [:vector :string] :supporting-quotes [:vector :string]}}]"}],
+    :avoid-when
+    ["the output is a structured triple (summary + entities + dates) — use document-analysis (chunked-extraction-as-task-class) instead"
+     "no cross-chunk reasoning needed — use chunked-extraction (terminal :aggregate without synthesis)"
+     "the source fits in a single :llm context — direct :llm without chunking is simpler"
+     "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15"
+     "the briefing is going to a decision-maker AND no grounding check is wired downstream"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+     :confidence 1.0,
+     :last-update "2026-09-16T05:37:19.993926-05:00"},
+    :domain-label "recipe-scaling-and-logistics",
+    :content
+    "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+    :domain-coverage :uncovered,
+    :rank 8,
+    :reasoning
+    "This class is highly specialized for briefing generation from large documents. Its strengths in 'identifying cross-chunk patterns' and 'extracting supporting quotes' are irrelevant to a recipe scaling task. Furthermore, its 'avoid-when' fires because the source recipe fits in a single context.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "the synthesis stage's context can overflow when per-chunk extracts are too rich AND the chunk count is high — synthesizer truncates or hallucinates connections",
+      :avoid-when
+      "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15",
+      :recommended-alternative
+      "either reduce per-chunk extraction granularity (key-points-only, no quotes) OR add an intermediate :code stage that selects top-K per-chunk extracts before synthesis"}
+     {:trait
+      "without a grounding judge, the synthesis stage can fabricate connections between per-chunk extracts that aren't actually in the source — a 'plausible narrative' that doesn't survive verification",
+      :avoid-when
+      "the briefing is going to a decision-maker AND no grounding check is wired downstream",
+      :recommended-alternative
+      "wire a grounding judge on the briefing output that checks each claim against the source quotes — catches fabricated connections before the briefing ships"}],
+    :domain-reasoning
+    "The candidate is focused on briefing generation and decision-making support from documents; it shares no subject matter or output kind with culinary recipe scaling.",
+    :cos-good 0.9944751767922465,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9924360987573546,
+    :score 429.87159654130835,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.05,
+    :document-id
+    ":tree-class:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9944751767922465,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered
+  ["data-warehouse-etl-design"
+   "backend-middleware-refactoring"
+   "jvm-service-diagnosis"
+   "sql-query-optimization"
+   "database-migration-runbook"
+   "security-audit-haikus"
+   "recipe-scaling-and-logistics"
+   "streaming-etl-design"],
+  :event/id #uuid "01a0a9d6-5a5d-70b4-910a-4dcc589b9d6b",
+  :confidence 1.0,
+  :source-sheet-id #uuid "b19a80ed-8694-461e-b505-1396e40b31a8",
+  :ranked-candidates
+  [{:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 430.1671475625918}
+   {:target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 1.0,
+    :score 430.1671475625918}
+   {:target-id "seed:tree:ResearchThenSynthesize",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.1,
+    :score 430.29375021397937}
+   {:target-id "seed:tree:ResearchThenSynthesize",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.1,
+    :score 430.29375021397937}
+   {:target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.05,
+    :score 429.87159654130835}],
+  :was-fresh-mint? false,
+  :assigned-via :land-on-domain-child},
+ :deferred-events [],
+ :domain-children-considered
+ ["data-warehouse-etl-design"
+  "backend-middleware-refactoring"
+  "jvm-service-diagnosis"
+  "sql-query-optimization"
+  "database-migration-runbook"
+  "security-audit-haikus"
+  "recipe-scaling-and-logistics"
+  "streaming-etl-design"],
+ :sheet-id #uuid "b19a80ed-8694-461e-b505-1396e40b31a8",
+ :payload-domain
+ {:assigned-via :land-on-domain-child,
+  :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :child-tree-id #uuid "f44659cf-2420-3e77-aad3-564d4735f516",
+  :domain-label "recipe-scaling-and-logistics"},
+ :pass 2,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: recipe-scaling-and-logistics); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 2 from corpus retrieval)\n#### Top match (confidence: 1.00)\nWhy this fits: This task requires a sequence of distinct transformation passes: scaling ingredients (transformation), designing a workflow/station setup (enrichment), and calculating costs (mechanical/deterministic calculation). The ETL pipeline's recommended pattern of using :llm for content transformation followed by :code for deterministic output (like the cost-estimate) perfectly matches the requirement to produce a multi-keyed output map. Crucially, this candidate explicitly lists 'recipe-scaling-and-logistics' as an existing domain child.\n\nPattern guidance (seed `:summary`):\nETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).\n\nCapabilities:\n  - ordered chain of typically 2-4 stages where each stage transforms the previous stage's output into a richer form\n  - natural fit for raw-input → normalized → enriched → emit-ready flows\n  - each stage's :reads consume the previous stage's :writes — explicit data dependency tracking\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate (confidence 1.00, evidence-count 1)\n    - Good when: input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]\n      ```\n\n  - **Trait:** use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names (confidence 1.00, evidence-count 1)\n    - Good when: the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage (confidence 1.00, evidence-count 1)\n    - Avoid when: intermediate stages don't declare :output-schemas and downstream stages assume specific keys\n    - Recommended fix: always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer\n\n  - **Failure mode:** 5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short (confidence 1.00, evidence-count 1)\n    - Avoid when: individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates\n    - Recommended fix: collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - customer record normalization: parse → dedupe-fields → enrich-from-CRM → emit-warehouse-row\n  - log line parsing: tokenize → classify-event-type → annotate-with-context → emit-structured-event\n  - translation pipeline: clean-input → translate → polish-style → emit-final-text\n\n#### Alternative #1 (confidence: 1.00)\nWhy this fits: This fingerprint shares the same ETL pipeline structure and domain associations as the class, making it a perfect fit for a multi-stage transformation task that culminates in a deterministic cost estimate. The :sequence of :llm stages for logic (technique, pitfalls) and :code for math (costing) is the correct structural match.\n\nPattern guidance (seed `:summary`):\nETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).\n\nCapabilities:\n  - ordered chain of typically 2-4 stages where each stage transforms the previous stage's output into a richer form\n  - natural fit for raw-input → normalized → enriched → emit-ready flows\n  - each stage's :reads consume the previous stage's :writes — explicit data dependency tracking\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** explicit per-stage :reads/:writes dependency chain makes ETL debuggable — failures isolate to the stage that produced the broken intermediate (confidence 1.00, evidence-count 1)\n    - Good when: input requires multiple distinct transformation passes AND each pass produces a named intermediate (normalized, enriched, formatted)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:raw-input] :writes [:normalized]}] [:llm {:reads [:normalized :reference-data] :writes [:enriched]}] [:code {:reads [:enriched] :writes [:emit-ready] :fn (fn [{:keys [enriched]}] {:emit-ready (clojure.string/join \",\" enriched)})}] [:final {:keys [:emit-ready]}]]\n      ```\n\n  - **Trait:** use :code (NOT :llm) for the final emit-format stage when the format is deterministic — saves tokens and avoids drift in field names (confidence 1.00, evidence-count 1)\n    - Good when: the final stage is mechanical formatting (CSV row assembly, JSON envelope wrapping, fixed-width record padding)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:enriched] :writes [:row] :fn (fn [{:keys [enriched]}] {:row (clojure.string/join \",\" (map :v enriched))})}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** ETL chains break when an intermediate stage silently emits a different shape than the next stage expects — typed :output-schemas catch the shape mismatch at the wrong stage (confidence 1.00, evidence-count 1)\n    - Avoid when: intermediate stages don't declare :output-schemas and downstream stages assume specific keys\n    - Recommended fix: always declare :output-schemas on each intermediate stage AND validate at the next stage's :reads — push the shape contract upstream so the failing stage is identified, not the consumer\n\n  - **Failure mode:** 5+ stage chains burn tokens that a single multi-instruction :llm could cover when stages are short (confidence 1.00, evidence-count 1)\n    - Avoid when: individual stages are 1-2 sentence transformations AND there's no need to inspect intermediates\n    - Recommended fix: collapse 3+ short successive :llm stages into a single :llm with a multi-step instruction and structured :output-schemas for each intermediate\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - customer record normalization: parse → dedupe-fields → enrich-from-CRM → emit-warehouse-row\n  - log line parsing: tokenize → classify-event-type → annotate-with-context → emit-structured-event\n  - translation pipeline: clean-input → translate → polish-style → emit-final-text\n\nAssigned to domain child f44659cf-2420-3e77-aad3-564d4735f516 (label: recipe-scaling-and-logistics) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral: Synthesis (confidence: 0.90)\n   Why this fits: The task is fundamentally about integrating multiple constraints (scaling factors, equipment limits, logistics, costs) into a single cohesive output (the scaled recipe and workflow). This matches the Synthesis behavior of integrating multiple structured inputs into a single artifact. The recommended pattern for long artifacts (scaffolding via a structured outline) fits the specific required output keys like :revised-technique and :pitfalls-and-mitigations.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Analysis (confidence: 0.75)\n   Why this fits: The task requires reasoning over a set of 'items' (the ingredients and techniques) to identify specific scaling 'problems' and 'opportunities' (e.g., heat distribution, texture preservation). The strength of 'multi-dimensional analysis' fits the requirement to look at the recipe through different lenses (cost, timing, chemistry). However, the output needs to be a new recipe, not just a list of findings.\n\n   Guidance (seed `:summary`):\n   Analysis reasons over already-extracted items to produce structured findings (patterns / problems / opportunities) with per-finding evidence. Always tie findings to specific items via :affected-items references for downstream auditability. For multi-dimensional analysis, fan out per-dimension :llm stages via :parallel — each stage gets a tighter focus. NEVER skip the extraction stage: analyzing raw documents conflates extraction and reasoning, degrading both. Composes into comparative-summary (multi-source structured findings), chunked-extraction (per-chunk parallel analysis), and sequential-pipeline (extract → analyze → synthesize). Avoid when the task is summarizing (use synthesis) or generating options (use ideation).\n\nCapabilities:\n  - given a vector/map of pre-extracted items, produce a structured set of findings (patterns / problems / opportunities) with per-finding evidence\n  - natural fit as a mid-tree stage between extraction (upstream) and synthesis/critique/code-building (downstream)\n  - outputs are typically a vector of findings, each with :type / :evidence / :confidence / :affected-items\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** tie each finding to the specific extracted item(s) that triggered it via an :affected-items reference field — downstream stages can audit, drill down, or prioritize findings by evidence weight (confidence 1.00, evidence-count 1)\n    - Good when: downstream stages need to attribute findings to evidence OR rank findings by support\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:extracts] :writes [:findings] :output-schemas {:findings [:vector [:map [:type :string] [:evidence :string] [:confidence :double] [:affected-items [:vector :string]]]]}}]\n      ```\n\n  - **Trait:** for multi-dimensional analysis (e.g., risk / opportunity / blocker across the same items), use :parallel one-:llm-per-dimension stages — each stage has a tight focus and can produce richer per-dimension reasoning (confidence 1.00, evidence-count 1)\n    - Good when: the analysis has 2-4 orthogonal dimensions that benefit from separate prompts\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:parallel [:llm {:reads [:extracts] :writes [:risks]}] [:llm {:reads [:extracts] :writes [:opportunities]}] [:llm {:reads [:extracts] :writes [:blockers]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** analyzing raw documents (skipping extraction) forces the analysis :llm to do BOTH extraction and reasoning — quality degrades on both since the model can't optimize attention for either (confidence 1.00, evidence-count 1)\n    - Avoid when: the input is raw documents AND the analysis needs to attribute findings to specific items\n    - Recommended fix: two-stage: extract structured items first, then analyze over the extracts; preserves analyzability of findings\n\n  - **Failure mode:** single-pass analysis over a long flat list of items loses signal on per-item nuance — findings cluster around the most prominent items (confidence 1.00, evidence-count 1)\n    - Avoid when: item count is high AND each item deserves per-item attention\n    - Recommended fix: use :map-each per-item analysis with bounded :max-concurrency, then aggregate findings — preserves per-item granularity\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - risk analysis over extracted contract clauses: per-clause risk score + reasoning + mitigation\n  - pattern detection across log events: clusters of related events + frequency + suspected cause\n  - gap analysis over a feature list: required-vs-present + missing-items + priority\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent b3597aa7-3957-3734-90c6-531d27c08f67)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral: Research (confidence: 0.60)\n   Why this fits: The task requires external grounding for 'typical restaurant supplier pricing' and potentially for scaling factors like salt non-linearity. The 'research-then-synthesize' shell is a good fit for gathering the cost data before generating the recipe. However, the core of the task is the scaling logic, not just the data gathering.\n\n   Guidance (seed `:summary`):\n   Research gathers raw external/contextual material to seed downstream behaviors. Best implemented as :parallel fan-out over 2-4 narrower queries (preserving source-id for downstream attribution) rather than one giant retrieve-everything query. ALWAYS provide a fallback path when retrieval is on the critical path — silent failure of external sources produces vacuous downstream output. Naturally composes into research-then-synthesize shells (sequential research → synthesis), briefing-generation (with structured per-source output), and fallback-recovery shells (primary source + backup). Avoid when all material is already in :reads or the task is purely structural.\n\nCapabilities:\n  - formulate one or more search/retrieval queries from the task goal, fan out queries, collect raw source material into a named :writes key\n  - natural fit at the start of a tree when the task needs evidence the model doesn't already have in context\n  - outputs are typically a vector of source snippets or a map of source-id → raw content for downstream extraction/synthesis\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** fan out independent queries with :parallel (or :map-each over queries) so wall-time stays bounded by the slowest single query, not the sum (confidence 1.00, evidence-count 1)\n    - Good when: queries are independent (no need to read result A before issuing query B) AND each query is cheap relative to the task budget\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:parallel [:llm {:reads [:goal] :writes [:result-a]}] [:llm {:reads [:goal] :writes [:result-b]}]]\n      ```\n\n  - **Trait:** declare the source-type and shape in the :reads of downstream nodes so synthesis/analysis can branch on source provenance without re-inferring it from raw text (confidence 1.00, evidence-count 1)\n    - Good when: downstream stages need to attribute findings to specific sources OR weight sources by trust\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:goal] :writes [:sources] :output-schemas {:sources [:vector [:map [:source-id :string] [:trust :double] [:content :string]]]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** issuing one giant 'find everything relevant' query forces the model to compress in retrieval AND lose source attribution — downstream stages can't backtrack (confidence 1.00, evidence-count 1)\n    - Avoid when: the task needs traceable evidence per finding\n    - Recommended fix: decompose the goal into 2-4 narrower queries (each scoped to a sub-aspect), fan them out in :parallel, preserve source-id per snippet for downstream attribution\n\n  - **Failure mode:** research without a fallback path silently fails open when external sources timeout or refuse — downstream stages see :sources nil and silently produce vacuous output (confidence 1.00, evidence-count 1)\n    - Avoid when: external retrieval is on the critical path AND the rest of the tree can't degrade gracefully\n    - Recommended fix: wrap the primary retrieval in :fallback with a secondary source OR a 'use only model's prior knowledge with explicit low-confidence flag' branch\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - pre-analysis fact gathering: 'find recent rulings on X' → top-N case snippets with citations\n  - pre-synthesis briefing: 'collect what's known about company Y' → multi-source dossier\n  - pre-classification grounding: 'lookup definitions of these terms' → controlled-vocabulary anchors\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 8ad38e72-05e4-3201-bac7-3ed9c54a2791)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nA small restaurant has a chef-tested recipe for ratatouille that yields\n6 plates from these ingredients + technique:\n\nIngredients:\n- 2 medium eggplants, diced 1 cm\n- 3 zucchini, diced 1 cm\n- 2 red bell peppers, diced 1 cm\n- 4 plum tomatoes, peeled + diced\n- 1 large onion, finely chopped\n- 4 garlic cloves, minced\n- 1/2 cup olive oil\n- 2 tsp salt, 1 tsp ground black pepper\n- 1 tbsp dried herbes de Provence\n- Fresh basil for garnish\n\nTechnique:\n- Sweat onions and garlic in olive oil 5 min\n- Add peppers, cook 5 min\n- Add eggplant + zucchini, cook 10 min with occasional stirring\n- Add tomatoes + seasoning, simmer covered 25 min\n- Uncover, reduce 10 min\n\nScale this recipe to feed 60 plates for a catering event. NOT a simple\n10x multiplication — provide a scaled recipe that accounts for:\n- Knife work + dicing time at scale (suggest a workflow + station setup)\n- Cookware capacity (a 12\" pan can hold ~6 plates of vegetables; what\n  changes with scaling?)\n- Heat distribution in larger pans / pots (timing adjustments)\n- Seasoning at scale (salt doesn't scale linearly with vegetable volume)\n- Texture preservation (over-stirring with larger batches mashes the\n  vegetables)\n- Service timing (how far in advance can this be cooked + held without\n  texture loss)\n- Cost estimate at typical restaurant supplier pricing\n\nOutput: `{:scaled-ingredients :revised-technique :workflow :timing :cost-estimate :pitfalls-and-mitigations}`",
+ :june-flags
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 18666,
+ :confidence 1.0,
+ :was-fresh-mint? false,
+ :assigned-via :land-on-domain-child}

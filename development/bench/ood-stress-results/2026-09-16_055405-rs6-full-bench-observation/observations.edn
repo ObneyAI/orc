@@ -1,0 +1,114 @@
+[{:slug "domain-001-game-balance",
+  :claims [],
+  :occurrences
+  [{:assigned-tree-id #uuid "8d76a391-4c67-3784-a70a-5f62d61ef84e",
+    :verdict :success}],
+  :duration-ms 42515,
+  :deferred [],
+  :usage
+  {:prompt-tokens 54135,
+   :completion-tokens 2812,
+   :total-tokens 56947,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "5f35b0d2-cf71-4f2d-b48b-6d1d8bb114dd"}]
+    {:prompt-tokens 54135,
+     :completion-tokens 2812,
+     :total-tokens 56947}}},
+  :status :success,
+  :error nil,
+  :sheet-id #uuid "af2f025f-d0e2-48fb-8d3c-f691b63e1069",
+  :classified
+  {:assigned-tree-id #uuid "8d76a391-4c67-3784-a70a-5f62d61ef84e",
+   :parent-tree-id #uuid "2ead65e6-6373-38de-81c4-ef7bf067afc9",
+   :domain-label "game-balance-simulation",
+   :outcome :matched,
+   :domain-verdict
+   {:domain-coverage :partial,
+    :domain-label "game-balance-simulation",
+    :domain-reasoning
+    "The candidate mentions 'iterative refinement' and 'draft -> critique -> revise', which is a structural match for the 'simulate -> evaluate -> adjust' loop in game balancing. However, it does not explicitly name game design or win-rate balancing as a representative use."},
+   :domain-children-considered [],
+   :confidence 0.95,
+   :was-fresh-mint? true,
+   :assigned-via :mint-domain-child},
+  :minted
+  [{:parent-tree-id #uuid "2ead65e6-6373-38de-81c4-ef7bf067afc9",
+    :child-tree-id #uuid "8d76a391-4c67-3784-a70a-5f62d61ef84e",
+    :domain-label "game-balance-simulation"}]}
+ {:slug "domain-002-recipe-scaling",
+  :claims [],
+  :occurrences
+  [{:assigned-tree-id #uuid "cd164782-6d0a-32fd-8d89-c72a2e96a857",
+    :verdict :success}],
+  :duration-ms 66347,
+  :deferred [],
+  :usage
+  {:prompt-tokens 97772,
+   :completion-tokens 5769,
+   :total-tokens 103541,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "9cb1c916-2fe5-40a4-8150-1723c0b3030e"}]
+    {:prompt-tokens 97772,
+     :completion-tokens 5769,
+     :total-tokens 103541}}},
+  :status :success,
+  :error nil,
+  :sheet-id #uuid "6a50edda-448d-4d97-b8a4-3cbc134a122f",
+  :classified
+  {:assigned-tree-id #uuid "cd164782-6d0a-32fd-8d89-c72a2e96a857",
+   :parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+   :domain-label "recipe-scaling-and-catering",
+   :outcome :matched,
+   :domain-verdict
+   {:domain-coverage :uncovered,
+    :domain-label "recipe-scaling-and-catering",
+    :domain-reasoning
+    "While the candidate does not explicitly mention culinary scaling, its focus on multi-stage transformation with intermediate states matches the task's requirement to process a single recipe through several analytical lenses (scaling, workflow, cost)."},
+   :domain-children-considered [],
+   :confidence 0.9,
+   :was-fresh-mint? true,
+   :assigned-via :mint-domain-child},
+  :minted
+  [{:parent-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :child-tree-id #uuid "cd164782-6d0a-32fd-8d89-c72a2e96a857",
+    :domain-label "recipe-scaling-and-catering"}]}
+ {:slug "domain-003-marathon-training",
+  :claims [],
+  :occurrences
+  [{:assigned-tree-id #uuid "c7712fb1-1fdc-38b0-9668-f3b5dd05f271",
+    :verdict :success}],
+  :duration-ms 51852,
+  :deferred [],
+  :usage
+  {:prompt-tokens 58968,
+   :completion-tokens 3703,
+   :total-tokens 62671,
+   :by-node
+   {[{:type :leaf,
+      :node-id #uuid "0a8d66ad-8475-47bc-a58e-52ed1c49d6d6"}]
+    {:prompt-tokens 58968,
+     :completion-tokens 3703,
+     :total-tokens 62671}}},
+  :status :success,
+  :error nil,
+  :sheet-id #uuid "0b72aef9-f5bd-464c-aef3-3451464a173f",
+  :classified
+  {:assigned-tree-id #uuid "c7712fb1-1fdc-38b0-9668-f3b5dd05f271",
+   :parent-tree-id #uuid "cd164782-6d0a-32fd-8d89-c72a2e96a857",
+   :domain-label "marathon-training-plan",
+   :outcome :matched,
+   :domain-verdict
+   {:domain-coverage :partial,
+    :domain-label "marathon-training-plan",
+    :domain-reasoning
+    "The task is about personal training/fitness planning, while the candidate declares 'recipe-scaling-and-catering'. Both involve scaling a base set of instructions (recipe/mileage) against specific constraints and producing a multi-part logistical output."},
+   :domain-children-considered [],
+   :confidence 0.9,
+   :was-fresh-mint? true,
+   :assigned-via :mint-domain-child},
+  :minted
+  [{:parent-tree-id #uuid "cd164782-6d0a-32fd-8d89-c72a2e96a857",
+    :child-tree-id #uuid "c7712fb1-1fdc-38b0-9668-f3b5dd05f271",
+    :domain-label "marathon-training-plan"}]}]

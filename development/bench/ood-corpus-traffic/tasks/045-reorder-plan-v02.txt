@@ -1,0 +1,17 @@
+; brief-id: b-035
+; group: reorder-plan
+; variant: 2
+
+Hi there, hope you're having a decent week. I’m currently stuck at my daughter’s soccer tournament and the Wi-Fi is spotty at best, but I’m trying to get ahead of our inventory issues before the busy season really kicks in. The garage is already starting to look like a maze, and I really don't want another situation like last year where we had bikes sitting around for months because we over-ordered the wrong frame sizes, but then ran out of the mid-range hybrids right when everyone wanted to be outside.
+
+Anyway, I’ve attached three files: the sales history from the last eighteen months, the current lead times from our four main distributors (which are all over the place lately, especially for the hydraulic brakes and some of the specialized gear sets), and the latest stock-on-hand report from the shop floor. I also included the specific supplier terms—pay attention to the shipping tiers because we really need to hit those free freight thresholds without drowning in surplus parts.
+
+Could you go through all of this—it’s about 120 SKUs total across the bikes and the accessories—and give me a clear list of what our reorder points should be for each item? I need to know exactly how much to order for each SKU so we don't hit a stockout but also don't tie up every cent we have in inventory that just sits there.
+
+Please lay out a purchase schedule for me for the next two months, showing when we need to pull the trigger on each order to account for those lead times. Also, I need a breakdown of the total cash that will be tied up in these orders. I need to make sure we have enough liquid for the upcoming marketing push and the temporary staff we’re hiring. Just the buy list and the cash requirements, please; I don't need a whole budget forecast or a brief for when I talk to the reps next week.
+
+Thanks so much, really appreciate you taking this off my plate while I’m dealing with these sideline parents!
+
+Best,
+Marcus
+Wheels & Gears Hub

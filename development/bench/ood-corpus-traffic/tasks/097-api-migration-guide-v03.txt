@@ -1,0 +1,13 @@
+; brief-id: b-017
+; group: api-migration-guide
+; variant: 3
+
+I’m slammed trying to clear my Jira queue before heading to the airport tomorrow and need someone to take the lead on the API v4 Migration Guide. We’re officially transitioning from the legacy PHP and Go SDKs to the unified architecture, and I need a formal technical document drafted according to this spec:
+
+- **Section 1: The Transition Path**: Provide a 5-step walkthrough detailing how to initialize the new client and handle the updated authentication handshake logic.
+- **Section 2: Code Comparison Blocks**: Include side-by-side snippets for C# and Python demonstrating a refactored "User Update" request.
+- **Section 3: Mapping Table**: A three-column table mapping the transition: [Legacy Endpoint | New GraphQL Query | Priority Level].
+- **Section 4: Webhook Schema Migration**: A technical breakdown comparing the new nested event payloads against the previous flat JSON objects.
+- **Section 5: Deployment Checklist**: A 6-point list covering environment variable updates, rate limit adjustments, and the protocol for sunsetting legacy tokens.
+
+I’ve attached the Swagger files for both versions and the raw 'breaking-changes.md' file. The tone should be an instructional 'how-to' for external developers, not just a changelog. This needs to be ready for the QA team to review by 8:00 AM tomorrow.

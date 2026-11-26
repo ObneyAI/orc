@@ -1,0 +1,22 @@
+{:slug "230-nutrition-labels-v06",
+ :group "nutrition-labels",
+ :in-domain? false,
+ :variant 6,
+ :expected-output-kind
+ "per-serving calories and macronutrients, allergens, and a formatted label per recipe",
+ :brief-id "b-033",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1691, :completion-tokens 297, :total-tokens 1988},
+  :draft-prompt-sha256
+  "eee87b6fb8262b94e5a9e77f2ddc340a165c63ed9b88814d0314d31865a57de2",
+  :polish-usage
+  {:prompt-tokens 480, :completion-tokens 342, :total-tokens 822},
+  :polish-prompt-sha256
+  "358131ab44f032a30117955edc6dced9982d39f05f3ae882c01ff401b9bb74de",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

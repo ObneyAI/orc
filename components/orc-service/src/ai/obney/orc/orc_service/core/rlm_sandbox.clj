@@ -22,22 +22,40 @@
    Key principle: Separates variable space (sandbox memory) from token space
    (what the LLM sees). Large data stays in variable space; only sliced data
    goes to sub-LLM calls."
-  (:require [sci.core :as sci]
+  (:require [ai.obney.orc.orc-service.core.recoverable-function :as recoverable-function]
+            [sci.core :as sci]
             [clojure.walk :as walk]
             [clojure.string :as str]
             [clojure.set]
             [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.orc-service.core.output-validation :as output-validation]
             [malli.core :as m]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.core.sci-sandbox :as base-sandbox]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
+            [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
+            [ai.obney.orc.orc-service.core.researcher-models :as researcher-models]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [com.brunobonacci.mulog :as u])
   (:import [java.io StringWriter]))
+
+;; =============================================================================
+;; CV-B (C7): closure-rejection message, exported
+;; =============================================================================
+
+(def quoted-inline-function-source-message
+  "The rejection message emit-tree!-fn throws when a checkpointed campaign's
+   :code node carries an already-evaluated closure instead of quoted (fn ...)
+   source. Exported (not private) and used BOTH at the throw site below and
+   by the executor's diagnose-parse-error reactive hint, so the two stay
+   byte-identical by construction and the hint can key off this constant's
+   text (or the ex-data :requirement keyword) instead of a regex over prose."
+  (str "Durable emit-tree! code nodes require quoted (fn ...) source; an "
+       "already-evaluated closure cannot be recorded as durable source"))
 
 ;; =============================================================================
 ;; Input Preview (Variable Space vs Token Space)
@@ -120,7 +138,9 @@
   [inputs]
   (reduce-kv
    (fn [acc k v]
-     (assoc acc k (preview-value (:value v))))
+     (assoc acc k (if (contains? v :value)
+                    (preview-value (:value v))
+                    {:type :absent})))
    {}
    inputs))
 
@@ -139,6 +159,31 @@
     (try
       (:field-type (m/properties schema))
       (catch Exception _ nil))))
+
+(defn- inline-contract
+  [node-name key declared value direction]
+  (let [schema (or declared
+                   (if (= :input direction)
+                     (try
+                       (blackboard-schema/infer-specific-schema value [key])
+                       (catch clojure.lang.ExceptionInfo e
+                         (throw (ex-info (str "Inline LLM '" node-name "' needs a specific input contract at "
+                                              (pr-str (:path (ex-data e))) "; declare its blackboard schema")
+                                         (merge (ex-data e)
+                                                {:reason :missing-inline-contract :node-name node-name
+                                                 :direction direction :contract-reason (:reason (ex-data e))})
+                                         e))))
+                     (throw (ex-info (str "Inline LLM '" node-name "' needs an output contract at "
+                                          (pr-str [key]) "; declare its blackboard schema")
+                                     {:reason :missing-inline-contract :node-name node-name
+                                      :direction direction :path [key]
+                                      :contract-reason :missing-output-schema}))))]
+    (when-let [violation (first (blackboard-schema/violations schema [key]))]
+      (throw (ex-info (str "Inline LLM '" node-name "' needs a specific contract at "
+                           (pr-str (:path violation)))
+                      (merge violation {:reason :missing-inline-contract :node-name node-name
+                                        :direction direction :contract-reason (:reason violation)}))))
+    schema))
 
 (defn execute-llm-primitive
   "Execute an LLM primitive from the RLM sandbox.
@@ -160,7 +205,8 @@
    block rather than as inline text. This is the Phase-1 mirror of
    executor.clj's build-field behavior for Phase-2 leaf nodes."
   [name opts context]
-  (let [{:keys [instruction writes model reads]} opts
+  (let [opts (researcher-models/inherit (:model-defaults context) opts)
+        {:keys [instruction writes model reads]} opts
         {:keys [provider blackboard sandbox-vars usage-tracker reserve-llm-call!
                 reserve-provider-call!
                 durable-source-required? tick-id node-id researcher-iteration
@@ -173,33 +219,33 @@
         ;; Build inputs from reads - pass FULL values (no truncation)
         ;; The generated code manages chunk sizes; we don't second-guess it
         inputs (reduce (fn [acc k]
-                         (let [v (or (get sandbox-vars k)
-                                     (get-in blackboard [k :value]))]
-                           (if (some? v)
-                             (assoc acc k v)  ;; Full value, no truncation
-                             acc)))
+                         (cond
+                           (contains? sandbox-vars k) (assoc acc k (get sandbox-vars k))
+                           (contains? (get blackboard k) :value)
+                           (assoc acc k (get-in blackboard [k :value]))
+                           :else acc))
                        {}
                        (or reads []))
         ;; Build ORC LLM module — U5: propagate :field-type from the blackboard
         ;; schema for each read key so vision/audio/etc. inputs get routed
         ;; as proper multimodal content blocks, not as inline text.
-        module {:inputs (mapv (fn [[k _v]]
-                                (let [schema (get-in blackboard [k :schema])
+        module {:inputs (mapv (fn [[k value]]
+                                (let [schema (inline-contract name k (get-in blackboard [k :schema]) value :input)
                                       ft (schema-field-type schema)]
                                   (cond-> {:name k
-                                           :spec :any
-                                           :description (str "Input: " (clojure.core/name k))}
+                                           :spec schema}
                                     ft (assoc :type ft))))
                               inputs)
                 :outputs (mapv (fn [k]
-                                 {:name k
-                                  :spec :any
-                                  :description (str "Output: " (clojure.core/name k))})
+                                 (let [schema (inline-contract name k (get-in blackboard [k :schema]) nil :output)]
+                                   {:name k
+                                    :spec schema
+                                    :description (:description (m/properties schema))}))
                                writes)
                 :instructions instruction}
         ;; The :model rides through llm into the litellm router as a
         ;; per-request override.
-        llm-options (cond-> {:validate? false :with-metadata? true}
+        llm-options (cond-> (merge {:validate? false :with-metadata? true} (:options opts))
                       model (assoc :model model))
         logical-action-identity
         (when durable-source-required?
@@ -210,7 +256,8 @@
             :generated-code-hash generated-code-hash
             :kind :provider
             :target (encode-effect-value
-                     {:provider provider :model model :name name})
+                     {:provider (or (:provider opts) provider) :model model :name name
+                      :fallback-models (:fallback-models opts) :fallback-policy (:fallback-policy opts)})
             :arguments (encode-effect-value
                         {:module module
                          :inputs inputs
@@ -228,6 +275,13 @@
     (u/trace ::rlm-llm-primitive
       {:name name :writes writes :model model}
       (try
+        (let [call-context (assoc (or (:model-call-context context) context)
+                                 :researcher-ownership-epoch researcher-ownership-epoch)
+              prepared-inline-model-call
+              (when (and logical-action-identity (nil? completed-effect)
+                         (contains? opts :fallback-models))
+                (researcher-models/prepare-inline opts provider module llm-options
+                                                 call-context logical-action-identity))]
         (when (and logical-action-identity (nil? completed-effect))
           (let [claim-result
                 (claim-researcher-effect!
@@ -241,23 +295,14 @@
                               {:claim-result claim-result
                                :logical-action-identity logical-action-identity
                                :attempt-identity attempt-identity})))))
-        (when-let [rejected
-                   (and (nil? completed-effect)
-                        (if reserve-provider-call!
-                          (reserve-provider-call!
-                           {:iteration-index researcher-iteration
-                            :logical-action-identity logical-action-identity
-                            :provider-attempt-ordinal effect-attempt-ordinal})
-                          (and reserve-llm-call! (reserve-llm-call!))))]
-          (throw (ex-info
-                  (or (:cognitect.anomalies/message rejected)
-                      (str "LLM call budget exceeded: "
-                           (:current rejected) "/" (:budget rejected)))
-                  rejected)))
         ;; :with-metadata? true ensures llm returns {:outputs ... :usage ...} instead of just outputs
         (let [result (if completed-effect
                        (:result completed-effect)
-                       (llm/predict provider module inputs llm-options))
+                       (let [call-context (assoc call-context :prepared-inline-model-call prepared-inline-model-call)
+                             logical-id (or logical-action-identity
+                                            (researcher-models/logical-id call-context :subcall name module inputs opts llm-options))]
+                         (researcher-models/predict opts provider module inputs llm-options
+                                                    call-context :subcall logical-id)))
               outputs (or (:outputs result) result)
               usage (:usage result)
               ;; Aggregate usage into tracker if provided
@@ -291,10 +336,11 @@
           (reduce (fn [acc k]
                     (assoc acc k (get outputs k)))
                   {}
-                  writes))
+                  writes)))
         (catch Exception e
           (throw (ex-info (str "LLM primitive '" name "' failed: " (.getMessage e))
-                          {:name name :instruction instruction :writes writes}
+                          (merge {:name name :writes writes}
+                                 (select-keys (ex-data e) [:failure-kind :reason :provider-evidence :model-fallback :status]))
                           e)))))))
 
 ;; =============================================================================
@@ -415,6 +461,8 @@
 
         ;; Context for LLM primitive execution
         exec-context {:provider provider
+                      :model-defaults (:model-defaults context)
+                      :model-call-context (:model-call-context context)
                       :blackboard blackboard
                       :parent-trace-id parent-trace-id
                       :usage-tracker usage-tracker
@@ -451,10 +499,22 @@
 
         ;; final! function with validation
         final!-fn (fn [output]
-                    (let [validated (validate-final! output declared-writes optional-writes)]
-                      (reset! final-output validated)
+                    ;; A later refused final attempt must not retain an earlier
+                    ;; successful capture from this same program.
+                    (reset! final-output nil)
+                    (let [candidate (validate-final! output declared-writes optional-writes)
+                          result (output-validation/validate-outputs
+                                   blackboard {:status :success :outputs candidate} false)]
+                      (when (= :failure (:status result))
+                        ;; Candidate values can contain transient SCI closures.
+                        ;; Retain safe schema evidence and original program source,
+                        ;; never executable objects in checkpointed error data.
+                        (throw (ex-info (:error result)
+                                        {:failure-kind :final-output-schema-invalid
+                                         :rejected-write-keys (vec (keys (:rejected-writes result)))})))
+                      (reset! final-output (:outputs result))
                       ;; Return a marker string for detection
-                      (str "FINAL_ANSWER: " (pr-str validated))))
+                      (str "FINAL_ANSWER: " (pr-str (:outputs result)))))
 
         ;; get-input function - loads full value into variable space
         get-input-fn (fn [k]
@@ -656,10 +716,11 @@
                         (when (and durable-source-required? live-inline-closure?)
                           (throw
                            (ex-info
-                            (str "Durable emit-tree! code nodes require quoted "
-                                 "(fn ...) source; an already-evaluated closure "
-                                 "cannot be recorded as durable source")
+                            quoted-inline-function-source-message
                             {:requirement :quoted-inline-function-source})))
+                        ;; Validate structure while feedback still contains only data.
+                        ;; The existing vector grammar accepts quoted function data.
+                        (rlm-dsl/validate-emitted-tree! tree)
                         ;; Preserve the authored source first. Compile only
                         ;; quoted inline code-node function forms for execution.
                         (let [executable-tree
@@ -669,7 +730,9 @@
                                           (= :fn (key node))
                                           (seq? (val node))
                                           (#{'fn 'fn*} (first (val node))))
-                                   [:fn (sci/eval-form @sci-ctx* (val node))]
+                                   [:fn (if durable-source-required?
+                                          (recoverable-function/prepare-function (val node) @sci-ctx*)
+                                          (sci/eval-form @sci-ctx* (val node)))]
                                    node))
                                tree)
                               canonical (rlm-dsl/rlm-dsl->orc-dsl executable-tree)]
@@ -1030,13 +1093,18 @@
    - :stdout - Captured stdout
    - :result - Evaluation result
    - :error - Error message if failed
+   - :error-data - CV-B (C7): (ex-data e) when the thrown exception carries
+     structured ex-data (e.g. emit-tree!-fn's {:requirement
+     :quoted-inline-function-source}), else nil. Carried alongside :error so
+     the executor's reactive hint can key off the requirement keyword instead
+     of parsing the message.
    - :final-output - The validated output from final! (if called)
    - :sub-llm-usage - Aggregated token usage from all sub-LLM calls"
   [{:keys [sci-ctx final-output usage-tracker]} code-string]
   (let [stdout-writer (StringWriter.)]
     (try
-      (let [result (binding [*out* stdout-writer]
-                     (sci/eval-string* sci-ctx code-string))]
+      (let [result (base-sandbox/call-with-output-writer stdout-writer
+                     #(sci/eval-string* sci-ctx code-string))]
         {:stdout (str stdout-writer)
          :result (pr-str result)
          :raw-result result
@@ -1049,5 +1117,17 @@
          :raw-result nil
          :error-class (.getName (class e))
          :error (.getMessage e)
+         ;; CV-B (C7) root cause: SCI wraps a throw from evaluated code in
+         ;; its OWN sci/error ex-info ({:type :sci/error :line ... :column
+         ;; ... :message ... :sci.impl/callstack ...}) — (ex-data e) on the
+         ;; CAUGHT exception is that wrapper, not the original throw's
+         ;; ex-data. The original ex-info (e.g. emit-tree!-fn's
+         ;; {:requirement :quoted-inline-function-source}) survives one
+         ;; level down as the wrapper's cause. Prefer the cause's ex-data
+         ;; when present (our own domain data) and fall back to the
+         ;; wrapper's (still useful for SCI's own errors, which have no
+         ;; deeper cause) — verified live: a raw (ex-data e) here silently
+         ;; lost the requirement keyword on every checkpointed rejection.
+         :error-data (or (ex-data (ex-cause e)) (ex-data e))
          :final-output @final-output
          :sub-llm-usage @usage-tracker}))))

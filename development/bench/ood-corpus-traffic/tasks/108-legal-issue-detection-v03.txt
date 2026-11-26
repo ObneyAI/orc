@@ -1,0 +1,17 @@
+; brief-id: b-001
+; group: legal-issue-detection
+; variant: 3
+
+I am trying to finalize a SaaS licensing agreement for our new analytics platform before the end of the quarter, but the "Limitation of Liability" and "Indemnification" sections provided by the vendor appear heavily skewed in their favor. This contract is governed by New York law, and I am concerned that we are assuming excessive third-party risk with insufficient recourse should their service fail to comply with data privacy regulations. Please review the provided clauses and generate a risk assessment according to the following schema:
+
+* **Issue:** A concise summary identifying the specific legal or commercial concern.
+* **Severity:** An assessment of the risk level (Low, Medium, High, or Critical).
+* **Area of Law:** The legal domain affected (e.g., Tort, Contractual Liability, Data Privacy).
+* **Cited Text:** The exact verbatim excerpt from the agreement being addressed.
+* **Suggested Revision:** A specific redline or rewritten clause designed to balance the risk between the parties.
+
+Please analyze the following text:
+
+9.1 Limitation of Liability. In no event shall Licensor be liable for any indirect, incidental, or consequential damages. Licensor’s total cumulative liability for all claims arising out of this Agreement shall not exceed the amount of fees actually paid by Licensee in the one (1) month preceding the claim.
+
+10.2 Indemnification. Licensee shall indemnify and hold harmless Licensor against any and all third-party claims, losses, or damages arising out of Licensee's use of the Software, including any data breaches resulting from Licensee’s uploaded content, regardless of Licensor’s negligence.

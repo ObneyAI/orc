@@ -1,0 +1,12 @@
+; brief-id: b-029
+; group: research-synthesis
+; variant: 5
+
+I’ve just finished uploading the transcripts from our 12 B2B deep-dive sessions along with the 30 consumer support tickets related to the subscription overhaul. Given the pushback on enterprise rates and the friction points in the setup wizard, I need this synthesized before my 4 PM meeting with the VP of Product. Please follow these specific steps:
+
+1. Identify the primary themes across both datasets. For each theme, include exactly four verbatim quotes to ensure we are grounding our findings in the actual user voice.
+2. Rank every identified product opportunity. This ranking must prioritize issues that are directly causing B2B churn risk or account instability.
+3. Outline concrete recommendations specifically for the onboarding sequence and our pricing transparency layout.
+4. Assign a Confidence Score (High, Medium, or Low) to every recommendation based solely on the volume of unique users who reported the corresponding issue.
+
+Please keep the report strictly focused on the data. Do not include any persona profiles, user journey maps, or suggestions for future survey questions; we need to focus exclusively on implementation steps for the current findings.

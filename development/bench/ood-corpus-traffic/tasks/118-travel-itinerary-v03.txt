@@ -1,0 +1,13 @@
+; brief-id: b-013
+; group: travel-itinerary
+; variant: 3
+
+I am organizing a short-notice business trip to Berlin for next week and need a high-efficiency itinerary for my partner and me. I will be free all day Wednesday, Nov 8th, and Thursday, Nov 9th. We are based near Potsdamer Platz and have a total budget of €1,200 for the two days. Our primary interests are Cold War history and Brutalist architecture. However, because my partner manages a chronic fatigue condition, we have a strict limit of 3 hours of active movement per day; all other time must be spent in low-impact or seated environments. Please provide a plan using the following schema:
+
+* **Timeline:** An hourly breakdown from 09:00 to 21:00 for both days.
+* **Activity:** Names of sites or tours, including a 'Mobility Score' (1–5, where 1 is fully seated).
+* **Logistics:** Specific U-Bahn/S-Bahn lines or exact ride-share pick-up points to minimize walking distances between stops.
+* **Dining:** One lunch and one dinner recommendation per day—spots must be quiet with verifiable reservation options.
+* **Bookings:** Names of specific tickets or direct booking links to secure immediately (e.g., Reichstag Dome, Berlin Unterwelten).
+* **Budget:** A line-item cost breakdown for two people totaling under €1,200.
+* **Contingency:** A dedicated 'Low-Energy/Indoor' alternative for each afternoon to account for potential fatigue flare-ups or inclement weather.

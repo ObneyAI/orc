@@ -1,0 +1,5 @@
+; brief-id: fx-recipe
+; group: recipe-scaling
+; variant: 1
+
+This chili recipe serves 6: 2 lbs ground beef, 1 onion, 2 cans beans, 1 can tomatoes, 2 tbsp chili powder. I need it to serve 20 for a work potluck -- can you scale every ingredient and note if any spice ratios should change at that volume?

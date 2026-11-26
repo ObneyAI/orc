@@ -1,0 +1,226 @@
+{:assigned-tree-id #uuid "0b1739ba-09ac-3ac0-bc83-3b09344c144e",
+ :tick-id #uuid "4d2ac1bd-3d95-4dda-af4c-e24695e8a40e",
+ :slug "13-haikusecurity-b",
+ :parent-tree-id #uuid "0f80961b-9318-329c-91c3-8f77cda96c43",
+ :domain-label "security-finding-haikus",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :uncovered,
+  :domain-label "security-finding-haikus",
+  :domain-reasoning
+  "The task involves security vulnerability reporting (penetration test findings) and creative writing (haikus), which is not explicitly covered by the candidate's representative uses (summary, entities, key-dates)."},
+ :node-id #uuid "549d6c15-e36e-413d-8f85-b5cc99a221ae",
+ :top-1
+ {:target-id "seed:tree:ParallelIndependent",
+  :fitness-score 0.9,
+  :rerank-source :reranker,
+  :domain-coverage :uncovered,
+  :domain-label "security-finding-haikus"},
+ :minted-events
+ [{:parent-tree-id #uuid "0f80961b-9318-329c-91c3-8f77cda96c43",
+   :child-tree-id #uuid "0b1739ba-09ac-3ac0-bc83-3b09344c144e",
+   :domain-label "security-finding-haikus"}],
+ :classified-event
+ {:assigned-tree-id #uuid "0b1739ba-09ac-3ac0-bc83-3b09344c144e",
+  :parent-tree-id #uuid "0f80961b-9318-329c-91c3-8f77cda96c43",
+  :domain-label "security-finding-haikus",
+  :classified-at "2026-09-16T09:39:18.137063-05:00",
+  :reasoning
+  "The task requires generating 6 independent haikus based on a single set of inputs (the 6 findings). ParallelIndependent is the correct structural match because it handles 'a SET of TRANSFORMATIONS on one input' concurrently. Since the 6 haikus are independent and can be written to a single vector/map structure (distinct outputs per finding), this pattern allows for parallel generation to minimize wall-time, matching the 'independent transformations' strength.",
+  :outcome :matched,
+  :source-node-id #uuid "549d6c15-e36e-413d-8f85-b5cc99a221ae",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.95,
+    :was-fresh-mint? false,
+    :reasoning
+    "Synthesis is the strongest fit because the task requires integrating six distinct findings into a single cohesive artifact (a vector of haikus). The recommended-pattern of using a :code-built outline (the six findings) to guide the :llm in generating structured sections (the haikus) matches the task's structural requirement for a vector of maps.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "86275302-0c3d-35ae-b74e-abd4f27984eb",
+    :confidence 0.75,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task is a 'style shift' or 'semantic rephrasing' of technical findings into haikus. While this is a transformation of data, the candidate's avoid-when explicitly warns against using this subtree for transformations needing judgment or style shifts, recommending :llm instead of :code. However, the :map-each pattern is highly relevant for processing the six findings independently.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "c841adb5-394a-3f45-b904-49e9f2822b6b",
+    :confidence 0.6,
+    :was-fresh-mint? false,
+    :reasoning
+    "Documentation-writing is relevant because it involves producing human-facing prose about technical content. However, the task is creative/poetic rather than reference documentation, and the candidate's focus on API signatures and fidelity to code symbols is only tangentially related to security findings.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "4d2ac1bd-3d95-4dda-af4c-e24695e8a40e",
+  :event/tags
+  #{[:tick #uuid "4d2ac1bd-3d95-4dda-af4c-e24695e8a40e"]
+    [:description-target
+     #uuid "0b1739ba-09ac-3ac0-bc83-3b09344c144e"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T14:39:18.137218Z",
+  :domain-verdict
+  {:domain-coverage :uncovered,
+   :domain-label "security-finding-haikus",
+   :domain-reasoning
+   "The task involves security vulnerability reporting (penetration test findings) and creative writing (haikus), which is not explicitly covered by the candidate's representative uses (summary, entities, key-dates)."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "wall-time equals the slowest child instead of the sum of all children",
+      :good-when
+      "the same source data needs 2-3+ independent transformations AND children's latencies are similar AND children's :writes don't overlap",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:document] :writes [:summary]}] [:llm {:reads [:document] :writes [:entities]}] [:llm {:reads [:document] :writes [:key-dates]}]] [:final {:keys [:summary :entities :key-dates]}]]"}],
+    :avoid-when
+    ["the work is per-item over a collection — use :map-each (collection iteration), not :parallel (independent transformations)"
+     "any child depends on any other child's output — use :sequence"
+     "only one child exists — drop the :parallel wrapper"
+     "any two children declare the same key in their :writes"
+     "one child is dramatically slower than the others AND a downstream node needs all children's results"
+     "a child's :reads include a key another sibling writes to"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ParallelIndependent",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.731207-05:00"},
+    :domain-label "security-finding-haikus",
+    :content
+    "ParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.",
+    :domain-coverage :uncovered,
+    :rank 6,
+    :reasoning
+    "The task requires generating 6 independent haikus based on a single set of inputs (the 6 findings). ParallelIndependent is the correct structural match because it handles 'a SET of TRANSFORMATIONS on one input' concurrently. Since the 6 haikus are independent and can be written to a single vector/map structure (distinct outputs per finding), this pattern allows for parallel generation to minimize wall-time, matching the 'independent transformations' strength.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "two children with overlapping :writes race — the surviving value is non-deterministic",
+      :avoid-when
+      "any two children declare the same key in their :writes",
+      :recommended-alternative
+      "give each child a distinct :writes key; OR use :sequence so writes happen in order; OR aggregate via :code after the :parallel"}
+     {:trait
+      "uneven child latencies mean the parallel speedup is bottlenecked by the slowest",
+      :avoid-when
+      "one child is dramatically slower than the others AND a downstream node needs all children's results",
+      :recommended-alternative
+      "split the slow child into smaller pieces via :map-each so its work parallelizes too; OR restructure so the slow child runs in :sequence with a downstream node that doesn't need siblings' results"}
+     {:trait
+      "children cannot read each other's outputs — they execute concurrently",
+      :avoid-when
+      "a child's :reads include a key another sibling writes to",
+      :recommended-alternative
+      "use :sequence to chain dependent computations; OR ensure each child reads only from blackboard keys set BEFORE the :parallel"}],
+    :domain-reasoning
+    "The task involves security vulnerability reporting (penetration test findings) and creative writing (haikus), which is not explicitly covered by the candidate's representative uses (summary, entities, key-dates).",
+    :cos-good 0.9997749068137122,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9947377448890672,
+    :score 442.2836760502125,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.9,
+    :document-id ":tree-class:\"seed:tree:ParallelIndependent\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9997749068137122,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "wall-time equals the slowest child instead of the sum of all children",
+      :good-when
+      "the same source data needs 2-3+ independent transformations AND children's latencies are similar AND children's :writes don't overlap",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:document] :writes [:summary]}] [:llm {:reads [:document] :writes [:entities]}] [:llm {:reads [:document] :writes [:key-dates]}]] [:final {:keys [:summary :entities :key-dates]}]]"}],
+    :avoid-when
+    ["the work is per-item over a collection — use :map-each (collection iteration), not :parallel (independent transformations)"
+     "any child depends on any other child's output — use :sequence"
+     "only one child exists — drop the :parallel wrapper"
+     "any two children declare the same key in their :writes"
+     "one child is dramatically slower than the others AND a downstream node needs all children's results"
+     "a child's :reads include a key another sibling writes to"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ParallelIndependent",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.714214-05:00"},
+    :domain-label "security-finding-haikus",
+    :content
+    "ParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.",
+    :domain-coverage :uncovered,
+    :rank 7,
+    :reasoning
+    "This candidate shares the same structural definition as the tree-class. It is a high-fitness match because it facilitates running multiple LLM calls (one for each haiku) in parallel on the same source data. The 'avoid-when' for collections does not strictly fire here because the input is a fixed set of specific findings requiring different transformations (haikus with specific technical imagery), though :map-each is a viable alternative if the findings were treated as a homogenous list.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "two children with overlapping :writes race — the surviving value is non-deterministic",
+      :avoid-when
+      "any two children declare the same key in their :writes",
+      :recommended-alternative
+      "give each child a distinct :writes key; OR use :sequence so writes happen in order; OR aggregate via :code after the :parallel"}
+     {:trait
+      "uneven child latencies mean the parallel speedup is bottlenecked by the slowest",
+      :avoid-when
+      "one child is dramatically slower than the others AND a downstream node needs all children's results",
+      :recommended-alternative
+      "split the slow child into smaller pieces via :map-each so its work parallelizes too; OR restructure so the slow child runs in :sequence with a downstream node that doesn't need siblings' results"}
+     {:trait
+      "children cannot read each other's outputs — they execute concurrently",
+      :avoid-when
+      "a child's :reads include a key another sibling writes to",
+      :recommended-alternative
+      "use :sequence to chain dependent computations; OR ensure each child reads only from blackboard keys set BEFORE the :parallel"}],
+    :domain-reasoning
+    "The candidate does not mention security, penetration testing, or poetry in its representative uses.",
+    :cos-good 0.9997749068137122,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9947377448890672,
+    :score 442.2836760502125,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.9,
+    :document-id ":tree-fingerprint:\"seed:tree:ParallelIndependent\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9997749068137122,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered
+  ["bakery-production-scaling" "recipe-scaling-and-catering-prep"],
+  :event/id #uuid "01a0aaa8-6679-70d8-b872-d13798277712",
+  :confidence 0.9,
+  :source-sheet-id #uuid "68b06246-d22a-4c03-9654-7ab42e2f5f88",
+  :ranked-candidates
+  [{:target-id "seed:tree:ParallelIndependent",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.9,
+    :score 442.2836760502125}
+   {:target-id "seed:tree:ParallelIndependent",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.9,
+    :score 442.2836760502125}],
+  :was-fresh-mint? true,
+  :assigned-via :mint-sibling-domain-child},
+ :deferred-events [],
+ :domain-children-considered
+ ["bakery-production-scaling" "recipe-scaling-and-catering-prep"],
+ :sheet-id #uuid "68b06246-d22a-4c03-9654-7ab42e2f5f88",
+ :payload-domain
+ {:assigned-via :mint-sibling-domain-child,
+  :parent-tree-id #uuid "0f80961b-9318-329c-91c3-8f77cda96c43",
+  :child-tree-id #uuid "0b1739ba-09ac-3ac0-bc83-3b09344c144e",
+  :domain-label "security-finding-haikus"},
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: security-finding-haikus); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 2 from corpus retrieval)\n#### Top match — ParallelIndependent (confidence: 0.90)\nWhy this fits: The task requires generating 6 independent haikus based on a single set of inputs (the 6 findings). ParallelIndependent is the correct structural match because it handles 'a SET of TRANSFORMATIONS on one input' concurrently. Since the 6 haikus are independent and can be written to a single vector/map structure (distinct outputs per finding), this pattern allows for parallel generation to minimize wall-time, matching the 'independent transformations' strength.\n\nPattern guidance (seed `:summary`):\nParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.\n\n\n#### Alternative #1 — ParallelIndependent (confidence: 0.90)\nWhy this fits: This candidate shares the same structural definition as the tree-class. It is a high-fitness match because it facilitates running multiple LLM calls (one for each haiku) in parallel on the same source data. The 'avoid-when' for collections does not strictly fire here because the input is a fixed set of specific findings requiring different transformations (haikus with specific technical imagery), though :map-each is a viable alternative if the findings were treated as a homogenous list.\n\nPattern guidance (seed `:summary`):\nParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.\n\n\nAssigned to domain child 0b1739ba-09ac-3ac0-bc83-3b09344c144e (label: security-finding-haikus) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 3 from corpus retrieval)\n1. Behavioral: Synthesis (confidence: 0.95)\n   Why this fits: Synthesis is the strongest fit because the task requires integrating six distinct findings into a single cohesive artifact (a vector of haikus). The recommended-pattern of using a :code-built outline (the six findings) to guide the :llm in generating structured sections (the haikus) matches the task's structural requirement for a vector of maps.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Transformation (confidence: 0.75)\n   Why this fits: The task is a 'style shift' or 'semantic rephrasing' of technical findings into haikus. While this is a transformation of data, the candidate's avoid-when explicitly warns against using this subtree for transformations needing judgment or style shifts, recommending :llm instead of :code. However, the :map-each pattern is highly relevant for processing the six findings independently.\n\n   Guidance (seed `:summary`):\n   Transformation is mechanical reshape of data between deterministic shapes. ALWAYS use :code (not :llm) for deterministic transformations — preserves fidelity, costs nothing, runs in ms; :llm for transformation produces non-deterministic output. For per-item independent transformations, :map-each isolates per-item failures. ALWAYS declare :output-schemas on transformation output and :input-schemas on downstream :reads so shape mismatch fails at the boundary, not deep in the consumer. Composes into etl-pipeline (sequential transform chain), parallel-sum (map-reduce transformation), sequential-pipeline shells, and map-reduce shells. Avoid for transformations that need judgment (semantic rephrasing / style shift — use :llm) or for unstructured input (extract first).\n\nCapabilities:\n  - given input data + a target shape spec, emit the input restructured to the target shape\n  - natural fit anywhere a tree needs to change data shape without semantic interpretation\n  - outputs are typically a single restructured value or a vector of per-item transformations\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** implement transformations in :code (NOT :llm) when the mapping is deterministic — preserves byte-for-byte fidelity, costs zero tokens, runs in milliseconds (confidence 1.00, evidence-count 1)\n    - Good when: the transformation rule can be expressed as a pure function over the input\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:code {:reads [:input] :writes [:output] :fn (fn [{:keys [inputs]}] {:output (mapv (fn [r] (select-keys r [:a :b])) (:input inputs))})}]\n      ```\n\n  - **Trait:** for per-item independent transformations over a vector, use :map-each rather than a single batch :code call when the per-item work is non-trivial — supports per-item failure isolation (confidence 1.00, evidence-count 1)\n    - Good when: items can fail independently AND partial success has value\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:map-each {:items :records :as :record :writes [:transformed]} [:code {:reads [:record] :writes [:transformed] :fn (fn [{:keys [inputs]}] {:transformed (assoc (:record inputs) :stamp \"x\")})}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** using :llm for a deterministic transformation (CSV → JSON, snake_case → camelCase) produces non-deterministic output AND wastes tokens (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation rule is fully specifiable\n    - Recommended fix: always :code for deterministic transformations; reserve :llm for transformations that need judgment (semantic-rephrasing / style-shift / domain-translation)\n\n  - **Failure mode:** transformations without :output-schemas on the downstream :reads break silently when an upstream change shifts the output shape — the consumer gets garbage instead of an error (confidence 1.00, evidence-count 1)\n    - Avoid when: the transformation feeds another stage that binds on specific fields\n    - Recommended fix: declare :output-schemas on the transformation output AND :input-schemas on the downstream :reads — shape mismatch fails loudly at the boundary, not deep in the consumer\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - CSV row → JSON object mapping per-field\n  - extracted entity records → DB-row shape with derived fields\n  - input list → output list with N filters / projections applied\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 86275302-0c3d-35ae-b74e-abd4f27984eb)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n3. Behavioral: Documentation-writing (confidence: 0.60)\n   Why this fits: Documentation-writing is relevant because it involves producing human-facing prose about technical content. However, the task is creative/poetic rather than reference documentation, and the candidate's focus on API signatures and fidelity to code symbols is only tangentially related to security findings.\n\n   Guidance (seed `:summary`):\n   Documentation-writing produces human-facing PROSE ABOUT code — a docstring, usage example, or reference entry — not executable code. The load-bearing trait is fidelity to the symbol's ACTUAL signature/options (read the real arglist and option keys first, then describe them, optionally with a short runnable example) so the prose can't drift from the real API. Prefer this over the broad Code-building parent whenever the deliverable is documentation: Code-building's spec->emit->validate shape invents parameters the function doesn't have and risks scope-creeping into a behavior change. Avoid when the task implements/changes behavior (the Code-building parent) or the deliverable is a structured machine artifact like an OpenAPI spec (extraction/transformation).\n\nCapabilities:\n  - given a code symbol (function / option map / API) + its real signature, produce human-facing prose — a docstring, usage example, or reference entry — that accurately describes what it accepts and returns\n  - natural fit when the artifact is PROSE ABOUT code (docstring, README section, option reference), not executable code itself\n  - outputs are typically a docstring string + an optional runnable usage snippet, attached to the documented symbol\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** ground the doc in the symbol's ACTUAL signature/options read from source — read the arglist and option keys first, then describe them, so the prose can't drift from the real API (confidence 0.70, evidence-count 1)\n    - Good when: the symbol's source is available to read (the common case for internal docs)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:src] :writes [:signature] :fn (fn [{:keys [inputs]}] {:signature :arglist-and-option-keys})}] [:llm {:reads [:signature :src] :writes [:docstring]}] [:final {:keys [:docstring]}]]\n      ```\n\n  - **Trait:** include a SHORT runnable usage example that exercises the real signature — a worked call teaches the API faster than prose and surfaces signature mistakes in the doc (confidence 0.70, evidence-count 1)\n    - Good when: the symbol is public/consumed by others AND a minimal example is meaningful\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:signature] :writes [:doc] :output-schemas {:doc [:map [:docstring :string] [:example :string]]}}]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** writing the doc from the task description alone (the Code-building parent's spec->emit instinct) invents parameters/return shapes the function does not actually have — the doc looks plausible and is wrong (confidence 0.70, evidence-count 1)\n    - Avoid when: the documented symbol already exists and its real signature can be read\n    - Recommended fix: read the symbol's actual arglist/options first; describe only what is really there; never infer the API from the prose ask\n\n  - **Failure mode:** treating documentation like code generation drives toward producing or modifying executable code when the task only wanted prose — scope creep that risks changing behavior (confidence 0.70, evidence-count 1)\n    - Avoid when: the deliverable is strictly the docstring/usage prose, not a code change\n    - Recommended fix: keep the edit confined to the doc surface (docstring / comment / README); do not alter the implementation\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - write a docstring and a short usage example for the public parse-config function describing each option key it accepts\n  - add a README section documenting the public HTTP endpoints with request/response shapes drawn from the route handlers\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent c841adb5-394a-3f45-b904-49e9f2822b6b)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nSix findings from a mobile app penetration test (hard-coded API key in the binary, certificate pinning absent, insecure local storage of the refresh token, deep-link parameter injection, verbose crash logs with PII, outdated OpenSSL). Write one haiku per finding, 5-7-5 syllables, that conveys the risk through imagery and remains technically precise, never naming the vulnerability class outright. Return a vector of 6 maps {:finding \"1\" :haiku \"...\"}.",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? false},
+ :elapsed-ms 16645,
+ :confidence 0.9,
+ :was-fresh-mint? true,
+ :assigned-via :mint-sibling-domain-child}

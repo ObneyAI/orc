@@ -132,6 +132,8 @@ Nodes are the building blocks of workflows. There are two categories:
 - `code` - Execute a Clojure function
 - `condition` - Check a boolean expression
 - `llm-condition` - Use LLM for yes/no decisions
+- `llm-decision` - Ask a model (chat or native decision model) a boolean or enum question and write the answer
+- `tool` - Call one authored tool with arguments from the blackboard
 
 ### Execution Model
 
@@ -279,6 +281,24 @@ Execute an LLM call with structured input/output.
   add `:force-tool-choice? true` when the provider must call ORC's generated
   `submit_response` tool. Forced choice is opt-in because provider/schema
   compatibility varies.
+  Two optional controls apply when a node reuses its instruction across calls.
+  With both absent or false, request layout stays unchanged.
+  `:prompt-cache? true` places a nonblank instruction in its own text part with
+  `cache_control {:type "ephemeral"}`, before the input guide, values and images.
+  This applies to function-calling and strict JSON requests. Marker prompts keep
+  their existing layout. Blank or absent instructions do not create an empty
+  cacheable message part.
+  `:generic-tool-description? true` applies to function calling: it replaces the
+  duplicate instruction in `submit_response`'s description with a generic
+  description. The message retains the instruction; output schemas and their
+  field descriptions stay unchanged. ORC consumes both flags before transport.
+
+  Cache support, minimum prefix size, lifetime and actual savings depend on the
+  provider and model. Inspect the serialized request and provider usage rather
+  than assuming a marker guarantees a cache hit. The pinned OpenRouter adapter
+  preserves the message marker but drops the tool-level marker that ORC also
+  constructs. The original provider experiment used the message breakpoint;
+  tool-level cache control is not an established transport capability.
 
 **Structured Output:**
 
@@ -299,10 +319,11 @@ The response is automatically parsed and stored to the specified blackboard key.
 When structured output fails, the node remains `:failure` and its trace carries
 an optional machine-readable `:failure-kind`. Current structured failure kinds
 are `:transport-failure`, `:missing-forced-tool-call`,
-`:tool-call-parsing-failed`, `:schema-validation-failed`, and
-`:empty-provider-response`. The accompanying `:provider-evidence` is a sanitized
-allowlist containing available provider/model identity, response ID, finish
-reason, tool-call presence/name, usage, and `:output-truncated?`. It never
+`:tool-call-parsing-failed`, `:schema-validation-failed`,
+`:empty-provider-response`, and `:provider-finish-error` (the provider itself
+finished the response with an error). The accompanying `:provider-evidence` is a
+sanitized allowlist containing available provider/model identity, response ID,
+finish reason, the provider's native finish detail when reported, tool-call presence/name, usage, and `:output-truncated?`. It never
 contains tool arguments or an arbitrary raw provider envelope.
 
 Use `:sheet/node-trace-detail` with the failed node's `:trace-instance-id` to
@@ -338,6 +359,55 @@ Execute a Clojure function.
 - Function returns `{:output-key value ...}`
 - Multiple outputs can be written from a single function
 - Inputs and outputs use keyword keys
+
+**Calling tools from a code leaf.** The function also receives `:call-tool-fn`
+(`(call-tool-fn tool-name args)`). Two options govern it:
+
+```clojure
+(sheet/code "lookup-report"
+  :fn "my-app.reports/lookup"
+  :tool-caller-fn "my-app.gates/consumer-gate"   ; (builder blackboard context) -> call-tool-fn
+  :tool-contracts {"search" {:arguments [:map {:closed true} [:query :string]]
+                             :result    [:map [:hits [:vector :string]]]}}
+  :reads [:query] :writes [:report])
+```
+
+- `:tool-caller-fn` names a consumer tool gate. Every tool call the leaf makes goes through it; a
+  gate that cannot be resolved or built fails the node — it never falls back to the ungated caller.
+  The builder's context carries `:node`, `:node-id`, `:tick-id` and `:execution-deadline-ms`.
+- `:tool-contracts` are **enforced**, not just documented: arguments that violate the declared
+  `:arguments` schema never reach the tool, and a result that violates `:result` is never returned
+  as a value. A field supplied under two spellings (`:query` and `"query"`) is rejected. The tool
+  receives, and your code sees, the original values. A contract violation is thrown as an
+  `ex-info` carrying `:orc.tool/outcome` (`:invalid-arguments` / `:invalid-result`); your code may
+  catch it, otherwise the node fails. The tool's own exceptions reach your code unchanged.
+- Researchers (`repl-researcher`) take the same `:tool-contracts`, and they also govern the tool
+  calls of the researcher's generated child trees. A researcher receives every tool failure as data
+  — `{:error <safe message> :orc.tool/outcome <kind>}` — never the tool's raw exception text; a tool
+  host may share a message deliberately by putting `:orc.tool/message` in its `ex-data`.
+
+### tool
+
+Call one tool, named when the workflow is authored, and write its result.
+
+```clojure
+(sheet/tool "find-report"
+  :tool "search"                         ; required: the authored tool name
+  :reads [:query]                        ; arguments: {:query <value>}
+  :writes [:hits]                        ; exactly one write
+  :tool-caller-fn "my-app.gates/consumer-gate"            ; optional, as for code
+  :tool-contracts {"search" {:arguments [:map [:query :string]]}})  ; optional, enforced
+```
+
+- Arguments are the declared reads (keyword keys; absent reads omitted).
+- The result is written to the single write key; if the result is a map holding that key, the
+  value under it is written.
+- Gate and contracts behave exactly as for `code`. With no tool caller available the node fails
+  with an error naming the tool. A tool name chosen at run time (by a model or the blackboard) is
+  never executable.
+- Inside a checkpointed researcher's generated child tree, tool calls (from `code` or `tool`
+  leaves) are claimed and receipted like the researcher's own inline calls: after a crash, a call
+  whose effect already completed returns its recorded result instead of running again.
 
 ### condition
 
@@ -389,9 +459,118 @@ Use LLM to evaluate a yes/no question.
 - `:reads` - Context to evaluate
 
 **Behavior:**
-- LLM responds with yes/no (or true/false, 1/0)
-- Returns SUCCESS if yes, FAILURE if no
-- Use with `fallback` for LLM-driven branching
+- Returns SUCCESS when the model's valid answer is true, FAILURE when it is false
+- A missing or non-boolean answer, or a provider failure, is also FAILURE but carries a
+  structured `:failure-kind` in `node-trace-detail`; a semantic "no" has none and records
+  `:condition-answer false`
+- Runs under the same execution policy as an `llm` leaf: per-node `:model`, default provider
+  retry, the shared LLM-call budget and the execution deadline
+- The completion records the values read, the answer, the resolved model and the usage
+- Use with `fallback` for LLM-driven branching; to route on more than yes/no, or to keep the
+  answer as data, use `llm-decision`
+
+### llm-decision
+
+Ask a bounded question and write the answer to the blackboard. Unlike `llm-condition`, a valid
+answer — including `false` or a "none of these" option — is SUCCESS; ordinary `condition` guards
+then route on the written key.
+
+```clojure
+(sheet/workflow "support-router"
+  (sheet/blackboard
+    {:request :string
+     :route [:enum {:descriptions {"lookup"   "Retrieve an existing figure from a stored report."
+                                   "research" "Investigate a question that needs new evidence."
+                                   "clarify"  "Too ambiguous to act on; ask the user."}}
+             "lookup" "research" "clarify"]})
+  (sheet/sequence "main"
+    (sheet/llm-decision "route"
+      :instruction "Choose the operation that addresses the user's request."
+      :reads [:request]
+      :writes [:route]                 ; exactly one key; its schema decides the question
+      :min-confidence 0.6              ; optional floor ...
+      :abstain "clarify")              ; ... writes this offered option when not met
+    (sheet/fallback "dispatch"
+      (sheet/sequence "lookup-route"
+        (sheet/condition "is-lookup" :check {:key :route :op :equals :value "lookup"})
+        ...)
+      ...)))
+```
+
+**The answer key's schema decides the question:**
+- `:boolean` → "does this proposition hold?"
+- `[:enum {:descriptions {id description}} id ...]` → "which one applies?"; every option is offered
+  to the model together with its description
+- `:options-from :catalog` (a declared read key holding `[{:id ... :description ...}]`) → options
+  discovered at run time; the answer key may then be `:string`. Ids are kept verbatim.
+- Anything else is rejected when the workflow is built.
+
+**Banded decisions.** `:bands-from :rubric` (a declared read key holding a run-time rubric
+`{:bands {1 "..." 2 "..."} :criterion "..." :stance "..."}`) makes the model choose ONE ordered band;
+the integer band is written to the answer key, which must be an integer schema. The bands must be
+integer-keyed, contiguous, at least two, each with a non-blank description. `:bands-from` must also
+be in `:reads`, excludes `:options-from`, and rejects `:min-confidence` and `:abstain`. A chat model
+is offered the bands as described string choices and its answer is checked against them locally. A
+native decision model is asked for a score; the band is the uniquely most probable level, and an
+exact tie selects no band (the node ends `:undecided`, and the tie is not retried). This is the node
+that score-only judges run, and it works in any workflow:
+
+```clojure
+;; docs-example: banded-decision
+(def support-bands
+  {:criterion "How well are the claims supported by the evidence?"
+   :stance "Be strict."
+   :bands {1 "Unsupported facts" 2 "Partly supported facts" 3 "All facts supported"}})
+
+(def banded
+  (sheet/workflow "docs-banded-decision"
+    (sheet/blackboard
+     {:evidence :string
+      :rubric [:map {:description "A grading rubric: ordered, described bands"}
+               [:bands [:map-of :int [:maybe :string]]]
+               [:criterion {:optional true} :string]
+               [:stance {:optional true} :string]]
+      :band :int})
+    (sheet/llm-decision "grade"
+      :instruction "Grade the evidence against the rubric."
+      :reads [:evidence :rubric]
+      :bands-from :rubric
+      :writes [:band])))
+```
+
+**Parameters:** `:instruction`, `:reads`, `:writes` (one key), `:options-from`, `:bands-from`,
+`:min-confidence` with `:abstain` (must be an offered option), `:model`, `:retry`, `:judges`,
+`:options`.
+
+**Behavior:**
+- A valid answer is SUCCESS and is written; an answer outside the offered set, a missing answer or
+  a provider failure is FAILURE with a structured `:failure-kind`, and nothing is written
+- The completion event and `node-trace-detail` carry a `:decision` record: the options offered,
+  the answer, whether it was set aside for abstention, and any distribution / confidence /
+  probability the provider reported (never synthesised)
+- With `:min-confidence`, an answer whose reported confidence is below the floor — or that reports
+  none, as conversational models do — writes the `:abstain` option and records the set-aside answer
+- On a conversational model the answer is requested as structured output (function calling) by
+  default; set `:options {:use-function-calling? false}` to opt out
+- Same execution policy as an `llm` leaf (model, retry, call budget, deadline)
+
+**Native decision models.** Register a provider with `:protocol :decision` and the same node runs
+on it — no other change:
+
+```clojure
+(llm/register-provider! :jev
+  {:provider :openrouter
+   :protocol :decision                 ; OpenRouter POST /api/alpha/decisions
+   :model "typesafe/jev-1.13"
+   :config {:api-key (System/getenv "OPENROUTER_API_KEY")}})
+```
+
+Booleans are asked as yes/no (noul) questions and enums as choice questions with each option's
+description as its criterion. Answers are validated, never repaired: distributions must cover the
+offered options and agree with the selected answer and reported confidence to within the
+provider's reported resolution (`:reported-resolution`, default 0.01 — OpenRouter rounds to two
+decimals). A decision model answers boolean, enum and banded outputs; any other output is refused
+before the call.
 
 ### delegate
 
@@ -419,6 +598,14 @@ Execute another workflow (sheet) with isolated blackboard. Useful for composing 
 - Maps target outputs back to parent `:writes` keys
 - Target failure causes delegate node to fail
 - Full execution tracing with lifecycle events
+- The child draws on the **family** LLM-call budget and remaining time: once the root
+  execution's `:llm-call-budget` is spent, no provider call starts anywhere in the family
+- The parent's tool context (and its tool caller / MCP session) reaches the child, so a gated
+  tool in the child sees the same consumer context
+- Inputs reach the child by key name; two parent reads that would supply the same child input
+  (e.g. `:left/id` and `:right/id` → `:id`) are rejected when the workflow is built
+- `(sheet/get-family-usage ctx trace-id)` returns the provider usage of an execution and all of
+  its descendants, each call counted once
 
 **Use cases:**
 - Decompose complex workflows into reusable components
@@ -889,170 +1076,130 @@ Configure retries for unreliable operations:
 
 ### Evaluation Judges
 
-Define evaluation criteria at the workflow level and reference them from LLM nodes. This enables retrospective evaluation of LLM outputs for quality assurance.
+A judge grades what a node did. You declare judges at the workflow level with `sheet/judges`, parallel to `sheet/blackboard`, and attach them to nodes by name with `:judges`. Attaching a judge enables it. Full reference: [EVALUATION-COMPONENT.md](EVALUATION-COMPONENT.md). Every code block marked `;; docs-example: <id>` in this section is run by `components/evaluation/test/ai/obney/orc/evaluation/docs_examples_test.clj`.
 
-#### Defining Judges
+#### `:judges` on every node
 
-Use `sheet/judges` parallel to `sheet/blackboard`:
-
-```clojure
-(sheet/workflow "lead-qualification"
-  (sheet/blackboard
-    {:lead-data :string
-     :analysis [:map
-                [:score :double]
-                [:reasoning :string]
-                [:keyFactors [:vector :string]]]})
-
-  ;; Define evaluation criteria at workflow level
-  (sheet/judges
-    {:analysis-completeness
-     {:type :completeness
-      :criteria "Must include: score (0.0-1.0), reasoning (2+ sentences), and at least 3 key factors"
-      :weight 0.35}
-
-     :analysis-grounding
-     {:type :grounding
-      :criteria "All key factors must cite specific data from lead-data. Score must be justified by stated reasoning."
-      :weight 0.35}
-
-     :analysis-reasoning
-     {:type :reasoning
-      :criteria "Reasoning must connect lead characteristics to scoring decision. Logic must be clear and non-contradictory."
-      :weight 0.30}})
-
-  (sheet/llm "analyze-lead"
-    :model "google/gemini-2.5-flash"
-    :instruction "Analyze this lead for sales qualification..."
-    :reads [:lead-data]
-    :writes [:analysis]
-    :judges ["analysis-completeness" "analysis-grounding" "analysis-reasoning"]))
-```
-
-#### Judge Types
-
-**Grounding (35% default weight)**
-
-Detects hallucinations by checking if claims are supported by input context.
-
-| Score | Meaning |
-|-------|---------|
-| 1.0 | Every claim traceable, no hallucinations |
-| 0.8 | Almost all claims grounded, minor extrapolation |
-| 0.6 | Some claims ungrounded but no serious hallucinations |
-| 0.4 | Multiple ungrounded claims |
-| 0.2 | Majority of claims not supported by context |
+Every node constructor accepts `:judges`, a vector of declared judge names: `llm`, `llm-decision`, `code`, `tool`, `repl-researcher`, `condition`, `llm-condition`, `sequence`, `fallback`, `parallel`, `map-each` and `delegate`. A judge on a composite or delegate grades its forwarded outputs, and a judged composite makes its tree run durably. The judge names a workflow declares are strings once stored, so `{:grounded ...}` is attached as `:judges ["grounded"]`.
 
 ```clojure
-{:type :grounding
- :criteria "All claims about budget must trace to explicit budget fields.
-            Do not infer company size from name alone.
-            Timeline claims must reference stated deadlines."}
+;; docs-example: built-in-judge
+(def triage
+  (sheet/workflow "docs-ticket-triage"
+    (sheet/blackboard {:ticket-message :string :category :string})
+    (sheet/judges {:grounded {:type :grounding
+                              :purposes #{:monitoring :learning}}})
+    (sheet/llm "classify"
+      :instruction "Classify the ticket into one category."
+      :reads [:ticket-message]
+      :writes [:category]
+      :judges ["grounded"])))
+
+(defn run-triage [ctx]
+  (let [sheet-id (sheet/build-workflow! ctx triage)]
+    (sheet/execute ctx sheet-id {:ticket-message "URGENT: billing error on my account."})
+    sheet-id))
+
+(defn scored-assessments [ctx sheet-id]
+  (evaluation/get-assessments ctx {:sheet-id sheet-id :status :scored}))
 ```
 
-**Instruction Following (25% default weight)**
+#### Judge config fields
 
-Evaluates whether the LLM followed its given instruction.
+| Field | Meaning |
+|---|---|
+| `:type` | `:grounding`, `:instruction-following`, `:reasoning`, `:completeness`, or `:custom` |
+| `:sheet-id` | for `:custom`: the id of the workflow that grades |
+| `:rubric` | `{:criterion :stance :bands {1 "..." 2 "..."} :feedback :required\|:none}`. Absent, a built-in judge uses its type's default rubric |
+| `:criteria` | on a built-in judge without a `:rubric`: replaces the default criterion |
+| `:purposes` | a non-empty subset of `#{:monitoring :learning}`. Default: both, or only `:monitoring` when the rubric's feedback is `:none`. A learning judge must require feedback |
+| `:model` | a model id or a registered provider name. Absent, the judge runs on the runtime provider |
+| `:timeout-ms` | a positive integer; default 60000 |
+| `:weight` | the judge's relative weight in the composite of a node's learning judges |
+| `:alert` | `{:below :window :min-coverage}`: opt-in performance alert |
+| `:assess-failures?` | a boolean; default false. A completion that failed, timed out or blocked is recorded ungradable (`:subject-failed`) without running the judge; true judges it like any other |
 
-| Score | Meaning |
-|-------|---------|
-| 1.0 | All requirements met, format correct |
-| 0.8 | Most requirements met, minor format issues |
-| 0.6 | Core requirements met, some missed |
-| 0.4 | Several requirements missed |
-| 0.2 | Instruction largely ignored |
+A declaration with an invalid rubric, purposes or alert is rejected. Rebuilding a workflow whose judge definition changed revises the judge (its revision number goes up). A judge's `:provider` field is ignored.
+
+#### Rubric and score-only judges
 
 ```clojure
-{:type :instruction-following
- :criteria "Response must be valid JSON.
-            All requested fields must be present.
-            Score must be numeric, not text."}
+;; docs-example: monitoring-judge
+(def category-rubric
+  {:criterion "Is the category the one a support agent would choose?"
+   :stance "Be strict: a plausible but wrong category is a failure."
+   :bands {1 "Wrong category."
+           2 "Defensible, but not the best category."
+           3 "The category a support agent would choose."}
+   :feedback :none})
+
+(def monitored-triage
+  (sheet/workflow "docs-monitored-triage"
+    (sheet/blackboard {:ticket-message :string :category :string})
+    (sheet/judges {:category-check {:type :instruction-following
+                                    :rubric category-rubric
+                                    :purposes #{:monitoring}}})
+    (sheet/llm "classify"
+      :instruction "Classify the ticket into one category."
+      :reads [:ticket-message]
+      :writes [:category]
+      :judges ["category-check"])))
 ```
 
-**Reasoning Quality (20% default weight)**
+The model chooses a band; the score is `(band - lowest) / (highest - lowest)`.
 
-Evaluates coherence and logical flow of reasoning.
+#### Custom judge type
 
-| Score | Meaning |
-|-------|---------|
-| 1.0 | Clear logical flow, well-structured argument |
-| 0.8 | Sound reasoning with minor gaps |
-| 0.6 | Generally logical but some unclear steps |
-| 0.4 | Weak reasoning, logical gaps |
-| 0.2 | Incoherent or contradictory reasoning |
+A `:custom` judge is a workflow. It reads `:host-inputs`, `:host-outputs`, `:host-instruction` (and `:rubric`, `:original-task`, and the opt-in `:host-family` and `:child-assessments`) from its declared blackboard keys, and writes a `:band` with a rubric or a `:score` without one:
 
 ```clojure
-{:type :reasoning
- :criteria "Each conclusion must cite supporting evidence.
-            Conflicting factors must be addressed.
-            Final score must follow from stated reasoning."}
+;; docs-example: custom-judge
+(defn label-judge
+  "Grades the assessed node's `category` output by its length."
+  [{:keys [inputs]}]
+  (let [category (str (get-in inputs [:host-outputs :category]))]
+    (if (<= (count category) 12)
+      {:band 3 :feedback "A short label, as asked."}
+      {:band 1 :feedback "The category is a sentence, not a label."})))
+
+(def label-judge-workflow
+  (sheet/workflow "docs-label-judge"
+    (sheet/blackboard
+     {:host-inputs [:map-of :keyword [:any {:description "Values the assessed node read"}]]
+      :host-outputs [:map-of :keyword [:any {:description "Values the assessed node wrote"}]]
+      :host-instruction [:string {:description "The assessed node's instruction"}]
+      :rubric [:map [:bands [:map-of :int :string]]
+               [:criterion {:optional true} :string]
+               [:stance {:optional true} :string]]
+      :band [:int {:description "The band chosen from the rubric"}]
+      :feedback [:string {:description "Why this band"}]})
+    (sheet/code "check"
+      :fn "ai.obney.orc.evaluation.docs-examples-test/label-judge"
+      :reads [:host-inputs :host-outputs :host-instruction :rubric]
+      :writes [:band :feedback])))
+
+(def label-rubric
+  {:criterion "The category is a short label."
+   :stance "Be strict."
+   :bands {1 "Not a label." 2 "A long label." 3 "A short label."}
+   :feedback :required})
+
+(defn label-judged-workflow [judge-sheet-id]
+  (sheet/workflow "docs-label-judged"
+    (sheet/blackboard {:ticket-message :string :category :string})
+    (sheet/judges {:label {:type :custom
+                           :sheet-id judge-sheet-id
+                           :rubric label-rubric}})
+    (sheet/code "classify"
+      :fn "ai.obney.orc.evaluation.docs-examples-test/classify"
+      :reads [:ticket-message]
+      :writes [:category]
+      :judges ["label"])))
 ```
 
-**Completeness (20% default weight)**
+#### Judges run after the node, durably
 
-Evaluates whether all aspects of the task were addressed.
-
-| Score | Meaning |
-|-------|---------|
-| 1.0 | All aspects thoroughly covered |
-| 0.8 | Most aspects covered, minor omissions |
-| 0.6 | Core aspects covered, some gaps |
-| 0.4 | Multiple aspects missing |
-| 0.2 | Majority of required aspects missing |
-
-```clojure
-{:type :completeness
- :criteria "Must address: company profile, pain points, budget signals,
-            decision makers, urgency indicators.
-            Each aspect needs at least one specific data point."}
-```
-
-#### Sharing Judges Across Nodes
-
-Multiple nodes can reference the same judge definition:
-
-```clojure
-(sheet/workflow "multi-step-analysis"
-  (sheet/judges
-    {:common-grounding
-     {:type :grounding
-      :criteria "All claims must cite specific input data"}})
-
-  (sheet/sequence "main"
-    (sheet/llm "step-1"
-      :reads [:input-1]
-      :writes [:output-1]
-      :judges ["common-grounding"])
-    (sheet/llm "step-2"
-      :reads [:output-1]
-      :writes [:output-2]
-      :judges ["common-grounding"])))
-```
-
-#### Custom Judge Type
-
-Reference a custom evaluation sheet for domain-specific validation:
-
-```clojure
-{:type :custom
- :sheet-id #uuid "abc123..."  ;; ID of custom judge workflow
- :weight 0.25}
-```
-
-#### Evaluation is Retrospective
-
-Judges are evaluated **after** execution, not during. This keeps production latency low while enabling comprehensive batch evaluation:
-
-```clojure
-;; After workflow executions...
-(eval/evaluate-node-traces event-store
-  {:sheet-id sheet-id
-   :node-id "analyze-lead"
-   :limit 50})
-;; => Evaluates historical traces using defined judge criteria
-```
-
-For inline validation during execution, use `condition` or `llm-condition` nodes instead.
+A judge does not change how the tree runs. When the node completes, an assessment is requested durably and the judge runs afterwards, as a workflow. It is read with `evaluation/get-assessments`; every judgment ends scored, failed or ungradable. Performance per node version is available from `evaluation/get-node-performance`. For inline validation during execution, use `condition` or `llm-condition` nodes instead.
 
 ---
 
@@ -1637,3 +1784,112 @@ Saves a sheet directly to a .clj file.
 4. **Build your own** — start with a simple workflow and iterate
 
 Happy workflow building!
+
+### Model fallback on standard nodes
+
+**Local implementation in progress, not merged.** This API supersedes the
+unmerged `llm-fallback` wrapper. Integration and recovery acceptance must complete
+before consumers adopt it; this section describes the intended contract, not a
+claim that every path has passed its proof.
+
+Configure backups directly on `llm`, `llm-condition`, `llm-decision`, or
+`repl-researcher`. The node remains one task with one typed input/output contract.
+
+```clojure
+(orc/llm "assess"
+  :provider :primary-provider
+  :model "provider/primary"
+  :fallback-models [{:provider :backup-provider
+                     :model "provider/backup"
+                     :options {:max-tokens 32768}}
+                    {:model "provider/another-backup"}]
+  :fallback-policy :temporary-transport
+  :instruction "Assess the supplied evidence."
+  :reads [:request :evidence]
+  :writes [:assessment-reasoning :assessment]
+  :options {:output-mode :json-schema :max-tokens 65536})
+```
+
+`:provider` is a registered provider alias, not a model identifier. Omit it to
+use existing runtime selection. Each backup requires a model; an omitted backup
+provider means the primary's provider, never the preceding backup's provider.
+Register each selected provider in the worker/runtime context so resumed work can
+resolve it. Existing native decision registration names retain their established
+model-selection behavior; use unambiguous explicit provider/model pairs for new
+cross-provider definitions.
+
+An omitted fallback list leaves existing behavior unchanged. An explicit `[]`
+disables inherited backups. Candidate generation overrides are `:temperature`,
+`:max-tokens`, `:top-p`, `:top-k`, `:frequency-penalty`, `:presence-penalty`,
+`:seed`, `:reasoning`, `:max-retries` and `:timeout-ms`. Keep shared output/privacy
+controls in node `:options`. Candidates cannot override instructions, read/write
+contracts, execution identities, budgets, deadlines or runtime callbacks.
+
+The default `:temporary-transport` policy admits reliable connection, timeout,
+rate-limit and server failures. Unknown or contradictory evidence is refused;
+HTTP 429 alone does not distinguish rate limiting from exhausted quota. Explicit
+`:all-transport` admits other recorded transport failures, including permanent
+ones. Neither policy switches on valid false/negative answers, abstention, ties,
+invalid outputs, permission blocks, cancellation or exhausted execution limits.
+A false `llm-condition` still fails the condition semantically; it is not an
+outage and does not invoke backups.
+
+Candidates are checked against the effective output mode and decision contract
+before dispatch. Registration does not prove remote model availability or quality.
+Native/chat transitions must retain the offered choices, rubric and declared
+confidence/abstention behavior; missing confidence is never invented. An
+incompatible strict-output adapter is rejected, not silently downgraded.
+
+When backups are configured, the default is one request per candidate. Explicit
+`:options {:max-retries n}` permits bounded retries before moving on. All physical
+requests retain the family budget and absolute deadline. Exhaustion does not
+restart the candidate list through an outer node retry. Nodes without configured
+backups retain their existing retry behavior.
+
+#### Researcher model roles
+
+Node-level model/provider/fallback configuration belongs to the researcher's
+prime model. Configure specialists separately under `:rlm`:
+
+```clojure
+(orc/repl-researcher "research"
+  :model prime-model
+  :fallback-models [{:model backup-prime-model}]
+  :instruction instruction
+  :reads [:sources] :writes [:findings]
+  :rlm {:recursive? true :checkpointed? true
+        :sub-provider :specialist-provider
+        :sub-model specialist-model
+        :sub-options {:max-tokens 32768}
+        :sub-fallback-models [{:model backup-specialist-model}]
+        :sub-fallback-policy :temporary-transport})
+```
+
+Inline and emitted model calls inherit these subcall defaults. An explicit
+subcall primary still inherits backups; a supplied list replaces them, and `[]`
+disables them. Changing models retries the failed model request, not the research
+iteration or completed tool actions. After a backup succeeds, later calls in that
+researcher run/role start there. Selection is durable and only advances; another
+run or tenant starts independently. An explicit subcall configuration has its
+own selection state.
+
+#### Evidence and streaming
+
+Inspect the node trace's `:model-fallback` summary and candidate journal query
+`:sheet/model-candidate-history` with `{:tick-id tick-id}` using the normal Grain
+query envelope. Candidate entries identify the logical call, role, candidate,
+requested provider/model, safe failure and transition reason. Provider-reported
+model identity is separate. They are attempts within one node, not artificial
+child leaves. Inspect physical request observations as well as candidate counts
+when retries are enabled.
+
+For streaming, fallback is allowed only before visible output. Once a delta or
+field reaches the caller, failure terminates that stream without substituting a
+new answer. Recovery must retain that boundary. A crash during a model request
+may require another counted model request when its outcome is unknown; completed
+external actions must not be repeated.
+
+Call-budget exhaustion may cancel the family before a completed trace exists.
+The public execute result retains the budget error, and cancelled ticks record
+`:sheet/tick-cancelled` with its reason. Inspect those records rather than waiting
+indefinitely for a completed trace.

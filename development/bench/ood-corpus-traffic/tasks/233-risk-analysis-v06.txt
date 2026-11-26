@@ -1,0 +1,12 @@
+; brief-id: b-003
+; group: risk-analysis
+; variant: 6
+
+I’m currently killed in a terminal at O'Hare with a six-hour delay and only my phone, and I just received the final draft of the 210-page Subcontractor Framework Agreement for the Neo-Tokyo Smart Infrastructure Project. We are supposed to sign off by Monday, but the indemnity clauses look like a minefield. I’ve uploaded the full document, and I need you to go through the whole thing to extract every single mandatory obligation we are committing to, specifically paired with the exact financial penalties or liquidated damages tied to each section.
+
+After that, please build out a comprehensive risk matrix. I need you to rate every liability as HIGH, MEDIUM, or LOW. For the justification, don't just give me fluff; I need you to point to the specific language in the contract that dictates why the risk level is set there—especially regarding the "Force Majeure" and "Performance Bond" sections. Wrap it all up with a sharp executive summary that tells me exactly where we are most exposed financially if the hardware delivery timelines slip. 
+
+To give you a head start on the numbers, here is the specific fee structure they included in the cover note:
+{ "Late_Delivery_Penalty": "2% of total contract value per day", "Safety_Violation_Fine": "$50,000 per occurrence", "Data_Breach_Indemnity": "Unlimited", "Warranty_Retention": "15% for 24 months" }
+
+Please stay laser-focused on the risks and obligations. I don't need a summary of who the lead architects are, the project's green-energy goals, or a list of the sub-consultants. I just need to know how we get sued or fined, and how much it’s going to cost us if things go sideways. Thanks for saving my weekend.

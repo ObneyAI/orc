@@ -1,0 +1,22 @@
+{:slug "154-content-calendar-v04",
+ :group "content-calendar",
+ :in-domain? false,
+ :variant 4,
+ :expected-output-kind
+ "a dated calendar of posts with topic, format, hook, call to action and success metric",
+ :brief-id "b-018",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1175, :completion-tokens 259, :total-tokens 1434},
+  :draft-prompt-sha256
+  "5e5ccd0fc436fb5f694ceb5151c6e95c754385b2bc21b0c9239eebf0bf668bd5",
+  :polish-usage
+  {:prompt-tokens 428, :completion-tokens 259, :total-tokens 687},
+  :polish-prompt-sha256
+  "afc654611fc642d1f1f27ca4ae5f9ea4b36d56ad25fa8cafbb07111dcadcb76c",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

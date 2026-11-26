@@ -1,0 +1,15 @@
+; brief-id: b-026
+; group: log-triage
+; variant: 2
+
+Hi there, hope you're having a decent Tuesday. I’m currently stuck in a bit of a nightmare here—my kid’s preschool called because he’s got a fever, so I’m trying to pack up my bag and head out the door, but just as I was leaving, the mobile team started screaming about a spike in crash reports for the latest Android build (version 4.2.1). I really need to get home to relieve the sitter, so I’m hoping you can take a look at this for me while I'm in transit.
+
+I’ve attached the raw stack traces and the device state logs for about 300 of the affected sessions that happened in the last hour. The symptoms seem to be a mix of the app freezing on the splash screen and a 'NullPointerException' being thrown right after the user tries to authenticate via the social login flow. The mobile lead thinks it might be something related to the new API gateway timeout settings we pushed last night, but honestly, I saw some weird stuff in the proguard mappings earlier that makes me wonder if we’re just misinterpreting the obfuscated code.
+
+Could you go through these logs and give me a ranked list of what you think is actually going wrong? For each hypothesis, please point out the specific lines in the logs that back it up and tell me what I should tell the dev team to check next once I get back online tonight. I need your best guess on the single most likely cause so I can tell my boss what the plan is.
+
+I'm going to be offline for about 45 minutes while I drive, so if you could have this ready by the time I pull into my driveway, that would be a lifesaver. I really don't want to have to spend my whole night debugging this if it's just a simple configuration mismatch or a bad library version.
+
+Thanks a ton,
+
+Sarah

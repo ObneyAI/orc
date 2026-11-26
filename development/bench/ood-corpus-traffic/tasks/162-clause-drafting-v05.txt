@@ -1,0 +1,12 @@
+; brief-id: b-005
+; group: clause-drafting
+; variant: 5
+
+Please review the attached Outsourcing Agreement for our new NSW-based IT support provider and draft a formal Service Level Agreement (SLA) clause for Section 5 based on the following requirements:
+
+1. Use the specifications in the attached "Service Requirements" memo to draft the clause, ensuring the language is fully compliant with Australian Contract Law.
+2. Explicitly define a 99.9% availability target and implement a "Service Credit" structure that triggers a 5% discount for every hour of downtime exceeding that threshold.
+3. Include a detailed "Rationale" section justifying the credit structure as a "Liquidated Damages" approach; this needs to be legally robust enough to avoid being struck down as a 'penalty' under New South Wales jurisdiction.
+4. Provide two "Negotiation Notes" specifically designed to counter objections regarding our 15-minute 'Critical Incident' response time requirement.
+
+Given our history of sluggish response times with previous vendors, I need this to be airtight. Please provide the finalized clause text, the legal reasoning for the credits, and the negotiation talking points by tomorrow morning so I have them ready for the partner meeting.

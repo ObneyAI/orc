@@ -1,0 +1,5 @@
+; brief-id: b-035
+; group: reorder-plan
+; variant: 1
+
+Update reorder points and order quantities for all 45 core coffee bean SKUs and packaging supplies. Reference the attached sales history, current lead times, and live warehouse stock levels. Balance supplier terms to hit MOQs while avoiding overstock. Output a table with specific reorder points and quantities per item, plus a consolidated purchase schedule for the next 30 days. Calculate total estimated cash tied up in this cycle. Maintain specific buffer for seasonal blends to prevent holiday stockouts. Exclude budget forecasts; need the actionable buy list only.

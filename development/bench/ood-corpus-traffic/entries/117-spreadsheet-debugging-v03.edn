@@ -1,0 +1,22 @@
+{:slug "117-spreadsheet-debugging-v03",
+ :group "spreadsheet-debugging",
+ :in-domain? false,
+ :variant 3,
+ :expected-output-kind
+ "the located errors with cause, corrected formulas, and checks to prevent regression",
+ :brief-id "b-040",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 583, :completion-tokens 288, :total-tokens 871},
+  :draft-prompt-sha256
+  "d7f10dc83228b8359743d9f4a17d5aa3e887dd2f4e378133a71d63f38ea869f2",
+  :polish-usage
+  {:prompt-tokens 466, :completion-tokens 279, :total-tokens 745},
+  :polish-prompt-sha256
+  "f8fe333cacac37ee81195539a714e3a8a6b3b88dc6bff771593b3a2fba26beac",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

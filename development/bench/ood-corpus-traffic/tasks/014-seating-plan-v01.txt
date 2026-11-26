@@ -1,0 +1,5 @@
+; brief-id: b-020
+; group: seating-plan
+; variant: 1
+
+Draft seating chart for 150 wedding guests using the attached master list. Use 15 circular tables with 10-person capacity each. Group A (Bride's family) must be at tables 1-4; Group B (Groom's family) at tables 5-8. Ensure Miller and Thompson families are seated together. Halloway and Vance families must not be at the same or adjacent tables. Provide final assignments and a checklist confirming all constraints. Identify any specific violations. For 'Late RSVP' guests, provide two alternative placement options for tables with open seats. Omit venue layouts and meal preferences.

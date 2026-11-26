@@ -1,0 +1,880 @@
+{:deferrals-by-axis {:structural 4},
+ :in-domain-mint-slugs
+ ["008-contract-comparison-v01"
+  "033-risk-analysis-v01"
+  "068-legal-issue-detection-v02"
+  "128-contract-comparison-v04"
+  "188-legal-issue-detection-v05"
+  "193-risk-analysis-v05"
+  "228-legal-issue-detection-v06"],
+ :behavioral-fresh-mint-rate 0.9533898305084746,
+ :deferral-count 4,
+ :confounder-mint-count 4,
+ :missing-slugs [],
+ :majority-child-landing-rate 0.5546218487394958,
+ :deferrals-by-reason {},
+ :in-domain-seed-match-count 0,
+ :cross-group-families
+ {:families 46,
+  :shared-families 0,
+  :tasks-in-shared-families 0,
+  :shared {}},
+ :total 238,
+ :confounder-mint-slugs
+ ["046-compliance-checklist-v02"
+  "122-clause-drafting-v04"
+  "166-compliance-checklist-v05"
+  "206-compliance-checklist-v06"],
+ :latency
+ {:mean-ms 14540.90336134454, :median-ms 14607, :p95-ms 17291},
+ :in-domain-total 24,
+ :reached-via-frequencies
+ {:index-match 169,
+  :graph-land 32,
+  :mint 32,
+  :deferred 4,
+  :seed-match 1},
+ :tokens {:total 2978893, :mean 12516.35714285714},
+ :groups
+ {"api-migration-guide"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "api-migration-guide",
+   :child-count 2,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["017-api-migration-guide-v01"
+    "057-api-migration-guide-v02"
+    "097-api-migration-guide-v03"
+    "137-api-migration-guide-v04"
+    "177-api-migration-guide-v05"
+    "217-api-migration-guide-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "budget-forecast"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "budget-forecast",
+   :child-count 4,
+   :label-variant-count 1,
+   :label-variants ("nonprofit-cashflow-forecasting"),
+   :parents (#uuid "b6fb208b-4977-3571-a412-ec23e4f787eb"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["019-budget-forecast-v01"
+    "059-budget-forecast-v02"
+    "099-budget-forecast-v03"
+    "139-budget-forecast-v04"
+    "179-budget-forecast-v05"
+    "219-budget-forecast-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "chess-study"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "chess-study",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("chess-study-syllabus"),
+   :parents (#uuid "51d08fdd-b410-38b7-aa35-933e0ac75de7"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["032-chess-study-v01"
+    "072-chess-study-v02"
+    "112-chess-study-v03"
+    "152-chess-study-v04"
+    "192-chess-study-v05"
+    "232-chess-study-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "clause-drafting"
+  {:landing-count 5,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "clause-drafting",
+   :child-count 3,
+   :label-variant-count 2,
+   :label-variants
+   ("contract-clause-drafting" "employment-contract-drafting"),
+   :parents (#uuid "460bff7f-9637-3eb7-ae67-29f3077bc8b0"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["002-clause-drafting-v01"
+    "042-clause-drafting-v02"
+    "082-clause-drafting-v03"
+    "122-clause-drafting-v04"
+    "162-clause-drafting-v05"
+    "202-clause-drafting-v06"],
+   :converged-relaxed? false,
+   :mint-count 1},
+  "cloud-cost-review"
+  {:landing-count 4,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "cloud-cost-review",
+   :child-count 4,
+   :label-variant-count 2,
+   :label-variants ("cloud-cost-optimization" "gcp-cost-optimization"),
+   :parents (#uuid "1027c7e6-3535-3fa6-b98e-ab6d620cf0ae"),
+   :landing-rate-2nd-plus 0.6,
+   :members
+   ["004-cloud-cost-review-v01"
+    "044-cloud-cost-review-v02"
+    "084-cloud-cost-review-v03"
+    "124-cloud-cost-review-v04"
+    "164-cloud-cost-review-v05"
+    "204-cloud-cost-review-v06"],
+   :converged-relaxed? false,
+   :mint-count 2},
+  "compliance-checklist"
+  {:landing-count 3,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "compliance-checklist",
+   :child-count 5,
+   :label-variant-count 4,
+   :label-variants
+   ("regulatory-compliance-checklist"
+    "hipaa-compliance-checklist"
+    "gdpr-compliance-checklist"
+    "pci-dss-compliance-checklist"),
+   :parents (#uuid "6b919eef-246f-395c-a8a2-e3813a585354"),
+   :landing-rate-2nd-plus 0.4,
+   :members
+   ["006-compliance-checklist-v01"
+    "046-compliance-checklist-v02"
+    "086-compliance-checklist-v03"
+    "126-compliance-checklist-v04"
+    "166-compliance-checklist-v05"
+    "206-compliance-checklist-v06"],
+   :converged-relaxed? false,
+   :mint-count 3},
+  "content-calendar"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "content-calendar",
+   :child-count 2,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["034-content-calendar-v01"
+    "074-content-calendar-v02"
+    "114-content-calendar-v03"
+    "154-content-calendar-v04"
+    "194-content-calendar-v05"
+    "234-content-calendar-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "contract-comparison"
+  {:landing-count 3,
+   :cross-parent-scatter 2,
+   :converged-strict? false,
+   :deferral-count 1,
+   :group "contract-comparison",
+   :child-count 3,
+   :label-variant-count 3,
+   :label-variants
+   ("saas-contract-comparison"
+    "commercial-lease-comparison"
+    "employment-contract-negotiation"),
+   :parents
+   (#uuid "a53a693a-cab3-3763-9857-1cc4c5090e98"
+    #uuid "47a0608c-ab0a-3048-9d7c-a5e09fbcb35c"),
+   :landing-rate-2nd-plus 0.6,
+   :members
+   ["008-contract-comparison-v01"
+    "048-contract-comparison-v02"
+    "088-contract-comparison-v03"
+    "128-contract-comparison-v04"
+    "168-contract-comparison-v05"
+    "208-contract-comparison-v06"],
+   :converged-relaxed? false,
+   :mint-count 2},
+  "document-analysis"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "document-analysis",
+   :child-count 2,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["031-document-analysis-v01"
+    "071-document-analysis-v02"
+    "111-document-analysis-v03"
+    "151-document-analysis-v04"
+    "191-document-analysis-v05"
+    "231-document-analysis-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "experiment-plan"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "experiment-plan",
+   :child-count 1,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["024-experiment-plan-v01"
+    "064-experiment-plan-v02"
+    "104-experiment-plan-v03"
+    "144-experiment-plan-v04"
+    "184-experiment-plan-v05"
+    "224-experiment-plan-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "game-balance"
+  {:landing-count 5,
+   :cross-parent-scatter 0,
+   :converged-strict? false,
+   :deferral-count 1,
+   :group "game-balance",
+   :child-count 2,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["018-game-balance-v01"
+    "058-game-balance-v02"
+    "098-game-balance-v03"
+    "138-game-balance-v04"
+    "178-game-balance-v05"
+    "218-game-balance-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "hiring-rubric"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "hiring-rubric",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("interview-rubric-design"),
+   :parents (#uuid "1012350d-6907-31ff-8cfb-435b4557a135"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["036-hiring-rubric-v01"
+    "076-hiring-rubric-v02"
+    "116-hiring-rubric-v03"
+    "156-hiring-rubric-v04"
+    "196-hiring-rubric-v05"
+    "236-hiring-rubric-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "incident-postmortem"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "incident-postmortem",
+   :child-count 1,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["023-incident-postmortem-v01"
+    "063-incident-postmortem-v02"
+    "103-incident-postmortem-v03"
+    "143-incident-postmortem-v04"
+    "183-incident-postmortem-v05"
+    "223-incident-postmortem-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "legal-issue-detection"
+  {:landing-count 3,
+   :cross-parent-scatter 2,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "legal-issue-detection",
+   :child-count 4,
+   :label-variant-count 3,
+   :label-variants
+   ("contract-clause-review"
+    "commercial-lease-review"
+    "influencer-contract-review"),
+   :parents
+   (#uuid "ec24366b-ccb0-3d06-8aed-7bc30eddba5f"
+    #uuid "2cd133e7-fe29-331d-bda1-07b16b21afa6"),
+   :landing-rate-2nd-plus 0.4,
+   :members
+   ["028-legal-issue-detection-v01"
+    "068-legal-issue-detection-v02"
+    "108-legal-issue-detection-v03"
+    "148-legal-issue-detection-v04"
+    "188-legal-issue-detection-v05"
+    "228-legal-issue-detection-v06"],
+   :converged-relaxed? false,
+   :mint-count 3},
+  "lesson-plan"
+  {:landing-count 5,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "lesson-plan",
+   :child-count 5,
+   :label-variant-count 1,
+   :label-variants ("spanish-language-instruction"),
+   :parents (#uuid "51d08fdd-b410-38b7-aa35-933e0ac75de7"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["013-lesson-plan-v01"
+    "053-lesson-plan-v02"
+    "093-lesson-plan-v03"
+    "133-lesson-plan-v04"
+    "173-lesson-plan-v05"
+    "213-lesson-plan-v06"],
+   :converged-relaxed? false,
+   :mint-count 1},
+  "log-triage"
+  {:landing-count 3,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "log-triage",
+   :child-count 4,
+   :label-variant-count 3,
+   :label-variants
+   ("kubernetes-database-incident-investigation"
+    "mobile-crash-incident-investigation"
+    "database-incident-investigation"),
+   :parents (#uuid "151679bd-e2e2-3f05-9755-ba3b06785437"),
+   :landing-rate-2nd-plus 0.6,
+   :members
+   ["035-log-triage-v01"
+    "075-log-triage-v02"
+    "115-log-triage-v03"
+    "155-log-triage-v04"
+    "195-log-triage-v05"
+    "235-log-triage-v06"],
+   :converged-relaxed? false,
+   :mint-count 3},
+  "marathon-training"
+  {:landing-count 4,
+   :cross-parent-scatter 2,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "marathon-training",
+   :child-count 4,
+   :label-variant-count 3,
+   :label-variants
+   ("marathon-training-plan"
+    "half-marathon-training-plan"
+    "ultramarathon-training-plan"),
+   :parents
+   (#uuid "82cfde25-fa8f-3376-a5b1-7633513e1f4b"
+    #uuid "0068ecbf-e441-3ee1-95a7-b67c68c0dec4"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["015-marathon-training-v01"
+    "055-marathon-training-v02"
+    "095-marathon-training-v03"
+    "135-marathon-training-v04"
+    "175-marathon-training-v05"
+    "215-marathon-training-v06"],
+   :converged-relaxed? false,
+   :mint-count 2},
+  "meeting-actions"
+  {:landing-count 5,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "meeting-actions",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("meeting-transcript-extraction"),
+   :parents (#uuid "3acb40d4-d8b6-39e1-a666-174aeb01ced9"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["021-meeting-actions-v01"
+    "061-meeting-actions-v02"
+    "101-meeting-actions-v03"
+    "141-meeting-actions-v04"
+    "181-meeting-actions-v05"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "nutrition-labels"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "nutrition-labels",
+   :child-count 1,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["030-nutrition-labels-v01"
+    "070-nutrition-labels-v02"
+    "110-nutrition-labels-v03"
+    "150-nutrition-labels-v04"
+    "190-nutrition-labels-v05"
+    "230-nutrition-labels-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "planting-schedule"
+  {:landing-count 5,
+   :cross-parent-scatter 0,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "planting-schedule",
+   :child-count 1,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["026-planting-schedule-v01"
+    "066-planting-schedule-v02"
+    "106-planting-schedule-v03"
+    "146-planting-schedule-v04"
+    "186-planting-schedule-v05"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "poetry-meter"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "poetry-meter",
+   :child-count 2,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["010-poetry-meter-v01"
+    "050-poetry-meter-v02"
+    "090-poetry-meter-v03"
+    "130-poetry-meter-v04"
+    "170-poetry-meter-v05"
+    "210-poetry-meter-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "property-comps"
+  {:landing-count 5,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "property-comps",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("residential-property-valuation"),
+   :parents (#uuid "a53a693a-cab3-3763-9857-1cc4c5090e98"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["001-property-comps-v01"
+    "041-property-comps-v02"
+    "081-property-comps-v03"
+    "121-property-comps-v04"
+    "161-property-comps-v05"
+    "201-property-comps-v06"],
+   :converged-relaxed? false,
+   :mint-count 1},
+  "query-optimisation"
+  {:landing-count 4,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "query-optimisation",
+   :child-count 3,
+   :label-variant-count 3,
+   :label-variants
+   ("postgresql-performance-tuning"
+    "sql-performance-tuning"
+    "bigquery-performance-tuning"),
+   :parents (#uuid "7715c534-8fc5-3c8c-b2fe-374e2b6e4f0e"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["022-query-optimisation-v01"
+    "062-query-optimisation-v02"
+    "102-query-optimisation-v03"
+    "142-query-optimisation-v04"
+    "182-query-optimisation-v05"
+    "222-query-optimisation-v06"],
+   :converged-relaxed? false,
+   :mint-count 2},
+  "recipe-scaling"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "recipe-scaling",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("commercial-food-production-scaling"),
+   :parents (#uuid "8900e34c-615e-3ac8-8ed6-7e391721a0b8"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["025-recipe-scaling-v01"
+    "065-recipe-scaling-v02"
+    "105-recipe-scaling-v03"
+    "145-recipe-scaling-v04"
+    "185-recipe-scaling-v05"
+    "225-recipe-scaling-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "rehab-programme"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "rehab-programme",
+   :child-count 1,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["003-rehab-programme-v01"
+    "043-rehab-programme-v02"
+    "083-rehab-programme-v03"
+    "123-rehab-programme-v04"
+    "163-rehab-programme-v05"
+    "203-rehab-programme-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "release-notes"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "release-notes",
+   :child-count 1,
+   :label-variant-count 1,
+   :label-variants ("software-release-notes"),
+   :parents (#uuid "c1e0ce15-bd03-33fb-8304-a99c29009db9"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["012-release-notes-v01"
+    "052-release-notes-v02"
+    "092-release-notes-v03"
+    "132-release-notes-v04"
+    "172-release-notes-v05"
+    "212-release-notes-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "reorder-plan"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "reorder-plan",
+   :child-count 1,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["005-reorder-plan-v01"
+    "045-reorder-plan-v02"
+    "085-reorder-plan-v03"
+    "125-reorder-plan-v04"
+    "165-reorder-plan-v05"
+    "205-reorder-plan-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "research-synthesis"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "research-synthesis",
+   :child-count 1,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["011-research-synthesis-v01"
+    "051-research-synthesis-v02"
+    "091-research-synthesis-v03"
+    "131-research-synthesis-v04"
+    "171-research-synthesis-v05"
+    "211-research-synthesis-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "resume-tailoring"
+  {:landing-count 3,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "resume-tailoring",
+   :child-count 3,
+   :label-variant-count 3,
+   :label-variants
+   ("german-job-application-prep"
+    "nursing-job-application-overhaul"
+    "teacher-job-application-package"),
+   :parents (#uuid "38b02975-33e0-337c-ba0d-a047056045e5"),
+   :landing-rate-2nd-plus 0.6,
+   :members
+   ["007-resume-tailoring-v01"
+    "047-resume-tailoring-v02"
+    "087-resume-tailoring-v03"
+    "127-resume-tailoring-v04"
+    "167-resume-tailoring-v05"
+    "207-resume-tailoring-v06"],
+   :converged-relaxed? false,
+   :mint-count 3},
+  "risk-analysis"
+  {:landing-count 4,
+   :cross-parent-scatter 2,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "risk-analysis",
+   :child-count 4,
+   :label-variant-count 2,
+   :label-variants
+   ("municipal-rfp-risk-assessment" "compliance-risk-analysis"),
+   :parents
+   (#uuid "afb64dcf-5f4b-33ca-9dad-fba2c18ec481"
+    #uuid "07ba4e3f-700a-3d98-ab9e-d8114fb612aa"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["033-risk-analysis-v01"
+    "073-risk-analysis-v02"
+    "113-risk-analysis-v03"
+    "153-risk-analysis-v04"
+    "193-risk-analysis-v05"
+    "233-risk-analysis-v06"],
+   :converged-relaxed? false,
+   :mint-count 2},
+  "rpg-encounter"
+  {:landing-count 6,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "rpg-encounter",
+   :child-count 2,
+   :label-variant-count 1,
+   :label-variants ("rpg-encounter-design"),
+   :parents (#uuid "8d913a66-b826-4163-b42a-cc8e75d81c60"),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["009-rpg-encounter-v01"
+    "049-rpg-encounter-v02"
+    "089-rpg-encounter-v03"
+    "129-rpg-encounter-v04"
+    "169-rpg-encounter-v05"
+    "209-rpg-encounter-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "run-of-show"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "run-of-show",
+   :child-count 1,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["039-run-of-show-v01"
+    "079-run-of-show-v02"
+    "119-run-of-show-v03"
+    "159-run-of-show-v04"
+    "199-run-of-show-v05"
+    "239-run-of-show-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "schema-migration"
+  {:landing-count 4,
+   :cross-parent-scatter 0,
+   :converged-strict? true,
+   :deferral-count 2,
+   :group "schema-migration",
+   :child-count 1,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["027-schema-migration-v01"
+    "067-schema-migration-v02"
+    "107-schema-migration-v03"
+    "147-schema-migration-v04"
+    "187-schema-migration-v05"
+    "227-schema-migration-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "seating-plan"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "seating-plan",
+   :child-count 2,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["014-seating-plan-v01"
+    "054-seating-plan-v02"
+    "094-seating-plan-v03"
+    "134-seating-plan-v04"
+    "174-seating-plan-v05"
+    "214-seating-plan-v06"],
+   :converged-relaxed? false,
+   :mint-count 0},
+  "security-haiku"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? true,
+   :deferral-count 0,
+   :group "security-haiku",
+   :child-count 1,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["040-security-haiku-v01"
+    "080-security-haiku-v02"
+    "120-security-haiku-v03"
+    "160-security-haiku-v04"
+    "200-security-haiku-v05"
+    "240-security-haiku-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "spreadsheet-debugging"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "spreadsheet-debugging",
+   :child-count 2,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["037-spreadsheet-debugging-v01"
+    "077-spreadsheet-debugging-v02"
+    "117-spreadsheet-debugging-v03"
+    "157-spreadsheet-debugging-v04"
+    "197-spreadsheet-debugging-v05"
+    "237-spreadsheet-debugging-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "tax-estimate"
+  {:landing-count 4,
+   :cross-parent-scatter 1,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "tax-estimate",
+   :child-count 3,
+   :label-variant-count 3,
+   :label-variants
+   ("sole-trader-tax-calculation"
+    "corporate-tax-estimation"
+    "sole-trader-tax-estimation"),
+   :parents (#uuid "60c63fe7-aac0-3217-84bf-109e75f1aca4"),
+   :landing-rate-2nd-plus 0.6,
+   :members
+   ["029-tax-estimate-v01"
+    "069-tax-estimate-v02"
+    "109-tax-estimate-v03"
+    "149-tax-estimate-v04"
+    "189-tax-estimate-v05"
+    "229-tax-estimate-v06"],
+   :converged-relaxed? false,
+   :mint-count 2},
+  "translation-glossary"
+  {:landing-count 3,
+   :cross-parent-scatter 2,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "translation-glossary",
+   :child-count 5,
+   :label-variant-count 2,
+   :label-variants
+   ("game-localization-glossary" "bilingual-product-glossary"),
+   :parents
+   (#uuid "47a0608c-ab0a-3048-9d7c-a5e09fbcb35c"
+    #uuid "322c903e-b6fb-3f24-b651-258a5a9d4055"),
+   :landing-rate-2nd-plus 0.4,
+   :members
+   ["020-translation-glossary-v01"
+    "060-translation-glossary-v02"
+    "100-translation-glossary-v03"
+    "140-translation-glossary-v04"
+    "180-translation-glossary-v05"
+    "220-translation-glossary-v06"],
+   :converged-relaxed? false,
+   :mint-count 3},
+  "travel-itinerary"
+  {:landing-count 6,
+   :cross-parent-scatter 0,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "travel-itinerary",
+   :child-count 2,
+   :label-variant-count 0,
+   :label-variants (),
+   :parents (),
+   :landing-rate-2nd-plus 1.0,
+   :members
+   ["038-travel-itinerary-v01"
+    "078-travel-itinerary-v02"
+    "118-travel-itinerary-v03"
+    "158-travel-itinerary-v04"
+    "198-travel-itinerary-v05"
+    "238-travel-itinerary-v06"],
+   :converged-relaxed? true,
+   :mint-count 0},
+  "worksheet-generation"
+  {:landing-count 4,
+   :cross-parent-scatter 2,
+   :converged-strict? false,
+   :deferral-count 0,
+   :group "worksheet-generation",
+   :child-count 6,
+   :label-variant-count 2,
+   :label-variants
+   ("ap-chemistry-stoichiometry-worksheet" "french-grammar-worksheet"),
+   :parents
+   (#uuid "7a486fa5-b668-3f3b-b669-45b8621b434a"
+    #uuid "13ba0456-5c9c-391b-905b-be7649570228"),
+   :landing-rate-2nd-plus 0.8,
+   :members
+   ["016-worksheet-generation-v01"
+    "056-worksheet-generation-v02"
+    "096-worksheet-generation-v03"
+    "136-worksheet-generation-v04"
+    "176-worksheet-generation-v05"
+    "216-worksheet-generation-v06"],
+   :converged-relaxed? false,
+   :mint-count 2}},
+ :newborn-in-index-rate 0.03980099502487562,
+ :in-domain-mint-count 7,
+ :identity-stability 0.6176470588235294}

@@ -26,4 +26,8 @@
                   ;; changes what consumers of orc-ontology pull in (`:deps`):
                   ;; the shipped component resolves both lazily.
                   :extra-deps {orc/colbert {:local/root "../colbert"}
-                               orc/evaluation {:local/root "../evaluation"}}}}}
+                               orc/evaluation {:local/root "../evaluation"}
+                               obneyai/grain-event-store-sqlite-v3
+                               {:git/url "https://github.com/ObneyAI/grain.git"
+                                :git/sha "dbf5b5229aad09785e40f71e96adf65c90f971d5"
+                                :deps/root "projects/grain-event-store-sqlite-v3"}}}}}

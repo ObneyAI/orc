@@ -1,0 +1,6 @@
+interface:
+  display_name: "ORC Decision Models"
+  short_description: "Build semantic routing and checks in ORC trees"
+  default_prompt: "Use $orc-decision-models to design typed semantic decisions and tool routing for this ORC behavior tree."
+policy:
+  allow_implicit_invocation: true

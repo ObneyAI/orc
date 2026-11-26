@@ -1,0 +1,24 @@
+; brief-id: b-025
+; group: release-notes
+; variant: 3
+
+I need a set of release notes synthesized for the CLI v3.2.0 based on the 35 raw change items attached below. The source data includes a messy mix of PR descriptions, commit messages, and issue titles that need to be translated from "dev-speak" into clear, benefit-oriented language for our end users. For example, instead of technical shorthand like "updated debounce logic," describe it as "faster command-line response times."
+
+Please format the output exactly according to this schema:
+* **What’s New**: A bulleted list of entirely new commands or flags introduced in this version.
+* **Improved**: A summary of performance optimizations, UX enhancements, or internal refactors that benefit the user experience.
+* **Fixed**: A list of resolved bugs and errors, phrased by the behavior they corrected.
+* **Breaking Changes**: A high-visibility section highlighting changes to existing command syntax or output formats.
+* **Upgrade Notes**: A specific guide on migrating to the new global configuration file structure, as the previous format is now deprecated.
+
+Strict Constraints:
+- Use a professional, technical tone suitable for engineers.
+- Remove all internal references, including PR numbers, developer names, and commit hashes.
+- Ensure the final document is cohesive and ready for public distribution.
+
+[CLI REPO DATA]
+- Commit: fix: resolve race condition in 'deploy' command when using --force
+- PR #214: feat: add --json flag to 'list-resources' for machine-readable output
+- Issue #118: 'Error when pipe-lining stdout to grep on Windows'
+- Commit: refactor: update config parser to use YAML instead of JSON (BREAKING)
+- PR #220: feat: implement 'auth login' via browser redirect... [30 more items...]

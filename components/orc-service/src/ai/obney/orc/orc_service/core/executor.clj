@@ -7,7 +7,7 @@
    Supports multiple executor types:
    - :ai - ORC LLM AI execution with optional model selection
    - :code - Clojure function execution
-   - :tool - Direct tool invocation (future)
+   - :tool - Authored-tool invocation
    - :repl-researcher - Iterative LLM+SCI code execution
 
    Mapping:
@@ -17,25 +17,34 @@
    - Blackboard values → ORC LLM input values
    - ORC LLM output values → Blackboard writes"
   (:require [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.orc-service.core.model-fallback :as model-fallback]
+            [ai.obney.orc.orc-service.core.ai-model-receipts :as ai-model-receipts]
+            [ai.obney.orc.orc-service.core.model-call-journal :as model-call-journal]
+            [ai.obney.orc.orc-service.core.ordinary-model-plan :as ordinary-model-plan]
+            [ai.obney.orc.orc-service.core.provider-observations :as provider-observations]
             [clojure.string :as str]
             [clojure.set]
             [clojure.walk :as walk]
             [cheshire.core :as json]
             [malli.core :as m]
-            [malli.error :as me]
-            [malli.transform :as mt]
+            [ai.obney.orc.orc-service.core.output-validation :as output-validation]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.core.observability :as obs]
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.block :as block]
+            [ai.obney.orc.orc-service.core.decision :as decision]
             [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.core.iteration-evidence :as iteration-evidence]
+            [ai.obney.orc.orc-service.core.researcher-setup-diagnostics :as setup-diagnostics]
             [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
+            [ai.obney.orc.orc-service.core.tool-invocation :as tool-invocation]
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
+            [ai.obney.orc.orc-service.core.researcher-models :as researcher-models]
             [ai.obney.orc.orc-service.core.researcher-mode :as researcher-mode]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
@@ -156,19 +165,6 @@
                   :else v)))]
       (decode* value))))
 
-(def ^:private transport-timeout-classes
-  "Exception types that mean exactly one thing: the call did not complete within
-   its deadline. A checkpointed provider call races TWO timers set from the same
-   live remainder — ORC's own `bounded-call` deadline and the request timeout ORC
-   hands the transport — so either can fire first. Both must classify the same
-   way, or which timer wins decides whether the campaign retries or dies.
-
-   Classified by TYPE and cause chain, never by message text.
-   `HttpConnectTimeoutException` is a subtype of `HttpTimeoutException`."
-  #{java.net.http.HttpTimeoutException
-    java.net.SocketTimeoutException
-    java.util.concurrent.TimeoutException})
-
 (def provider-classification-lead-ms
   "How much EARLIER than the transport's deadline ORC's own provider deadline fires.
 
@@ -206,17 +202,10 @@
     provider-timeout-ms))
 
 (defn transport-timeout?
-  "True when `throwable`, or anything in its cause chain, is a transport-level
-   deadline expiry. The chain walk is cycle-guarded: a self-referencing cause
-   must not hang the classifier."
+  "Recognize durable researcher deadlines and the LLM boundary's structural
+   transport timeout contract. No exception cause is needed after replay."
   [throwable]
-  (loop [e throwable
-         seen #{}]
-    (cond
-      (nil? e) false
-      (contains? seen e) false
-      (some #(instance? % e) transport-timeout-classes) true
-      :else (recur (.getCause ^Throwable e) (conj seen e)))))
+  (llm/transport-timeout? throwable))
 
 (defn bounded-call
   "Invoke f within timeout-ms. Returns a tagged result and interrupts the worker
@@ -352,7 +341,7 @@
                        items)})
 
     (map? v)
-    (let [ks (sort (keys v))
+    (let [ks (sort-by pr-str (keys v))
           ks-sample (take 3 ks)]
       {:keys (vec ks)
        :sample-3 (mapv (fn [k]
@@ -387,6 +376,48 @@
                              (coll? v))
                          (empty? v)))]
       k)))
+
+(def ^:private researcher-control-keys
+  #{:tree-results :generated-tree :generated-tree-raw :generated-tree-source
+    :iteration-reasonings :preflight-required-schema-keys})
+
+(defn- scoped-child-node? [nodes node-id]
+  (loop [parent-id (:parent-id (get nodes node-id)) seen #{}]
+    (when (and parent-id (not (contains? seen parent-id)))
+      (let [parent (get nodes parent-id)]
+        (or (= :map-each (:type parent))
+            (recur (:parent-id parent) (conj seen parent-id)))))))
+
+(defn- child-declared-writes [nodes]
+  (vec (distinct
+         (remove nil?
+           (mapcat (fn [[id node]]
+                     (when-not (scoped-child-node? nodes id)
+                       (concat (:writes node)
+                               (when (= :map-each (:type node)) [(:output-key node)]))))
+                   nodes)))))
+
+(defn- completed-child-values [context tick-id nodes events]
+  ;; Resolve canonical producer writes, including references and explicit null.
+  ;; Seeds/rejected writes are excluded by the value log. Per-item results retain
+  ;; their execution identity; they cannot replace an unscoped local binding.
+  (reduce (fn [result completion]
+            (let [writes (value-log/resolve-writes context (:tenant-id context) tick-id completion)
+                  owner (assoc (select-keys completion [:event/id :node-id :tick-id :status])
+                               :exec-context (second (value-log/execution-key completion)))
+                  protected (select-keys writes researcher-control-keys)
+                  writes (apply dissoc writes researcher-control-keys)]
+              (cond->
+                (if (scoped-child-node? nodes (:node-id completion))
+                  (update result :scoped-outputs into
+                          (map (fn [[k v]] {:key k :owner owner :preview (compute-output-preview v)}) writes))
+                  (-> result
+                      (update :values merge writes)
+                      (update :owners merge (zipmap (keys writes) (repeat owner)))))
+                (seq protected) (update :protected-writes into (keys protected)))))
+          {:values {} :owners {} :scoped-outputs [] :protected-writes []}
+          (filter #(and (= :sheet/node-execution-completed (:event/type %))
+                        (contains? #{:success :partial} (:status %))) events)))
 
 (defn compute-tree-result-summary
   "Build the lightweight :tree-results summary entry for a Phase 2 tree execution.
@@ -464,6 +495,8 @@
              :elapsed-ms (:duration-ms phase2-result)
              :outputs-keys outputs-keys
              :outputs-previews outputs-previews
+             :missing-writes (vec (remove #(contains? (:outputs phase2-result) %) writes))
+             :present-empty-writes (vec (filter #(contains? (:outputs phase2-result) %) nil-writes))
              :nodes-succeeded succeeded
              :nodes-failed failed
              :nodes-total total
@@ -483,9 +516,17 @@
              :budget-remaining-ms (:budget-remaining-ms phase2-result)
              :nodes-completed-before-cancel (count leaf-completions))
 
+      (:error phase2-result)
+      (assoc :error (:error phase2-result))
+
+      (:admission-rejected? phase2-result)
+      (assoc :admission-rejected? true)
+
+      (:setup-diagnostic phase2-result)
+      (assoc :setup-diagnostic (:setup-diagnostic phase2-result))
+
       (:preflight-rejected? phase2-result)
-      (assoc :preflight-rejected? true
-             :error (:error phase2-result)))))
+      (assoc :preflight-rejected? true))))
 
 (defn merge-tree-result-into-sandbox
   "Return new sandbox-vars after a Phase 2 tree execution.
@@ -552,32 +593,52 @@
   (let [{:keys [status elapsed-ms nodes-succeeded nodes-failed nodes-total
                 outputs-keys outputs-previews nil-writes failed-leaves
                 failure-indices failure-reasons surviving-vars
-                preflight-rejected? error]} summary
+                preflight-rejected? admission-rejected? error missing-writes present-empty-writes
+                source-iteration action-id tick-id scoped-outputs protected-writes]} summary
         preview-str (fn [k]
                       (let [p (get outputs-previews k)]
                         (if (string? p) p (pr-str p))))
         nil-set (set nil-writes)
-        ok-keys (vec (remove nil-set outputs-keys))]
-    (if preflight-rejected?
+        ok-keys (vec outputs-keys)]
+    (cond
+      preflight-rejected?
       (str "TREE REJECTED BEFORE EXECUTION — no child tick or leaf ran. "
            error
-           " Re-emit the same intended tree with explicit, specific "
-           ":output-schemas for every write; do not treat this as an "
-           "executed failure and do not finalize or recover yet.")
+           " Correct the reported setup error before re-emitting the intended "
+           "tree. Reuse existing declared contracts; declare specific schemas "
+           "for new computed keys. No child result was produced.")
+      admission-rejected?
+      (str "CHILD ADMISSION REJECTED BEFORE EXECUTION — no child tick or leaf ran. "
+           error
+           " The refusal occurred before child code could change its inputs. "
+           "No child result was produced.")
+      :else
       (str "Tree executed — status: " status
+         " | child tick: " tick-id
+         (when action-id (str " | action: " action-id))
+         (when (some? source-iteration) (str " | source iteration: " source-iteration))
          " | nodes: " nodes-succeeded "/" nodes-total " succeeded"
          (when (and nodes-failed (pos? nodes-failed))
            (str ", " nodes-failed " failed"))
          (when elapsed-ms (str " | " elapsed-ms " ms"))
+         (when error (str "\nExecution error: " error))
          (when (seq ok-keys)
            (str "\nOutputs merged (readable via get-var):\n"
                 (str/join "\n" (map (fn [k] (str "  " k " = " (preview-str k)))
                                     ok-keys))))
-         (when (seq nil-writes)
+         (when (seq missing-writes)
+           (str "\nMissing child writes (no completed value): " (pr-str missing-writes)))
+         (when (seq present-empty-writes)
+           (str "\nPresent null/empty child writes: " (pr-str present-empty-writes)
+                " — completed values, not absence. Assess their meaning for the task."))
+         (when (and (seq nil-writes) (nil? missing-writes))
            (str "\nNIL/EMPTY WRITES: " (str/join ", " (map str nil-writes))
-                " — these declared writes did NOT land; (get-var ...) returns"
-                " nil/empty for them. Decide whether empty is the correct"
-                " answer for your task, or recover before calling final!."))
+                " — legacy summary combines missing and present empty values; inspect producer evidence."))
+         (when (seq scoped-outputs)
+           (str "\nPer-item completed outputs (previews; inspect by owner, not global get-var):\n"
+                (str/join "\n" (map pr-str scoped-outputs))))
+         (when (seq protected-writes)
+           (str "\nChild writes excluded from researcher control state: " (pr-str protected-writes)))
          (when (seq failed-leaves)
            (str "\nFailed leaves:\n"
                 (str/join "\n" (map (fn [{:keys [node-id error]}]
@@ -663,14 +724,29 @@
 ;; Usage Normalization
 ;; =============================================================================
 
+(defn- usage-cost
+  "The provider-reported :cost of a usage map when it is a number, else nil."
+  [usage]
+  (let [c (:cost usage)] (when (number? c) c)))
+
+(defn- add-cost
+  "Add `usage`'s :cost (when present) onto the accumulator's :cost."
+  [acc usage]
+  (if-let [c (usage-cost usage)]
+    (assoc acc :cost (+ (or (:cost acc) 0) c))
+    acc))
+
 (defn- normalize-usage
   "Normalize ORC LLM/litellm usage map to kebab-case.
    Handles both snake_case (raw API) and kebab-case (already normalized) inputs."
   [usage]
   (when usage
-    {:prompt-tokens (or (:prompt-tokens usage) (:prompt_tokens usage) 0)
-     :completion-tokens (or (:completion-tokens usage) (:completion_tokens usage) 0)
-     :total-tokens (or (:total-tokens usage) (:total_tokens usage) 0)}))
+    (cond-> {:prompt-tokens (or (:prompt-tokens usage) (:prompt_tokens usage) 0)
+             :completion-tokens (or (:completion-tokens usage) (:completion_tokens usage) 0)
+             :total-tokens (or (:total-tokens usage) (:total_tokens usage) 0)}
+      ;; A provider that reports what a call cost (e.g. OpenRouter decisions)
+      ;; keeps that figure; it is never synthesised.
+      (number? (:cost usage)) (assoc :cost (:cost usage)))))
 
 ;; =============================================================================
 ;; Schema Description Generation
@@ -728,8 +804,11 @@
                                   opts (when (map? (first rest)) (first rest))
                                   field-schema (if opts (second rest) (first rest))
                                   optional? (:optional opts)]
+                              ;; Never mark optionality on the NAME (`name?:`): a function-calling
+                              ;; model copies the suffix into the key it returns, and the value is
+                              ;; then silently lost on decode. State it in words, outside the name.
                               (str (name field-key)
-                                   (when optional? "?")
+                                   (when optional? " (optional)")
                                    ": " (malli-schema->description field-schema))))]
           (str "object with {" (clojure.string/join ", " field-descs) "}"))
 
@@ -741,7 +820,7 @@
              (clojure.string/join ", " (map provider-enum-spelling args)))
 
         :maybe
-        (str (malli-schema->description (first args)) " (optional)")
+        (str (malli-schema->description (first args)) " or null")
 
         :or
         (str "either " (clojure.string/join " or " (map malli-schema->description args)))
@@ -776,12 +855,17 @@
      [:string {:description \"The question to answer\"}]
      [:map {:description \"A map of...\"} [:field :type]]
 
+   A recursive schema is persisted as `[:schema {:registry ..} <root>]`; the
+   registry wrapper carries no description of its own, so the root's
+   description is the key's description.
+
    Returns the description string or nil if not present."
   [schema]
-  (when (and (vector? schema)
-             (> (count schema) 1)
-             (map? (second schema)))
-    (:description (second schema))))
+  (when (vector? schema)
+    (or (when (and (> (count schema) 1) (map? (second schema)))
+          (:description (second schema)))
+        (when (and (= :schema (first schema)) (> (count schema) 2))
+          (extract-schema-description (last schema))))))
 
 ;; =============================================================================
 ;; Output Flattening (Python DSPy Alignment)
@@ -815,7 +899,9 @@
       [:score [:double {:description \"Academic fit score from 0.0 to 1.0\"}]]
       [:reasoning [:string {:description \"Detailed explanation\"}]]]"
   [key-name schema]
-  (if (map-schema? schema)
+  (if (and (map-schema? schema)
+           (or (seq (filter vector? (rest schema)))
+               (not (true? (:closed (second schema))))))
     ;; Flatten the map fields into separate output fields
     (let [fields (filter vector? (rest schema))]
       (vec
@@ -826,6 +912,11 @@
                    ;; Extract custom description from field options or nested schema
                    custom-desc (or (:description opts)
                                    (extract-schema-description field-spec))
+                   ;; Preserve authored provenance before legacy type prose is added.
+                   ;; The strict compiler selects this view after resolving mode.
+                   strict-desc (str/join "\n" (distinct (remove str/blank?
+                                              [(:description opts)
+                                               (extract-schema-description field-spec)])))
                    type-desc (malli-schema->description field-spec)
                    ;; Combine custom description with type info
                    description (if custom-desc
@@ -834,10 +925,16 @@
          {:name (keyword field-name)
           :original-key key-name
           :nested-key field-name
+          :original-nested-key field-key
+          ;; A key the contract declares as a string stays a string on
+          ;; reassembly; keyword keys are read as keywords (llm.allium).
+          :string-key? (string? field-key)
           :spec field-spec
           :optional (true? (:optional opts))
+          :orc/strict-description (not-empty strict-desc)
           :description description})))
-    ;; Not a flattened map - check if it's a map-of (needs JSON guidance)
+    ;; Dynamic maps retain their declared contract; the selected output
+    ;; protocol supplies its own wire-format guidance.
     (if (map-of-schema? schema)
       (let [custom-desc (extract-schema-description schema)
             type-desc (malli-schema->description schema)]
@@ -845,9 +942,10 @@
           :original-key key-name
           :nested-key nil
           :spec schema
+          :orc/strict-description custom-desc
           :description (if custom-desc
-                         (str custom-desc " - Return a valid JSON object. (" type-desc ")")
-                         (str key-name " - Return a valid JSON object. " type-desc))}])
+                         (str custom-desc " (" type-desc ")")
+                         (str key-name " - " type-desc))}])
       ;; Regular non-map schema
       (let [custom-desc (extract-schema-description schema)
             type-desc (malli-schema->description schema)]
@@ -855,6 +953,7 @@
           :original-key key-name
           :nested-key nil
           :spec schema
+          :orc/strict-description custom-desc
           :description (if custom-desc
                          (str custom-desc " (" type-desc ")")
                          (str "Output: " key-name " - " type-desc))}]))))
@@ -872,7 +971,9 @@
 
    Returns:
      {'academic-score' {:score 0.85 :reasoning '...' :keyFactors [...]}}"
-  [raw-outputs output-mapping]
+  ([raw-outputs output-mapping]
+   (reassemble-flattened-outputs raw-outputs output-mapping false))
+  ([raw-outputs output-mapping complete?]
   (reduce-kv
    (fn [acc output-key output-value]
      (if-let [mapping (get output-mapping output-key)]
@@ -889,15 +990,23 @@
 
            nested-key
            ;; Nested field - assoc into nested map
-           (update acc original-key assoc (keyword nested-key) output-value)
+           (update acc original-key assoc
+                   (if (contains? mapping :original-nested-key)
+                     (:original-nested-key mapping)
+                     (if (:string-key? mapping) nested-key (keyword nested-key)))
+                   output-value)
 
            :else
            ;; Non-nested field - use directly
            (assoc acc original-key output-value)))
        ;; No mapping found, use as-is
        (assoc acc output-key output-value)))
-   {}
-   raw-outputs))
+   (if (and complete? (map? raw-outputs))
+     (into {} (keep (fn [[parent fields]]
+                      (when (every? :optional fields) [parent {}])))
+           (group-by :original-key (filter :nested-key (vals output-mapping))))
+     {})
+   raw-outputs)))
 
 (defn- schema-field-type
   "Extract :field-type from a Malli schema's properties, if present.
@@ -909,47 +1018,57 @@
       (catch Exception _ nil))))
 
 (defn- build-field
-  "Build a ORC LLM field definition from a blackboard key and its entry.
-   Now uses Malli schemas directly instead of legacy field types.
+  "Build a ORC LLM INPUT field definition from a blackboard key and its entry.
 
-   If the Malli schema has a :description property (e.g., [:string {:description \"...\"}]),
-   it will be used as the field description, combined with type info.
-   This aligns with Python DSPy's InputField(desc=\"...\") pattern.
+   The field's :description is its declared meaning and nothing else: the
+   :description property of its Malli schema (e.g. [:string {:description \"...\"}]),
+   or no description at all when the schema declares none. The input field guide
+   states each shown field's name and type itself, and its nested fields only
+   where the request carries them, so a description that also spelled out the
+   declared type (or invented \"Blackboard key: ...\" text) would name nested
+   fields the request does not carry. Output fields are built elsewhere
+   (flatten-output-schema) and keep their type text.
 
    If the Malli schema has a :field-type property (e.g., [:vector {:field-type :image} :string]),
    it will be set as :type on the ORC LLM field definition, enabling multimodal support."
   [key-name blackboard-entry]
   (let [schema (:schema blackboard-entry)
         field-type (schema-field-type schema)
-        ;; Extract custom description from Malli schema properties
-        custom-desc (extract-schema-description schema)
-        type-desc (when schema (malli-schema->description schema))
-        ;; Combine: custom description + type info, or fallback to auto-generated
-        description (cond
-                      ;; Custom description provided - combine with type info
-                      (and custom-desc type-desc)
-                      (str custom-desc " (" type-desc ")")
-
-                      ;; Custom description only (no type info)
-                      custom-desc
-                      custom-desc
-
-                      ;; No custom description - use auto-generated
-                      type-desc
-                      (str "Blackboard key: " key-name " - " type-desc)
-
-                      ;; Fallback when no schema
-                      :else
-                      (str "Blackboard key: " key-name))]
+        description (extract-schema-description schema)]
     (cond-> {:name key-name
              :original-key key-name  ;; Keep original for mapping back
-             :spec (or schema :any)  ;; Use the Malli schema directly
-             :description description}
+             :spec (or schema :any)} ;; Use the Malli schema directly
+      description (assoc :description description)
       field-type (assoc :type field-type))))
 
 ;; =============================================================================
 ;; Module Builder
 ;; =============================================================================
+
+(defn- preserve-output-identities
+  "Assign deterministic wire aliases only where flattened names collide.
+   Original typed field keys remain in the reassembly mapping."
+  [outputs]
+  (let [wire-name (fn [field] (name (:name field)))
+        counts (frequencies (map wire-name outputs))
+        used (atom (set (map wire-name outputs)))
+        next-id (atom -1)]
+    (mapv (fn [field]
+            (if (> (get counts (wire-name field)) 1)
+              (let [alias (loop []
+                            (let [candidate (str "__orc_field_" (swap! next-id inc))]
+                              (if (contains? @used candidate) (recur) candidate)))]
+                (swap! used conj alias)
+                (let [identity-description
+                      (str " Original output path: "
+                           (pr-str (cond-> [(:original-key field)]
+                                     (contains? field :original-nested-key)
+                                     (conj (:original-nested-key field)))) ".")]
+                  (-> field
+                      (assoc :name (keyword alias))
+                      (update :description str identity-description)
+                      (update :orc/strict-description str identity-description))))
+              field)) outputs)))
 
 (defn build-module
   "Build a ORC LLM module from a leaf node and blackboard metadata.
@@ -993,7 +1112,23 @@
                                (flatten-output-schema
                                 key-name
                                 (get-in blackboard [key-name :schema]))))
-                     vec)
+                     vec
+                     preserve-output-identities)
+        ;; Flattened children retain their own contracts, but cannot carry the
+        ;; containing map's authored meaning. Preserve that scope separately;
+        ;; strict compilation renders it once using the final wire aliases.
+        output-groups
+        (into []
+              (keep (fn [key-name]
+                      (let [fields (filter #(and (= key-name (:original-key %))
+                                                 (contains? % :original-nested-key)) outputs)
+                            description (extract-schema-description
+                                         (get-in blackboard [key-name :schema]))]
+                        (when (and (seq fields) (not (str/blank? description)))
+                          {:path [key-name]
+                           :description description
+                           :fields (mapv (comp name :name) fields)}))))
+              (:writes node))
         ;; Warn about map-of schemas - they work but explicit [:map ...] is more reliable
         _ (when (some #(map-of-schema? (:spec %)) outputs)
             (println "[WARN] Node" (:name node) "uses [:map-of ...] schema for LLM output."
@@ -1005,11 +1140,14 @@
                                     [(:name o)
                                      {:original-key (:original-key o)
                                       :nested-key (:nested-key o)
+                                      :original-nested-key (:original-nested-key o)
+                                      :string-key? (:string-key? o)
                                       :optional (:optional o)
                                       :spec (:spec o)}])
                                   outputs))]
     {:inputs inputs
      :outputs outputs
+     :orc/output-groups output-groups
      :instructions (or (:instruction node) "Execute this task.")
      :output-mapping output-mapping}))
 
@@ -1032,17 +1170,13 @@
      node - The leaf node with :reads
      blackboard - Map of key -> {:key, :schema, :value, :version}
 
-   Returns a map of keyword -> value for ORC LLM (using sanitized names).
-   Complex values are serialized as JSON for better LLM understanding.
-   Values with :field-type in their schema properties (e.g., :image) are
-   passed through raw — they should not be JSON-serialized."
+   Returns native values for ORC LLM, including present nil. A declared entry
+   with no :value is absent. Shared request rendering serializes text inputs;
+   field-type inputs (e.g. images) retain their native content-part values."
   [node blackboard]
   (reduce (fn [acc key-name]
-            (if-let [entry (get blackboard key-name)]
-              (let [value (:value entry)
-                    ft (schema-field-type (:schema entry))
-                    serialized (if ft value (serialize-for-llm value))]
-                (assoc acc key-name serialized))
+            (if (contains? (get blackboard key-name) :value)
+              (assoc acc key-name (get-in blackboard [key-name :value]))
               acc))
           {}
           (:reads node)))
@@ -1076,10 +1210,20 @@
           node))
       tree)))
 
+(defn- inject-subcall-config [tree defaults]
+  (walk/postwalk
+   (fn [form]
+     (if (and (seq? form) (= 'sheet/llm (first form)))
+       (let [opts (apply hash-map (rest form))
+             effective (researcher-models/inherit defaults opts)]
+         (apply list 'sheet/llm (mapcat identity effective)))
+       form)) tree))
+
 (defn- inject-tool-caller-fn
   "Phase 4B: Walk a canonical-DSL emit-tree! tree and inject the parent
    repl-researcher's `:tool-caller-fn` (gated tool-caller builder FQN) into
-   each (sheet/code ...) form that does not already declare one.
+   each (sheet/code ...) form, overriding any gate the model declared; the
+   researcher's contracts are merged over any model-declared ones.
 
    No-op when tool-caller-fn is nil (no parent gate) — backwards compatible,
    the child code nodes use the static (:call-tool-fn context) unchanged.
@@ -1090,18 +1234,34 @@
    BUILDER FQN onto the generated code nodes so the child tick rebuilds the
    gated caller from its own blackboard :tool-context (plain data, which
    does survive the boundary) — exactly how the parent node builds it."
-  [tree tool-caller-fn]
-  (if (nil? tool-caller-fn)
-    tree
-    (walk/postwalk
-      (fn [node]
-        (if (and (seq? node)
-                 (= 'sheet/code (first node))
-                 (let [opts (try (apply hash-map (rest node)) (catch Exception _ nil))]
-                   (and opts (not (contains? opts :tool-caller-fn)))))
-          (concat node [:tool-caller-fn tool-caller-fn])
-          node))
-      tree)))
+  ([tree tool-caller-fn]
+   (inject-tool-caller-fn tree tool-caller-fn nil))
+  ([tree tool-caller-fn tool-contracts]
+   (if (and (nil? tool-caller-fn) (empty? tool-contracts))
+     tree
+     (walk/postwalk
+       (fn [node]
+         (if (and (seq? node)
+                  (= 'sheet/code (first node)))
+           (let [opts (try (apply hash-map (rest node)) (catch Exception _ nil))]
+             (if opts
+               ;; The researcher's gate and contracts ALWAYS govern its
+               ;; generated subtree: a model-authored gate is ignored, and a
+               ;; model-authored contract may only ADD a tool the researcher
+               ;; did not declare (the researcher wins per tool).
+               (let [opts' (cond-> opts
+                             tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+                             (seq tool-contracts)
+                             (assoc :tool-contracts
+                                    (merge (when (map? (:tool-contracts opts))
+                                             (:tool-contracts opts))
+                                           tool-contracts)))]
+                 (if (= opts opts')
+                   node
+                   (apply list 'sheet/code (mapcat identity opts'))))
+               node))
+           node))
+       tree))))
 
 ;; =============================================================================
 ;; Code Executor
@@ -1189,6 +1349,179 @@
         caller))
     (:call-tool-fn context)))
 
+(declare tool-caller-target tool-caller-arity tool-caller-arity-error)
+
+(defn- dispatch-claimed-tool-effect!
+  "The one claim -> dispatch -> validate -> complete sequence for a
+   checkpoint-safe tool call (LeafExecutor/CheckpointedResearcherExecution
+   EffectsAreClaimedBeforeTheyHappen). Both the inline researcher wrapper and
+   the generated-child wrapper run through here.
+
+   The claim is taken (when a claim capability exists) BEFORE the tool is
+   called; a claim anomaly throws. The tool's result must honour its declared
+   result contract before it is recorded; the durable completion is then
+   written under the same attempt identity, and an anomaly on completion
+   (ownership lost) throws. `wrap-errors?` turns a tool exception into the
+   safe :tool-error outcome (the model-facing researcher behaviour); a code
+   leaf passes false and sees the tool's own exception.
+
+   Returns {:result r :durable-result encoded-r}."
+  [{:keys [claim! complete! codecs contracts tool-name args action-id attempt-id
+           attempt-ordinal iteration-index caller caller-arity tool-context
+           wrap-errors?]}]
+  (let [claim-result (when claim!
+                       (claim! {:iteration-index iteration-index
+                                :logical-action-identity action-id
+                                :attempt-identity attempt-id
+                                :attempt-ordinal attempt-ordinal
+                                :kind :tool}))
+        _ (when (:cognitect.anomalies/category claim-result)
+            (throw (ex-info "Researcher tool claim conflicted"
+                            {:claim-result claim-result
+                             :logical-action-identity action-id
+                             :attempt-identity attempt-id})))
+        result (case caller-arity
+                 3 (if wrap-errors?
+                     (try
+                       (caller tool-name args tool-context)
+                       (catch Exception e
+                         ;; The tool's own failure reaches the researcher as
+                         ;; the safe :tool-error outcome, never its raw message.
+                         (throw (tool-invocation/tool-error tool-name e))))
+                     (caller tool-name args tool-context))
+                 (throw
+                  (ex-info
+                   tool-caller-arity-error
+                   {:expected-arities [3]})))
+        ;; Declared result contract: a violating result is never
+        ;; completed/recorded as a successful value.
+        _ (tool-invocation/validate-result! contracts tool-name result)
+        durable-result (encode-checkpoint-value codecs result)]
+    (when complete!
+      (let [completion (complete! {:logical-action-identity action-id
+                                   :attempt-identity attempt-id
+                                   :result durable-result})]
+        (when (:cognitect.anomalies/category completion)
+          (throw (ex-info "Researcher tool outcome lost ownership"
+                          {:completion-result completion
+                           :logical-action-identity action-id
+                           :attempt-identity attempt-id})))))
+    {:result result :durable-result durable-result}))
+
+(defn- checkpointed-campaign-epoch
+  "The ownership epoch of the checkpointed researcher campaign this tick
+   belongs to, or nil when it belongs to none."
+  [context]
+  (let [epoch (get-in context [:tick-options :researcher-ownership-epoch])]
+    (when (and (integer? epoch) (pos? epoch)) epoch)))
+
+(defn- checkpoint-child-call-tool-fn
+  "Wrap a generated child leaf's tool caller so each call is a campaign effect
+   exactly like an inline researcher tool call
+   (GeneratedChildToolCallsAreCheckpointed): the tool must be declared
+   checkpoint-safe; the call has a stable logical identity under the CAMPAIGN's
+   tick, node and iteration that also names the child node; it is claimed under
+   the campaign's ownership epoch before it begins; it completes with a durable
+   receipt. A call whose receipt is already complete returns the recorded
+   result without calling the tool; a claim with no completed receipt is
+   treated as an inline call's unresolved claim is (the new claim conflicts and
+   the call fails).
+
+   Identity: the child's generated code hash is not available to the child
+   leaf, so the child node id stands in for it. Returns a caller with the same
+   [tool args] / [tool args tool-context] arities."
+  [node context caller]
+  (let [tick-options (:tick-options context)
+        epoch (checkpointed-campaign-epoch context)
+        campaign-tick-id (:researcher-campaign-tick-id tick-options)
+        campaign-node-id (:researcher-campaign-node-id tick-options)
+        iteration-index (:researcher-iteration-index tick-options)
+        codecs (vec (or (:researcher-checkpoint-codecs context) []))
+        claim! (:claim-researcher-effect! context)
+        complete! (:complete-researcher-effect! context)
+        target (tool-caller-target caller)
+        arity (tool-caller-arity target)
+        completed (atom (reduce (fn [acc claim]
+                                  (if (= :completed (:status claim))
+                                    (assoc acc (:logical-action-identity claim)
+                                           (update claim :result
+                                                   #(decode-checkpoint-value codecs %)))
+                                    acc))
+                                {}
+                                (or (:researcher-effect-claims context) [])))
+        call (fn [tool-name args supplied-context]
+               (when-not (true? (get-in (:tool-contracts node)
+                                        [tool-name :checkpoint-safe?]))
+                 (throw (ex-info
+                         (str "Tool " tool-name
+                              " is not declared :checkpoint-safe? for resumable execution")
+                         {:tool tool-name :checkpoint-safe? false})))
+               (when-not (and (ifn? claim!) (ifn? complete!))
+                 (throw (ex-info
+                         "Checkpointed campaign child has no effect claim capability"
+                         {:tool tool-name})))
+               (tool-invocation/validate-arguments! (:tool-contracts node) tool-name args)
+               (let [action-id (researcher-effects/logical-action-identity
+                                {:tick-id campaign-tick-id
+                                 :node-id campaign-node-id
+                                 :iteration-index iteration-index
+                                 :child-node-id (:id node)
+                                 :kind :tool
+                                 :target tool-name
+                                 :arguments (encode-checkpoint-value codecs args)})]
+                 (if-let [receipt (get @completed action-id)]
+                   (:result receipt)
+                   (let [attempt-ordinal 0
+                         attempt-id (researcher-effects/attempt-identity
+                                     action-id epoch attempt-ordinal)
+                         tool-context (merge supplied-context
+                                             (:tool-context context)
+                                             {:orc/idempotency-key action-id
+                                              :orc/researcher-iteration iteration-index})
+                         {:keys [result]}
+                         (dispatch-claimed-tool-effect!
+                          {:claim! claim!
+                           :complete! complete!
+                           :codecs codecs
+                           :contracts (:tool-contracts node)
+                           :tool-name tool-name
+                           :args args
+                           :action-id action-id
+                           :attempt-id attempt-id
+                           :attempt-ordinal attempt-ordinal
+                           :iteration-index iteration-index
+                           :caller target
+                           :caller-arity arity
+                           :tool-context tool-context
+                           :wrap-errors? false})]
+                     (swap! completed assoc action-id {:status :completed :result result})
+                     result))))]
+    (fn
+      ([tool-name args] (call tool-name args nil))
+      ([tool-name args tool-context] (call tool-name args tool-context)))))
+
+(defn- resolve-node-tool-caller
+  "The node's tool caller exactly as a code leaf uses it: the gate (when
+   declared) or the static caller, guarded by the node's declared contracts
+   (the consumer's own tool exceptions pass through unchanged), and, inside a
+   checkpointed campaign's generated child, checkpointed as a campaign effect.
+   Returns nil when no caller is available."
+  [node blackboard context]
+  (let [host-caller (node-call-tool-fn node blackboard context)
+        checkpointed? (and host-caller (checkpointed-campaign-epoch context))
+        ;; A checkpointed effect must hand the host its idempotency key, so the
+        ;; HOST caller (not the contract guard wrapped around it, which accepts
+        ;; both arities) must take (tool-name, args, tool-context). Checked
+        ;; before anything is claimed, with the inline path's message.
+        _ (when (and checkpointed?
+                     (not= 3 (tool-caller-arity (tool-caller-target host-caller))))
+            (throw (ex-info tool-caller-arity-error {:expected-arities [3]})))
+        call-tool-fn (tool-invocation/guarded-call-tool-fn host-caller (:tool-contracts node)
+                                                          :wrap-tool-errors? false)]
+    (if checkpointed?
+      (checkpoint-child-call-tool-fn node context call-tool-fn)
+      call-tool-fn)))
+
 (defn execute-code
   "Execute a Clojure function as a leaf node.
 
@@ -1214,7 +1547,16 @@
         ;; Support both inline functions and symbol strings
         resolved (if (fn? fn-or-symbol)
                    {:fn fn-or-symbol}
-                   (resolve-fn fn-or-symbol))]
+                   (if (and (:recoverable-fn node)
+                            (string? fn-or-symbol)
+                            (str/starts-with? fn-or-symbol "ephemeral-fn-"))
+                     (try
+                       {:fn (tree-executor/restore-ephemeral-fn!
+                              fn-or-symbol (:recoverable-fn node))}
+                       (catch Exception e
+                         {:error (str "Cannot restore generated function " fn-or-symbol ": "
+                                      (ex-message e))}))
+                     (resolve-fn fn-or-symbol)))]
     (if (:error resolved)
       {:status :failure
        :error (:error resolved)
@@ -1237,10 +1579,18 @@
               ;; as :call-tool-fn. When absent, node-call-tool-fn returns the
               ;; static (:call-tool-fn context) unchanged — so existing code
               ;; nodes are byte-identical.
-              call-tool-fn (node-call-tool-fn node blackboard context)
-              code-context (assoc context :call-tool-fn call-tool-fn :node node)
+              ;; The gate is built with the invocation identity (node, node id,
+              ;; tick id, effective deadline), so :node is in the context the
+              ;; builder sees. A configured gate that cannot be resolved,
+              ;; throws or returns a non-function throws here and fails the
+              ;; node; the ungated caller is never used in its place.
+              gate-context (cond-> (assoc context :node node)
+                             (:id node) (assoc :node-id (:id node)))
+              call-tool-fn (resolve-node-tool-caller node blackboard gate-context)
+              code-context (assoc gate-context :call-tool-fn call-tool-fn)
               ;; Call the function with context
-              result (f (assoc code-context :inputs inputs :execution-context code-context))
+              result (sci-sandbox/call-with-output-writer *out*
+                       #(f (assoc code-context :inputs inputs :execution-context code-context)))
               duration-ms (- (System/currentTimeMillis) start-time)
               writes (:writes node)
               ;; U7: Reconcile the function's return value with the declared :writes.
@@ -1277,18 +1627,19 @@
                         (and (= 1 (count writes)) (map? result))
                         {(first writes) result}
                         :else nil)]
-          (let [missing-or-nil (when (seq writes)
-                                 (filterv #(or (not (contains? outputs %))
-                                               (nil? (get outputs %)))
-                                          writes))]
-          (if (and (map? outputs) (empty? missing-or-nil))
+          (let [missing-writes (when (seq writes)
+                                 ;; Presence is distinct from a valid nullable value. The
+                                 ;; normal blackboard write boundary validates the value
+                                 ;; against its original declared schema.
+                                 (filterv #(not (contains? outputs %)) writes))]
+          (if (and (map? outputs) (empty? missing-writes))
             {:status :success
              :outputs outputs
              :duration-ms duration-ms}
             {:status :failure
-             :error (if (seq missing-or-nil)
-                      (str "Code executor omitted or returned nil for declared writes "
-                           (pr-str missing-or-nil))
+             :error (if (seq missing-writes)
+                      (str "Code executor omitted declared writes "
+                           (pr-str missing-writes))
                       (str "Code executor functions must return a map compatible with declared :writes "
                            (pr-str writes)
                            ". Function returned: "
@@ -1315,57 +1666,99 @@
              :duration-ms (- (System/currentTimeMillis) start-time)}
             (throw t)))))))
 
+(defn execute-tool
+  "Execute a tool leaf: call the ONE tool named when the workflow was authored
+   (`:tool`) through the node's tool caller (gate, declared contract and, in a
+   checkpointed campaign's child, effect receipts — exactly as a code leaf),
+   with arguments taken from the declared read keys, and write the result to
+   the single declared write key (LeafExecutor ToolLeafCallsOnlyAuthoredTools).
+   A tool name is never taken from the blackboard or from a model. No tool
+   caller available fails explicitly, naming the tool."
+  [node blackboard context]
+  (let [start-time (System/currentTimeMillis)
+        tool-name (:tool node)
+        elapsed #(- (System/currentTimeMillis) start-time)
+        failure (fn [message] {:status :failure :error message :duration-ms (elapsed)})]
+    (cond
+      (not (and (string? tool-name) (not (clojure.string/blank? tool-name))))
+      (failure "Tool executor requires an authored :tool name")
+
+      (not= 1 (count (:writes node)))
+      (failure (str "Tool executor for " tool-name " requires exactly one declared write"))
+
+      :else
+      (try
+        (let [args (reduce (fn [acc key-name]
+                             (let [value (:value (get blackboard key-name))]
+                               (if (nil? value) acc (assoc acc key-name value))))
+                           {}
+                           (:reads node))
+              gate-context (cond-> (assoc context :node node)
+                             (:id node) (assoc :node-id (:id node)))
+              call-tool-fn (resolve-node-tool-caller node blackboard gate-context)]
+          (if-not call-tool-fn
+            (failure (str "No tool caller available to call tool " tool-name))
+            (let [write-key (first (:writes node))
+                  raw (call-tool-fn tool-name args)
+                  ;; Same single-write reconciliation as a code leaf: a map
+                  ;; already keyed by the declared write supplies that value;
+                  ;; any other result is the value itself.
+                  result (if (and (map? raw) (contains? raw write-key))
+                           (get raw write-key)
+                           raw)]
+              (if (nil? result)
+                (failure (str "Tool " tool-name " returned nil for declared write "
+                              (pr-str write-key)))
+                {:status :success
+                 :outputs {write-key result}
+                 :duration-ms (elapsed)}))))
+        (catch Exception e
+          (failure (.getMessage e)))
+        (catch Throwable t
+          (if (block/blocking-condition? t)
+            {:status :blocked
+             :block-payload (block/block-payload t)
+             :duration-ms (elapsed)}
+            (throw t)))))))
+
 ;; =============================================================================
 ;; AI Execution
 ;; =============================================================================
 
 (defn validate-leaf-outputs
-  "Decode provider JSON values and normalize object keys according to each
-   declared Malli schema, then reject an invalid successful leaf result before
-   its writes become canonical. Provider JSON numbers are canonicalized through
-   the schema; numeric strings remain invalid. Non-provider leaves receive only
-   schema-directed key normalization and retain strict JVM value types."
+  "Normalize and validate declared leaf outputs before their writes become canonical."
   ([blackboard result]
-   (validate-leaf-outputs blackboard result false))
+   (output-validation/validate-outputs blackboard result false))
   ([blackboard result provider-output?]
-   (if (not= :success (:status result))
-     result
-     (let [key-transformer (mt/key-transformer {:decode keyword :encode name})
-           rejected-writes (:outputs result)
-           normalized (reduce-kv
-                       (fn [outputs key value]
-                         (assoc outputs key
-                                (if-let [schema (get-in blackboard [key :schema])]
-                                  (if provider-output?
-                                    (llm/decode-provider-value schema value)
-                                    (m/decode schema value key-transformer))
-                                  value)))
-                       {}
-                       (:outputs result))]
-       (if-let [[key explanation]
-                (some (fn [[key value]]
-                        (when-let [schema (get-in blackboard [key :schema])]
-                          (try
-                            (when-not (m/validate schema value)
-                              [key (me/humanize (m/explain schema value))])
-                            (catch Exception e
-                              [key {:invalid-schema (.getMessage e)}]))))
-                      normalized)]
-         (-> result
-             (assoc :status :failure
-                    :error (str "Blackboard schema validation failed for "
-                                (pr-str key) ": " explanation)
-                    :outputs {}
-                    :rejected-writes rejected-writes))
-         (assoc result :outputs normalized))))))
+   (output-validation/validate-outputs blackboard result provider-output?)))
 
-(defn- outputs-have-nil?
-  "Check if any output values are nil, including nested maps where all values are nil."
-  [outputs]
-  (some (fn [v]
-          (or (nil? v)
-              (and (map? v) (every? nil? (vals v)))))
-        (vals outputs)))
+(def ^:private prediction-envelope-keys
+  "Keys llm/predict adds around :outputs when called with :with-metadata?."
+  #{:outputs :usage :model :raw-response :provider-evidence :decisions :provider-observations})
+
+(defn- prediction-envelope?
+  "True when `result` is llm/predict's metadata envelope rather than a direct
+   flat output map: it has an :outputs key and every key is prediction metadata."
+  [result]
+  (and (map? result)
+       (contains? result :outputs)
+       (every? prediction-envelope-keys (keys result))))
+
+(defn- unparseable-output-keys
+  "Nil-shaped results are missing-value evidence only when their actual declared
+   schema rejects them. Required nullable values and valid all-null/empty maps
+   must cross the normal schema boundary without being relabelled as absence."
+  [blackboard outputs]
+  (into []
+        (keep (fn [[k value]]
+                (when (and (or (nil? value)
+                               (and (map? value) (every? nil? (vals value))))
+                           (not (when-let [schema (get-in blackboard [k :schema])]
+                                  (try
+                                    (m/validate schema (llm/decode-provider-value schema value))
+                                    (catch Exception _ false)))))
+                  k)))
+        outputs))
 
 (defn- strip-nil-optional-writes
   "Drop declared-OPTIONAL writes that parsed to nil, so a node can mark a
@@ -1392,7 +1785,53 @@
   (when (or acc usage)
     (merge-with + (or acc {}) (or usage {}))))
 
-(defn execute-ai
+(def ^:private non-retryable-failure-kinds
+  "Failures that are the provider's or the configuration's deterministic answer:
+   an exact decision tie, and a provider that was never configured. Another
+   invocation cannot change them, only spend budget."
+  #{:undecided :provider-not-configured :model-plan-incompatible})
+
+(defn- persist-provider-attempt
+  "Run the injected durable transition. Return a bounded failure marker only;
+   persistence exceptions must not leak transport/configuration details."
+  [callback attempt]
+  (when callback
+    (try
+      (let [result (callback attempt)]
+        (when (:cognitect.anomalies/category result) :observation-persistence-failed))
+      (catch Exception _ :observation-persistence-failed))))
+
+(defn- validate-ai-prediction
+  [node blackboard optional-writes unparseable-is-schema-error? prediction]
+  (let [{:keys [outputs error raw-response]} prediction
+            outputs (strip-nil-optional-writes outputs optional-writes)
+            ;; Prediction skips input validation because gathered complex inputs
+            ;; are serialized. Presence is a separate obligation from value
+            ;; validation: an omitted nullable write must not become explicit null.
+            missing-output-keys (vec (remove #(or (contains? optional-writes %)
+                                                  (contains? outputs %))
+                                            (:writes node)))
+            unparseable-keys (into missing-output-keys
+                                   (unparseable-output-keys blackboard outputs))
+            schema-result (when (and (not error)
+                                     (or unparseable-is-schema-error?
+                                         (empty? unparseable-keys)))
+                            (if (seq missing-output-keys)
+                              ;; Keep the judge's schema-error/retry policy without
+                              ;; inserting values that the provider never returned.
+                              {:status :failure :outputs {} :missing-write-keys missing-output-keys :rejected-writes (or outputs {})
+                               :error (str "Missing required output keys " missing-output-keys)}
+                              (validate-leaf-outputs
+                               blackboard
+                               (cond-> {:status :success :outputs outputs}
+                                 raw-response (assoc :raw-response raw-response))
+                               true)))
+            schema-error (when (= :failure (:status schema-result))
+                           (:error schema-result))]
+    {:outputs outputs :missing-output-keys missing-output-keys
+     :unparseable-keys unparseable-keys :schema-result schema-result :schema-error schema-error}))
+
+(defn- execute-ai-candidate
   "Execute a leaf node using ORC LLM AI.
 
    Args:
@@ -1432,11 +1871,13 @@
         ;; for models where tool-backed structured output is more reliable.
         ;; The node's :model rides through as a per-request override —
         ;; litellm-clj's router honors :model in the request options.
-        internal-option-keys #{:execution-deadline-ms :reserve-llm-call!
+        internal-option-keys #{:execution-deadline-ms :reserve-llm-call! :fresh-model-authority!
                                :reserve-provider-attempt! :provider-reservation-context
                                :tick-id :node-attempt :max-node-attempts
-                               :exec-context
-                               :max-retries :retry-delay-ms :validate?}
+                               :exec-context :start-provider-attempt! :complete-provider-attempt!
+                               :max-retries :retry-delay-ms :validate? :unparseable-is-schema-error?
+                               :model-fallback-callbacks :model-role-context :model-candidate-index :mark-output-exposed!
+                               :model-request-callbacks :orc/retained-model-profile :orc/model-replay-only?}
         llm-options (merge {:validate? false
                                :with-metadata? true
                                :with-provider-evidence? true
@@ -1446,20 +1887,45 @@
         ;; Retry config - defaults to 1 retry with 500ms delay
         max-retries (get options :max-retries 1)
         retry-delay-ms (get options :retry-delay-ms 500)
+        ;; Opt-in (node `:options`): an output the provider omitted (nil) is
+        ;; validated against its declared schema like any other answer, so it is
+        ;; retried under the same budget and, once exhausted, fails with
+        ;; :schema-validation-failed naming the rejected write - instead of the
+        ;; un-retried "unparseable" failure. Default off: other nodes unchanged.
+        unparseable-is-schema-error? (boolean (:unparseable-is-schema-error? options))
 
         ;; Token streaming (Stage 2). Active when a subscriber asked for
         ;; deltas on this tick and the node is not using function calling
         ;; (whose structured tool response has no text stream to parse).
-        predict-stream-v2 (when (and stream
-                                     (or (:fields? stream) (:raw? stream))
-                                     (not (:use-function-calling? llm-options)))
+        stream-profile (when (and stream
+                                  (or (:fields? stream) (:raw? stream))
+                                  (not (:use-function-calling? llm-options)))
+                         (if-let [retained (:orc/retained-model-profile options)]
+                           {:output-mode (get-in retained [:profile :output-mode])}
+                           (try
+                             (llm/preflight-provider! provider llm-module llm-options)
+                             (catch Exception error {:error error}))))
+        predict-stream-v2 (when (and stream-profile
+                                     (not (:error stream-profile))
+                                     (not (contains? #{:json-schema :function-calling}
+                                                     (:output-mode stream-profile))))
                             llm/predict-stream-v2)
+        output-exposed? (atom false)
+        mark-output-exposed! (:mark-output-exposed! options)
+        expose! (fn []
+                  (when (compare-and-set! output-exposed? false true)
+                    (when mark-output-exposed!
+                      (let [r (mark-output-exposed!)]
+                        (when (:cognitect.anomalies/category r)
+                          (throw (ex-info "Stream exposure could not be persisted"
+                                          {:failure-kind :observation-persistence-failed})))))))
         emit-delta! (when predict-stream-v2
                       (let [base (cond-> (select-keys stream [:sheet-id :node-id])
                                    (:map-each stream) (assoc :map-each (:map-each stream)))]
                         ;; :attempt lets consumers detect a retry restart and
                         ;; reset their per-node delta accumulation.
                         (fn [attempt m]
+                          (expose!)
                           (streaming/emit! (:tick-id stream)
                                            (merge base {:attempt attempt} m)))))
 
@@ -1484,8 +1950,13 @@
                                               :fields (reassemble-flattened-outputs
                                                        (:fields ev) output-mapping)}))
                               (recur terminal))
-                  :error (recur {:error (str "LLM stream error: " (pr-str (:error ev)))})
-                  :final (let [outputs (reassemble-flattened-outputs (:outputs ev) output-mapping)]
+                  :error (recur (let [{:keys [failure-kind provider-evidence]} (:error ev)]
+                                  (cond-> {:error (str "LLM stream error: " (pr-str (:error ev)))}
+                                    failure-kind (assoc :failure-kind failure-kind)
+                                    provider-evidence
+                                    (assoc :provider-evidence
+                                           (update provider-evidence :usage normalize-usage)))))
+                  :final (let [outputs (reassemble-flattened-outputs (:outputs ev) output-mapping true)]
                            (when (:fields? stream)
                              (emit-delta! attempt
                                           {:orc.stream/type :llm-fields
@@ -1494,35 +1965,80 @@
                            (recur {:outputs outputs
                                    :usage (normalize-usage (:usage ev))
                                    :model (or (:model ev) (:model node))
+                                   :resolved-model (:model ev)
                                    :raw-response (:raw-response ev)}))
                   (recur terminal))
-                (or terminal {:error "LLM stream ended without a final result"})))))
+                (assoc (or terminal {:error "LLM stream ended without a final result"})
+                       :output-exposed? @output-exposed?)))))
 
         ;; Single attempt function
         try-once (fn [attempt attempt-options]
+                   ;; Preserve the ordinary typed failure path for a profile
+                   ;; rejected before dispatch, including subscribed executions.
+                   (when-let [error (:error stream-profile)] (throw error))
                    (if predict-stream-v2
                      (try-once-streaming attempt attempt-options)
                      (let [result (llm/predict provider llm-module inputs attempt-options)
-                           ;; ORC LLM returns outputs directly as a flat map, not wrapped in {:outputs ...}
-                           raw-outputs (or (:outputs result) result)
+                           ;; Unwrap EXPLICITLY. A metadata envelope is recognised by
+                           ;; its shape (an :outputs key and nothing but prediction
+                           ;; metadata keys); its :outputs are the node's writes even
+                           ;; when nil. Anything else is a direct flat output map. A nil
+                           ;; :outputs must never promote the envelope's metadata
+                           ;; (:usage, :raw-response, ...) into declared writes.
+                           raw-outputs (if (prediction-envelope? result)
+                                         (:outputs result)
+                                         result)
                            ;; Reassemble flattened outputs back into nested structure
-                           outputs (reassemble-flattened-outputs raw-outputs output-mapping)]
+                           ;; Missing envelope outputs stay missing. A nullable
+                           ;; write is present only when the provider supplied
+                           ;; that declared key explicitly with a null value.
+                           outputs (reassemble-flattened-outputs raw-outputs output-mapping true)]
                        {:outputs outputs
                         :usage (normalize-usage (:usage result))
                         :model (or (:model result) (:model node))
+                        ;; What the provider REPORTED, apart from the
+                        ;; configured fallback above (ModelLeafRecordsResolvedModel).
+                        ;; Only a metadata envelope can report one: a bare
+                        ;; outputs map may carry a declared write named :model.
+                        :resolved-model (when (prediction-envelope? result) (:model result))
                         :provider-evidence
                         (some-> (:provider-evidence result)
                                 (update :usage normalize-usage))
                         ;; Verbatim completion text from ORC LLM (:with-metadata? true).
                         ;; Carried so a nil-parse failure can show WHAT the model
                         ;; actually returned instead of discarding it.
-                        :raw-response (:raw-response result)})))
+                        :raw-response (:raw-response result)
+                        ;; A native decision model reports per-question
+                        ;; evidence (distribution, confidence) beside its
+                        ;; outputs; carried so a decision can record it.
+                        :decisions (:decisions result)
+                        :provider-observations (:provider-observations result)})))
 
         ;; Compute backoff delay for a given attempt
         backoff-for (fn [attempt]
                       (if (sequential? retry-delay-ms)
                         (nth retry-delay-ms (min attempt (dec (count retry-delay-ms))))
                         retry-delay-ms))
+        candidate-index (:model-candidate-index options)
+        request-callbacks (:model-request-callbacks options)
+        retained-profile (:orc/retained-model-profile options)
+        observation-context (get-in options [:model-role-context :context])
+        observation-owner (select-keys (get-in options [:model-role-context :owner])
+                                       [:sheet-id :tick-id :node-id :node-start-id :exec-context])
+        receipts (filter #(= candidate-index (:candidate-index %)) (:request-receipts request-callbacks))
+        completed-receipts (into {} (for [receipt receipts :when (= :completed (:phase receipt))]
+                                      [(:attempt-ordinal receipt) receipt]))
+        completed-requests (into {} (for [receipt receipts :when (= :completed (:phase receipt))]
+                                      [(:attempt-ordinal receipt) (:outcome receipt)]))
+        replay (when (seq receipts)
+                 (ai-model-receipts/select-response receipts
+                   #(validate-ai-prediction node blackboard optional-writes unparseable-is-schema-error? %)))
+        record-request! (fn [receipt]
+                          (when-let [record! (:record-request! request-callbacks)]
+                            (when (:cognitect.anomalies/category (record! receipt))
+                              :request-receipt-not-retained)))
+        start-provider-attempt! (:start-provider-attempt! options)
+        complete-provider-attempt! (:complete-provider-attempt! options)
         deadline-ms (:execution-deadline-ms options)
         reserve-call! (:reserve-llm-call! options)
         tick-id (:tick-id options)
@@ -1543,18 +2059,28 @@
             :options llm-options}))
         prepare-attempt
         (fn [attempt]
-          (let [remaining (execution-budget/remaining-ms deadline-ms)
-                physical-ordinal (+ (* (dec node-attempt) (inc max-retries))
-                                    attempt)]
+          (let [initial-remaining (execution-budget/remaining-ms deadline-ms)
+                physical-ordinal (+ (* (dec node-attempt) (inc max-retries)) attempt)
+                authority (when (or (nil? initial-remaining) (pos? initial-remaining))
+                            (when-let [ensure! (or (:fresh-authority! request-callbacks) (:fresh-model-authority! options))]
+                              (ensure! deadline-ms)))
+                remaining (execution-budget/remaining-ms deadline-ms)
+                admission (when (and reserve-provider-attempt!
+                                     (or (nil? remaining) (pos? remaining)))
+                            (reserve-provider-attempt!
+                              (cond-> {:logical-action-identity provider-action-id
+                                       :provider-attempt-ordinal physical-ordinal
+                                       :candidate-index (or (:model-candidate-index options) 0)
+                                       :node-attempt node-attempt}
+                                authority (assoc :emitted-model-authority authority))))]
             (cond
               (and remaining (not (pos? remaining)))
               {:timeout-error "Execution deadline exhausted before provider attempt"}
 
-              (and reserve-provider-attempt!
-                   (reserve-provider-attempt!
-                    {:logical-action-identity provider-action-id
-                     :provider-attempt-ordinal physical-ordinal}))
-              {:timeout-error "Durable provider-call reservation rejected before provider attempt"}
+              admission
+              {:timeout-error (or (:cognitect.anomalies/message admission)
+                                  "Durable provider-call reservation rejected before provider attempt")
+               :admission-failure-kind (:failure-kind admission)}
 
               (and (nil? reserve-provider-attempt!)
                    reserve-call! (reserve-call!))
@@ -1580,47 +2106,148 @@
                 (execution-budget/record-attempt! tick-id (:id node) state)
                 {:options attempt-options}))))]
 
+    (cond
+      (:failure replay) (:failure replay)
+
+      (:receipt replay)
+      (let [receipt (:receipt replay)
+            prediction (:outcome receipt)
+            result (:schema-result (validate-ai-prediction node blackboard optional-writes
+                                     unparseable-is-schema-error? prediction))
+            observation-error
+            (some (fn [completed]
+                    (when (and observation-context (:observation-owner completed) (:provider-outcome completed))
+                      (persist-provider-attempt
+                        #(provider-observations/complete-provider-attempt! observation-context %)
+                        (assoc (:observation-owner completed) :outcome (:provider-outcome completed)))))
+                  (:completed replay))]
+        (if observation-error
+          {:status :failure :retryable? false :failure-kind :model-plan-incompatible
+           :error "Provider attempt outcome could not be persisted; dispatch will not be repeated"
+           :usage (:usage replay)}
+          (merge (select-keys prediction [:model :resolved-model :raw-response :decisions :provider-evidence])
+                 result
+                 {:duration-ms (- (System/currentTimeMillis) start-time) :usage (:usage replay)
+                  :model-fallback {:recovery-accounting (:accounting replay)}})))
+
+      :else
     (loop [attempt 0
            accumulated-usage nil]
-      (let [{:keys [options timeout-error]} (prepare-attempt attempt)
-            {:keys [outputs usage model error raw-response failure-kind provider-evidence]}
-            (if timeout-error
-              {:error timeout-error :budget-timeout? true}
+      (let [known (get completed-requests attempt)
+            known-receipt (get completed-receipts attempt)
+            profile-error
+            (when (and retained-profile (not known))
+              (try
+                (when (:orc/model-replay-only? options)
+                  (throw (ex-info "Model plan cannot be resumed [retained-profile-version-unsupported]"
+                                  {:failure-kind :model-plan-incompatible
+                                   :reason :retained-profile-version-unsupported})))
+                (let [resolved (llm/preflight-provider! provider llm-module
+                                                       (assoc llm-options :orc/explicit-provider? true))]
+                  (when-not (and (= (:provider retained-profile) (:provider resolved))
+                                 (= (:model retained-profile) (:model resolved))
+                                 (= (:protocol retained-profile) (:protocol resolved))
+                                 (or (= :decision (:protocol resolved))
+                                     (= (get-in retained-profile [:profile :output-mode]) (:output-mode resolved))))
+                    (throw (ex-info "Model plan cannot be resumed [retained-profile-cannot-be-preserved]"
+                                    {:failure-kind :model-plan-incompatible
+                                     :reason :retained-profile-cannot-be-preserved}))))
+                nil
+                (catch Exception error
+                  (if (:failure-kind (ex-data error)) error (throw error)))))
+            replayed-observation-error
+            (when (and known observation-context (:observation-owner known-receipt)
+                       (:provider-outcome known-receipt))
+              (persist-provider-attempt
+               #(provider-observations/complete-provider-attempt! observation-context %)
+               (assoc (:observation-owner known-receipt) :outcome (:provider-outcome known-receipt))))
+            {:keys [options timeout-error admission-failure-kind]}
+            (when-not (or known profile-error) (prepare-attempt attempt))
+            invocation (when-not (or known profile-error timeout-error)
+                         (cond-> {:invocation-id (random-uuid)
+                                   :node-attempt node-attempt :provider-attempt (inc attempt)}
+                           (some? candidate-index)
+                           (assoc :candidate-index candidate-index
+                                  :requested-provider provider :requested-model (:model node))))
+            request (when invocation
+                      (cond-> {:request-id (random-uuid) :candidate-index (or candidate-index 0)
+                               :attempt-ordinal attempt :provider provider :requested-model (:model node)}
+                        (seq observation-owner) (assoc :observation-owner (merge observation-owner invocation))))
+            request-start-error (when request (record-request! (assoc request :phase :started)))
+            start-error (when (and invocation (not request-start-error))
+                          (persist-provider-attempt start-provider-attempt! invocation))
+            prediction
+            (cond
+              known (if (and (:provider-outcome known-receipt)
+                             (not= :success (get-in known-receipt [:provider-outcome :status])))
+                      (merge known {:error (or (:error known) "Recorded provider response was rejected")}
+                             (select-keys (:provider-outcome known-receipt) [:failure-kind :provider-evidence]))
+                      known)
+              profile-error (merge {:error (.getMessage ^Exception profile-error)}
+                                   (select-keys (ex-data profile-error) [:failure-kind :provider-evidence]))
+              timeout-error {:error timeout-error :budget-timeout? true}
+              request-start-error {:error "Model request start could not be retained"
+                                   :failure-kind :model-plan-incompatible}
+              start-error {:error "Provider attempt start could not be persisted"}
+              :else
               (try
                 (try-once attempt options)
                 (catch Exception e
-                  (let [{:keys [failure-kind provider-evidence]} (ex-data e)
-                        provider-evidence (some-> provider-evidence
-                                                  (update :usage normalize-usage))]
+                  (let [{:keys [failure-kind provider-evidence provider-observations]} (ex-data e)
+                        provider-evidence (some-> provider-evidence (update :usage normalize-usage))]
                     (cond-> {:error (.getMessage e)}
+                      provider-observations (assoc :provider-observations provider-observations)
                       failure-kind (assoc :failure-kind failure-kind)
                       provider-evidence
                       (assoc :provider-evidence provider-evidence
                              :usage (normalize-usage (:usage provider-evidence))
-                             :model (or (:model provider-evidence) (:model node))))))))
+                             :model (or (:model provider-evidence) (:model node))
+                             :resolved-model (:model provider-evidence)))))))
+            {:keys [outputs usage model resolved-model error raw-response failure-kind provider-evidence
+                    decisions provider-observations]}
+            prediction
             budget-timeout? (boolean timeout-error)
-            ;; Drop nil best-effort writes so an omitted evidence array is the
-            ;; node's declared-optional absence, not a nil-gate failure.
-            outputs (strip-nil-optional-writes outputs optional-writes)
+            {:keys [outputs missing-output-keys unparseable-keys schema-result schema-error]}
+            (validate-ai-prediction node blackboard optional-writes unparseable-is-schema-error? prediction)
             total-usage (merge-usage accumulated-usage usage)
-            schema-result (when (and (not error)
-                                     (not (outputs-have-nil? outputs)))
-                            (validate-leaf-outputs
-                             blackboard
-                             (cond-> {:status :success :outputs outputs}
-                               raw-response (assoc :raw-response raw-response))
-                             true))
-            schema-error (when (= :failure (:status schema-result))
-                           (:error schema-result))]
+            provider-outcome
+            (cond-> {:status (if (or error (seq unparseable-keys) schema-error) :failure :success)}
+              failure-kind (assoc :failure-kind failure-kind)
+              provider-evidence (assoc :provider-evidence provider-evidence)
+              (and (nil? failure-kind) (or (seq unparseable-keys) schema-error))
+              (assoc :failure-kind :schema-validation-failed)
+              provider-observations (assoc :provider-observations provider-observations))
+            request-complete-error
+            (when (and request (not request-start-error) (not start-error))
+              (record-request! (assoc request :phase :completed :provider-outcome provider-outcome
+                                      :outcome (model-fallback/durable-outcome
+                                                (assoc prediction :status (if (:error prediction) :failure :success))))))
+            completion-error
+            (or request-complete-error replayed-observation-error
+            (when (and invocation (not start-error) (not request-start-error))
+              (persist-provider-attempt
+               complete-provider-attempt!
+               (assoc invocation :outcome provider-outcome))))]
         (cond
+          (or request-start-error start-error completion-error)
+          (cond-> {:status :failure :retryable? false
+                   :error (if (or request-start-error start-error)
+                            "Provider attempt start could not be persisted; provider was not dispatched"
+                            "Provider attempt outcome could not be persisted; dispatch will not be repeated")
+                   :duration-ms (- (System/currentTimeMillis) start-time)
+                   :usage total-usage}
+            (or request-start-error request-complete-error replayed-observation-error)
+            (assoc :failure-kind :model-plan-incompatible))
+
           budget-timeout?
-          {:status :timeout
-           :error error
-           :duration-ms (- (System/currentTimeMillis) start-time)
-           :usage total-usage}
+          (cond-> {:status :timeout :error error
+                   :duration-ms (- (System/currentTimeMillis) start-time) :usage total-usage}
+            admission-failure-kind (assoc :failure-kind admission-failure-kind))
 
           ;; Exception — retry with backoff (handles rate limits, transient errors)
-          (and error (< attempt max-retries))
+          ;; An :undecided tie is the provider's answer, not a transient failure:
+          ;; retrying would only spend another paid call fishing for a different grade.
+          (and error (not @output-exposed?) (not (contains? non-retryable-failure-kinds failure-kind)) (< attempt max-retries))
           (let [backoff (backoff-for attempt)
                 remaining (execution-budget/remaining-ms deadline-ms)]
             (if (and remaining (<= remaining backoff))
@@ -1638,9 +2265,11 @@
           ;; Exception — retries exhausted
           error
           (let [result (cond-> {:status :failure :error error
+                                :output-exposed? @output-exposed?
                                 :duration-ms (- (System/currentTimeMillis) start-time)}
                          total-usage (assoc :usage total-usage)
                          model (assoc :model model)
+                         resolved-model (assoc :resolved-model resolved-model)
                          failure-kind (assoc :failure-kind failure-kind)
                          provider-evidence (assoc :provider-evidence provider-evidence))]
             (obs/log-ai-execution!
@@ -1660,11 +2289,8 @@
           ;; outputs that fail their declared schemas. A node-level :retry can
           ;; still retry this parse failure. The verbatim raw response is
           ;; carried on the result and logged in full so it is diagnosable.
-          (outputs-have-nil? outputs)
-          (let [nil-keys (vec (for [[k v] outputs
-                                    :when (or (nil? v)
-                                              (and (map? v) (every? nil? (vals v))))]
-                                k))
+          (and (seq unparseable-keys) (not unparseable-is-schema-error?))
+          (let [nil-keys unparseable-keys
                 raw-len (count (str raw-response))
                 preview (when raw-response
                           (subs raw-response 0 (min 1000 (count raw-response))))
@@ -1678,14 +2304,17 @@
                                       (min 1000 raw-len) " of " raw-len " chars) ---\n"
                                       preview)
                                  " No raw response text was returned by the provider."))
-                result {:status :failure :error error-msg
+                result (cond-> {:status :failure :error error-msg
                         :raw-response raw-response
                         :outputs outputs
                         :duration-ms (- (System/currentTimeMillis) start-time)
                         ;; Usage is preserved — these tokens were really spent
                         ;; and must not vanish from Phase-2 accounting.
                         :usage total-usage :model model
-                        :provider-evidence provider-evidence}]
+                        :resolved-model resolved-model
+                        :provider-evidence provider-evidence}
+                         (seq missing-output-keys)
+                         (assoc :missing-write-keys missing-output-keys))]
             (obs/log-unparseable-output!
               {:node-id (:id node) :node-name (:name node) :model model
                :nil-keys nil-keys :raw-length raw-len
@@ -1700,7 +2329,7 @@
           ;; violated the declared blackboard schema. This consumes the same
           ;; default retry budget as transport/provider exceptions. Only the
           ;; final exhausted attempt escapes as rejected-write evidence.
-          (and schema-error (< attempt max-retries))
+          (and schema-error (not @output-exposed?) (< attempt max-retries))
           (let [backoff (backoff-for attempt)
                 remaining (execution-budget/remaining-ms deadline-ms)]
             (if (and remaining (<= remaining backoff))
@@ -1720,6 +2349,7 @@
                               :duration-ms (- (System/currentTimeMillis) start-time)
                               :usage total-usage
                               :model model
+                              :resolved-model resolved-model
                               :failure-kind :schema-validation-failed
                               :provider-evidence provider-evidence)]
             (obs/log-ai-execution!
@@ -1732,72 +2362,355 @@
           :else
           (let [result (cond-> {:status :success :outputs (:outputs schema-result)
                                 :duration-ms (- (System/currentTimeMillis) start-time)
-                                :usage total-usage :model model}
-                         raw-response (assoc :raw-response raw-response))]
+                                :usage total-usage :model model
+                                :resolved-model resolved-model}
+                         raw-response (assoc :raw-response raw-response)
+                         (seq decisions) (assoc :decisions decisions))]
             (obs/log-ai-execution!
               {:node-id (:id node) :node-name (:name node) :model model
                :executor :ai :duration-ms (:duration-ms result)
                :status :success :usage total-usage :trace-id nil})
-            result))))))
+            result)))))))
+
+(defn execute-ai
+  "Execute a model task under its ordinary or generated-specialist owner,
+   retaining effective configured candidates and exact physical responses."
+  [node blackboard provider & {:keys [options stream] :or {options {}}}]
+  (if-not (seq (:fallback-models node))
+    (do
+      (when (:provider node)
+        (llm/preflight-provider! (:provider node)
+          (dissoc (build-module node blackboard) :output-mapping)
+          (assoc (dissoc options :fresh-model-authority!)
+                 :model (:model node) :orc/explicit-provider? true)))
+      (execute-ai-candidate node blackboard (or (:provider node) provider)
+                            :options options :stream stream))
+    (try
+      (let [_ (model-fallback/validate-config! node)
+            host-keys #{:execution-deadline-ms :reserve-llm-call! :fresh-model-authority! :reserve-provider-attempt!
+                        :provider-reservation-context :tick-id :node-attempt :max-node-attempts
+                        :exec-context :start-provider-attempt! :complete-provider-attempt!
+                        :model-fallback-callbacks :model-role-context :model-request-callbacks}
+            task-options (apply dissoc options host-keys)
+            module (dissoc (build-module node blackboard) :output-mapping)
+            policy (or (:fallback-policy node) :temporary-transport)
+            role-context (:model-role-context options)
+            ordinary? (= :node (get-in role-context [:owner :role]))
+            emitted? (= :subcall (get-in role-context [:owner :role]))
+            resolve-plan! #(ordinary-model-plan/resolve-plan node provider module task-options)
+            prepared (cond
+                       ordinary?
+                       (model-call-journal/prepare-ordinary-call
+                        (:context role-context) (:owner role-context)
+                        (select-keys node [:provider :model :options :fallback-models :fallback-policy])
+                        resolve-plan!)
+                       emitted?
+                       (model-call-journal/prepare-emitted-call
+                        (:context role-context) (:owner role-context)
+                        (select-keys node [:provider :model :options :fallback-models :fallback-policy])
+                        resolve-plan!))
+            ;; Historical unprepared callback lookup keeps its original raw
+            ;; option preimage; effective retained profiles use prepared plans.
+            legacy-candidates
+            (when (and role-context (not ordinary?) (not emitted?))
+              (mapv (fn [index candidate]
+                      (let [explicit? (or (contains? node :provider)
+                                          (and (pos? index)
+                                               (contains? (nth (:fallback-models node) (dec index)) :provider)))
+                            resolved (llm/preflight-provider!
+                                      (:provider candidate) module
+                                      (cond-> (:options candidate)
+                                        explicit? (assoc :orc/explicit-provider? true)
+                                        (:model candidate) (assoc :model (:model candidate))))]
+                        (assoc candidate :provider (:provider resolved) :model (:model resolved))))
+                    (range) (model-fallback/candidate-plan node provider task-options)))
+            candidates (or (:candidates prepared) (:candidates (resolve-plan!)))
+            policy (or (:policy prepared) policy)
+            callbacks (or (:callbacks prepared) (:model-fallback-callbacks options)
+                          (when role-context
+                            (model-call-journal/callbacks
+                             (:context role-context) (:owner role-context)
+                             (or legacy-candidates candidates) policy)))]
+        (when-not (fn? (:record! callbacks))
+          (throw (ex-info "Durable model fallback callbacks are required"
+                          {:failure-kind :configuration-error})))
+        (model-fallback/run-candidates
+         (merge callbacks
+                {:candidates candidates :policy policy
+                 :invoke!
+                 (fn [index candidate]
+                   ;; A completed request is replayed inside the attempt loop
+                   ;; before any provider reservation or current-registry read.
+                   (execute-ai-candidate
+                    (assoc node :model (:model candidate)) blackboard (:provider candidate)
+                    :options (-> (merge (:options candidate) (select-keys options host-keys))
+                                 (dissoc :model-fallback-callbacks)
+                                 (assoc :model-candidate-index index
+                                        :model-request-callbacks (when prepared callbacks)
+                                        :orc/retained-model-profile (when prepared
+                                                                      (select-keys candidate [:provider :model :protocol :profile]))
+                                        :orc/model-replay-only? (boolean (:replay-only? prepared))
+                                        :mark-output-exposed!
+                                        (when-let [mark! (:mark-output-exposed! callbacks)]
+                                          #(mark! index))))
+                    :stream stream))})))
+      (catch clojure.lang.ExceptionInfo error
+        (if (= :model-plan-incompatible (:failure-kind (ex-data error)))
+          {:status :failure :retryable? false :failure-kind :model-plan-incompatible
+           :error (.getMessage error)}
+          (throw error))))))
 
 (defn execute-llm-condition
-  "Execute an LLM condition node - uses LLM to evaluate a yes/no question.
+  "Execute an LLM condition node - a provider invocation that answers a yes/no
+   question, under the SAME execution policy as a model leaf.
+
+   The condition is expressed as a leaf with one declared boolean write
+   (`:result`) and delegated to `execute-ai`, so provider retry, backoff,
+   deadline, LLM-call budget reservation, per-node model choice and
+   structured failure capture are shared rather than re-implemented.
 
    Args:
      node - The llm-condition node map with :instruction, :reads, :model
      blackboard - Map of key -> {:key, :schema, :value, :version}
      provider - ORC LLM provider keyword (e.g., :openrouter)
-     options - Optional ORC LLM options map
+     options - Optional ORC LLM options map (same policy options as execute-ai)
 
    Returns:
-     {:status :success/:failure
-      :result boolean?          - the LLM's yes/no answer
-      :error string?            - error message if failed
-      :duration-ms int          - execution time
-      :usage {:prompt-tokens N :completion-tokens N :total-tokens N} - token usage (when available)
-      :model string?}           - model used (when available)"
+     {:status :success/:failure/:timeout
+      :result boolean?          - the model's answer; present ONLY when a
+                                  valid boolean answer was obtained
+      :error string?            - error message if no valid answer
+      :failure-kind keyword?    - structured failure kind (never set for a
+                                  valid semantic negative)
+      :provider-evidence map?
+      :duration-ms int
+      :usage map?  :model string?}
+
+   A valid `true` is :status :success; a valid `false` is :status :failure with
+   :result false and no :failure-kind. A missing, nil or non-boolean answer is
+   a :failure with :failure-kind :schema-validation-failed and no :result."
   [node blackboard provider & {:keys [options] :or {options {}}}]
-  (let [start-time (System/currentTimeMillis)
-        ;; Build inputs from reads
-        inputs (mapv (fn [key-name]
-                       (if-let [entry (get blackboard key-name)]
-                         (build-field key-name entry)
-                         {:name key-name
-                          :original-key key-name
-                          :spec :string
-                          :description (str "Input: " key-name)}))
-                     (:reads node))
-        ;; Build module with fixed boolean output
-        module {:inputs inputs
-                :outputs [{:name :result
-                           :spec :boolean
-                           :description "True if the condition is met, false otherwise"}]
-                :instructions (:instruction node)}
-        ;; Gather input values
-        input-values (into {}
-                           (for [key-name (:reads node)
-                                 :let [entry (get blackboard key-name)]
-                                 :when entry]
-                             [key-name (:value entry)]))
-        ;; Request metadata for usage tracking
-        ;; Disable validation since inputs may be JSON serialized
-        ;; The node's :model rides through as a per-request override.
-        llm-options (cond-> (assoc options :validate? false)
-                         (:model node) (assoc :model (:model node)))]
-    (try
-      (let [response (llm/predict provider module input-values llm-options)
-            ;; Response now has {:outputs {...} :usage {...} :model "..."}
-            bool-result (get-in response [:outputs :result])
-            duration-ms (- (System/currentTimeMillis) start-time)]
-        {:status :success
-         :result (boolean bool-result)
-         :duration-ms duration-ms
-         :usage (normalize-usage (:usage response))
-         :model (:model response)})
-      (catch Exception e
-        {:status :failure
-         :error (.getMessage e)
-         :duration-ms (- (System/currentTimeMillis) start-time)}))))
+  (let [answer-key :result
+        ;; Reads without a declared schema fall back to a string field, as
+        ;; the condition has always tolerated undeclared reads.
+        condition-bb (reduce (fn [bb k]
+                               (if (get-in bb [k :schema])
+                                 bb
+                                 (assoc-in bb [k :schema] :string)))
+                             (assoc blackboard answer-key
+                                    {:key answer-key
+                                     :schema [:boolean
+                                              {:description "True if the condition is met, false otherwise"}]})
+                             (:reads node))
+        leaf (-> node
+                 (select-keys [:id :name :instruction :reads :model :options :provider :fallback-models :fallback-policy])
+                 (assoc :writes [answer-key]))
+        ;; A finite answer is requested as a structured (function-calling)
+        ;; response by default: in marker mode a bare "true" with no field
+        ;; marker is unparseable (the whole-text fallback covers only string
+        ;; outputs). An explicit caller/node option still wins.
+        ;; Conditions bypass execute-leaf, which normally merges authored
+        ;; generation options. Retain them here before request/fallback
+        ;; planning; runtime ownership, accounting and deadlines win last.
+        result (execute-ai leaf condition-bb provider
+                           :options (merge {:use-function-calling? true}
+                                           (:options node) options))
+        answer (get-in result [:outputs answer-key])
+        valid? (and (= :success (:status result)) (boolean? answer))
+        base (dissoc result :outputs :rejected-writes)]
+    (cond
+      valid?
+      (if answer
+        (assoc base :status :success :result true)
+        (assoc base :status :failure :result false
+               :error "Condition evaluated to false"))
+
+      ;; The provider returned, but without a usable boolean answer: a
+      ;; structured provider failure, never a semantic negative.
+      (= :success (:status result))
+      (assoc base :status :failure
+             :failure-kind :schema-validation-failed
+             :error "Model-backed condition returned no valid boolean answer")
+
+      :else
+      (cond-> base
+        (and (= :failure (:status result)) (nil? (:failure-kind result)) (contains? result :outputs))
+        (assoc :failure-kind :schema-validation-failed)))))
+
+(defn execute-decision
+  "Execute a model decision: a leaf whose single declared write is a finite
+   answer (boolean, or one of an offered set of identified options), under the
+   SAME execution policy as a model leaf.
+
+   The decision is expressed as a synthetic leaf whose one write is the answer
+   key with a finite schema built from the options actually offered, then
+   delegated to `execute-ai`, so provider retry, backoff, deadline, LLM-call
+   budget reservation, per-node model choice and failure capture are shared.
+
+   Offered options: the answer key's static schema (`:boolean`, or an enum with
+   `:descriptions`), or, with :options-from, the run-time value of that read key
+   (`[{:id :description}]`). Every option id and description is rendered into
+   the provider-facing instruction.
+
+   Banded (:bands-from): the run-time rubric on that read key is validated
+   (an invalid rubric fails the node, writes nothing), rendered into the
+   instruction, and offered as an ORDERED string enum of band numbers; the
+   chosen band is written as an integer. A native decision model reports its
+   distribution, kept in :decision :band-distribution; an exact tie for most
+   probable band fails with :failure-kind :undecided.
+
+   Returns the `execute-ai` result shape plus :decision
+   `{:offered [...] :answer v :abstained? bool [:set-aside v]}`.
+   A valid answer is :status :success with :outputs {answer-key value}. A
+   missing, nil or out-of-set answer is :status :failure with
+   :failure-kind :schema-validation-failed and NO :outputs. No confidence is
+   synthesised: the floor is judged against a provider-reported :confidence
+   only (none is reported in this runtime yet), so a configured floor abstains."
+  [node blackboard provider & {:keys [options] :or {options {}}}]
+  (let [answer-key (first (:writes node))
+        fail (fn [error offered]
+               {:status :failure
+                :failure-kind :schema-validation-failed
+                :error error
+                :duration-ms 0
+                :decision {:offered (vec offered) :abstained? false}})
+        banded? (some? (:bands-from node))
+        banded (when banded?
+                 (decision/rubric (get-in blackboard [(:bands-from node) :value])))
+        band-levels (mapv (comp str first) (get-in banded [:rubric :bands]))
+        runtime? (some? (:options-from node))
+        runtime-opts (when runtime?
+                       (decision/runtime-options
+                        (get-in blackboard [(:options-from node) :value])))
+        static (when-not (or runtime? banded?)
+                 (decision/schema-options (get-in blackboard [answer-key :schema])))
+        kind (cond banded? :band runtime? :enum :else (:kind static))
+        option-list (cond
+                      banded? (mapv (fn [[level description]] {:id (str level) :description description})
+                                    (get-in banded [:rubric :bands]))
+                      runtime? runtime-opts
+                      (= :enum kind) (mapv (fn [id] {:id id
+                                                     :description (get (:descriptions static) id)})
+                                           (:ids static))
+                      :else nil)
+        offered (if (= :boolean kind) [true false] (mapv :id option-list))]
+    (cond
+      (and banded? (:error banded))
+      (fail (str "Decision '" (:name node) "' read key " (pr-str (:bands-from node))
+                 " holds an invalid rubric: " (:error banded))
+            [])
+
+      (nil? kind)
+      (fail (str "Decision '" (:name node) "' offers no valid options: answer key "
+                 (pr-str answer-key) " is not boolean or a finite enum"
+                 (when runtime? (str " and read key " (pr-str (:options-from node))
+                                     " holds no identified options")))
+            [])
+
+      (and runtime? (nil? runtime-opts))
+      (fail (str "Decision '" (:name node) "' read key " (pr-str (:options-from node))
+                 " holds no non-empty vector of {:id :description} options")
+            [])
+
+      (and (some? (:abstain node)) (not (some #(= (:abstain node) %) offered)))
+      (fail (str "Decision '" (:name node) "' abstention option " (pr-str (:abstain node))
+                 " is not one of the offered options " (pr-str offered))
+            offered)
+
+      :else
+      (let [offer-text (if banded?
+                         (decision/render-bands (:rubric banded))
+                         (decision/render-options kind option-list))
+            ;; Bands travel as STRINGS on the wire (one route returned empty
+            ;; tool arguments for an integer enum); the chosen band string is
+            ;; converted to its integer after the answer returns.
+            answer-schema (cond
+                            (= :boolean kind)
+                            [:boolean {:description (str "The decision's answer. " offer-text)}]
+
+                            banded?
+                            (into [:enum {:ordered-bands true
+                                          :description (str "The chosen band number. " offer-text)
+                                          :descriptions (into {}
+                                                              (map (fn [{:keys [id description]}]
+                                                                     [id description]))
+                                                              option-list)}]
+                                  offered)
+
+                            :else
+                            (into [:enum {:description (str "The chosen option id. " offer-text)
+                                          :descriptions (into {}
+                                                              (keep (fn [{:keys [id description]}]
+                                                                      (when description [id description])))
+                                                              option-list)}]
+                                  offered))
+            decision-bb (reduce (fn [bb k]
+                                  (if (get-in bb [k :schema])
+                                    bb
+                                    (assoc-in bb [k :schema] :string)))
+                                (assoc blackboard answer-key
+                                       {:key answer-key :schema answer-schema})
+                                (:reads node))
+            leaf (-> node
+                     (select-keys [:id :name :reads :model :options :provider :fallback-models :fallback-policy])
+                     ;; The rubric is rendered into the instruction (and is the
+                     ;; decision model's criteria); it is not also evidence.
+                     (update :reads #(if banded? (vec (remove #{(:bands-from node)} %)) %))
+                     (assoc :instruction (str (:instruction node) "\n\n" offer-text)
+                            :writes [answer-key]))
+            ;; Structured (function-calling) response by default — found live:
+            ;; a chat model answering with the bare option id and no field
+            ;; marker is unparseable in marker mode, whose whole-text fallback
+            ;; covers only string outputs. An explicit node option still wins;
+            ;; a native decision provider ignores this flag.
+            result (execute-ai leaf decision-bb provider
+                               :options (merge {:use-function-calling? true} options))
+            answer (get-in result [:outputs answer-key])
+            ;; The decision has exactly one provider-facing output, so its
+            ;; evidence is the single entry the provider reported (if any).
+            reported (some-> (:decisions result) vals first)
+            reported-record (if banded?
+                              {}
+                              (select-keys reported [:probabilities :confidence :probability]))
+            band-record (fn [{:keys [probabilities expected-position confidence]}]
+                          (when (and probabilities (some? expected-position))
+                            {:band-distribution
+                             (cond-> {:probabilities probabilities
+                                      :expected-position expected-position}
+                               (some? confidence) (assoc :confidence confidence))}))
+            ->level (fn [x] (if (and banded? (string? x)) (Long/parseLong x) x))
+            base (dissoc result :outputs :rejected-writes :decisions)]
+        (if (= :success (:status result))
+          (let [{:keys [valid? value record]}
+                (decision/judge {:offered offered
+                                 :abstain (:abstain node)
+                                 :min-confidence (:min-confidence node)}
+                                answer
+                                (:confidence reported))
+                record (merge record reported-record
+                              (when banded? (band-record reported)))
+                record (if banded?
+                         (cond-> (update record :offered #(mapv ->level %))
+                           (contains? record :answer) (update :answer ->level))
+                         record)]
+            (if valid?
+              (assoc base :outputs {answer-key (->level value)} :decision record)
+              (assoc base :status :failure
+                     :failure-kind :schema-validation-failed
+                     :error (str "Model decision '" (:name node)
+                                 "' returned no answer among the offered options "
+                                 (pr-str offered))
+                     :decision record)))
+          (cond-> (assoc base :decision
+                         (merge {:offered (mapv ->level offered) :abstained? false}
+                                ;; An exact tie keeps the distribution the
+                                ;; provider reported, so the undecided node is
+                                ;; auditable from its own record.
+                                (when banded?
+                                  (band-record (get-in result [:provider-evidence :band-distribution])))))
+            (and (= :failure (:status result)) (nil? (:failure-kind result))
+                 (contains? result :outputs))
+            (assoc :failure-kind :schema-validation-failed)))))))
 
 ;; =============================================================================
 ;; REPL Researcher Execution (RLM Pattern)
@@ -1842,25 +2755,40 @@
    error messages that don't match a known pattern.
 
    Patterns recognized:
-   - 'Unmatched delimiter' — the common failure in :output-schemas with
-     nested maps; suggests walking back through the parent {} of the
-     reported column.
+   - 'Unmatched delimiter' — follow the parser's actual unexpected and
+     expected delimiters, without guessing the enclosing API or form.
    - 'EOF while reading' — code truncated mid-form; usually a brace or
      paren never closed.
-   - 'Could not resolve symbol' — usually a typo or missing require."
-  [error]
-  (cond
+   - 'Could not resolve symbol' — usually a typo or missing require.
+   - CV-B (C7, reactive closure hint): the sandbox's own
+     :quoted-inline-function-source requirement — checked FIRST via the
+     ex-data keyword when `error-data` is available, falling back to a
+     literal (str/includes?) check against the sandbox's exported message
+     constant when only the message text survives (never a regex over
+     prose, since the message is our own template text, not model-authored)."
+  ([error] (diagnose-parse-error error nil))
+  ([error error-data]
+   (cond
+    (or (= :quoted-inline-function-source (:requirement error-data))
+        (str/includes? (or error "") rlm-sandbox/quoted-inline-function-source-message))
+    (str "Diagnostic hint: this is the durable-checkpoint closure-rejection guard. "
+         "Write every `:code` node's `:fn` as a literal quoted `(fn ...)` form "
+         "inside THIS `emit-tree!` call — never bind the tree or a function to a "
+         "name first and pass the name in. An already-evaluated closure cannot be "
+         "recorded as durable source, so the whole tree is rejected before it is "
+         "appended; re-emit the tree with the `:fn` written inline as `(fn "
+         "[{:keys [inputs]}] ...)`.")
+
     (re-find #"(?i)unmatched delimiter" error)
-    (str "Diagnostic hint: an 'Unmatched delimiter' error in (emit-tree! [...]) "
-         "almost always means a nested map schema (e.g. inside :output-schemas) "
-         "has a missing or mis-typed closing brace. Walk back from the column "
-         "marker until you find the unclosed { — fix THAT brace, not the one "
-         "the error points at.")
+    (str "Diagnostic hint: follow the unexpected delimiter and expected closing "
+         "delimiter in the parser message. A position introduced by 'to match' "
+         "identifies the opening form, not the unexpected closing character. "
+         "Check the nesting of that form in the submitted code.")
 
     (re-find #"(?i)eof while reading" error)
     (str "Diagnostic hint: 'EOF while reading' means a delimiter "
          "(paren/bracket/brace) was opened but never closed. Re-emit the "
-         "whole tree carefully — count opens vs closes at each depth.")
+         "complete code carefully — count opens vs closes at each depth.")
 
     (re-find #"(?i)could not resolve symbol" error)
     (str "Diagnostic hint: 'Could not resolve symbol' usually means a typo. "
@@ -1868,7 +2796,7 @@
          "emit-tree!, final!, get-input, get-var, store!) are bound. "
          "Don't reference clojure.core fns by alias.")
 
-    :else nil))
+    :else nil)))
 
 (defn- format-error-with-context
   "R-6: For SCI parse errors with [line col] markers, append the offending
@@ -1880,9 +2808,14 @@
    (Unmatched delimiter / EOF while reading / Could not resolve symbol).
 
    Non-parse errors (or codes that don't have the indicated line) pass
-   through with just the error message + the diagnostic hint when known."
-  [code error]
-  (let [hint (diagnose-parse-error (or error ""))
+   through with just the error message + the diagnostic hint when known.
+
+   `error-data` (CV-B / C7) is the history entry's :error-data, when present
+   — carried through to diagnose-parse-error so the reactive closure-rejection
+   hint can key off the sandbox's own ex-data requirement keyword."
+  ([code error] (format-error-with-context code error nil))
+  ([code error error-data]
+  (let [hint (diagnose-parse-error (or error "") error-data)
         hint-line (when hint (str "\n" hint))]
     (if-let [[line col] (parse-error-position error)]
       (let [lines (str/split (or code "") #"\n")
@@ -1895,7 +2828,7 @@
                "  " (apply str (repeat (dec col) " ")) "^"
                hint-line)
           (str "Error: " error hint-line)))
-      (str "Error: " error hint-line))))
+      (str "Error: " error hint-line)))))
 
 (defn- build-iteration-history
   "Format iteration history for LLM context.
@@ -1925,7 +2858,10 @@
                                  (str "Reasoning: " reasoning "\n"))
                                (when-let [error-excerpt (:error-excerpt entry)]
                                  (str "Error [" (:error-class entry) "]: "
-                                      error-excerpt "\n"))
+                                      error-excerpt "\n"
+                                      (when-let [hint (diagnose-parse-error
+                                                        error-excerpt (:error-data entry))]
+                                        (str hint "\n"))))
                                (when-let [result-profile (:result-profile entry)]
                                  (str "Result profile: " (pr-str result-profile) "\n"))
                                (when-let [stdout-profile (:stdout-profile entry)]
@@ -1948,7 +2884,7 @@
                              "Code:\n```clojure\n" code "\n```\n"
                              (when (seq stdout) (str "Output:\n" stdout "\n"))
                              (cond
-                               error (format-error-with-context code error)
+                               error (format-error-with-context code error (:error-data entry))
                                ;; Tree iterations: the eval result is just the
                                ;; compiled tree object (the model already sees
                                ;; its own emit-tree! code above) — show the
@@ -1959,6 +2895,20 @@
                                (str "\nVariables created: "
                                     (str/join ", " (map str vars-created)))))))
                     history)))))
+
+(def ^:private native-evidence-guidance
+  (str "## Native evidence ownership\n"
+       "Preserve native evidence unchanged when the task requires exact carry-through: "
+       "authoritative records, opaque identifiers, literal values and material qualifications. "
+       "Keep interpretation separate from evidence. Give semantic work ownership of new "
+       "judgments, explanations or decisions, rather than asking it to reproduce fields "
+       "already available as native values. Use code to assemble the declared final structure "
+       "from the original evidence and those new interpretations. Preserve required order, "
+       "duplicates, false, zero and null. Do not fuzzy-match, normalize, or repair identifiers "
+       "to hide changed evidence. Task-requested transformations remain valid; apply them "
+       "explicitly under the task's contracts. Use existing bindings, typed contracts and "
+       "primitives; this principle requires no new helper API, fixed tree shape or extra "
+       "model call.\n\n"))
 
 (defn- build-code-generation-module
   "Build ORC LLM module for generating Clojure code."
@@ -1984,6 +2934,7 @@
                 :spec :string
                 :description "Clojure code to execute. Call tools as functions, use println to log progress, and output FINAL_ANSWER: <result> when done."}]
      :instructions (str "You are a research assistant that writes Clojure code to solve tasks.\n\n"
+                        native-evidence-guidance
                         "IMPORTANT RULES:\n"
                         "1. Write valid Clojure code that calls the available tools\n"
                         "2. Use println to log your progress and findings\n"
@@ -2129,9 +3080,10 @@
         ;; builder, else static (:call-tool-fn context)), then (WS-5b) wrap it
         ;; so inline Phase-1 tool calls forward the tick :tool-context as the
         ;; 3rd arg — gating an inline mutate exactly like Phase-2.
-        call-tool-fn (phase1-call-tool-fn
-                      (assoc context :call-tool-fn
-                             (node-call-tool-fn node blackboard context)))
+        call-tool-fn (-> (phase1-call-tool-fn
+                          (assoc context :call-tool-fn
+                                 (node-call-tool-fn node blackboard context)))
+                         (tool-invocation/guarded-call-tool-fn (:tool-contracts node)))
 
         ;; Build SCI context with MCP and browser tools injected
         sci-ctx (sci-sandbox/build-sci-context
@@ -2184,7 +3136,11 @@
                 llm-options (cond-> (assoc execution-options :validate? false :with-metadata? true)
                                  (:model node) (assoc :model (:model node)))
 
-                llm-result (llm/predict provider module inputs llm-options)
+                llm-result (researcher-models/predict node provider module inputs llm-options
+                             (assoc context :researcher-iteration iteration
+                                            :execution-deadline-ms (:workflow-deadline-ms context))
+                             :prime (researcher-models/logical-id (assoc context :researcher-iteration iteration)
+                                                                 :prime (:name node) module inputs node llm-options))
                 ;; Extract code from LLM result
                 ;; With :with-metadata? true, llm returns {:outputs {:code "..."} :usage {...}}
                 ;; Code may be a string or a parsed Clojure form (if function calling mode parsed it)
@@ -2310,10 +3266,13 @@
                   (recur (inc iteration) new-history)))))))
 
       (catch Exception e
-        {:status :failure
-         :error (.getMessage e)
-         :duration-ms (- (System/currentTimeMillis) start-time)
-         :usage @total-usage}))))))
+        (if (:model-call-in-flight? (ex-data e))
+          {:status :running :researcher-frontier-conflict? true}
+          (merge {:status :failure
+                  :error (.getMessage e)
+                  :duration-ms (- (System/currentTimeMillis) start-time)
+                  :usage (merge-with + @total-usage (or (normalize-usage (:usage (ex-data e))) {}))}
+                 (select-keys (ex-data e) [:failure-kind :provider-evidence :model-fallback])))))))))
 
 ;; =============================================================================
 ;; RLM Mode Execution (BT as Primitive)
@@ -2324,7 +3283,7 @@
   [k preview source]
   (let [type-str (name (or (:type preview) :unknown))
         size-str (cond
-                   (:size preview) (str (:size preview) " chars")
+                   (:size preview) (str (:size preview) (if (= :string (:type preview)) " chars" " entries"))
                    (:length preview) (str (:length preview) " items")
                    :else nil)
         type-size (if size-str
@@ -2332,7 +3291,7 @@
                     (str "(" type-str ")"))
         preview-str (cond
                       (:preview preview) (str "  Preview: \"" (:preview preview) "\"")
-                      (:value preview) (str "  Value: " (pr-str (:value preview)))
+                      (contains? preview :value) (str "  Value: " (pr-str (:value preview)))
                       (:sample preview) (str "  Sample: " (pr-str (:sample preview)))
                       (:keys preview) (str "  Keys: " (pr-str (:keys preview)))
                       :else nil)]
@@ -2342,20 +3301,23 @@
 (defn- build-available-variables-section
   "Build the Available Variables section for the RLM prompt."
   [blackboard sandbox-vars-map var-creation-times]
-  (let [;; Format blackboard variables
-        blackboard-entries (for [[k v] blackboard
-                                 :let [preview (rlm-sandbox/preview-value (:value v))]]
-                             (format-variable-preview k preview "[from blackboard]"))
-        ;; Format sandbox variables (created during execution)
-        sandbox-entries (for [[k v] sandbox-vars-map
-                              :when (not (contains? blackboard k))]  ;; Don't duplicate blackboard keys
-                          (let [preview (rlm-sandbox/preview-value v)
-                                iteration (get var-creation-times k 0)
-                                source (str "[created iteration " iteration "]")]
-                            (format-variable-preview k preview source)))]
-    (when (or (seq blackboard-entries) (seq sandbox-entries))
-      (str "## Available Variables\n\n"
-           (str/join "\n\n" (concat blackboard-entries sandbox-entries))
+  (let [keys-in-view (distinct (concat (keys blackboard) (keys sandbox-vars-map)))
+        entries (for [k keys-in-view]
+                  (cond
+                    (contains? sandbox-vars-map k)
+                    (format-variable-preview k (rlm-sandbox/preview-value (get sandbox-vars-map k))
+                                             (str "[current local binding; created iteration "
+                                                  (get var-creation-times k "unrecorded") "]"))
+                    (contains? (get blackboard k) :value)
+                    (format-variable-preview k (rlm-sandbox/preview-value (get-in blackboard [k :value]))
+                                             "[original blackboard value]")
+                    :else
+                    (format-variable-preview k {:type :absent}
+                                             "[declared; no current value]")))]
+    (when (seq entries)
+      (str "## Available Variables — current binding previews\n\n"
+           "Previews are bounded. get-var reads current local bindings; get-input loads original blackboard values.\n\n"
+           (str/join "\n\n" entries)
            "\n\n"))))
 
 (defn- declared-write-schema-contract
@@ -2370,6 +3332,17 @@
         (map (fn [key-name]
                [key-name (get-in blackboard [key-name :schema])]))
         (:writes node)))
+
+(defn- available-schema-contracts
+  "Project declared contracts from the same blackboard as Available Variables.
+   Preserve whole Malli forms, including nested descriptions; do not discover
+   keys from other sheets or manufacture contracts for computed values."
+  [blackboard]
+  (into (sorted-map-by #(compare (pr-str %1) (pr-str %2)))
+        (keep (fn [[key-name entry]]
+                (when (some? (:schema entry))
+                  [key-name (:schema entry)])))
+        blackboard))
 
 (defn- bound-tool-contracts
   "Build the complete Phase-1 contract for the tools actually bound to a node."
@@ -2483,19 +3456,17 @@
    (build-rlm-code-generation-module node inputs-preview history blackboard
                                      sandbox-vars-map var-creation-times
                                      mcp-tools {}))
-  ;; ONE output contract per request, matching the transport. The marker
-  ;; directive below was written for marker mode and used to ship UNCHANGED
-  ;; into function-calling requests (where the provider layer attaches the
-  ;; submit_response tool and appends "Call the submit_response function") —
-  ;; a self-contradictory request. Models weighting the prompt text answered
-  ;; in marker TEXT and, with no fallback (one predict = one provider call),
-  ;; lost their whole answer: "LLM did not generate code" when the code WAS
-  ;; generated (wire-captured, 2026-08-11). `:function-calling?` selects the
-  ;; matching contract; default false keeps every existing caller and prompt
-  ;; byte-identical.
+  ;; The researcher owns the code value, while SIO owns its response envelope.
+  ;; Keeping protocol instructions here would conflict with strict JSON selected
+  ;; by a node or provider profile and could become stale when providers change.
   ([node inputs-preview history blackboard sandbox-vars-map var-creation-times mcp-tools
-    {:keys [function-calling? mint-behavior-contract]}]
+    {:keys [mint-behavior-contract]}]
   (let [rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
+        ;; CV-B (C7): whether this campaign persists a durable checkpoint —
+        ;; scopes the preventive closure-rejection pitfall bullet below, since
+        ;; a non-checkpointed campaign never hits execute-rlm-code's
+        ;; durable-source-required? guard.
+        checkpointed? (boolean (:checkpointed? rlm-config))
         available-code-nodes (get rlm-config :available-code-nodes)
         has-mcp? (boolean (seq mcp-tools))
         mcp-tool-list (str/join ", " mcp-tools)
@@ -2547,14 +3518,22 @@
               :spec :string
               :description "Clojure code to execute"}]
    :instructions (str "You are an RLM (Recursive Language Model) that constructs behavior trees to solve tasks.\n\n"
+                      native-evidence-guidance
                       ;; Two-space architecture explanation
                       "## Two-Space Architecture\n\n"
                       "RLM separates **Variable Space** (full data in sandbox memory) from **Token Space** (what LLMs see).\n"
                       "- Available Variables show PREVIEWS (type, size, sample) - not full content\n"
                       "- Use (get-input :key) to load full values into variable space\n"
-                      "- Sub-LLM calls via :reads receive previews, keeping token usage bounded\n\n"
+                      "- Sub-LLM calls via :reads receive FULL values; bound their input sizes explicitly in your code\n\n"
                       ;; Add Available Variables section
                       (build-available-variables-section blackboard sandbox-vars-map var-creation-times)
+                      "## Available Declared Contracts\n\n"
+                      (pr-str (available-schema-contracts blackboard)) "\n\n"
+                      "These are existing contracts for inputs, intermediate variables, and final outputs in this workflow. "
+                      "A declaration describes a value's shape and meaning; it does not prove that a value has been produced. "
+                      "Inline calls reuse these declared contracts for their :reads and :writes. "
+                      "Every inline :writes key must already have a declared contract. "
+                      "The separate Output Contract below identifies the final keys this researcher must return.\n\n"
                       "## Available Primitives\n\n"
                       "### llm - Execute a sub-LLM call\n"
                       "```clojure\n"
@@ -2563,7 +3542,8 @@
                       "- Returns a map with the :writes keys populated\n"
                       "- :reads [...] passes FULL values to the sub-LLM (no truncation)\n"
                       "- You control chunk sizes in your code - sub-LLMs receive exactly what you pass\n"
-                      "- :reads keys MUST match exact names from Available Variables section\n\n"
+                      "- :reads keys MUST match exact names from Available Variables or keys you have populated with store!\n"
+                      "- `:output-schemas` belongs to emitted nodes; it is not an inline llm option. Use an existing declared :writes key for inline calls\n\n"
                       "### final! - Return validated result\n"
                       "```clojure\n"
                       "(final! {:key value})\n"
@@ -2581,7 +3561,13 @@
                       "(store! :name value)  ;; Store and return value\n"
                       "(get-var :name)       ;; Retrieve stored value (nil if not found)\n"
                       "(list-vars)           ;; List all variables with previews\n"
-                      "```\n\n"
+                      "```\n"
+                      "Lexical bindings are not automatically keyed inputs. Before a sub-LLM reads a value computed in a let binding, store it under the exact :reads key:\n"
+                      "```clojure\n"
+                      "(let [selected (get-input :document)]\n"
+                      "  (store! :work selected))\n"
+                      "```\n"
+                      "A later :reads [:work] receives that complete stored value. Storing a value does not create an output contract for an inline :writes key.\n\n"
                       "### sequence - Execute children in order\n"
                       "```clojure\n"
                       "(sequence \"name\" child1 child2 ...)\n"
@@ -2594,7 +3580,7 @@
                       "  (fn [] (llm \"process\" :reads [:item-name] :writes [:result])))\n"
                       "```\n"
                       "- Iterates over collection from :collection-key in variables\n"
-                      "- Injects each item as :item-name (as preview)\n"
+                      "- Stores each complete item under :item-name for the body's :reads\n"
                       "- Body function called for each item\n"
                       "- Returns vector of results\n\n"
                       "### code - Pure computation (no LLM)\n"
@@ -2623,6 +3609,8 @@
                       "                       :output-schemas {:info :string}}]]\n"
                       "              [:aggregate {:from :results :writes [:all-info]\n"
                       "                           :output-schemas {:all-info [:map-of :keyword [:vector :string]]}}]\n"
+                      "              [:llm {:instruction \"Summarize the extracted information\" :reads [:all-info] :writes [:summary]\n"
+                      "                     :output-schemas {:summary :string}}]\n"
                       "              [:final {:keys [:summary]}]]))\n"
                       "```\n"
                       "- Emits a behavior tree S-expression for two-phase execution\n"
@@ -2631,11 +3619,14 @@
                       "  - :sequence - Execute children in order\n"
                       "  - :parallel - Execute children concurrently (independent work only)\n"
                       "  - :llm - Execute a sub-LLM call with {:instruction :reads :writes}\n"
-                      "      REQUIRED: :output-schemas {<write-key> <Malli-schema>} must declare the shape of EVERY :writes key.\n"
+                      "      Existing Available Declared Contracts are inherited for shared :reads and :writes, even before a value exists.\n"
+                      "      Omit :output-schemas for those keys; an identical redeclaration is allowed, but a conflicting shape or meaning is rejected.\n"
+                      "      For NEW computed keys, declare :output-schemas {<write-key> <Malli-schema>} with the complete specific shape and meaning.\n"
                       "      When the schema is structured (e.g. [:vector [:map [:name :string]]],\n"
                       "      [:map [:foo :string] [:bar :int]]), the framework asks the LLM for valid JSON and parses\n"
-                      "      the response back into Clojure data automatically. A generated tree with any undeclared write\n"
+                      "      the response back into Clojure data automatically. A generated tree with any unresolved write\n"
                       "      schema is rejected before execution. Use the most specific schema matching the value's intent.\n"
+                      "      The examples illustrate new keys; reuse an existing declared contract when a name is already declared.\n"
                       "      Example:\n"
                       "        [:llm {:instruction \"Identify PII targets on this page; return :targets as a vector of maps.\"\n"
                       "               :reads [:page-text]\n"
@@ -2719,7 +3710,7 @@
                       "For deterministic work — counting, regex matching, deduplication, string\n"
                       "replacement, aggregation, format conversion — prefer a :code node over a\n"
                       "sub-LLM call. Counting characters/items via (llm ...) is hallucination-\n"
-                      "prone; a pure-Clojure function is definitively correct.\n\n"
+                      "prone; deterministic code still needs validation against the declared contract and task.\n\n"
                       "### Common emit-tree! patterns\n\n"
                       "For any large data that exceeds token limits, use emit-tree! to design a processing pipeline:\n"
                       "- **Documents**: :chunk-document to split text, then :map-each + :llm per chunk, then :aggregate.\n"
@@ -2952,11 +3943,14 @@
                              "the most recent `:tree-results` entry to spot CLEARLY broken payloads — "
                              "e.g. an A-Z letter count block that reads `A: 0, B: 0, ...` for "
                              "non-empty transcription text, a required structured array that came "
-                             "back `[]`, or `nil` where structured data should be. When the task has no "
-                             "explicit process requirement, only emit another tree if a value is "
-                             "OBVIOUSLY broken in that sense; minor imperfections, stylistic "
-                             "differences, or completeness questions are fine — finalize and let the "
-                             "evaluation layer judge quality.\n\n")
+                             "back `[]`, or `nil` where structured data should be. Cosmetic or "
+                             "stylistic differences alone do not require another tree. Missing required "
+                             "evidence, changed native values or material qualifications, and unsupported "
+                             "certainty are correctness failures even when the schema and previews look "
+                             "complete. Use focused repair within the remaining allowance, or a "
+                             "contract-permitted unresolved result when the evidence genuinely prevents "
+                             "closure. Do not invent missing evidence or use an unresolved result to "
+                             "conceal an avoidable error.\n\n")
                         "")
                       ;; T2-Hardening-C: forward guidance — recurring SCI/Clojure
                       ;; pitfalls observed across the bench suite that the model
@@ -2969,25 +3963,25 @@
                       "Reading this list once now prevents the retry loop from rediscovering "
                       "each pitfall via execution failure. Each entry pairs the failure mode "
                       "with the concrete fix.\n\n"
-                      "- **Set literals with computed elements fail SCI's reader.** "
-                      "`#{(get-in m k1) (get-in m k2)}` — the elements aren't literal values "
-                      "so the reader rejects the form. Use `(set [(expr1) (expr2)])` to build "
-                      "a set from runtime values.\n"
-                      "- **`frequencies` on collections that may contain `nil` produces a "
-                      "`{nil N}` entry that collides downstream.** When the source collection "
-                      "has nils (e.g. partially-populated schedule slots), build the count "
-                      "from the non-nil values: `(frequencies (filter some? coll))`.\n"
-                      "- **`(get-var :foo)` returns `nil` after a Phase-2 `:failure`.** "
-                      "If the prior tree's leaf failed, the value it was supposed to write "
-                      "never landed. Always check before consuming: "
-                      "`(when-let [v (get-var :foo)] ...)`. Don't assume vars exist just "
-                      "because the writes were DECLARED on the tree — the writes are an "
-                      "intent, not a fact.\n"
-                      "- **Namespaced symbols don't resolve in the SCI sandbox.** "
-                      "`clojure.string/join`, `clojure.set/intersection`, etc. won't load. "
-                      "Use the bound sandbox primitives or re-derive locally with `(let ...)` "
-                      "+ basic Clojure (`str`, `apply`, `interpose`, `reduce`, `map`, "
-                      "`filter`, `into`, `vec`).\n"
+                      "- **Computed set elements must be distinct.** A literal such as "
+                      "`#{(get m :a) (get m :b)}` works when the values differ, but "
+                      "equal values cause a duplicate-key error. Use `(set [(get m :a) "
+                      "(get m :b)])` when runtime values may repeat.\n"
+                      "- **`frequencies` counts nil, false and zero as distinct values.** "
+                      "Preserve nil when it is a valid domain value; filter it only when "
+                      "the declared task explicitly excludes it. Do not discard evidence "
+                      "merely because a value is false, zero or nil.\n"
+                      "- **Check presence and producer completion before using stored values.** "
+                      "`(contains? (list-vars) :foo)` distinguishes an absent key from a "
+                      "present key; false and explicit nil are values, so `when-let` is "
+                      "not a presence check. Read the value with `(get-var :foo)`. A retained "
+                      "value may be from an earlier successful producer even when a later "
+                      "tree failed; inspect the producing result before assuming freshness.\n"
+                      "- **Use supported sandbox capabilities, not arbitrary JVM APIs.** "
+                      "Available examples include `clojure.string/join` and `clojure.set/intersection`. "
+                      "Do not assume every namespace, Java class or core function is available. "
+                      "Typed input values do not need string parsing; preserve their declared "
+                      "types and presence instead of inventing coercions or default values.\n"
                       "- **`:output-schemas` must match downstream `:code` consumer's "
                       "expectations.** If the `:llm` declares `:output-schemas {:foo "
                       ":string}` but the downstream `:code` expects a parsed map, the "
@@ -2995,25 +3989,30 @@
                       "to the actual data shape: `[:map [:a :string] [:b :int]]`, NOT "
                       "`[:map :a :string :b :int]`. Nested map fields require `[:map [:k "
                       ":type]]` brace nesting.\n"
-                      "- **Inline-fn bodies that reference unbound names fail at execution "
-                      "time, not at emit.** When you write `[:code {:fn (fn [{:keys "
-                      "[inputs]}] (use-name x))}]` and `x` isn't bound, SCI doesn't notice "
-                      "until the leaf actually runs; the error surfaces as 'Could not "
-                      "resolve symbol' from inside the validator, far from your emit-tree "
-                      "call. Double-check that every name your `:fn` body references is "
-                      "either in `(:keys [...])` destructured from `inputs`, in a `let` "
-                      "binding inside the fn, or a sandbox primitive.\n"
-                      "- **`(get-in m [...])` on nil returns nil silently.** If your "
-                      "`:reads` brings in a value that's nil (because a prior step "
-                      "failed), `(get-in nil [:k1 :k2])` returns nil instead of throwing. "
-                      "Downstream operations on nil throw far from the actual problem. "
-                      "Verify the top of the data is non-nil before deep `get-in`.\n"
-                      "- **For-comprehensions return lazy sequences that defer side "
-                      "effects.** `(for [x xs] (process! x))` doesn't execute until the "
-                      "result is consumed; if the surrounding code only checks `(count "
-                      "...)` or the result is dropped, the side effects never fire. Use "
-                      "`(mapv ...)` or wrap in `(doall ...)` when you need eager "
-                      "evaluation or predictable error attribution.\n\n"
+                      "- **Unbound symbols can fail during SCI analysis or later execution.** "
+                      "A function body may be rejected before it is called; quoted emitted "
+                      "source is analyzed when that source is compiled. Check that each name "
+                      "is bound by the function inputs, a local binding, or a supported "
+                      "sandbox capability. Do not infer when a failure occurs from its "
+                      "position inside a function.\n"
+                      (if checkpointed?
+                        (str "- **In a checkpointed campaign, write every `:code` node's `:fn` "
+                             "as a literal quoted `(fn ...)` inside the `emit-tree!` call — "
+                             "never bind the tree or a function to a name first.** An "
+                             "already-evaluated closure cannot be recorded as durable source "
+                             "and the tree is rejected.\n")
+                        "")
+                      "- **A nil lookup is not proof of a failed producer.** "
+                      "`(get-in nil [:k1 :k2])` returns nil. Nil may be a valid nullable "
+                      "value or an absent path; inspect key presence, the declared schema "
+                      "and producer outcome. Operations differ: `(count nil)` is zero, "
+                      "while others reject nil. Validate what the next operation requires.\n"
+                      "- **For-comprehensions are lazy until consumed.** Dropping an "
+                      "unconsumed `(for [x xs] (process! x))` does not run its body. "
+                      "`count` realizes a finite lazy sequence and therefore runs those "
+                      "bodies; do not use count just to trigger effects. Use `mapv` or "
+                      "`doall` when eager realization is intended, and keep effects "
+                      "within the task's permitted capabilities.\n\n"
 
                       "## Output Contract\n"
                       "Authoritative declared write schemas:\n"
@@ -3022,36 +4021,22 @@
                       "Every value passed to final! MUST satisfy its declared Malli schema exactly. "
                       "Closed maps reject undeclared keys; preserve nested, optional, collection, and union shapes. "
                       "The examples below are illustrative; this declared contract is authoritative.\n\n"
-                      "## CRITICAL OUTPUT FORMAT\n"
-                      (if function-calling?
-                        ;; Function-calling contract: the transport carries the
-                        ;; structure; the fence prohibition is the only part of
-                        ;; the marker directive that is transport-independent.
-                        (str "Call the provided function with your answer. Put the RAW "
-                             "Clojure code in the `code` field (NO markdown code fences, "
-                             "NO ```clojure or ``` tags, NO marker/delimiter lines of any "
-                             "kind — just the code itself as the field's string value).\n\n")
-                        (str "Your response MUST start with `[[ ## code ## ]]` on its own line, followed by RAW Clojure code (NO markdown code fences, NO ```clojure or ``` tags), and end with `[[ ## completed ## ]]`.\n\n"
-                             "Correct format:\n"
-                             "```\n"
-                             "[[ ## code ## ]]\n"
-                             "(emit-tree! [:sequence ...])\n"
-                             "[[ ## completed ## ]]\n"
-                             "```\n\n"
-                             "WRONG (do NOT use markdown fences around your code):\n"
-                             "```\n"
-                             "```clojure\n"
-                             "(emit-tree! [:sequence ...])\n"
-                             "```\n"
-                             "```\n\n"))
+                      "## Code Value\n"
+                      "Put RAW Clojure code in the `code` output field. "
+                      "The field value must contain NO markdown code fences, "
+                      "NO ```clojure or ``` tags, and NO marker/delimiter lines — "
+                      "just the code itself. Use the response format specified by "
+                      "the output contract.\n\n"
                       "## Example: Simple Analysis (small data)\n"
+                      "For a workflow that declares :document, :work, :analysis, and final :answer as strings, one inline call can reuse the :analysis contract:\n"
                       "```clojure\n"
-                      "(let [data (get-input :document)\n"
-                      "      result (llm \"analyze\" \n"
-                      "               :instruction \"Analyze this text\"\n"
-                      "               :reads [:document]\n"
-                      "               :writes [:analysis])]\n"
-                      "  (final! {:answer (:analysis result)}))\n"
+                      "(let [selected (get-input :document)]\n"
+                      "  (store! :work selected)\n"
+                      "  (let [result (llm \"analyze\"\n"
+                      "                   :instruction \"Analyze this text\"\n"
+                      "                   :reads [:work]\n"
+                      "                   :writes [:analysis])]\n"
+                      "    (final! {:answer (:analysis result)})))\n"
                       "```\n\n"
                       "## Example: Processing Large Data (PREFERRED - use emit-tree!)\n"
                       ;; CE-6b: when tools are bound, the large-data line must
@@ -3238,6 +4223,9 @@
                         (str "Tool " tool-name
                              " is not declared :checkpoint-safe? for resumable execution")
                         {:tool tool-name :checkpoint-safe? false})))
+              ;; Declared argument contract: enforced BEFORE any logical action
+              ;; identity, claim or dispatch, so an invalid call claims no effect.
+              (tool-invocation/validate-arguments! (:tool-contracts node) tool-name args)
               (let [ordinal (swap! action-ordinal inc)
                     attempt-ordinal (get iteration-attempts @current-iteration 0)
                     action-id
@@ -3283,35 +4271,22 @@
                               {:timeout-kind :iteration
                                :tool tool-name
                                :timeout-ms tool-timeout-ms})))
-                        claim-result
-                        (when-let [claim! (:claim-researcher-effect! context)]
-                          (claim! {:iteration-index @current-iteration
-                                   :logical-action-identity action-id
-                                   :attempt-identity attempt-id
-                                   :attempt-ordinal attempt-ordinal
-                                   :kind :tool}))
-                        _ (when (:cognitect.anomalies/category claim-result)
-                            (throw (ex-info "Researcher tool claim conflicted"
-                                            {:claim-result claim-result
-                                             :logical-action-identity action-id
-                                             :attempt-identity attempt-id})))
-                        result (case checkpoint-tool-caller-arity
-                                 3 (checkpoint-call-tool-fn tool-name args tool-context)
-                                 (throw
-                                  (ex-info
-                                   tool-caller-arity-error
-                                   {:expected-arities [3]})))]
-                    (let [durable-result (encode-checkpoint-value checkpoint-codecs result)]
-                    (when-let [complete! (:complete-researcher-effect! context)]
-                      (let [completion
-                            (complete! {:logical-action-identity action-id
-                                        :attempt-identity attempt-id
-                                        :result durable-result})]
-                        (when (:cognitect.anomalies/category completion)
-                          (throw (ex-info "Researcher tool outcome lost ownership"
-                                          {:completion-result completion
-                                           :logical-action-identity action-id
-                                           :attempt-identity attempt-id})))))
+                        {:keys [result durable-result]}
+                        (dispatch-claimed-tool-effect!
+                         {:claim! (:claim-researcher-effect! context)
+                          :complete! (:complete-researcher-effect! context)
+                          :codecs checkpoint-codecs
+                          :contracts (:tool-contracts node)
+                          :tool-name tool-name
+                          :args args
+                          :action-id action-id
+                          :attempt-id attempt-id
+                          :attempt-ordinal attempt-ordinal
+                          :iteration-index @current-iteration
+                          :caller checkpoint-call-tool-fn
+                          :caller-arity checkpoint-tool-caller-arity
+                          :tool-context tool-context
+                          :wrap-errors? true})]
                     (swap! completed-actions assoc action-id
                            {:status :completed :result result})
                     (when persist-action!
@@ -3319,8 +4294,9 @@
                                         :action-kind :tool
                                         :iteration @current-iteration
                                         :result durable-result}))
-                    result))))))
-          (phase1-call-tool-fn (assoc context :call-tool-fn raw-call-tool-fn)))
+                    result)))))
+          (-> (phase1-call-tool-fn (assoc context :call-tool-fn raw-call-tool-fn))
+              (tool-invocation/guarded-call-tool-fn (:tool-contracts node))))
         timeout-config (or (:timeouts rlm-config) {})
         pre-classification-timing (:researcher-campaign-timing context)
         campaign-timing
@@ -3357,6 +4333,24 @@
         ;; Track usage across iterations
         total-usage (atom (or (:usage checkpoint)
                               {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}))
+
+        ;; The share of `total-usage` that was spent by generated child ticks
+        ;; (Phase 2). Those ticks record the same tokens on their own node
+        ;; completions, so this node's completion reports its OWN share
+        ;; (total minus this) as :own-usage — each provider call is then
+        ;; counted exactly once by the family-usage query. Persisted in the
+        ;; checkpoint beside :usage so a resumed campaign keeps the split.
+        descendant-usage (atom (or (:descendant-usage checkpoint)
+                                   {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}))
+        add-descendant-usage!
+        (fn [u]
+          (swap! descendant-usage
+                 (fn [acc]
+                   (-> acc
+                       (update :prompt-tokens (fnil + 0) (or (:prompt-tokens u) 0))
+                       (update :completion-tokens (fnil + 0) (or (:completion-tokens u) 0))
+                       (update :total-tokens (fnil + 0) (or (:total-tokens u) 0))
+                       (add-cost u)))))
 
         ;; Persistent sandbox-vars across iterations (for store!/get-var)
         sandbox-vars (atom (or (:sandbox-vars checkpoint) {}))
@@ -3470,6 +4464,7 @@
                               :sandbox-vars @sandbox-vars
                               :var-creation-times @var-creation-times
                               :usage @total-usage
+                              :descendant-usage @descendant-usage
                               :cumulative-tree-ms @cumulative-tree-ms
                               :iteration-attempts (dissoc iteration-attempts (dec next-iteration))
                               :campaign-started-at-ms campaign-started-at-ms
@@ -3535,6 +4530,7 @@
                               :sandbox-vars (dissoc @sandbox-vars :generated-tree)
                               :var-creation-times @var-creation-times
                               :usage @total-usage
+                              :descendant-usage @descendant-usage
                               :cumulative-tree-ms @cumulative-tree-ms
                               :iteration-attempts (dissoc iteration-attempts iteration)
                               :campaign-started-at-ms campaign-started-at-ms
@@ -3615,7 +4611,7 @@
                          :max-iteration-attempts max-iteration-attempts}
                   durable-checkpoint (assoc :checkpoint durable-checkpoint))))))]
 
-    (try
+    (as-> (try
       (loop [iteration initial-iteration
              history (or (:history checkpoint) [])]
         (cond
@@ -3725,10 +4721,7 @@
           ;; CE-6b (ADR 0018): pass the node's bound mcp-tools into the module
           ;; builder (mirrors the non-RLM researcher call) so the Phase-1
           ;; prompt ADVERTISES what the sandbox already binds.
-          ;; The instructions must match the transport the request will
-          ;; actually use: same default-false + caller/node override the
-          ;; llm-options merge below applies, computed here so the module
-          ;; and the transport cannot disagree about the output contract.
+          ;; SIO supplies the envelope for the effective provider protocol.
           (let [_ (reset! current-iteration iteration)
                 _ (reset! action-ordinal 0)
                 iteration-start-ms (long (campaign-now-ms-fn))
@@ -3744,16 +4737,12 @@
                                                          (or (:iteration-ms timeout-config)
                                                              campaign-timeout-ms))]))
                 _ (reset! current-iteration-deadline-ms iteration-deadline-ms)
-                function-calling? (boolean (:use-function-calling?
-                                            (merge {:use-function-calling? false}
-                                                   options)))
                 mint-behavior-contract
                 (registered-mint-behavior-contract (:command-registry context))
                 module (build-rlm-code-generation-module node inputs-preview history
                                                           blackboard @sandbox-vars @var-creation-times
                                                           mcp-tools
-                                                          {:function-calling? function-calling?
-                                                           :mint-behavior-contract mint-behavior-contract})
+                                                          {:mint-behavior-contract mint-behavior-contract})
                 ;; G2 (ADR 0018): pass the :available-code-nodes VALUE into the
                 ;; runtime inputs so the module's declared field + catalog prompt
                 ;; note are non-empty and the model can reference catalog :code
@@ -3762,9 +4751,18 @@
                 ;; added (no declared field either, so backward-compatible).
                 available-code-nodes (let [rlm (:rlm node)]
                                        (when (map? rlm) (:available-code-nodes rlm)))
+                ;; Immutable iteration facts remain bounded/value-free. The
+                ;; durable resumable summary carries the actual child outcome,
+                ;; associated with its original action even after inspection-only turns.
+                latest-tree-summary (peek (:tree-results @sandbox-vars))
+                setup-feedback (when latest-tree-summary
+                                 (render-tree-outcome latest-tree-summary))
                 inputs (cond-> {:task (:instruction node)
-                                :inputs-info (pr-str inputs-preview)
-                                :history (or (build-iteration-history history) "None")}
+                                :inputs-info (str "Original blackboard input previews (not current local bindings): " (pr-str inputs-preview))
+                                :history (str (or (build-iteration-history history) "None")
+                                              (when setup-feedback
+                                                (str "\n\nLatest completed child outcome (previews):\n"
+                                                     setup-feedback)))}
                          available-code-nodes (assoc :available-code-nodes available-code-nodes)
                          mint-behavior-contract
                          (assoc :mint-behavior-contract mint-behavior-contract)
@@ -3809,8 +4807,28 @@
                 ;; The transport receives the EXACT live remainder: it is the
                 ;; outer bound and must never outlive the enclosing workflow.
                 (assoc llm-options :timeout-ms provider-timeout-ms)
+                legacy-provider-action-id
+                (str (:tick-id context) "/" (:node-id context) "/"
+                     iteration "/provider/1")
+                ;; An explicit old mirror is authoritative before any registry
+                ;; lookup. Retained prime role preparation then supplies stable
+                ;; per-turn identity without resolving today's defaults.
+                prepared-prime-model-call
+                (when (and checkpointed? (contains? node :fallback-models))
+                  (researcher-models/prepare-prime
+                   node provider module inputs llm-options
+                   (assoc context :researcher-iteration iteration
+                                  :legacy-completed-prime-action-id
+                                  (when (get @completed-actions legacy-provider-action-id)
+                                    legacy-provider-action-id))))
                 provider-action-id
-                (researcher-effects/provider-logical-action-identity
+                (or (:logical-action-id prepared-prime-model-call)
+                    (when (get @completed-actions legacy-provider-action-id) legacy-provider-action-id)
+                (if (contains? node :fallback-models)
+                  (researcher-models/logical-id (assoc context :researcher-iteration iteration
+                                                             :llm-provider provider)
+                                               :prime (:name node) module inputs node llm-options)
+                  (researcher-effects/provider-logical-action-identity
                  {:tick-id (:tick-id context)
                   :node-id (:node-id context)
                   :iteration-index iteration
@@ -3822,17 +4840,13 @@
                   ;; time and is therefore not part of the logical request.
                   ;; Hash only stable caller/node options so replay can find
                   ;; the completed provider claim under load.
-                  :options (encode-effect-value provider-request-options)})
-                legacy-provider-action-id
-                (str (:tick-id context) "/" (:node-id context) "/"
-                     iteration "/provider/1")
+                  :options (encode-effect-value provider-request-options)})))
                 provider-attempt-ordinal (get iteration-attempts iteration 0)
                 provider-attempt-id
                 (researcher-effects/attempt-identity
                  provider-action-id ownership-epoch provider-attempt-ordinal)
                 completed-provider-action
-                (or (get @completed-actions provider-action-id)
-                    (get @completed-actions legacy-provider-action-id))
+                (get @completed-actions provider-action-id)
                 completed-provider-envelope (:result completed-provider-action)
                 completed-provider-result
                 (if (and (map? completed-provider-envelope)
@@ -3840,33 +4854,16 @@
                   (:provider-result completed-provider-envelope)
                   completed-provider-envelope)
                 invoke-provider
-                #(do
-                   (when-let [exceeded
-                              (if (and checkpointed?
-                                       (:reserve-provider-call! context))
-                                ((:reserve-provider-call! context)
-                                 {:iteration-index iteration
-                                  :logical-action-identity provider-action-id
-                                  :provider-attempt-ordinal
-                                  provider-attempt-ordinal})
-                                (and (:reserve-llm-call! context)
-                                     ((:reserve-llm-call! context))))]
-                     (throw (ex-info
-                             (or (:cognitect.anomalies/message exceeded)
-                                 (str "LLM call budget exceeded: "
-                                      (:current exceeded) "/" (:budget exceeded)))
-                             exceeded)))
-                   ;; :orc/idempotency-key here recognises an already-
-                   ;; dispatched call on resume at OUR boundary (the claim
-                   ;; and :completed-actions lookup above); it is not read or
-                   ;; honoured by any LLM provider (ADR 0004). Provider calls
-                   ;; remain at-least-once and are durably attributed to the
-                   ;; ownership epoch that produced them, never surfaced to
-                   ;; the model as a failure.
-                   (llm/predict provider module inputs
-                                (cond-> provider-request-options
-                                  checkpointed?
-                                  (assoc :orc/idempotency-key provider-action-id))))
+                #(researcher-models/predict
+                   node provider module inputs
+                   (cond-> provider-request-options checkpointed?
+                     (assoc :orc/idempotency-key provider-action-id))
+                   (assoc context :researcher-iteration iteration
+                                  :effect-attempt-ordinal provider-attempt-ordinal
+                                  :model-configuration-options llm-options
+                                  :prepared-prime-model-call prepared-prime-model-call
+                                  :execution-deadline-ms iteration-deadline-ms)
+                   :prime provider-action-id)
                 provider-claim-result
                 (when (and checkpointed?
                            (nil? completed-provider-action)
@@ -3927,8 +4924,10 @@
                                ;; takes the same retry-from-checkpoint path
                                ;; (`TimedOutIterationRetriesFromCheckpoint`). Any
                                ;; other provider error stays a terminal failure.
-                               (cond-> {:code nil :error (.getMessage e)}
-                                 (transport-timeout? e)
+                               (cond-> (merge {:code nil :error (.getMessage e)}
+                                              (select-keys (ex-data e) [:usage :failure-kind :provider-evidence :model-fallback
+                                                                        :model-call-in-flight?]))
+                                 (and (not (:model-fallback (ex-data e))) (transport-timeout? e))
                                  (assoc :timeout-kind :provider)))
 
                              :else (:value provider-call))
@@ -4036,11 +5035,16 @@
                 _ (when-let [u (normalize-usage (:usage llm-result))]
                     (swap! total-usage
                            (fn [acc]
-                             {:prompt-tokens (+ (:prompt-tokens acc 0) (:prompt-tokens u))
-                              :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens u))
-                              :total-tokens (+ (:total-tokens acc 0) (:total-tokens u))})))]
+                             (-> {:prompt-tokens (+ (:prompt-tokens acc 0) (:prompt-tokens u))
+                                  :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens u))
+                                  :total-tokens (+ (:total-tokens acc 0) (:total-tokens u))}
+                                 (cond-> (:cost acc) (assoc :cost (:cost acc)))
+                                 (add-cost (:usage llm-result))))))]
 
             (cond
+                (:model-call-in-flight? llm-result)
+                {:status :running :researcher-frontier-conflict? true}
+
                 (str/blank? code)
                 (if-let [terminal-error (or (:error llm-result)
                                             (when checkpointed?
@@ -4059,21 +5063,21 @@
                                     (string? reasoning)
                                     (assoc :reasoning reasoning)))
                             terminal-result
-                            {:status :failure
-                             :error terminal-error
-                             :iterations history
-                             :duration-ms (- (long (campaign-now-ms-fn))
-                                             campaign-started-at-ms)
-                             :usage @total-usage}]
+                            (merge {:status :failure
+                                    :error terminal-error
+                                    :iterations history
+                                    :duration-ms (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                                    :usage @total-usage}
+                                   (select-keys llm-result [:failure-kind :provider-evidence :model-fallback]))]
                         (persist-terminal-result iteration failure-history
                                                  terminal-result
                                                  attempt-start-ms))
-                      {:status :failure
-                       :error terminal-error
-                       :iterations history
-                       :duration-ms (- (long (campaign-now-ms-fn))
-                                       campaign-started-at-ms)
-                       :usage @total-usage}))
+                      (merge {:status :failure
+                              :error terminal-error
+                              :iterations history
+                              :duration-ms (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                              :usage @total-usage}
+                             (select-keys llm-result [:failure-kind :provider-evidence :model-fallback]))))
                   (let [next-history (conj history
                                            {:code code
                                             :reasoning reasoning
@@ -4097,6 +5101,10 @@
                                              sandbox-vars)
                     rlm-ctx (rlm-sandbox/build-rlm-context
                             {:provider provider
+                             :model-call-context (assoc context :researcher-iteration iteration
+                                                              :effect-attempt-ordinal (get iteration-attempts iteration 0)
+                                                              :execution-deadline-ms iteration-deadline-ms)
+                             :model-defaults (researcher-models/subcall-defaults node)
                              :blackboard blackboard
                              :declared-writes declared-writes
                              :optional-writes optional-writes
@@ -4240,10 +5248,37 @@
                    :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
                    :usage @total-usage}
 
+                  ;; Compatibility refusal cannot be repaired by generating a
+                  ;; different request identity in another iteration. Surface
+                  ;; the typed cause without authorizing further model work.
+                  (and (:error exec-result)
+                       (= :model-plan-incompatible (get-in exec-result [:error-data :failure-kind])))
+                  {:status :failure
+                   :failure-kind :model-plan-incompatible
+                   :reason (get-in exec-result [:error-data :reason])
+                   :error (:error exec-result)
+                   :iterations new-history
+                   :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                   :usage @total-usage}
+
                   ;; Recoverable error - add to history and continue iteration
                   ;; This gives the model a chance to self-correct
                   (:error exec-result)
-                  (let [error-msg (:error exec-result)
+                  (let [;; A later SCI error may follow a partial emit-tree!.
+                        ;; Restore only pending emission state; ordinary values
+                        ;; and actual effects survive. Prior completed tree
+                        ;; provenance remains available for inspection/harvest.
+                        _ (when (and recursive-mode? checkpointed?)
+                            (swap! sandbox-vars
+                                   (fn [vars]
+                                     (merge (dissoc vars :generated-tree
+                                                    :generated-tree-raw
+                                                    :generated-tree-source)
+                                            (select-keys sandbox-before-iteration
+                                                         [:generated-tree
+                                                          :generated-tree-raw
+                                                          :generated-tree-source])))))
+                        error-msg (:error exec-result)
                         available-vars (concat (keys blackboard) (keys @sandbox-vars))
                         enhanced-error (format-error-with-suggestions error-msg available-vars)
                         error-history (conj history
@@ -4255,6 +5290,11 @@
                                             :stdout (:stdout exec-result)
                                             :error-class (:error-class exec-result)
                                             :error enhanced-error
+                                            ;; CV-B (C7): carried alongside :error so the next
+                                            ;; iteration's build-iteration-history rendering can
+                                            ;; key diagnose-parse-error's reactive hint off the
+                                            ;; sandbox's own ex-data requirement keyword.
+                                            :error-data (:error-data exec-result)
                                             :vars-created []})]
                     (or (checkpoint-result (inc iteration) error-history
                                            attempt-start-ms)
@@ -4363,7 +5403,9 @@
                         ;; byte-identical) when the parent has no gate.
                         generated-tree (-> (:generated-tree @sandbox-vars)
                                            (inject-sub-model sub-model)
-                                           (inject-tool-caller-fn (:tool-caller-fn node)))
+                                           (inject-subcall-config (researcher-models/subcall-defaults node))
+                                           (inject-tool-caller-fn (:tool-caller-fn node)
+                                                                 (:tool-contracts node)))
                         generated-tree-raw (:generated-tree-raw @sandbox-vars)
                         generated-tree-source (:generated-tree-source @sandbox-vars)
                         ;; Debug: Print the generated tree
@@ -4499,7 +5541,9 @@
                                                :generated-tree-source generated-tree-source
                                                :blackboard (reduce-kv
                                                              (fn [acc k entry]
-                                                               (assoc acc k (:value entry)))
+                                                               (if (contains? entry :value)
+                                                                 (assoc acc k (:value entry))
+                                                                 acc))
                                                              {}
                                                              blackboard)
                                                ;; U6: preserve parent blackboard schemas
@@ -4525,16 +5569,20 @@
                                             (catch Exception e
                                               (println "[DEBUG RLM] Phase 2 execution ERROR:" (.getMessage e))
                                               (.printStackTrace e)
-                                              {:status :failure
-                                               :preflight-rejected? true
-                                               :missing-schema-keys (:blackboard-keys (ex-data e))
-                                               :error (str "Phase 2 execution failed: " (.getMessage e))})))
+                                              (let [diagnostic (setup-diagnostics/from-exception e)]
+                                                (cond-> {:status :failure
+                                                         :preflight-rejected? true
+                                                         :missing-schema-keys (:blackboard-keys (ex-data e))
+                                                         :error (str "Phase 2 execution failed: " (.getMessage e))}
+                                                  diagnostic
+                                                  (assoc :setup-diagnostic diagnostic
+                                                         :error (setup-diagnostics/render diagnostic)))))))
                             durable-phase2-result
                             (select-keys phase2-result
                                          [:status :outputs :usage :duration-ms :error :trace-id
                                           :sheet-id :breakdown :phase1-elapsed-ms
                                           :phase2-elapsed-ms :block-payload :preflight-rejected?
-                                          :missing-schema-keys])
+                                          :missing-schema-keys :setup-diagnostic])
                             phase2-completion-result
                             (when (and checkpointed?
                                        (nil? completed-phase2-action)
@@ -4675,36 +5723,45 @@
                               (assoc :phase2-elapsed-ms (or (:duration-ms phase2-result)
                                                             (:remaining-ms budget))
                                      :budget-remaining-ms 0))
-                            base-summary (compute-tree-result-summary
-                                           {:phase2-result phase2-result+budget
-                                            :tick-events tick-events
-                                            :tree-raw generated-tree-raw
-                                            :writes declared-writes})
+                            child-nodes (when child-tick-id
+                                          ((requiring-resolve 'ai.obney.orc.orc-service.core.read-models/get-tick-nodes-by-id)
+                                           context child-tick-id))
+                            child-writes (vec (remove researcher-control-keys (child-declared-writes child-nodes)))
+                            produced (completed-child-values context child-tick-id child-nodes tick-events)
+                            produced-values (:values produced)
+                            feedback-result (assoc phase2-result+budget :outputs produced-values)
+                            base-summary (assoc (compute-tree-result-summary
+                                                  {:phase2-result feedback-result
+                                                   :tick-events tick-events
+                                                   :tree-raw generated-tree-raw
+                                                   :writes (vec (distinct (concat child-writes (keys produced-values))))})
+                                                :source-iteration (inc iteration)
+                                                :action-id phase2-action-id
+                                                :output-owners (:owners produced)
+                                                :scoped-outputs (:scoped-outputs produced)
+                                                :protected-writes (vec (distinct (:protected-writes produced))))
                             ;; Successful intermediate writes inside the tree
                             ;; (work that completed even if the tree failed).
                             ;; Merged into sandbox-vars so a recovery tree can
                             ;; resume from them instead of recomputing — the
                             ;; behavior the focused-failure-recovery section
                             ;; describes.
-                            surviving (surviving-vars-from-events
-                                        tick-events
-                                        (concat declared-writes
-                                                (:reads node)
-                                                [:tree-results :generated-tree
-                                                 :generated-tree-raw
-                                                 :generated-tree-source
-                                                 :iteration-reasonings]))
+                            surviving (apply dissoc produced-values child-writes)
                             summary (cond-> base-summary
                                       (seq surviving)
-                                      (assoc :surviving-vars
-                                             (vec (sort (keys surviving)))))
-                            _ (swap! sandbox-vars merge-tree-result-into-sandbox
-                                     phase2-result+budget declared-writes summary)
-                            ;; Newest tree's intermediate values win over any
-                            ;; stale same-named vars from earlier iterations.
-                            _ (when (seq surviving)
-                                (swap! sandbox-vars
-                                       (fn [sv] (merge sv surviving))))
+                                      (assoc :surviving-vars (vec (sort-by pr-str (keys surviving)))))
+                            ;; Never derive writes from the child's seeded blackboard.
+                            ;; Canonical completed values supersede prior locals, including nil.
+                            _ (swap! sandbox-vars
+                                     (fn [vars]
+                                       (-> vars
+                                           (dissoc :generated-tree)
+                                           (merge produced-values)
+                                           (update :tree-results (fnil conj []) summary))))
+                            _ (swap! var-creation-times
+                                     (fn [times]
+                                       (reduce (fn [m k] (if (contains? m k) m (assoc m k (inc iteration))))
+                                               times (keys produced-values))))
                             _ (swap! cumulative-tree-ms + (or (:duration-ms phase2-result) 0))
                             ;; Aggregate Phase 2 sub-LLM usage into the
                             ;; tick-level total-usage. Without this the
@@ -4717,6 +5774,7 @@
                             ;; accumulation.
                             p2-usage (:usage phase2-result)
                             _ (when (and p2-usage (pos? (:total-tokens p2-usage 0)))
+                                (add-descendant-usage! p2-usage)
                                 (swap! total-usage
                                        (fn [acc]
                                          (-> acc
@@ -4728,22 +5786,14 @@
                                                      (or (:completion-tokens p2-usage) 0))
                                              (update :total-tokens
                                                      (fnil + 0 0)
-                                                     (or (:total-tokens p2-usage) 0))))))
+                                                     (or (:total-tokens p2-usage) 0))
+                                             (add-cost p2-usage)))))
                             _ (dbg "\n[DEBUG RLM] Recursive recur — :tree-results entries:"
                                    (count (:tree-results @sandbox-vars))
                                    "summary status:" (:status summary))
-                            ;; R-5: After the recursive-mode merge, update the
-                            ;; LAST iteration history entry so its :vars-created
-                            ;; reflects the tree's writes that ACTUALLY LANDED
-                            ;; (non-nil values), not just the transient
-                            ;; :generated-tree / :generated-tree-raw markers.
-                            ;; Nil/empty declared writes are deliberately
-                            ;; EXCLUDED — listing them as "created" is what
-                            ;; misled the model into finalizing nils. They
-                            ;; surface loudly in :tree-outcome instead.
-                            nil-write-set (set (:nil-writes summary))
-                            tree-output-keys (vec (remove nil-write-set
-                                                          (:outputs-keys summary)))
+                            ;; Presence comes from completed canonical writes, not
+                            ;; value truthiness. Null and empty values remain visible.
+                            tree-output-keys (vec (:outputs-keys summary))
                             prior-sandbox-keys (set (keys sandbox-before-iteration))
                             tree-created-keys (remove prior-sandbox-keys tree-output-keys)
                             tree-updated-keys (filter prior-sandbox-keys tree-output-keys)
@@ -4770,6 +5820,8 @@
                                                                (vec (distinct
                                                                      (concat prior-updated
                                                                              tree-updated-keys))))
+                                                        (cond-> (:preflight-rejected? phase2-result)
+                                                          (assoc :error (:error phase2-result)))
                                                         (assoc :generated-tree
                                                                generated-tree-raw
                                                                :generated-tree-source
@@ -4780,7 +5832,8 @@
                                                                                             :nodes-succeeded
                                                                                             :nodes-failed
                                                                                             :nodes-timed-out
-                                                                                            :error])
+                                                                                            :error
+                                                                                            :setup-diagnostic])
                                                                :tree-outcome outcome)))))]
                         (or (checkpoint-result (inc iteration) new-history
                                                attempt-start-ms)
@@ -4792,12 +5845,16 @@
                             ;; Preserve :by-node from Phase 2 (the per-node breakdown
                             ;; of sub-LLM calls inside the generated tree).
                             p2-by-node (:by-node p2-usage)
+                            _ (when p2-usage (add-descendant-usage! p2-usage))
                             combined-usage (cond-> {:prompt-tokens (+ (:prompt-tokens p1-usage 0)
                                                                      (:prompt-tokens p2-usage 0))
                                                     :completion-tokens (+ (:completion-tokens p1-usage 0)
                                                                           (:completion-tokens p2-usage 0))
                                                     :total-tokens (+ (:total-tokens p1-usage 0)
                                                                      (:total-tokens p2-usage 0))}
+                                             (or (usage-cost p1-usage) (usage-cost p2-usage))
+                                             (assoc :cost (+ (or (usage-cost p1-usage) 0)
+                                                             (or (usage-cost p2-usage) 0)))
                                              (seq p2-by-node) (assoc :by-node p2-by-node))]
                         {:status (:status phase2-result)
                          :outputs (:outputs phase2-result)
@@ -4847,10 +5904,26 @@
                       (recur (inc iteration) new-history))))))))
 
       (catch Exception e
-        {:status :failure
-         :error (.getMessage e)
-         :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
-         :usage @total-usage}))))
+        (merge {:status :failure
+                :error (.getMessage e)
+                :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                :usage @total-usage}
+               (select-keys (ex-data e) [:failure-kind :provider-evidence :model-fallback])))) result
+      ;; Every return path reports :usage that may fold in generated child
+      ;; ticks; record this node's own share alongside it.
+      (if (:usage result)
+        (assoc result :own-usage
+               (let [d @descendant-usage
+                     tokens (into {}
+                                  (map (fn [k]
+                                         [k (max 0 (- (or (get (:usage result) k) 0)
+                                                      (or (get d k) 0)))]))
+                                  [:prompt-tokens :completion-tokens :total-tokens])]
+                 ;; Own cost = total cost minus descendant cost, when costs exist.
+                 (if-let [total-cost (usage-cost (:usage result))]
+                   (assoc tokens :cost (max 0 (- total-cost (or (usage-cost d) 0))))
+                   tokens)))
+        result))))
 
 ;; =============================================================================
 ;; Retry Logic
@@ -4878,6 +5951,7 @@
      (loop [attempt 0]
        (let [result (execute-fn)]
          (if (or (contains? #{:success :timeout :blocked} (:status result))
+                 (false? (:retryable? result))
                  (>= (inc attempt) max-attempts))
            result
            (do
@@ -4900,7 +5974,7 @@
    Executor types:
    - :ai (default) - ORC LLM AI execution
    - :code - Clojure function execution
-   - :tool - Direct tool invocation (not yet implemented)
+   - :tool - Authored-tool invocation (one named tool, reads as arguments)
 
    Args:
      node - The leaf node map
@@ -4916,7 +5990,11 @@
   [node blackboard provider & {:keys [context options stream] :or {context {} options {}}}]
   (let [executor-type (or (:executor node) :ai)
         retry-config (:retry node)
-        execution-options (merge options (:options node))
+        execution-options (merge options (:options node)
+                                 ;; Durable observation capabilities belong to the
+                                 ;; host, not to model/node request configuration.
+                                 (select-keys options [:start-provider-attempt!
+                                                       :complete-provider-attempt! :model-role-context :model-fallback-callbacks]))
         max-node-attempts (or (get-in retry-config [:max-attempts]) 1)
         node-attempt (atom 0)
         execute-fn (fn []
@@ -4927,10 +6005,12 @@
                                                        :node-attempt current-node-attempt
                                                        :max-node-attempts max-node-attempts)
                                        :stream stream)
+                       :decision (execute-decision node blackboard provider
+                                                   :options (assoc execution-options
+                                                                   :node-attempt current-node-attempt
+                                                                   :max-node-attempts max-node-attempts))
                        :code (execute-code node blackboard context)
-                       :tool {:status :failure
-                              :error "Tool executor not yet implemented"
-                              :duration-ms 0}
+                       :tool (execute-tool node blackboard context)
                        ;; Default to AI
                        (execute-ai node blackboard provider
                                    :options (assoc execution-options

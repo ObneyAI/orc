@@ -1,0 +1,205 @@
+{:reasoning-mentions-corpus? false,
+ :slug "domain-002-recipe-scaling",
+ :arm :baseline,
+ :generated-tree-raw
+ [:sequence
+  [:llm
+   {:instruction
+    "You are a professional catering chef. Scale the provided Ratatouille recipe (originally 6 plates) to 60 plates. \n                      Constraints:\n                      1. Scaled Ingredients: Adjust quantities. Note that salt/seasoning does not scale linearly (usually ~70-80% of linear for salt).\n                      2. Revised Technique: Address batch cooking. Large pots risk steaming/mashing. Suggest roasting vegetables separately in sheet pans or using tilting brazier.\n                      3. Workflow: Station setup for dicing ~100+ vegetables. Use of mandolines or food processors for consistency.\n                      4. Timing: Adjust for bulk heat-up and cooling.\n                      5. Cost Estimate: Use typical US wholesale prices (e.g., eggplant $1.50/lb, zucchini $1.20/lb).\n                      6. Pitfalls: Address mushy texture, uneven seasoning, and holding temperature.\n\n                      Output the result as a structured map with keys: :scaled-ingredients, :revised-technique, :workflow, :timing, :cost-estimate, :pitfalls-and-mitigations.",
+    :reads [],
+    :writes [:scaled_recipe],
+    :output-schemas
+    {:scaled_recipe
+     [:map
+      [:scaled-ingredients :string]
+      [:revised-technique :string]
+      [:workflow :string]
+      [:timing :string]
+      [:cost-estimate :string]
+      [:pitfalls-and-mitigations :string]]}}]
+  [:code
+   {:fn
+    (fn
+     [{:keys [inputs]}]
+     (let
+      [r (:scaled_recipe inputs)]
+      {:result
+       (str
+        "SCALED INGREDIENTS:\n"
+        (:scaled-ingredients r)
+        "\n\n"
+        "REVISED TECHNIQUE:\n"
+        (:revised-technique r)
+        "\n\n"
+        "WORKFLOW:\n"
+        (:workflow r)
+        "\n\n"
+        "TIMING:\n"
+        (:timing r)
+        "\n\n"
+        "COST ESTIMATE:\n"
+        (:cost-estimate r)
+        "\n\n"
+        "PITFALLS & MITIGATIONS:\n"
+        (:pitfalls-and-mitigations r))})),
+    :reads [:scaled_recipe],
+    :writes [:result]}]
+  [:final {:keys [:result]}]],
+ :node-trace-usage-total
+ {:prompt-tokens 18023, :completion-tokens 2938, :total-tokens 20961},
+ :duration-ms 19119,
+ :deferred [],
+ :usage
+ {:prompt-tokens 17560,
+  :completion-tokens 1890,
+  :total-tokens 19450,
+  :by-node
+  {[{:type :leaf,
+     :node-id #uuid "9b97d73d-2ee5-4ffc-b2bf-d5669a019496"}]
+   {:prompt-tokens 17560,
+    :completion-tokens 1890,
+    :total-tokens 19450}}},
+ :render {:arm nil, :prepend-chars nil, :candidates nil, :prepend nil},
+ :status :success,
+ :reasoning-names-label? false,
+ :iteration-reasonings
+ ["To scale a recipe 10x for a catering event while addressing specific culinary challenges (seasoning non-linearity, texture preservation, heat distribution, and professional kitchen workflow), I will use a behavior tree. This tree will first utilize a sub-LLM call to handle the culinary logic and complex scaling constraints, ensuring the output meets the professional catering requirements. I will then use a `:code` node to format the final result into a single string as required by the authoritative `:result` contract. The tree approach is chosen because the task requires synthesizing multiple constraints (scaling, workflow, cost, and logistics) that are best handled by a high-level LLM reasoning step, followed by structured formatting."
+  "The previous iteration successfully generated the `:result` variable by executing a behavior tree that scaled the recipe and formatted the output. According to the `tree-results` and `history`, the `:result` variable now contains the full string containing the scaled ingredients, technique, workflow, timing, cost estimate, and pitfalls. Since the task is to provide the scaled recipe and the required keys are present in the `:scaled_recipe` map (which was the source for the final `:result` string), I can now terminate the process by calling `final!` with the generated result."],
+ :tree-node-count 4,
+ :outputs
+ {:result
+  "SCALED INGREDIENTS:\n*   **Eggplant:** 25 lbs (approx. 20-22 large), 1/2-inch dice\n*   **Zucchini:** 15 lbs, 1/2-inch dice\n*   **Yellow Squash:** 15 lbs, 1/2-inch dice\n*   **Red & Yellow Bell Peppers:** 12 lbs (approx. 24 peppers), 1/2-inch dice\n*   **Yellow Onions:** 10 lbs, small dice\n*   **Garlic:** 1 lb, minced\n*   **Canned Crushed Tomatoes (Peeled):** 3x #10 cans (approx. 2.25 gallons)\n*   **Extra Virgin Olive Oil:** 1.5 liters\n*   **Fresh Thyme:** 4 bunches, tied (or 4 oz leaves)\n*   **Fresh Basil:** 2 lbs, chiffonade (for finishing)\n*   **Kosher Salt:** 7 oz (approx. 1 cup), adjust to taste (calculated at 75% linear scale)\n*   **Black Pepper:** 2 oz\n*   **Red Wine Vinegar:** 1 cup (to brighten at finish)\n\nREVISED TECHNIQUE:\nTo avoid the \"mush\" effect common in large-batch ratatouille, do not stew everything together from raw. \n1. **The Roasting Method:** Toss diced eggplant, zucchini, squash, and peppers in olive oil and salt. Spread across ~15-20 full-size sheet pans. Roast at 425°F (220°C) in convection ovens until edges are caramelized and texture is \"al dente.\" \n2. **The Base:** In a tilting brazier or large steam-jacketed kettle, sauté onions and garlic until translucent. Add crushed tomatoes and herbs. Simmer for 45 minutes to develop a thick, rich sauce.\n3. **The Marriage:** Fold the roasted vegetables into the tomato base. Heat through for only 10-15 minutes to allow flavors to meld without breaking down the vegetable structure.\n\nWORKFLOW:\n1. **Prep Station (Hours 1-3):** Set up 3 prep cooks. One on a vegetable slicer/robot-coupe (using the dicing grid) for onions and peppers. Two on manual dicing for eggplant and squash to ensure uniform cubes that won't pulverize.\n2. **Roasting Station (Hours 3-4):** Stagger sheet pans into ovens. Rotate every 10 minutes. \n3. **Sauce Station (Hours 3-4.5):** Start tomato base in the brazier simultaneously with roasting.\n4. **Assembly & Holding (Hour 5):** Combine components. Transfer to 2-inch hotel pans. \n5. **Garnish:** Add fresh basil and a drizzle of raw EVOO just before service.\n\nTIMING:\n*   **Prep/Dicing:** 3 hours (Bulk dicing 80 lbs of produce).\n*   **Roasting:** 1.5 hours (convection rotation).\n*   **Simmering Base:** 1 hour.\n*   **Final Assembly/Meld:** 20 minutes.\n*   **Total Lead Time:** 5-6 hours. \n*   *Note: Allow 45 minutes for large-scale temperature recovery when adding cold/room temp vegetables to the sauce.*\n\nCOST ESTIMATE:\n*   **Produce (Eggplant, Zucchini, Peppers, Onions):** $125.00\n*   **Pantry (Oil, Garlic, Herbs, Vinegar):** $45.00\n*   **Canned Goods (#10 Tomatoes):** $30.00\n*   **Total Estimated Wholesale Cost:** $200.00\n*   **Cost Per Plate (Portion):** ~$3.33\n\nPITFALLS & MITIGATIONS:\n*   **Pitfall: Excess Moisture/Soggy Texture.** *Mitigation:* Salting the eggplant 30 minutes before roasting to draw out water; roasting at high heat instead of boiling in sauce.\n*   **Pitfall: Oversalted Base.** *Mitigation:* Because sauce reduces, season the tomato base lightly; add the final 20% of salt only after the vegetables and sauce are combined.\n*   **Pitfall: Greasy Finish.** *Mitigation:* Eggplant acts like a sponge. Ensure oil is tossed thoroughly on sheet pans rather than poured into the stewing pot.\n*   **Pitfall: Holding Temp.** *Mitigation:* If holding in a hot box (Cambro), keep the lids slightly cracked to prevent steam from further cooking the vegetables into a puree.",
+  :generated-tree-raw
+  [:sequence
+   [:llm
+    {:instruction
+     "You are a professional catering chef. Scale the provided Ratatouille recipe (originally 6 plates) to 60 plates. \n                      Constraints:\n                      1. Scaled Ingredients: Adjust quantities. Note that salt/seasoning does not scale linearly (usually ~70-80% of linear for salt).\n                      2. Revised Technique: Address batch cooking. Large pots risk steaming/mashing. Suggest roasting vegetables separately in sheet pans or using tilting brazier.\n                      3. Workflow: Station setup for dicing ~100+ vegetables. Use of mandolines or food processors for consistency.\n                      4. Timing: Adjust for bulk heat-up and cooling.\n                      5. Cost Estimate: Use typical US wholesale prices (e.g., eggplant $1.50/lb, zucchini $1.20/lb).\n                      6. Pitfalls: Address mushy texture, uneven seasoning, and holding temperature.\n\n                      Output the result as a structured map with keys: :scaled-ingredients, :revised-technique, :workflow, :timing, :cost-estimate, :pitfalls-and-mitigations.",
+     :reads [],
+     :writes [:scaled_recipe],
+     :output-schemas
+     {:scaled_recipe
+      [:map
+       [:scaled-ingredients :string]
+       [:revised-technique :string]
+       [:workflow :string]
+       [:timing :string]
+       [:cost-estimate :string]
+       [:pitfalls-and-mitigations :string]]}}]
+   [:code
+    {:fn
+     (fn
+      [{:keys [inputs]}]
+      (let
+       [r (:scaled_recipe inputs)]
+       {:result
+        (str
+         "SCALED INGREDIENTS:\n"
+         (:scaled-ingredients r)
+         "\n\n"
+         "REVISED TECHNIQUE:\n"
+         (:revised-technique r)
+         "\n\n"
+         "WORKFLOW:\n"
+         (:workflow r)
+         "\n\n"
+         "TIMING:\n"
+         (:timing r)
+         "\n\n"
+         "COST ESTIMATE:\n"
+         (:cost-estimate r)
+         "\n\n"
+         "PITFALLS & MITIGATIONS:\n"
+         (:pitfalls-and-mitigations r))})),
+     :reads [:scaled_recipe],
+     :writes [:result]}]
+   [:final {:keys [:result]}]],
+  :generated-tree-source
+  "[:sequence [:llm {:instruction \"You are a professional catering chef. Scale the provided Ratatouille recipe (originally 6 plates) to 60 plates. \\n                      Constraints:\\n                      1. Scaled Ingredients: Adjust quantities. Note that salt/seasoning does not scale linearly (usually ~70-80% of linear for salt).\\n                      2. Revised Technique: Address batch cooking. Large pots risk steaming/mashing. Suggest roasting vegetables separately in sheet pans or using tilting brazier.\\n                      3. Workflow: Station setup for dicing ~100+ vegetables. Use of mandolines or food processors for consistency.\\n                      4. Timing: Adjust for bulk heat-up and cooling.\\n                      5. Cost Estimate: Use typical US wholesale prices (e.g., eggplant $1.50/lb, zucchini $1.20/lb).\\n                      6. Pitfalls: Address mushy texture, uneven seasoning, and holding temperature.\\n\\n                      Output the result as a structured map with keys: :scaled-ingredients, :revised-technique, :workflow, :timing, :cost-estimate, :pitfalls-and-mitigations.\", :reads [], :writes [:scaled_recipe], :output-schemas {:scaled_recipe [:map [:scaled-ingredients :string] [:revised-technique :string] [:workflow :string] [:timing :string] [:cost-estimate :string] [:pitfalls-and-mitigations :string]]}}] [:code {:fn (fn [{:keys [inputs]}] (let [r (:scaled_recipe inputs)] {:result (str \"SCALED INGREDIENTS:\\n\" (:scaled-ingredients r) \"\\n\\n\" \"REVISED TECHNIQUE:\\n\" (:revised-technique r) \"\\n\\n\" \"WORKFLOW:\\n\" (:workflow r) \"\\n\\n\" \"TIMING:\\n\" (:timing r) \"\\n\\n\" \"COST ESTIMATE:\\n\" (:cost-estimate r) \"\\n\\n\" \"PITFALLS & MITIGATIONS:\\n\" (:pitfalls-and-mitigations r))})), :reads [:scaled_recipe], :writes [:result]}] [:final {:keys [:result]}]]",
+  :iteration-reasonings
+  ["To scale a recipe 10x for a catering event while addressing specific culinary challenges (seasoning non-linearity, texture preservation, heat distribution, and professional kitchen workflow), I will use a behavior tree. This tree will first utilize a sub-LLM call to handle the culinary logic and complex scaling constraints, ensuring the output meets the professional catering requirements. I will then use a `:code` node to format the final result into a single string as required by the authoritative `:result` contract. The tree approach is chosen because the task requires synthesizing multiple constraints (scaling, workflow, cost, and logistics) that are best handled by a high-level LLM reasoning step, followed by structured formatting."
+   "The previous iteration successfully generated the `:result` variable by executing a behavior tree that scaled the recipe and formatted the output. According to the `tree-results` and `history`, the `:result` variable now contains the full string containing the scaled ingredients, technique, workflow, timing, cost estimate, and pitfalls. Since the task is to provide the scaled recipe and the required keys are present in the `:scaled_recipe` map (which was the source for the final `:result` string), I can now terminate the process by calling `final!` with the generated result."],
+  :iterations
+  [{:result-profile {:type :vector, :length 4},
+    :variable-delta
+    {:created-keys [:result], :updated-keys [], :removed-keys []},
+    :attempt-ordinal 0,
+    :started-at "2026-09-16T14:21:36.289Z",
+    :emitted-tree-recorded? true,
+    :reasoning
+    "To scale a recipe 10x for a catering event while addressing specific culinary challenges (seasoning non-linearity, texture preservation, heat distribution, and professional kitchen workflow), I will use a behavior tree. This tree will first utilize a sub-LLM call to handle the culinary logic and complex scaling constraints, ensuring the output meets the professional catering requirements. I will then use a `:code` node to format the f",
+    :stdout-profile
+    {:type :string, :length 0, :word-count 1, :line-count 1},
+    :tree-fingerprint "-596409054",
+    :duration-ms 16306,
+    :status :success,
+    :code
+    "(emit-tree!\n (quote\n  [:sequence\n   [:llm {:instruction \"You are a professional catering chef. Scale the provided Ratatouille recipe (originally 6 plates) to 60 plates. \n                      Constraints:\n                      1. Scaled Ingredients: Adjust quantities. Note that salt/seasoning does not scale linearly (usually ~70-80% of linear for salt).\n                      2. Revised Technique: Address batch cooking. Large pots risk steaming/mashing. Suggest roasting vegetables separately in sheet pans or using tilting brazier.\n                      3. Workflow: Station setup for dicing ~100+ vegetables. Use of mandolines or food processors for consistency.\n                      4. Timing: Adjust for bulk heat-up and cooling.\n                      5. Cost Estimate: Use typical US wholesale prices (e.g., eggplant $1.50/lb, zucchini $1.20/lb).\n                      6. Pitfalls: Address mushy texture, uneven seasoning, and holding temperature.\n\n                      Output the result as a structured map with keys: :scaled-ingredients, :revised-technique, :workflow, :timing, :cost-estimate, :pitfalls-and-mitigations.\"\n          :reads []\n          :writes [:scaled_recipe]\n          :output-schemas {:scaled_recipe [:map\n                                           [:scaled-ingredients :string]\n                                           [:revised-technique :string]\n                                           [:workflow :string]\n                                           [:timing :string]\n                                           [:cost-estimate :string]\n                                           [:pitfalls-and-mitigations :string]]}}]\n   [:code {:fn (fn [{:keys [inputs]}]\n                 (let [r (:scaled_recipe inputs)]\n                   {:result (str \"SCALED INGREDIENTS:\\n\" (:scaled-ingredients r) \"\\n\\n\"\n                                 \"REVISED TECHNIQUE:\\n\" (:revised-technique r) \"\\n\\n\"\n                                 \"WORKFLOW:\\n\" (:workflow r) \"\\n\\n\"\n                                 \"TIMING:\\n\" (:timing r) \"\\n\\n\"\n                                 \"COST ESTIMATE:\\n\" (:cost-estimate r) \"\\n\\n\"\n                                 \"PITFALLS & MITIGATIONS:\\n\" (:pitfalls-and-mitigations r))}))\n           :reads [:scaled_recipe]\n           :writes [:result]}]\n   [:final {:keys [:result]}]]))",
+    :emitted-tree-source
+    "[:sequence [:llm {:instruction \"You are a professional catering chef. Scale the provided Ratatouille recipe (originally 6 plates) to 60 plates. \\n                      Constraints:\\n                      1. Scaled Ingredients: Adjust quantities. Note that salt/seasoning does not scale linearly (usually ~70-80% of linear for salt).\\n                      2. Revised Technique: Address batch cooking. Large pots risk steaming/mashing. Suggest roasting vegetables separately in sheet pans or using tilting brazier.\\n                      3. Workflow: Station setup for dicing ~100+ vegetables. Use of mandolines or food processors for consistency.\\n                      4. Timing: Adjust for bulk heat-up and cooling.\\n                      5. Cost Estimate: Use typical US wholesale prices (e.g., eggplant $1.50/lb, zucchini $1.20/lb).\\n                      6. Pitfalls: Address mushy texture, uneven seasoning, and holding temperature.\\n\\n                      Output the result as a structured map with keys: :scaled-ingredients, :revised-technique, :workflow, :timing, :cost-estimate, :pitfalls-and-mitigations.\", :reads [], :writes [:scaled_recipe], :output-schemas {:scaled_recipe [:map [:scaled-ingredients :string] [:revised-technique :string] [:workflow :string] [:timing :string] [:cost-estimate :string] [:pitfalls-and-mitigations :string]]}}] [:code {:fn (fn [{:keys [inputs]}] (let [r (:scaled_recipe inputs)] {:result (str \"SCALED INGREDIENTS:\\n\" (:scaled-ingredients r) \"\\n\\n\" \"REVISED TECHNIQUE:\\n\" (:revised-technique r) \"\\n\\n\" \"WORKFLOW:\\n\" (:workflow r) \"\\n\\n\" \"TIMING:\\n\" (:timing r) \"\\n\\n\" \"COST ESTIMATE:\\n\" (:cost-estimate r) \"\\n\\n\" \"PITFALLS & MITIGATIONS:\\n\" (:pitfalls-and-mitigations r))})), :reads [:scaled_recipe], :writes [:result]}] [:final {:keys [:result]}]]",
+    :completed-at "2026-09-16T14:21:52.595Z",
+    :generated-code-recorded? true,
+    :iteration-index 0,
+    :emitted-tree
+    [:sequence
+     [:llm
+      {:instruction
+       "You are a professional catering chef. Scale the provided Ratatouille recipe (originally 6 plates) to 60 plates. \n                      Constraints:\n                      1. Scaled Ingredients: Adjust quantities. Note that salt/seasoning does not scale linearly (usually ~70-80% of linear for salt).\n                      2. Revised Technique: Address batch cooking. Large pots risk steaming/mashing. Suggest roasting vegetables separately in sheet pans or using tilting brazier.\n                      3. Workflow: Station setup for dicing ~100+ vegetables. Use of mandolines or food processors for consistency.\n                      4. Timing: Adjust for bulk heat-up and cooling.\n                      5. Cost Estimate: Use typical US wholesale prices (e.g., eggplant $1.50/lb, zucchini $1.20/lb).\n                      6. Pitfalls: Address mushy texture, uneven seasoning, and holding temperature.\n\n                      Output the result as a structured map with keys: :scaled-ingredients, :revised-technique, :workflow, :timing, :cost-estimate, :pitfalls-and-mitigations.",
+       :reads [],
+       :writes [:scaled_recipe],
+       :output-schemas
+       {:scaled_recipe
+        [:map
+         [:scaled-ingredients :string]
+         [:revised-technique :string]
+         [:workflow :string]
+         [:timing :string]
+         [:cost-estimate :string]
+         [:pitfalls-and-mitigations :string]]}}]
+     [:code
+      {:fn
+       (fn
+        [{:keys [inputs]}]
+        (let
+         [r (:scaled_recipe inputs)]
+         {:result
+          (str
+           "SCALED INGREDIENTS:\n"
+           (:scaled-ingredients r)
+           "\n\n"
+           "REVISED TECHNIQUE:\n"
+           (:revised-technique r)
+           "\n\n"
+           "WORKFLOW:\n"
+           (:workflow r)
+           "\n\n"
+           "TIMING:\n"
+           (:timing r)
+           "\n\n"
+           "COST ESTIMATE:\n"
+           (:cost-estimate r)
+           "\n\n"
+           "PITFALLS & MITIGATIONS:\n"
+           (:pitfalls-and-mitigations r))})),
+       :reads [:scaled_recipe],
+       :writes [:result]}]
+     [:final {:keys [:result]}]]}
+   {:result-profile {:type :map, :length 1},
+    :vars-updated [:iteration-reasonings],
+    :vars-created [],
+    :provider-latency-ms 2748,
+    :reasoning
+    "The previous iteration successfully generated the `:result` variable by executing a behavior tree that scaled the recipe and formatted the output. According to the `tree-results` and `history`, the `:result` variable now contains the full string containing the scaled ingredients, technique, workflow, timing, cost estimate, and pitfalls. Since the task is to provide the scaled recipe and the required keys are present in the `:scaled_recipe` map (which was the source for the final `:result` string), I can now terminate the process by calling `final!` with the generated result.",
+    :stdout-profile
+    {:type :string, :length 0, :word-count 1, :line-count 1},
+    :error-class nil,
+    :provider-usage
+    {:prompt-tokens 9406, :completion-tokens 146, :total-tokens 9552},
+    :result
+    "\"FINAL_ANSWER: {:result \\\"SCALED INGREDIENTS:\\\\n*   **Eggplant:** 25 lbs (approx. 20-22 large), 1/2-inch dice\\\\n*   **Zucchini:** 15 lbs, 1/2-inch dice\\\\n*   **Yellow Squash:** 15 lbs, 1/2-inch dice\\\\n*   **Red & Yellow Bell Peppers:** 12 lbs (approx. 24 peppers), 1/2-inch dice\\\\n*   **Yellow Onions:** 10 lbs, small dice\\\\n*   **Garlic:** 1 lb, minced\\\\n*   **Canned Crushed Tomatoes (Peeled):** 3x #10 cans (approx. 2.25 gallons)\\\\n*   **Extra Virgin Olive Oil:** 1.5 liters\\\\n*   **Fresh Thyme:** 4 bunches, tied (or 4 oz leaves)\\\\n*   **Fresh Basil:** 2 lbs, chiffonade (for finishing)\\\\n*   **Kosher Salt:** 7 oz (approx. 1 cup), adjust to taste (calculated at 75% linear scale)\\\\n*   **Black Pepper:** 2 oz\\\\n*   **Red Wine Vinegar:** 1 cup (to brighten at finish)\\\\n\\\\nREVISED TECHNIQUE:\\\\nTo avoid the \\\\\\\"mush\\\\\\\" effect common in large-batch ratatouille, do not stew everything together from raw. \\\\n1. **The Roasting Method:** Toss diced eggplant, zucchini, squash, and peppers in olive oil and salt. Spread across ~15-20 full-size sheet pans. Roast at 425°F (220°C) in convection ovens until edges are caramelized and texture is \\\\\\\"al dente.\\\\\\\" \\\\n2. **The Base:** In a tilting brazier or large steam-jacketed kettle, sauté onions and garlic until translucent. Add crushed tomatoes and herbs. Simmer for 45 minutes to develop a thick, rich sauce.\\\\n3. **The Marriage:** Fold the roasted vegetables into the tomato base. Heat through for only 10-15 minutes to allow flavors to meld without breaking down the vegetable structure.\\\\n\\\\nWORKFLOW:\\\\n1. **Prep Station (Hours 1-3):** Set up 3 prep cooks. One on a vegetable slicer/robot-coupe (using the dicing grid) for onions and peppers. Two on manual dicing for eggplant and squash to ensure uniform cubes that won't pulverize.\\\\n2. **Roasting Station (Hours 3-4):** Stagger sheet pans into ovens. Rotate every 10 minutes. \\\\n3. **Sauce Station (Hours 3-4.5):** Start tomato base in the brazier simultaneously with roasting.\\\\n4. **Assembly & Holding (Hour 5):** Combine components. Transfer to 2-inch hotel pans. \\\\n5. **Garnish:** Add fresh basil and a drizzle of raw EVOO just before service.\\\\n\\\\nTIMING:\\\\n*   **Prep/Dicing:** 3 hours (Bulk dicing 80 lbs of produce).\\\\n*   **Roasting:** 1.5 hours (convection rotation).\\\\n*   **Simmering Base:** 1 hour.\\\\n*   **Final Assembly/Meld:** 20 minutes.\\\\n*   **Total Lead Time:** 5-6 hours. \\\\n*   *Note: Allow 45 minutes for large-scale temperature recovery when adding cold/room temp vegetables to the sauce.*\\\\n\\\\nCOST ESTIMATE:\\\\n*   **Produce (Eggplant, Zucchini, Peppers, Onions):** $125.00\\\\n*   **Pantry (Oil, Garlic, Herbs, Vinegar):** $45.00\\\\n*   **Canned Goods (#10 Tomatoes):** $30.00\\\\n*   **Total Estimated Wholesale Cost:** $200.00\\\\n*   **Cost Per Plate (Portion):** ~$3.33\\\\n\\\\nPITFALLS & MITIGATIONS:\\\\n*   **Pitfall: Excess Moisture/Soggy Texture.** *Mitigation:* Salting the eggplant 30 minutes before roasting to draw out water; roasting at high heat instead of boiling in sauce.\\\\n*   **Pitfall: Oversalted Base.** *Mitigation:* Because sauce reduces, season the tomato base lightly; add the final 20% of salt only after the vegetables and sauce are combined.\\\\n*   **Pitfall: Greasy Finish.** *Mitigation:* Eggplant acts like a sponge. Ensure oil is tossed thoroughly on sheet pans rather than poured into the stewing pot.\\\\n*   **Pitfall: Holding Temp.** *Mitigation:* If holding in a hot box (Cambro), keep the lids slightly cracked to prevent steam from further cooking the vegetables into a puree.\\\"}\"",
+    :code "(final! {:result (get-var :result)})",
+    :error nil,
+    :stdout ""}]},
+ :iteration-count 2,
+ :error nil,
+ :classified {},
+ :child-after-run nil}

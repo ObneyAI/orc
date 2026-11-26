@@ -24,6 +24,12 @@
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
             [malli.core :as m]))
 
+(defn- an-hour-later
+  "The recovering worker's view an hour after the crashed owner last renewed:
+   that lease has expired (ExecutionRecovery OwnedWorkIsNotAbandoned)."
+  [ctx]
+  (assoc ctx :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))
+
 (deftest det-e2e-267-classification-commit-requires-positive-epoch-and-one-outcome
   (let [schema (schemas/commands :sheet/commit-researcher-classification)
         sheet-id (random-uuid)
@@ -1175,7 +1181,7 @@
                      (rm/get-researcher-resume-state
                       ctx sheet-id tick-id node-id)))
               "the recovery seam is specifically before the first checkpoint")
-          (let [recovery-results (runtime/resume-in-progress! ctx)
+          (let [recovery-results (runtime/resume-in-progress! (an-hour-later ctx))
                 classification-events
                 (into []
                       (es/read (:event-store ctx)
@@ -2580,7 +2586,7 @@
                              (fn [] @release-new-monitor)
                              :researcher-worker-finished-fn
                              #(deliver new-worker-finished true))}))
-            (let [recovery (sheet/resume-in-progress! ctx)]
+            (let [recovery (sheet/resume-in-progress! (an-hour-later ctx))]
               (is (= [{:resumed? true
                        :researcher-ownership-epoch 2}]
                      (mapv #(select-keys

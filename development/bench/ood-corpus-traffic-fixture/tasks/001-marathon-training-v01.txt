@@ -1,0 +1,5 @@
+; brief-id: fx-marathon
+; group: marathon-training
+; variant: 1
+
+I'm training for my first marathon in 12 weeks. My current long run is 8 miles. Can you build me a week-by-week mileage progression that peaks 3 weeks before race day and then tapers?

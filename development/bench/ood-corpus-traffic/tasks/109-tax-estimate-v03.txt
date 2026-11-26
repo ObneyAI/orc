@@ -1,0 +1,14 @@
+; brief-id: b-023
+; group: tax-estimate
+; variant: 3
+
+Please provide a detailed tax liability projection for a Brisbane-based IT contractor operating as a sole trader. The analysis must be based on a projected gross income of $195,000 against $18,500 in deductible business expenses (home office, PI insurance, and certifications). Note that the previous year's income was $85,000, so PAYG installments need significant adjustment. 
+
+Your response must strictly follow this schema:
+
+* **Annual Tax Summary**: State the total estimated taxable income, the total tax payable (inclusive of the 2% Medicare Levy), and the resulting effective tax rate.
+* **Calculation Breakdown**: Provide a line-item list showing the specific Australian tax brackets applied and the exact dollar amount calculated for each income tier.
+* **Quarterly PAYG Installments**: List four specific calendar dates for the current financial year and the precise dollar amount required for each installment to meet the total obligation.
+* **Verification Checklist**: A bulleted list of critical assumptions to verify with an accountant, specifically addressing the Medicare Levy Surcharge (given the lack of private hospital cover) and eligibility for hardware depreciation/temporary full expensing rules.
+
+Ensure all calculations reflect current ATO tax rates for the 2023-24 financial year to prevent a significant shortfall during the July reconciliation.

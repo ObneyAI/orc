@@ -1,0 +1,12 @@
+; brief-id: b-030
+; group: meeting-actions
+; variant: 5
+
+Please review the transcript I’ve uploaded from this morning’s 20-minute Solaris engineering standup. The audio was pretty chaotic due to the discussion on the API migration, so I need you to synthesize it into a clean dev log using these steps:
+
+1. Draft a three-sentence executive summary tailored for the two team members out sick. This should strictly cover the current build status and the single primary blocker identified during the call.
+2. Extract all finalized technical decisions. I only want the "done deals"—specifically architectural choices or PR approvals that were officially greenlit. Ignore any open brainstorming or circular debates.
+3. Build an accountability log for all action items. Each entry must clearly link the owner (e.g., 'Dave' or 'Frontend Team') to their specific task and the mentioned deadline. If a deadline wasn't explicitly stated, label it as "TBD."
+4. Compile a "Parking Lot" section for any technical hurdles, edge cases, or bugs that were raised but intentionally deferred to a later deep-dive session or the next sprint.
+
+The final output needs to be high-density, professional, and ready to paste directly into our Slack channel. Avoid any "play-by-play" commentary or fluff.

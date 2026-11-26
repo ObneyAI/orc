@@ -1,0 +1,15 @@
+; brief-id: b-040
+; group: spreadsheet-debugging
+; variant: 5
+
+Please perform a comprehensive audit of the 'Global_Sales_Projections' workbook to address several critical calculation errors before the end-of-quarter reporting deadline. Follow these specific steps to ensure the file is functional and accurate:
+
+1. Analyze the 'Projections' tab to identify every instance where the 'Year-on-Year Growth' column is throwing a #DIV/0! error. Determine if these failures are caused by empty denominators in new regions or specific range mismatches in the lookup arrays.
+
+2. Debug the 'Currency_Conversion' dashboard specifically regarding the EUR toggle. The totals currently appear inconsistent with bank statements because the system seems to be bypassing the 2% volatility buffer established in the 'FX_Rates' sheet. Find the exact breakdown in the lookup logic causing this.
+
+3. Provide updated formulas for both the growth calculations and the FX buffer. These must be cross-platform compatible, utilizing IFERROR and INDEX/MATCH functions that work seamlessly in both Excel and Google Sheets.
+
+4. Implement a "Validation Check" for each corrected section. I need a conditional flag or specific formula that triggers an alert if any converted total deviates from the raw input by more than 5%. This is vital to prevent future regressions.
+
+I have uploaded the formulas from the 'Projections' and 'FX_Rates' sheets, a sample dataset of regional sales, and the list of discrepancies for your reference.

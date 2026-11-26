@@ -1,0 +1,13 @@
+; brief-id: b-022
+; group: chess-study
+; variant: 3
+
+I am a 1500 USCF rated player looking to break the 1700 barrier. While my tactical play in openings like the King's Gambit and Sicilian Najdorf is strong, my inability to convert or hold Rook endgames is my primary weakness. I have 6 hours per week to train and require a 3-week intensive "Rook Endgame Mastery" syllabus focused on club-level progression. Please provide the roadmap according to the following schema:
+
+* **Theoretical Foundation**: A list of 4 essential technical positions (such as the Lucena or Philidor) including a summary of the winning or drawing procedure for each.
+* **Model Game Analysis**: A curated list of 5 classic games, specifically highlighting Rook activity and pawn breakthroughs, with a preference for the games of Rubinstein or Capablanca.
+* **Weekly Training Schedule**: A detailed, day-by-day breakdown illustrating how to allocate the 6-hour weekly budget between theoretical study and active practice.
+* **Practical Drills**: Instructions for engine-based drills, specifically for practicing "building a bridge" and defending passive Rook positions.
+* **Middlegame-to-Endgame Transition**: 3 strategic principles to determine when it is advantageous to trade into a pure Rook ending versus maintaining minor pieces.
+
+The response should be a cohesive training plan rather than a single-game analysis or a collection of engine evaluations.

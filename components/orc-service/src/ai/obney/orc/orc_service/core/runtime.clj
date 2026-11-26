@@ -13,6 +13,7 @@
             [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.core.trace-time :as trace-time]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
+            [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
@@ -72,6 +73,8 @@
               (seq (:write-keys completion))
               (assoc :write-keys (:write-keys completion)
                      :output-profile (:write-profile completion))
+              (seq (:missing-write-keys completion))
+              (assoc :missing-write-keys (:missing-write-keys completion))
               (seq (:rejected-write-keys completion))
               (assoc :rejected-write-keys (:rejected-write-keys completion)
                      :rejected-output-profile (:rejected-write-profile completion))
@@ -126,9 +129,16 @@
           node-id (java.util.UUID/nameUUIDFromBytes
                    (.getBytes (str path) "UTF-8"))
           children (or (:children snapshot-node) [])
-          node-record {:id node-id
+          node-record (merge
+                       (select-keys snapshot-node [:provider :fallback-models :fallback-policy
+                                                   :model-fallback-policy :rlm :browser-tools
+                                                   :tool-contracts :tool-caller-fn :judges])
+                       {:id node-id
                        :type (:type snapshot-node)
                        :name (:name snapshot-node)
+                       ;; The draft node this one was published from (absent on
+                       ;; snapshots published before it was recorded).
+                       :source-node-id (:source-node-id snapshot-node)
                        :parent-id parent-id
                        :children-ids (mapv (fn [i _]
                                              (java.util.UUID/nameUUIDFromBytes
@@ -147,6 +157,10 @@
                        :tools (:tools snapshot-node)
                        :options (:options snapshot-node)
                        :retry (:retry snapshot-node)
+                       :options-from (:options-from snapshot-node)
+                       :bands-from (:bands-from snapshot-node)
+                       :min-confidence (:min-confidence snapshot-node)
+                       :abstain (:abstain snapshot-node)
                        ;; Condition fields
                        :check (:check snapshot-node)
                        ;; Parallel fields
@@ -173,7 +187,7 @@
                                             (:inherit-ontology? snapshot-node)
                                             true)
                        ;; Ontology context injection
-                       :context (:context snapshot-node)}
+                       :context (:context snapshot-node)})
           ;; Recursively parse children
           child-records (mapcat (fn [i child]
                                   (parse-snapshot-nodes child node-id i (str path "/" i)))
@@ -181,15 +195,67 @@
                                 children)]
       (cons [node-id node-record] child-records))))
 
+(defn- recover-source-node-ids
+  "Link the run nodes of a snapshot published before draft ids were recorded to
+   their draft nodes, where that is unambiguous: a run node takes the id of the
+   live draft node of the same name only when exactly one node of that name
+   exists in the snapshot AND exactly one in the live sheet. Nodes that cannot be
+   linked are left without a source id - they are not judged - and the run says
+   so loudly; a guess between same-named nodes would attribute assessments to
+   the wrong node."
+  [nodes-by-id live-nodes sheet-id version-number]
+  (let [by-name (fn [nodes] (group-by :name (remove #(nil? (:name %)) nodes)))
+        run-by-name (by-name (vals nodes-by-id))
+        live-by-name (by-name (vals live-nodes))
+        recovered (reduce-kv
+                   (fn [acc id node]
+                     (if (:source-node-id node)
+                       acc
+                       (let [run-same (get run-by-name (:name node))
+                             live-same (get live-by-name (:name node))]
+                         (if (and (= 1 (count run-same)) (= 1 (count live-same)))
+                           (assoc acc id (assoc node :source-node-id (:id (first live-same))))
+                           acc))))
+                   nodes-by-id
+                   nodes-by-id)
+        unlinked (into [] (comp (remove :source-node-id) (map #(or (:name %) (:id %))))
+                       (vals recovered))]
+    (when (seq unlinked)
+      (u/log ::published-nodes-cannot-be-judged
+             :sheet-id sheet-id
+             :version-number version-number
+             :node-names unlinked
+             :reason "snapshot predates source node ids and the node name does not identify exactly one draft node"))
+    recovered))
+
+(defn- carry-source-judges
+  "Stamp each run node of a published version with the judges attached to the
+   draft node it was published from (`:source-node-id`), as they stand when the
+   run starts. Attachments live on the draft node, never in the snapshot, so a
+   judge attached after publishing still monitors the published version; the
+   run needs them to know which composites are durable boundaries. `:judges`
+   is not part of a node's definition (node-version), so this forks no
+   node version."
+  [nodes-by-id live-nodes]
+  (reduce-kv (fn [acc id node]
+               (if-let [judges (some->> (:source-node-id node) (get live-nodes) :judges seq)]
+                 (assoc acc id (assoc node :judges (vec judges)))
+                 acc))
+             nodes-by-id
+             nodes-by-id))
+
 (defn- parse-snapshot-for-execution
   "Parse a version snapshot into the format expected by execute.
    Returns {:nodes-by-id {...} :root-id uuid :blackboard {...}}"
-  [snapshot]
+  ([snapshot] (parse-snapshot-for-execution snapshot nil nil nil))
+  ([snapshot live-nodes sheet-id version-number]
   (let [snapshot-nodes (:nodes snapshot)
         blackboard-schema (:blackboard-schema snapshot)
         ;; Parse nodes
         node-pairs (parse-snapshot-nodes snapshot-nodes nil 0 "root")
-        nodes-by-id (into {} node-pairs)
+        nodes-by-id (cond-> (into {} node-pairs)
+                      live-nodes (-> (recover-source-node-ids live-nodes sheet-id version-number)
+                                     (carry-source-judges live-nodes)))
         ;; Get root ID (first node)
         root-id (when (seq node-pairs) (first (first node-pairs)))
         ;; Build blackboard from schema (values will be set from inputs)
@@ -202,7 +268,7 @@
                           blackboard-schema)]
     {:nodes-by-id nodes-by-id
      :root-id root-id
-     :blackboard blackboard}))
+     :blackboard blackboard})))
 
 ;; =============================================================================
 ;; Execution Snapshot Builder
@@ -245,14 +311,17 @@
                                (rm/get-version read-ctx sheet-id version-to-use))
             {:keys [nodes-by-id root-id blackboard-entries version-number]}
             (if version-snapshot
-              (let [parsed (parse-snapshot-for-execution (:snapshot version-snapshot))]
+              (let [parsed (parse-snapshot-for-execution (:snapshot version-snapshot)
+                                                  (rm/get-nodes-by-id read-ctx sheet-id)
+                                                  sheet-id
+                                                  (:version-number version-snapshot))]
                 {:nodes-by-id (:nodes-by-id parsed)
                  :root-id (:root-id parsed)
                  :blackboard-entries (:blackboard parsed)
                  :version-number (:version-number version-snapshot)})
               {:nodes-by-id (rm/get-nodes-by-id read-ctx sheet-id)
                :root-id (:root-node-id sheet)
-               :blackboard-entries (rm/get-blackboard-by-key read-ctx sheet-id)
+               :blackboard-entries (rm/get-blackboard-by-key-from-events read-ctx sheet-id)
                :version-number nil})]
         (if-not root-id
           {:cognitect.anomalies/category :cognitect.anomalies/not-found
@@ -602,6 +671,101 @@
              :types #{:rlm/researcher-frontier-claimed}
              :tags #{(researcher-effects/campaign-tag sheet-id tick-id node-id)}})))
 
+(defn- tick-open-starts
+  "Unfinished starts of one tick and the lease renewals naming each start, from
+   the tick's durable events."
+  [tick-events]
+  (let [;; Projection state collapses repeated map child executions to a
+        ;; bare node id. Fold lifecycle events by full execution context
+        ;; instead so one sibling completion cannot hide other abandoned
+        ;; starts of the same child node.
+        open-starts-by-key
+        (reduce (fn [starts event]
+                  (case (:event/type event)
+                    :sheet/node-execution-started
+                    (assoc starts (value-log/execution-key event) event)
+
+                    :sheet/node-execution-completed
+                    (dissoc starts (value-log/execution-key event))
+
+                    starts))
+                {}
+                tick-events)
+        ;; A map item context is terminal once any matching completion is
+        ;; durable. A stale/reordered duplicate start after that completion
+        ;; must not reopen the slot. Non-map nodes retain ordered lifecycle
+        ;; folding because they can legitimately execute again in one tick.
+        completed-map-contexts
+        (into #{}
+              (keep (fn [event]
+                      (let [exec-context (value-log/exec-context (:inputs event))]
+                        (when (and (= :sheet/node-execution-completed
+                                      (:event/type event))
+                                   (contains? exec-context
+                                              :ai.obney.orc.orc-service.core.todo-processors/map-each-parent))
+                          (value-log/execution-key event)))))
+              tick-events)]
+    {:open-starts (vals (apply dissoc open-starts-by-key completed-map-contexts))
+     :renewals-by-start
+     (group-by :start-event-id
+               (filter #(= :sheet/node-execution-lease-renewed (:event/type %))
+                       tick-events))}))
+
+(defn- recoverable-start?
+  "OwnedWorkIsNotAbandoned / AbandonedWorkStaysRecoverable: a leaf or delegate
+   start (original or resumed) is resumed only when its owner is known not to
+   be working on it. Researchers use the same lease decision for WHETHER to
+   resume (checkpointed or not) and keep their epoch-based path for WHAT is
+   resumed: only original starts are candidates."
+  [context nodes-by-id renewals-by-start start]
+  (let [node (get nodes-by-id (:node-id start))
+        renewals (get renewals-by-start (:event/id start))
+        exec-context (value-log/exec-context (:inputs start))]
+    (case (:type node)
+      (:leaf :delegate)
+      (execution-lease/abandoned? context start renewals exec-context)
+      :repl-researcher (and (nil? (:resumed-from-event-id start))
+                            (execution-lease/abandoned?
+                             context start renewals exec-context
+                             {:fenced? (boolean
+                                        (researcher-mode/checkpointed? node))}))
+      false)))
+
+(defn- unresumed-map-coordinator?
+  "True when an in-progress map-each node has an original start that no resumed
+   start references yet: `resume-in-progress!` rebuilds that coordinator (once;
+   the resume command refuses a second resume of the same start)."
+  [nodes-by-id nodes-in-progress tick-events]
+  (let [resumed-ids (into #{} (keep :resumed-from-event-id) tick-events)]
+    (boolean
+     (some (fn [node-id]
+             (and (= :map-each (:type (get nodes-by-id node-id)))
+                  (some #(and (= :sheet/node-execution-started (:event/type %))
+                              (= node-id (:node-id %))
+                              (nil? (:resumed-from-event-id %))
+                              (not (contains? resumed-ids (:event/id %))))
+                        tick-events)))
+           nodes-in-progress))))
+
+(defn abandoned-work?
+  "True when `resume-in-progress!` would resume at least one start now, by the
+   same lease decision, or rebuild a map coordinator it has not yet resumed.
+   Reads the cached in-progress projection first (idle is empty) and the durable
+   events only of ticks that are still running."
+  [context]
+  (boolean
+   (some
+    (fn [{:keys [tick-id nodes-in-progress]}]
+      (let [nodes-by-id (:nodes-by-id (rm/get-tick-execution-context context tick-id))
+            tick-events (into [] (es/read (:event-store context)
+                                          {:tenant-id (:tenant-id context)
+                                           :tags #{[:tick tick-id]}}))
+            {:keys [open-starts renewals-by-start]} (tick-open-starts tick-events)]
+        (or (unresumed-map-coordinator? nodes-by-id nodes-in-progress tick-events)
+            (some #(recoverable-start? context nodes-by-id renewals-by-start %)
+                  open-starts))))
+    (rm/get-all-active-executions context))))
+
 (defn resume-in-progress!
   "Resume abandoned map coordinators plus leaf, delegate, and researcher
    frontiers from durable state.
@@ -619,38 +783,7 @@
             tick-events (into [] (es/read (:event-store context)
                                           {:tenant-id (:tenant-id context)
                                            :tags #{[:tick tick-id]}}))
-            ;; Projection state collapses repeated map child executions to a
-            ;; bare node id. Fold lifecycle events by full execution context
-            ;; instead so one sibling completion cannot hide other abandoned
-            ;; starts of the same child node.
-            open-starts-by-key
-            (reduce (fn [starts event]
-                      (case (:event/type event)
-                        :sheet/node-execution-started
-                        (assoc starts (value-log/execution-key event) event)
-
-                        :sheet/node-execution-completed
-                        (dissoc starts (value-log/execution-key event))
-
-                        starts))
-                    {}
-                    tick-events)
-            ;; A map item context is terminal once any matching completion is
-            ;; durable. A stale/reordered duplicate start after that completion
-            ;; must not reopen the slot. Non-map nodes retain ordered lifecycle
-            ;; folding because they can legitimately execute again in one tick.
-            completed-map-contexts
-            (into #{}
-                  (keep (fn [event]
-                          (let [exec-context (value-log/exec-context (:inputs event))]
-                            (when (and (= :sheet/node-execution-completed
-                                          (:event/type event))
-                                       (contains? exec-context
-                                                  :ai.obney.orc.orc-service.core.todo-processors/map-each-parent))
-                              (value-log/execution-key event)))))
-                  tick-events)
-            open-starts
-            (vals (apply dissoc open-starts-by-key completed-map-contexts))
+            {:keys [open-starts renewals-by-start]} (tick-open-starts tick-events)
             ;; Rebuild each active map coordinator before its in-flight direct
             ;; child is re-enqueued below. The resumed map start is consumed by
             ;; the same ordered execute-node processor, so its durable survivor
@@ -685,10 +818,8 @@
         (keep
          (fn [start]
            (let [node-id (:node-id start)
-                 node (get nodes-by-id node-id)
-                 node-type (:type node)]
-             (when (and (contains? #{:leaf :delegate :repl-researcher} node-type)
-                        (nil? (:resumed-from-event-id start)))
+                 node (get nodes-by-id node-id)]
+             (when (recoverable-start? context nodes-by-id renewals-by-start start)
                (let [researcher-ownership-epoch
                      (when (researcher-mode/checkpointed? node)
                        (inc (latest-researcher-frontier-epoch
@@ -735,6 +866,11 @@
 
    Options:
      :timeout-ms - Max execution time in ms (default 300000 = 5 minutes)
+     :execution-deadline-ms - Optional absolute deadline cap, inherited by
+                              delegates, for provider admission. The local
+                              timeout may tighten it; a spent cap stays spent.
+                              It does not shorten the blocking caller wait or
+                              interrupt arbitrary code; those retain timeout-ms.
      :result-grace-ms - Silence tolerance used to classify an expired wait
                         as WEDGED vs merely over budget (default
                         `default-result-grace-ms`, the engine's own
@@ -755,6 +891,11 @@
                       already durable elsewhere are referenced, not copied
      :return-references? - Internal flag to include :output-sources for delegates
      :llm-call-budget - Max LLM calls before failing (opt-in only, NO default)
+     :assessment-origin - {:assessment-id uuid}: marks this run as work done for
+                          an assessment. Recorded durably on the run's start
+                          event and inherited by every child run, so no
+                          completion under it is ever auto-assessed (read it
+                          back with `assessment-origin`).
      :durability-mode - Internal comparison mode; :legacy restores per-node
                         routing lifecycle events (default uses summarized routing)
 
@@ -766,7 +907,7 @@
       :executed-version ...      ;; Version number if published version was used
       :wedged? true              ;; Present only when the run was declared
       :liveness {...}}           ;; wedged — see `expire-run!` (non-retryable)"
-  [context sheet-id inputs & {:keys [timeout-ms result-grace-ms use-version force-draft
+  [context sheet-id inputs & {:keys [timeout-ms execution-deadline-ms result-grace-ms use-version force-draft
                                       trace? langfuse-client store-trace?
                                       max-ticks llm-call-budget tick-id parent-tick-id
                                       delegate-parent-sheet-id delegate-parent-node-id
@@ -774,7 +915,8 @@
                                       delegate-parent-read-sources
                                       correlation-id input-sources return-references?
                                       durability-mode checkpointed-campaign?
-                                      llm-budget-root-sheet-id llm-budget-root-tick-id]
+                                      llm-budget-root-sheet-id llm-budget-root-tick-id
+                                      assessment-origin]
                                :or {timeout-ms 300000
                                     result-grace-ms default-result-grace-ms
                                     store-trace? true}}]
@@ -791,6 +933,10 @@
         execution-now-ms-fn (or (:execution-now-ms-fn context)
                                 #(System/currentTimeMillis))
         execution-start-ms (long (execution-now-ms-fn))
+        local-deadline-ms (+ execution-start-ms timeout-ms)
+        effective-deadline-ms (if (some? execution-deadline-ms)
+                                (min local-deadline-ms execution-deadline-ms)
+                                local-deadline-ms)
         cmd-result (cp/process-command
                      (assoc context :command
                             (cond-> {:command/id (random-uuid)
@@ -800,7 +946,7 @@
                                      :tick-id tick-id
                                      :inputs (or inputs {})
                                      :options (cond-> {:timeout-ms timeout-ms
-                                                        :execution-deadline-ms (+ execution-start-ms timeout-ms)
+                                                        :execution-deadline-ms effective-deadline-ms
                                                         :store-trace? store-trace?}
                                                  trace? (assoc :trace? true)
                                                  langfuse-client (assoc :langfuse-client langfuse-client)
@@ -824,6 +970,8 @@
                                                  llm-budget-root-tick-id
                                                  (assoc :llm-budget-root-tick-id
                                                         llm-budget-root-tick-id)
+                                                 assessment-origin
+                                                 (assoc :assessment-origin assessment-origin)
                                                  durability-mode (assoc :durability-mode durability-mode))}
                               parent-tick-id (assoc :parent-tick-id parent-tick-id)
                               correlation-id (assoc :correlation-id correlation-id)

@@ -1,0 +1,22 @@
+{:slug "141-meeting-actions-v04",
+ :group "meeting-actions",
+ :in-domain? false,
+ :variant 4,
+ :expected-output-kind
+ "decisions made, action items with owner and due date, open questions, and a short summary for absentees",
+ :brief-id "b-030",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1082, :completion-tokens 230, :total-tokens 1312},
+  :draft-prompt-sha256
+  "9f8cffc3ac680445586af5a315a4cf6928200dd748db9615bcfe394bb28fc899",
+  :polish-usage
+  {:prompt-tokens 399, :completion-tokens 230, :total-tokens 629},
+  :polish-prompt-sha256
+  "5718c6d258356c724acd08217b6ca09a4c93eac84ca6a738ab9916edddd65964",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

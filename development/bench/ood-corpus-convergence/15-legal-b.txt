@@ -1,0 +1,3 @@
+;; Provenance: hand-authored for the RS-6 convergence sweep
+;; Group: legal (in-domain sanity); variant b of 3 — the same domain re-asked with a different concrete instance.
+Review this intellectual-property assignment clause from a designer's contractor agreement and list every legal concern with severity, area of law, a citation of the offending text and a suggested revision: 'Contractor irrevocably assigns to Client all rights in any work, idea or invention conceived by Contractor during the term of this agreement, whether or not related to the services, including work created on Contractor's own time and equipment, and waives all moral rights in perpetuity.'

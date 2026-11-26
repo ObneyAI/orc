@@ -69,10 +69,22 @@
     (sheet/sequence "main"
       (sheet/code "copy" :fn (fq function-name) :reads [:input] :writes [:output]))))
 
+(def ^:private trace-projection-events
+  "The execution trace is a PROJECTION of the run, stored asynchronously after
+   it returns and re-published as a strictly newer revision whenever later
+   source events land (`refresh-execution-trace`). How many revisions a tick
+   has at any instant is a timing fact, not an engine result — on the hosted
+   runner the streamed tick carried one extra :sheet/execution-trace-refreshed
+   at comparison time and the plain tick none. The engine's durable events are
+   what subscribing must not change; the projection's revision count is not
+   one of them."
+  #{:sheet/execution-traced :sheet/execution-trace-refreshed})
+
 (defn- normalized-durable [ctx tick-id]
   (mapv #(select-keys % [:event/type :node-id :node-type :status :read-keys
                           :write-keys :root-status :output-keys :key :value])
-        (h/read-tick-events ctx tick-id)))
+        (remove #(contains? trace-projection-events (:event/type %))
+                (h/read-tick-events ctx tick-id))))
 
 (deftest det-e2e-065-streaming-lifecycle
   (testing "all deterministic control-flow types emit one coherent lifecycle taxonomy"

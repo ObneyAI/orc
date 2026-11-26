@@ -1,0 +1,7 @@
+; brief-id: b-026
+; group: log-triage
+; variant: 4
+
+Hey, sorry to dump this on you, but I’m juggling a bunch of customer calls and our Postgres primary just started throwing a fit. I’ve attached the last 20 minutes of the RDS error logs along with a CSV of the active session metrics. Users are complaining about 'too many connections' errors, but the dashboard shows we aren't even at 50% capacity, so I suspect something else is hanging things up. 
+
+Can you dig into these logs and give me a ranked breakdown of what’s actually happening? I need the specific log lines or metric spikes that support each theory, plus a clear instruction on what I should check next for each—like a specific config file or a lock monitor query. Most importantly, give me your best shot at the definitive root cause. I need to know if we’re dealing with a hidden deadlock, a botched index on the 'orders' table from this morning's deploy, or if the connection pooler is just acting up. I'll be back at my desk in 20; really hoping you can have this sorted by then. Thanks!

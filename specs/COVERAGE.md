@@ -1,5 +1,105 @@
 # ORC Allium distillation coverage
 
+## Checkpoint recovery and delegate admission review
+
+The scoped regression witnesses cover two existing contracts: rejected partial
+emissions preserve the preceding checkpoint's emission provenance, and ordinary
+siblings in a delegate target do not acquire a researcher's campaign identity.
+The corresponding named checklist entries retain their native HTTP/SQLite
+evidence. They do not close the broader budget/restart obligations below.
+
+The full main `83479e348d271950960ad14e7996111adb0bd9f0` snapshot reports
+39 warnings, 116 informational diagnostics, zero errors and zero process
+findings both before and after these annotations (check exit 1, analyse exit 0).
+No diagnostic identity or message changes. This is a warning baseline, not a
+clean check. The earlier 113-info account below predates three GEPA
+`allium.rule.unreachableTrigger` diagnostics: `ReflectOnTheParentsMinibatch`
+and `SkipAParentPerfectOnItsMinibatch` lack a local `ParentMinibatchEvaluated`
+source, and `CompleteOptimizationAtReflectionBudget` lacks a local
+`ReflectionBudgetExhausted` source. These pre-existing findings remain tracked
+and unresolved; this repair neither accepts nor removes them.
+
+## Mixed-family call budget repair: approved intent, verification open
+
+The independently reproduced mixed workflow exceeds a native cap of six:
+three ordinary calls, prime and specialist finish before a saved researcher
+frontier, then continuation prime and ordinary synthesis both dispatch after
+fresh-JVM recovery. The seventh call has canonical provider start/completion
+and actual loopback HTTP response. This is a code bug against
+`SharedLlmCallBudget`, not a new researcher-only interpretation. Evidence is
+`complex-portability/complex-mixed-budget-six/launcher-runs/9edbad84-6a2b-41f7-ad9e-d876274f9f25/ROOT-CAUSE-REPRODUCTION.json`
+in the isolated campaign.
+
+The owner approved durable counting for every bounded execution, including
+checkpoint opt-out, and refusal of old bounded resumes whose complete count is
+unknown. `SharedLlmCallBudget` records that intent. The structural model now distinguishes NodeProviderCallReservation and
+CampaignProviderCallReservation. Both consume the same family capacity and
+require complete history plus actual running execution ownership. The native
+executor admission callback boundary supplies both request triggers; no new
+consumer workflow command is introduced. The first implementation slice is independently verified for a warm mixed family: the unchanged public SQLite/loopback test passes 1 test and 10 assertions. It admits exactly 5 physical calls and 5 durable reservations (3 ordinary, 2 campaign), denies continuation/synthesis, durably cancels active/root ticks and returns the native 5/5 reason in 628 ms. Root verified canonical owner joins, final source hashes and no remaining cancellation threads. Evidence: `complex-portability/budget-slice1-root-green/ROOT-REVIEW.json`. This is partial coverage only; existing campaign proofs do not close the remaining mixed-family obligations.
+
+Seven obligations are tracked under BUDGET-1 through BUDGET-7 in the deterministic
+checklist: whole-family counting, atomic contention, retry/candidate uniqueness,
+fresh-JVM recovery, actual ownership, fail-closed anomalies, and approved legacy/
+opt-out compatibility. **7 obligations, 0 covered, 7 uncovered.** Each remains
+uncovered until its complete public-interface witness passes on repaired source.
+The immutable warm and restart RED proofs establish the original defect; the new GREEN covers only the warm portion of BUDGET-1. Affected regression subset: 7 tests, 47 passing assertions, 9 failures, 0 errors; all failures are individually attributed in the slice report (eight approved history/ownership/projection fixture-contract conflicts and one independently reproduced preexisting identity assertion). The subset remains RED and no test has been weakened. Scoped weed retains campaign-schema/legacy-union and root-marker ownership gaps for BUDGET-5, with all other obligations still open. No generated
+mock, stub, TODO, skeleton or weakened test substitutes for those witnesses.
+
+The natural legacy transition has now been independently replayed: old markerless
+SQLite execution refuses every new provider call, while a fresh-format control
+resumes with seven calls/seven reservations and retains completed work. However,
+researcher completion drops typed failure metadata and the finite schema excludes
+`budget-history-unavailable`. BUDGET-7c records this code gap. The specification
+now explicitly includes that compatibility kind and requires ordinary/researcher
+canonical and execution-family failure metadata retention. No typed-metadata fix
+is claimed until its public transport and legacy witnesses pass. Root result
+shape is not silently expanded. Existing enum drift was also corrected: provider_finish_error, provider_not_configured and undecided were already implemented finite failure variants but absent from the Allium enum. This is specification reconciliation, not new runtime behavior.
+
+Before this intent amendment, independent `allium check specs` and
+`allium analyse specs` both reported 39 warnings, 114 informational diagnostics,
+zero errors and zero process findings (check exit 1, analyse exit 0). This is a
+characterized baseline, not a clean check. After structural modeling, both
+commands report 39 warnings, 113 informational diagnostics, zero errors and zero
+process findings (check exit 1, analyse exit 0). The one removed informational
+diagnostic was ProviderCallIsReservedBeforeInvocation's missing trigger source;
+the explicit internal ProviderInvocationAdmission boundary now supplies it and
+the new node-owned request. No new diagnostic is accepted or hidden.
+
+
+MODEL-CONTRACT-25 is independently verified in strict mode (root60884:2 tests,
+88 assertions). Before the repair, output flattening dropped the containing
+map's authored description before SIO. MODEL-CONTRACT-24's proof covers child
+and nested descriptions but used no authored description on the flattened outer
+map. Its green does not cover this additional scope. The invariant explicitly
+names containing-map meaning and original output-group identity. The repair
+preserves both in the paired compiled schema; legacy-mode omission remains an
+intentional compatibility gap. Evidence:
+complex-portability/guidance-comparison/outer-description-review.md in the isolated
+campaign. No model-quality improvement or complete meaning coverage is claimed.
+
+MODEL-CONTRACT-24 records contradictory synthetic output prose in strict mode:
+typed keys collapse in the legacy summary although the paired schema retains
+them. StrictOutputGuidanceHasOneStructuralAuthority requires preserving authored
+meanings while using paired strict structural guidance. The scoped correction
+and public proof are independently accepted in root94949: 3 tests/184 assertions;
+1 checklist obligation covered, 6 detailed obligations, 6 covered, 0 uncovered.
+Actual wire/canonical audit and legacy full-body equality are preserved under
+strict-guidance-repair/ROOT-REVIEW.md. Live quality comparison remains pending.
+Marker/function behavior and researcher metadata outside this strict leaf seam
+remain separate; no model-quality improvement is inferred from truthful prose.
+
+MODEL-CONTRACT-23 records the emitted-DSL structural validation gap observed
+in the preserved Gemini live run: a final node's extra operand is silently
+discarded before execution. EmittedTreeStructureIsValidatedBeforeExecution
+now states full-node validation and recoverable structural feedback. Root70131
+independently verified the public SQLite/HTTP repair (3 tests/75 assertions),
+with canonical audit and preserved pre-repair failure control. For this slice:
+1 checklist obligation covered; 6 detailed obligations, 6 covered, 0 uncovered.
+No live-model semantic improvement is claimed. Diagnostic baseline remains
+39 warnings/114 info/zero errors and zero process findings. The separate existing
+retry-default compatibility expectations still fail; they are not grammar regressions.
+
 This ledger defines the scope of “every part of ORC” against the production
 component directories in `components/`. A component is complete only after its
 public boundary, domain state, significant rules, and cross-component contracts
@@ -30,7 +130,123 @@ tests are evidence for these domains rather than separately governed product
 domains. Any behavior found there that is not represented by a component is
 added to this ledger rather than silently excluded.
 
+## Researcher timeout classification across retained responses
+
+RESEARCHER-TIMEOUT-1 covers the ordinary/native LLM normalization boundary,
+researcher capture, durable request receipt and executor classification.
+Known Java timeout classes and exact normalized transport categories retain their
+meaning after unsafe causes are removed. Explicit non-timeout categories retain
+precedence; error text and HTTP status alone do not establish a timeout.
+
+Earlier timeout-specific verification passed 142 tests / 1,133 assertions: 135 offline LLM
+tests, six actual Grain campaign tests and one actual SQLite receipt replay.
+Configured fallback exhaustion retains its terminal policy; recorded replay adds
+neither provider calls nor events. The existing timeout classification namespace
+is unchanged. **6 obligations, 6 covered, 0 uncovered** within this repair scope.
+No generated skeleton or weakened assertion supplies coverage. Transport effects
+are injected; Grain state transitions, projections and SQLite records are real.
+
+That earlier source retained 39 warnings and 113 informational diagnostics,
+with zero errors and zero process findings. This remains a characterized baseline rather
+than a clean check. Fresh-process recovery, hosted provider failures and chat
+streaming are outside this proof. The separate live provider-finish-error remains
+unresolved and is not reclassified as a timeout.
+
+The merged recovery repair already supplies the timeout implementation and its
+stronger category-precedence checks. Reconciliation preserves all 70 runtime
+files byte-for-byte. The remaining changes correct test translations of native
+inputs, JSON-ready transport values and declared optional fields. The score
+fixture now checks the intact value before rendering, exact JSON field names
+at transport, and absence of a declared optional child from supplied evidence.
+Its two obsolete expectations reproduce two failures before this correction.
+
+The focused reconciliation command passes 149 tests and 750 assertions, with
+zero failures or errors: three LLM boundary namespaces, all 48 RLM mode tests,
+six reconciled-contract tests and one retained timeout replay. The six
+reconciled-contract cases now pass 44 assertions. No production assertion was
+removed or skipped. The existing field-guide and native-input contracts govern
+these checks; the reconciliation introduces no new production domain or
+behavior. Current Allium checks retain 12 modules, 39 warnings and 116
+informational diagnostics, with zero errors and zero process findings. Check
+exits 1 and analyse exits 0; this remains a warning baseline, not a clean check.
+
+## Provider failure evidence and bounded alternatives
+
+`StructuredPrediction.SafeOrdinaryTransportEvidence` specifies the synchronous
+conversational failure-evidence contract. DET-E2E-322 observes actual HTTP through
+canonical events and trace queries: three loopback requests, safe typed failure
+and a valid negative control (11 focused tests/158 assertions, zero failures/errors).
+The sources are `ai.obney.orc.orc-service.ordinary-transport-failure-e2e-test` and
+`ai.obney.orc.llm.transport-failure-evidence-test`.
+
+DET-E2E-323 is a scoped consumer example:1 test/108 assertions, zero failures/errors,
+seven loopback requests. It covers exact predecessor ownership, unchanged inputs,
+concurrent healthy work, no completed-tool replay, permanent/schema rejection and
+actual family call-budget exhaustion. Its frozen-deadline observations do not by
+themselves prove expiry; DET325 separately covers exact inherited caps and expired
+admission. Source: `ai.obney.orc.orc-service.scoped-model-alternative-e2e-test`.
+This example does not install a universal fallback policy. Chat streaming,
+delegating strict adapters and arbitrary model compatibility remain outside scope.
+
+`DecisionProtocolPrediction.NativeTransportStatusSurvivesPublicBoundaries` has
+separate coverage (DET-E2E-324). Direct hato top-level integer status100–599 survives
+as status-only transport evidence; no category is inferred. The same map reaches
+native completion, trace detail and the one-response wrapper's error terminal,
+followed by close. Author and independent observations each passed2 tests/51
+assertions, zero failures/errors, and exactly three loopback requests. The original
+witness passed eight harness assertions and failed three status-preservation
+assertions before the repair. Source: `ai.obney.orc.orc-service.native-transport-status-e2e-test`
+and the status-boundary checks in `ai.obney.orc.llm.decision-protocol-test`.
+Custom native-client type/status precedence, asynchronous chat errors, partial output
+and fallback eligibility remain outside that proof. Its structural check retained
+zero errors and one baseline warning; analysis reported zero findings.
+
+`DelegationBoundary.FamilyBudgetIsShared` preserves the inherited absolute cap
+(DET-E2E-325). Delegates pass their parent's frozen deadline to public `execute`,
+which stores the lesser of that cap and its local deadline. Four obligations are
+covered: propagation across child dispatch delay, tighter local allowance,
+preservation of a spent cap, and actual expired provider admission. The expiry
+observation uses the authenticated tick command without a blocking caller timer:
+one primary HTTP502, then exact deadline refusal before a second provider attempt;
+the completed fixture tool runs once. Effect-free cap checks demonstrate stored
+arithmetic, not interruption of arbitrary code. Blocking caller wait still uses
+the relative timeout. Source: `ai.obney.orc.orc-service.deadline-model-alternative-e2e-test`.
+The original witness exposed a252ms extension; each repaired author/independent
+observation passed3 tests/34 assertions, zero failures/errors and one loopback request.
+All these runtime proofs use real Grain events/projections in an in-memory store,
+with zero paid calls. They do not prove restart or disk persistence.
+
 ## Source audit
+
+The model-contract campaign found emitted-child compilation continuing after
+rejected setup commands. `GeneratedChildSetupMustSucceedBeforeExecution` now
+records the required boundary; MODEL-CONTRACT-19 has scoped public SQLite
+verification. `GeneratedChildrenReuseDeclaredContracts`
+separately covers absent authored outputs, complete inherited meanings and
+conflicting generated declarations under MODEL-CONTRACT-20, also verified through
+SQLite/loopback. Root's combined 38-test run found four failures only in an older
+nullable fixture that redeclared its nonnullable output as nullable; the fixture
+now inherits the authored contract with all assertions unchanged, and its narrow
+rerun passed 78 assertions. These are deterministic proofs, not live-model
+acceptance; the full model-portability obligations remain open.
+
+The repaired emitted live pilot subsequently exposed stale variable previews and
+missing child-outcome feedback after checkpointing. `ResearcherFeedbackMatchesCurrentState`
+records the required behavior under MODEL-CONTRACT-21. Root independently
+verified 14 tests/170 assertions and actual request captures across SQLite reopen
+for its scoped deterministic repair. Existing typed child success and accurate
+feedback do not prove that a live researcher chooses to finalize; that comparison
+remains open, along with derived-input contracts and nested-map attribution.
+
+That feedback investigation also found unattributed map-each aggregate writes:
+the value existed, but canonical resolution for the parent completion could not
+associate it with its producer. `MapEachAggregateHasCanonicalProducer` and
+MODEL-CONTRACT-22 now have a focused processor attribution repair and independent
+public SQLite partial-aggregate proof: root 1 test/9 assertions plus exact parent
+completion/write ownership audit. The existing event helper supplies attribution;
+no flat-value correlation workaround was added. The model feedback/reopen and
+full live-portability obligations remain separate. Structural/process analysis
+remains at 39 warnings/114 information diagnostics, not a clean baseline.
 
 The final audit enumerated every Clojure namespace under each component's
 `src/` tree. The twelve specifications cover 145 product namespaces across the 16
@@ -66,18 +282,23 @@ and zero process findings under Allium language version 3.
 present, while `allium analyse` returns success when those diagnostics produce
 no process findings. Thus “zero errors” above does not mean
 `allium check specs` exits cleanly. Under the current checked-in specifications
-and Allium CLI, both
-`allium check specs` and `allium analyse specs` report 150 structural diagnostics
-across the twelve specifications: 115 informational and 35 warnings. `analyse`
-reports zero process findings.
+and Allium CLI 3.5.3, `allium check specs` reports 155 structural diagnostics
+across the twelve specifications: 116 informational and 39 warnings, zero
+errors. `analyse` reports zero process findings. Before the GEPA reflection
+repair the same CLI measured 113 informational and 39 warnings; the repair adds
+two `unreachableTrigger` diagnostics for `ParentMinibatchEvaluated`, an internal
+evaluation callback like `SubsampleEvaluationCompleted`. The reflection token
+budget adds one for `ReflectionBudgetExhausted`, the internal callback beside
+`OptimizationBudgetExhausted`.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 77 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations. The RR-12 map-each recovery, RR-13 blocked-child callback, and RR-14 resume-persistence triggers are such startup/internal callbacks. |
-| `allium.field.unused` | 38 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
-| `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
-| `allium.definition.unused` | 17 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
+| `allium.rule.unreachableTrigger` | 77 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations. The RR-12 map-each recovery, RR-13 blocked-child callback, RR-14 resume-persistence, GEPA parent-minibatch evaluation and GEPA reflection-budget triggers are such startup/internal callbacks. |
+| `allium.field.unused` | 39 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.externalEntity.missingSourceHint` | 17 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
+| `allium.definition.unused` | 18 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
+| `allium.surface.unusedBinding` | 2 | Surface bindings not yet referenced by the surface body; candidates for connection or removal during tending |
 
 This is a characterized baseline, not an allowlist for future warnings. Agents
 must review every newly introduced or changed diagnostic, update this table when
@@ -910,7 +1131,11 @@ outside that boundary.
 
 ## Durable provider-call budget
 
-DET-E2E-273 closes the restartable shared-call-budget gap with one immutable
+Historical scope: DET-E2E-273 covers checkpointed campaign reservations only.
+It does not close mixed ordinary/campaign family accounting; see BUDGET-1 through
+BUDGET-7 above. Its original evidence remains valid within that narrower scope.
+
+DET-E2E-273 records one immutable
 provider-call reservation per physical attempt. A root-tag CAS validates the
 durable budget, invoking execution and node, campaign iteration and live epoch,
 global root-scoped invocation identity, and remaining capacity before provider
@@ -1003,3 +1228,728 @@ information, 34 warnings, 0 errors; analyse reports 0 findings. The ORC ontology
 module retains 44 information and 5 warnings, while the standalone graph module
 retains 16 information and 1 warning. Raw outputs were refreshed in the
 standalone project's `evidence/extraction-combined-spec-{check,analyse}.json`.
+
+## Domain children are minted at classification from a judged coverage verdict
+
+The R-Inject specialisation arc (ADR 0006; issues RS-1 … RS-6) adds twenty obligations to `specs/ontology.allium`
+and one invariant to `specs/orc-service.allium`. Every obligation is covered by a durable suite that asserts on
+structured data the runtime emits — typed reranker fields, event bodies, identities and concept-graph edges — never
+on a parse of model prose:
+
+| Obligation | Suite |
+|---|---|
+| `value-equality.DomainVerdict`, `entity-fields.DomainVerdict`, `enum-comparable.DomainCoverage`, `contract-signature.TaskClassification.judge_domain_coverage` | `rs1_domain_verdict_test` (parse canonicalises the verdict; the candidate schema accepts existing domain children; the instruction carries the coverage section byte-for-byte around the shipped text) |
+| `rule-success` / `rule-failure.1-3` for `MintDomainChild`, `LandOnDomainChild`, `MintSiblingDomainChild` | `rs2_domain_child_classifier_test` (twelve rule branches: first mint on partial or uncovered, covered stays on the leaf, unknown and blank labels defer, landing by canonical label, sibling on a new label, failed lookup defers) |
+| `rule-entity-creation.MintDomainChild.1`, `rule-entity-creation.MintSiblingDomainChild.1` (the parent edge) | `rs3_domain_child_birth_test`, `rs3_domain_child_durable_test` (edge read back from the concepts read-model after the mint, and after a sibling mint) |
+| `rule-entity-creation.MintDomainChild.2`, `rule-entity-creation.MintSiblingDomainChild.2` (the child concept: label, scope, provenance, parent) | `rs3_domain_child_birth_test` |
+| `ClassificationEffectsCommitAsOneBoundedSet` (orc-service) | `rs3_domain_child_durable_test` (three store-backed checkpointed commits: mint + capture + assignment, assignment + domain deferral, and the boundary rules) |
+| `DeferralIsVisible` on the domain axis, `ClassificationIsOnePerCampaign` for the domain axis | `rs3_domain_child_durable_test`, `rs6_weed_test` (one domain deferral per occurrence) |
+| `DomainChildIdentityIsStable` (the reranker is shown existing children) | `rs6_weed_test`, `rs1_domain_verdict_test` |
+| `DomainChildrenAreAlwaysConsidered` | `rs2_domain_child_classifier_test` (children consulted whatever the top match's fitness) |
+| consumer surfaces — the waterfall render, the retrieval feed, walk-down scope, the harvested label | `rs4_waterfall_render_test`, `rs5_domain_child_chain_test` |
+
+Weed check mode over the arc's constructs reported seventeen divergences; one was a code bug (the reranker's
+existing-children seam was never filled in production) and two were latent code gaps (a domain-axis deferral could
+be recorded twice for one occurrence; the checkpointed commit ordered the domain deferral differently from the
+wedge), all three fixed red-first. The rest were spec bugs or intentional gaps, tended: the rules now trigger on the
+decision-time shape match and name the child concept's creation, the canonical label and the assignment; the
+verdict's fields are optional; the search result carries the verdict; the outcome enum carries the three domain
+provenances; the description body carries the harvested label and the recommended pattern; the classifier's
+thresholds live in the config block; the invariants describe the per-axis deferral and its carve-out. Allium on the
+ontology spec: 0 errors, 8 warnings, 43 information diagnostics, 0 analyse findings (unchanged counts); the
+orc-service spec: 0 errors, 2 warnings (unchanged).
+
+Live proof (orchestrator solo): two sweep passes over the 21-task off-domain corpus through the real wedge and
+render, twice. On the final tree pass 1 minted fifteen domain children under the shapes that absorbed them (five
+first children, ten siblings) and pass 2 landed on the identical child for fourteen of them, identity stable on
+eighteen of twenty-one; both sanity checks matched their seeded class at 1.00 and `covered` in both passes; with
+children present the reranker called the parent `covered` on seventeen of twenty-one and the judged label decided.
+One bounded full-bench run took three off-domain tasks end to end: each minted its child before the render, the
+prepend carried the parent's entry and the child line, the campaign succeeded, and its verdict occurrence landed on
+the child. Findings and per-task envelopes live under `development/bench/ood-stress-results/2026-09-16_05*-rs6-*`.
+The classify-only sweeps of June and September, which recorded the unresolved absorption, remain beside them.
+
+## Decision and tool runtime (DET-E2E-297..309)
+
+Behavioural obligations added by the decision + tool runtime arc, each covered through the public
+workflow (DSL → build → execute → durable events and `node-trace-detail`) with only the provider,
+transport or tool seam injected, plus gated REAL-model runs:
+
+- `ModelBackedCondition` (3 invariants + signature) — `model_backed_condition_test.clj`,
+  `real_llm_model_condition_e2e_test.clj` (DET-E2E-297/298).
+- `ModelDecision` (6 + signature) — `model_decision_test.clj`, `model_decision_protocol_test.clj`,
+  `real_llm_decision_e2e_test.clj` (DET-E2E-300/301).
+- llm `DecisionProtocolPrediction` (5 + signature) — `components/llm/.../decision_protocol_test.clj`,
+  `real_jev_decision_test.clj` (DET-E2E-299). Validation holds documented definitions to within the
+  provider's reported resolution (real OpenRouter responses round to 0.01).
+- `LeafExecutor` additions (`CodeLeafToolGateIsPreserved`, `ToolGateSeesInvocationIdentity`,
+  `DeclaredToolContractsAreEnforced`, `ToolArgumentIdentityIsExact`, `ToolOutcomesAreStructured`,
+  `ToolLeafCallsOnlyAuthoredTools`) — `code_leaf_tool_gate_test.clj`,
+  `tool_contract_enforcement_test.clj`, `tool_seam_unification_test.clj`, `tool_leaf_test.clj`,
+  `weed_followups_test.clj` (DET-E2E-302/303/305/306).
+- `CheckpointedResearcherExecution` `GeneratedChildToolCallsAreCheckpointed` —
+  `generated_child_receipts_test.clj` (DET-E2E-306).
+- `ExecutionRecovery` `OwnedWorkIsNotAbandoned`, `AbandonedWorkStaysRecoverable` —
+  `execution_lease_recovery_test.clj` (incl. the actual registered periodic trigger; proven to fail
+  on the pre-lease code), `weed_followups_test.clj`, and a two-JVM SQLite crash/restart probe
+  (DET-E2E-304).
+- `ExecutionRecovery` `PeriodicRecoveryWritesOnlyWhenWorkIsAbandoned` —
+  `recovery_scan_quiet_test.clj`: idle tenant over 120 beats (an hour) records no event of any kind;
+  only-live-lease work (running and queued) records none; an abandoned start is quiet while its lease
+  is live, then recorded and resumed exactly once on the first beat after expiry, repeated scans
+  idempotent; the real scheduler's startup beat still recovers abandoned work; unreadable state (a
+  throwing or nil context function, an unreadable projection) and an unregistered consumer record the
+  trigger as before. Mechanism: a consumer registers a tenant-id -> context function
+  (`register-recovery-scan-context-fn!`); without it every beat is recorded as today. The decision is
+  `runtime/abandoned-work?`, which shares `recoverable-start?` with `resume-in-progress!`.
+  A map-each coordinator that no resumed start references yet also makes a scan record (once: the
+  resume command refuses a second resume), exactly as the scan resumed it before.
+- `DelegationBoundary` (4 + signature) — `delegation_boundary_test.clj`, `weed_followups_test.clj`
+  (DET-E2E-307).
+- mcp-sheet-builder `ExecutorsUseTheNodesToolCaller` — `tool_seam_unification_test.clj`,
+  `weed_followups_test.clj` (DET-E2E-305).
+- gepa `EveryModelInstructionIsAComponent` — `components/gepa/.../decision_instructions_test.clj`
+  (DET-E2E-308).
+- End to end on real models (Jev + Gemini): `real_llm_arc_e2e_test.clj` (DET-E2E-309).
+
+Obligation line: 33 obligations, 33 covered, 0 uncovered. A whole-spec weed (check mode) over these
+obligations classified every divergence: code bugs fixed with RED tests (`weed_followups_test.clj`),
+spec bugs tended (gate identity scoped to code/tool leaves; two-spellings scoped to declared sides;
+outcome kinds scoped to contract and tool failures; GEPA components scoped to leaves, decisions and
+conditions). Diagnostic baseline unchanged: `allium check`/`analyse specs` = 151 diagnostics
+(115 information, 36 warnings), 0 errors — the arc adds prose invariants only.
+
+## Judges as behaviours with durable assessments
+
+Specs: `evaluation.allium` (DiscreteBandScoring, TraceJudge, AssessmentRecording,
+PerformanceMonitoring, EvaluationAttachmentResolver, Assessment entity and rules, HonestComposite,
+PayForWhatYouUse), `orc-service.allium` (ModelDecision banded kind, LeafExecutor
+ModelLeafRecordsResolvedModel / ProviderMetadataIsNeverOutput / RejectedCompletionFailsTheNode /
+JudgedCompositesAreDurable, ExecutionFamilyIsQueryable, AssessmentWorkIsMarked), `llm.allium`
+(DeclaredStructuredValues, DeclaredMeaningReachesTheModel, PredictionMetadata,
+StructuredFailureClassification, DecisionProtocolPrediction banded score).
+
+Covered by DET-E2E-310 to 321 (see the checklist for files). A whole-spec weed (check mode) mapped
+every rule, invariant and guarantee in scope to code and tests; non-aligned items were fixed with
+RED tests (tree-shape learning records gated on purposes, one learning record per tick and judge,
+score-only feedback absent, outcome command validates its own bounds) or tended (assessment and
+subject identity, written feedback, failure kinds, failed subjects). Known gaps kept honest:
+`RecordLateResult` has no producer and stays tied to the open question on capacity, claims and
+recovery; researcher campaign events are not passed to assessment judges; the cancelled-campaign
+verdict rule has no dedicated test.
+
+Diagnostics: `allium check specs` = 153 (114 information, 39 warnings), 0 errors; `allium analyse`
+reports no structural findings in the touched specs.
+
+## Structured-contract and judge reconciliation
+
+Scope: `EveryRequestCarriesItsInputFieldGuide`, `DecisionRequestCarriesDeclaredMeaning`,
+strict output contracts, output presence, command-owned provider observations and
+judge missing-write evidence. See `docs/RECONCILED-CONTRACTS.md` and RECON-1 through
+RECON-9 in the deterministic checklist for the integration boundaries.
+
+Independent verification: SIO 114 tests/1405 assertions; client 283 tests/1009
+assertions; changed ORC namespaces 157 tests/976 assertions; judge lifecycle and
+trace-harness gate 13 tests/78 assertions; native presence/workflow guide gate
+25 tests/125 assertions. Counts overlap and must not be added as unique coverage.
+Legacy opt-in live tests were disabled in the local deterministic gate. Separate
+captured live compatibility used nine real model calls/seven assessments, followed
+by exact cold projection equality. Repository CI remains a separate merge gate.
+
+Scoped weed classifications: missing required outputs and missing-write diagnostic
+loss were code bugs; native absent-input-to-null synthesis was a code bug with one
+stale characterization expectation. Universal marker-guide ordering was a spec
+bug: existing marker golden-layout compatibility is preserved. Composite output
+union was an experiment setup error; the corrected tree explicitly publishes its
+joined output. Judge timeout rejection was the experiment transport's admission
+limit, not an ORC transport defect. No semantic phrase matching or generated-output
+repair was introduced.
+
+Allium check/analyse baseline remains 153 diagnostics (114 information, 39 warnings),
+zero errors and no analysis findings. This is the characterized judge baseline,
+not a clean diagnostic report. SIO and client each have one intentional external
+caller source-hint warning. Separate judge recovery and execution-family gaps
+remain explicit; no production domain was excluded from the existing ledger.
+
+Obligation line: 9 obligations, 9 covered, 0 uncovered for RECON-1 through RECON-9.
+The final delegated contract adds 1 test/30 assertions and the independent judge
+compatibility sweep passes 93 tests/492 assertions. Injected HTTP responses in
+deterministic tests intentionally isolate serialization and value propagation;
+the separate paid run supplies real-model evidence. No generated TODO, skipped
+obligation or skeleton is counted as coverage. Full repository CI is not implied
+by this focused obligation line.
+
+
+## Provider usage compatibility in learning provenance
+
+Existing `ModelProvenance.usage` permits provider accounting data. The five
+ontology provenance event schemas incorrectly required every usage value to be
+an integer, rejecting fractional cost and nested provider details. This was code
+drift; no Allium intent or ontology architecture changed. The shared open usage
+schema retains integral known token counts, numeric/explicitly unavailable cost,
+and additive accounting details. Four active event contracts and the retained
+anti-recency audit schema use it. The audit command was already retired: source
+review confirms the expanded schema still accepts its historical integer usage;
+no synthetic replacement writer or claimed live audit path was introduced.
+
+RECON-10 and RECON-11: **2 obligations, 2 covered, 0 uncovered**. The focused
+`provenance-usage-test` runs **4 tests / 35 assertions** through public commands,
+durable events, description/claim projections, and an actual consolidation
+workflow with only the provider completion boundary injected. Description RED:
+12 failures / 15 assertions, then GREEN 15 assertions. Claim RED: 5 failures /
+21 assertions, then GREEN 21 assertions. Command anomalies identify invalid
+event schema paths, so failure evidence does not depend on waiting for a timeout.
+Malformed string/fractional token counts remain rejected; absent and explicit-null
+cost are distinguished. Original assertion failures are retained in the laboratory
+reconciliation evidence.
+
+The workflow proof respects the two existing accounting boundaries: successor
+provenance copies normalized node totals/cost; detailed provider usage remains on
+the durable provider-attempt observation. The first expanded test incorrectly
+expected full details in normalized completion usage; its retained failure was a
+test translation error, corrected by asserting both boundaries without changing
+the executor. Direct provenance commands preserve their complete supplied usage.
+The root's separate replay of a real captured provider response and final CI are
+independent verification, not inferred from these deterministic results.
+
+## Parallel contracts and ordinary missing-output evidence
+
+`DeclaredOutputsOnly` already requires missing-key evidence in completions and
+traces. The ordinary unparseable-output branch omitted that metadata although the
+schema-error policy retained it. This is a code bug, corrected without changing
+failure classification, retry policy, raw response, or supplied-value evidence.
+No specification change is needed. Required nullable absence remains distinct
+from explicit null; no absent value is fabricated as a rejected value.
+
+The generated parallel test's ordinal fake predates reconciliation. A forced
+right-first comparison at base1851212 accepted two wrong-owner writes. At
+reconciled07f220d7 the same fake failed, and canonical writes rejected the wrong
+owner. This is a test defect exposed by required-output validation, not evidence
+that valid parallel responses fail. The corrected fake follows each requested
+module contract, and both orders verify exact canonical producer ownership.
+
+RECON-12/13: 2 obligations, 2 covered, 0 uncovered. Independent focused verification
+passed 39 tests / 214 assertions. The new metadata test was RED at both durable
+completion and public trace, then GREEN. The model fake is intentional for forced
+scheduling and invalid-output evidence; real provider verification is separate.
+There are no generated skeletons, skipped obligations, or weakened assertions.
+Allium remains153 diagnostics (114 information,39 warnings), zero errors and no
+analysis findings. Full aggregate and live CI remain merge gates.
+
+## Living-description CI evidence
+
+Test-only diagnostics preserve the existing DET-E2E-103/104 assertions, prompts,
+models, options, execution deadlines, and teardown. Opt-in capture saves exact
+HTTP entity bodies, command failures, tenant events and public traces before
+teardown; CI uploads them even when the test step fails. Credentials are excluded
+or explicitly withheld. Production behavior and Allium specifications are
+unchanged. Historical CI failure causation remains unresolved.
+
+LIVE-EVIDENCE-1/2/3: **3 obligations, 3 covered, 0 uncovered**. The focused
+`living-description-evidence-test` namespace passes 7 tests / 32 assertions over
+local HTTP and real Grain. These tests do not establish live provider behavior.
+The existing Allium diagnostic baseline is unchanged; independent inspection and
+the next instrumented CI execution remain required before merge.
+
+## Replay observation boundary
+
+REPLAY-074: **1 obligation, 1 covered, 0 uncovered**. The specification's
+`TraceRefreshNeverRegresses` already permits later durable evidence to enrich a
+trace. The old test compared different evidence prefixes; production behavior
+and specifications require no change. The corrected test waits for this tree's
+complete routing evidence and retains every full projection comparison. A
+controlled regression fails with the old observation barrier restored in memory.
+Independent focused namespaces pass 16 tests / 108 assertions. No generated
+skeletons, weakened assertions, or excluded production domains were introduced.
+Allium check and analyse retain 153 diagnostics (114 information, 39 warnings),
+zero errors and no analysis findings. Full CI remains the merge gate.
+
+## GEPA result publication concurrency
+
+`DurableOptimizationLifecycle.ResumeFromRecordedBoundary` now has a deterministic overlapping-public-command witness: the result append uses Grain CAS, preserving one terminal fact and one charge for that fact. Existing sequential replay assertions remain. The budget namespace passed3tests19assertions; the real resume/subscriber boundary passed1test9assertions. No specification changes; Allium baseline remains114info39warning0errors0findings.
+
+Coverage is deliberately limited: the real integration additionally proved duplicate task executions and duplicate task-ledger IDs across resume/subscriber workers. Result CAS does not establish task-level ownership, exactly-once execution, or complete budget safety. Those remain an implementation gap under the same recovery contract, with full event evidence retained in `/private/tmp/gepa-result-race/resume-green-v4.edn` for the current investigation. No test assertions were weakened to hide that scope.
+
+
+## Durable GEPA task recovery
+
+GEPA-RECOVERY: **12 obligations, 12 covered, 0 uncovered** for the newly tracked
+recovery contracts. This count does not claim exhaustive coverage of every rule
+in the broader GEPA specification.
+
+| Obligations | Independent evidence |
+|---|---|
+| 1: concurrent delivery | `gepa_resume_result_race_test.clj`; two original tasks, one aggregate |
+| 2: admission and ownership | `task_ledger_test.clj`; public command races, renewal and stale-owner fencing |
+| 3: original execution recovery | `gepa_cold_recovery_test.clj`; separate JVMs before dispatch, during execution, after tree completion, and after grading |
+| 4: metric identity | metric-runtime and metric-identity tests plus custom cold recovery; 10 preparation and 40 recovery assertions |
+| 5: safe metric retry | `gepa_metric_recovery_test.clj`; original outputs, charged retries, unsafe and exhausted outcomes |
+| 6: accounting and adoption | public-accounting and task-ledger tests plus cold recovery's five public views |
+| 7: scheduled recovery | `gepa_periodic_recovery_test.clj`; actual registered schedule, expired work and untouched healthy ownership |
+| 8: durable readback | `durable_execution_result_test.clj`; SQLite reopen, exact result, no writes, tenant isolation |
+| 9: publication races | `atomic_result_publication_test.clj`; concurrent public commands and projected totals |
+| 10: aggregate and terminal integrity | managed-result and partial-budget tests; final terminal set passed 18 tests and 187 assertions |
+| 11: canonical fields and options | metric-blackboard tests and captured live requests with the configured generation cap |
+| 12: named startup before manifest | `gepa_named_startup_recovery_test.clj`; SQLite reopen and repeated named startup |
+
+The running-tree crash proof passed 12 preparation and 30 recovery assertions.
+It preserves the completed leaf verbatim and resumes only the interrupted pure
+leaf on the original tick. It does not establish exactly-once external effects.
+The targeted live GEPA proof passed 1 test and 37 assertions with 24 complete
+request/response captures. Exact logs and scope are in
+`docs/issues/gepa-recovery/09-final-verification.md`.
+
+The local aggregate was intentionally stopped after 78 completed namespaces,
+687 tests and 3,668 assertions without recorded failures. It is not a passing
+aggregate gate. Full deterministic and live CI on the pushed revision remain
+required before merge. No production domain or existing assertion was removed;
+scripted capabilities in deterministic tests are not claimed as live-model proof.
+No generated mock, TODO or skeleton remains in these twelve obligations.
+Allium retains 114 informational diagnostics, 39 warnings, zero errors and zero
+analysis findings.
+
+
+## Opt-in request layout
+
+PROMPT-CACHE: **2 obligations, 2 covered, 0 uncovered**. The function and marker
+request tests plus `strict_contract_e2e_test.clj` preserve default requests,
+explicitly enabled cache/generic-description behavior, full serialized schemas
+and field descriptions, exact image payloads, required null values, absent
+optional values, and durable strict-workflow writes. Local controls are absent
+from provider requests. Marker-mode requests remain unchanged.
+
+The three affected namespaces passed 26 tests and 288 assertions. Independent
+execution of the three added checks passed 3 tests and 44 assertions. Evidence:
+`/private/tmp/orc-pr47-cache-checks.log` and
+`/private/tmp/orc-pr47-root-wire-proof.log`. These checks were expected-green
+verification of the existing feature; no missing-feature RED claim is made.
+Existing assertions were preserved. The HTTP fixture replaces only transport
+and preserves the pinned serializer; it is not evidence of provider cache hits.
+No generated TODO or skeleton remains in these two obligations.
+
+The pinned client drops tool-level cache markers and preserves the message
+marker. Documentation now states this limitation and provider-dependent cache
+eligibility without promising a hit or savings. The Allium annotations capture
+opt-in layout and unchanged structured contracts; no new diagnostic is expected
+beyond the recorded baseline. Final full CI remains the merge gate.
+
+## Public accounting absence follow-up
+
+GEPA-ACCOUNTING-ABSENCE-1: 1 obligation, 1 covered, 0 uncovered. RED: 1 test/16 assertions, 6 expected failures; independent root GREEN: complete public-accounting namespace 5 tests/62 assertions, no failures/errors, exit 0. Evidence: /private/tmp/gepa-absent-accounting-{red,green,root}.log. Allium baseline remains 114 info/39 warnings/0 errors and no analysis findings. Public views must not invent an optimization by attaching zero accounting to an empty projection. Existing tenant-scoped accounting remains required.
+
+## Deadline-cap verification
+
+DET-E2E-325:4 scoped obligations,4 covered,0 uncovered. The pre-repair witness
+passed27/28 assertions and exposed a252ms extension across a250ms dispatch barrier.
+Author and independent verification each passed3 tests/34 assertions with one
+loopback request. No existing assertion was weakened; no generated skeleton remains.
+The test source is `components/orc-service/test/ai/obney/orc/orc_service/deadline_model_alternative_e2e_test.clj`.
+The cap controls provider admission, not arbitrary-code interruption or shorter
+blocking waits. Streaming and other child construction paths are outside scope.
+Standalone `orc-service.allium` checks before/after remained0 errors,2 warnings,
+43 info; the missing WorkflowConsumer source hint and standalone unused StreamEnvelope
+are retained diagnostics. Analysis found0 findings. These counts do not replace
+the directory baseline above.
+
+## Rate-limit characterization
+
+DET-E2E-326:5 scoped obligations,5 covered,0 uncovered. Author and independent
+verification each passed1 test/57 assertions, exactly three loopback requests and
+zero paid calls. Owned rate-limit429 evidence admits the same-task alternative;
+quota429 denies it. Typed input/body identity, a valid negative answer, the original
+budget/deadline and one tool execution per task are retained. This characterizes
+the pinned client's heuristic, not universal provider categorization or new library
+behavior. An initial sandbox bind refusal preceded any HTTP and was separate from
+the successful observation. No assertion was weakened; no generated skeleton remains.
+Source: `components/orc-service/test/ai/obney/orc/orc_service/rate_limit_model_alternative_e2e_test.clj`.
+Chat streaming and application policy migration remain outside scope.
+
+## Configured model alternatives
+
+`LeafExecutor.ConfiguredModelAlternativesAreOneTask`,
+`ModelAlternativeAdmissionUsesOwnedFailure` and
+`ModelAlternativesRetainLimitsAndEvidence` extend the ordinary blocking model
+contract. MODEL-FALLBACK-1 through 4 are independently verified: 11 focused
+tests/288 assertions, zero failures/errors, including the prior scoped regression.
+The new public constructor is exercised through real Grain and local HTTP, with
+shared-store tenant isolation, mapped attribution and published-version overlap. See
+`docs/issues/model-fallback/PLAN.md`. Streaming and custom native classification
+remain outside this scope.
+
+## Standard-node fallback revision
+
+The wrapper proof at dcf5fbe7 remains historical evidence only. Existing-node fallback, compatible provider routing, researcher-role inheritance and persisted selection, and pre-output streaming fallback are new obligations NODE-FALLBACK-1 through 6. All remain unverified until their integration-shaped proofs run. No SIO parsing change is assumed; the asynchronous client error boundary needs separate verification.
+
+Standard-node engine acceptance completed: 20 tests/371 assertions, zero failures/errors, including old scoped regression and local client SSE test. NODE-FALLBACK-1..5 are covered; fresh recipe remains separately tracked. Known limits: no remote quality/load claim, no arbitrary protocol adapter support, no stream replacement after output, and no separate-process hard-kill evidence.
+
+NODE-FALLBACK-6 complete: fresh-agent ordinary/refusal/researcher inherited-specialist exercise used seven local HTTP requests, with public query/trace evidence. All six scoped obligations covered.
+
+## Model contract campaign
+
+StrictOutputProtocolIsPaired now explicitly covers researcher envelope consistency. MODEL-CONTRACT-1 passed independent wire/runtime verification: 1 test/104 assertions,16 local HTTP calls. Live model causal impact remains a separate campaign question. This clarification does not change legacy mode defaults or expand the supported strict schema subset.
+
+AuthoredModelOptionsReachEveryNodeKind adds MODEL-CONTRACT-2, currently unchecked. A guarded live condition probe exposed discarded node options before network dispatch; public wire/runtime regression and corrected-stack acceptance are pending. Existing fallback tests do not establish this option-preservation obligation. Structural diagnostics remain 39 warnings, 114 info, zero errors before and after the clarification.
+
+Campaign MODEL-CONTRACT-3 independently verifies controlled concurrent request ownership through SQLite and public projections; it does not establish production load or live provider timing. MODEL-CONTRACT-4 records the pending composed saved-quantum recovery experiment against existing delegation/researcher recovery contracts. These external campaign probes are not presented as installed repository regression tests.
+
+MODEL-CONTRACT-5 records pending actual attached-judge contract/runtime verification through SQLite, including malformed-verdict non-score evidence. This exercises existing assessment contracts; it does not claim evaluator-quality calibration or GEPA readiness.
+
+Campaign acceptance update: MODEL-CONTRACT-2 passed the independent 61-assertion public regression and seven live condition replays, retaining typed false and exact wire options. MODEL-CONTRACT-4 passed128 independent checks with8 local HTTP calls across inline/emitted composed saved-frontier recovery. MODEL-CONTRACT-5 passed94 independent checks with2 local HTTP calls, complete judge inputs/revision ownership and reopened projections. Root evidence: external source-pinned verification (artifacts not distributed). These results supersede the pending statuses above; external probes remain external, and Qwen capacity, live judge acceptance, interrupted-judge recovery and quality calibration are not inferred.
+
+
+## Complex portability continuation
+
+DeclaredMeaningReachesTheModel now explicitly includes nested/enum meanings, strict requests and inline/emitted callers, with input absence distinct from present null. MODEL-CONTRACT-7 through9 remain open. Inline generic schema replacement and nil-read omission are observed implementation drift; no passing acceptance is claimed yet.
+
+Continuation evidence: root independently executed declared-input integration
+(1 test/132 assertions) and computed-input integration plus scalar checks
+(3 tests/81 assertions, session72179). The latter includes real SQLite inline
+and emitted paths with five local provider calls. Inferred observed contracts
+cannot invent semantic descriptions; authored contracts retain priority.
+MODEL-CONTRACT-7 stays open for final integrated input presentation acceptance.
+
+InputPresentationPreservesTypedIdentity adds MODEL-CONTRACT-12 for paired value
+and guide identity across all request modes, including native decision state.
+The SIO helper independently passes115 tests/1184 assertions (session19170),
+including the root-discovered nested-null observation defect, but the ORC
+request integration is not yet accepted. No production domain is excluded.
+The targeted llm spec check before/after adds zero diagnostics: one existing
+external-entity source-hint warning, zero errors. Full spec analysis remains a
+final integration gate, not inferred from this targeted check.
+
+Root input integration acceptance subsequently passed35tests/390assertions
+(session87409) including actual HTTP allfive modes and SQLite canonical readback.
+Root researcher guidance acceptance passed1test/68assertions (session20031).
+Allium check/analyse across12files retain39warnings/114info, zeroerrors and
+zeroprocessfindings. Check-mode reviews and remaining boundaries are recorded in
+the campaign input-integration and researcher-guidance-repair ROOT-REVIEW files.
+
+Richer scenario execution exposed two producer-side code gaps under the existing
+typed identity contract: a finite dictionary key domain with keyword/string
+same-spelling values is rejected by the ordinary enum compiler; and already
+canonical namespaced dictionary keys are stringified by ORC's second JSON decode.
+MODEL-CONTRACT-14/15 retain these obligations. The source schemas and expected
+identities are not narrowed to obtain a passing experiment.
+
+TypedOutputIdentitySurvivesNormalization names the paired dictionary and canonical
+normalization obligations explicitly. A whole-value validation shortcut does not
+close MODEL-CONTRACT-15: the partial-raw probe demonstrates that a numeric sibling
+requiring conversion can still cause a valid nested typed key to be stringified.
+Root independently verified the dictionary candidate's public compile/parse
+checks (46 tests, 283 assertions, session34615); its SQLite witness and live-model
+coverage remain separate. The targeted llm specification check retains its one
+existing missing-source-hint warning and has no errors.
+
+MODEL-CONTRACT-15 is now independently verified on decoder hash60914e69:
+root session43421 passed 6 tests/28 assertions, and SQLite/HTTP session76529
+passed all six richer graph oracles with exact canonical fact records. The
+per-schema Malli interceptor guard closes the partial-raw failure without a
+separate application decoder. MODEL-CONTRACT-14 still awaits independent
+delegated-child evidence and integration. For these two named obligations:
+2 obligations, 1 covered, 1 uncovered. The uncovered dictionary integration
+is in progress; scripted HTTP answers prove the deterministic boundary only.
+
+The final dictionary child-owned witness passed independently in root session61653
+(1 test/20 assertions, one scripted HTTP call); exact reads/writes and child
+projection/parent ownership were inspected. MODEL-CONTRACT-14 is closed and the
+reviewed SIO codec hash e1a28687 is promoted into the local integration snapshot.
+For these two bounded deterministic obligations: 2 obligations, 2 covered,
+0 uncovered. The broader MODEL-CONTRACT-8/9 rich cross-model obligations remain
+open; no paid-model result is inferred from fixture responses.
+MODEL-CONTRACT-16 records newly confirmed input-guide drift. Root independently
+read rich run69a699d9 request1 and confirmed two authorization branch descriptions
+and four enum-option meanings absent from all actual message text. SIO own-meaning
+reads :description but not :descriptions, and multi expansion discards branch
+meaning while retaining child fields. Existing six graph oracles stayed green
+because fixture outputs come from expected scenario data; they remain valid
+output/transfer proofs but do not cover this input-guide obligation. The combined
+35-test/390-assertion boundary regression passed independently (session95126),
+also showing that this missing case is beyond its existing assertions. Add
+per-recipient input-section and canonical-value audits before rich portability
+acceptance. The targeted specification check retains one existing warning.
+The all-declared-meanings requirement intentionally supersedes SIO's historical
+README rule that a field/entry description overrides its schema description.
+Both distinct roles must now remain visible; identical text is deduplicated.
+The prior precedence test is evidence of that old contract, not a test to weaken
+silently. Its replacement must assert both meanings explicitly. This compatibility
+change belongs to MODEL-CONTRACT-16 and is not yet integrated or live-verified.
+MODEL-CONTRACT-16 is now independently covered at the actual request boundary:
+root27496 audited all52captured requests from eight rich SQLite cases, with
+40exact full-value recipients,12controller summaries,zero missing meanings and
+mutation/recipient coverage controls passing. The same audit previously found
+32missing-meaning recipients. SIO core58069423 is integrated locally; root47058
+also passed78tests/975assertions. This is fixture/transport fidelity, not live
+semantic quality. Execution-family null readback discovered under17 remains
+unresolved and is not accepted by this guide proof.
+
+## Generated optional-field protocol meaning
+
+MODEL-CONTRACT-26 records one scoped deterministic integration obligation:
+generated optional-nonnullable null-as-absence meaning reaches the actual ORC
+strict schema and guide without changing structural constraints or decoding.
+SIO's GeneratedAbsenceMeaningIsVisible invariant is in the mutable integration
+candidate, alongside ORC's existing strict-guidance authority requirement. Root
+ran public SIO presence checks (6tests/42assertions) and actual SQLite/loopback
+researcher fixture72121. Independent bounded comparison permits exactly one
+annotation null-branch description addition; required nullable/tagged controls,
+other request text, captured response and canonical values remain unchanged.
+Evidence: complex-portability/sentinel-candidate-replay/ROOT-REVIEW.json.
+For this deterministic requirement: 1 obligation, 1 covered, 0 uncovered.
+
+Live semantic effect remains unverified. The frozen combined runtime and canonical
+skills are unchanged; its successful baseline cases and failed semantic cases
+must retain their original revisions. An offline bad-response replay staying bad
+is decoder preservation evidence, not model-quality improvement.
+
+Focused SIO weed reconciliation separately corrected stale prose rejecting all
+optional-nullable fields/dynamic maps. Ordinary supported dictionary keys are
+not limited to finite domains; only collision-recovering literal-key tagging has
+that restriction. The stale string-dictionary negative case became a positive
+public roundtrip plus duplicate-key rejection, retaining other rejection cases.
+Root selected2tests/11assertions passed. SIO check/analyse retain1existing
+missingSourceHint warning,0errors,0findings; neither this focused result nor the
+prose reconciliation proves the whole SIO suite or every compiler obligation.
+
+## Paired function output portability
+
+PairedFunctionOutputPreservesTheDeclaredContract extends the existing prediction contract with an explicitly selected rich function profile on normal nodes/providers. Independent public SIO evidence reproduces lost keyword/string identity and duplicate required entries in legacy function schema presentation; the existing rich paired codec preserves the original values. This is a codec boundary defect witness, not provider success or complete ORC integration.
+
+MODEL-CONTRACT-FUNCTION-1 through3 register the public prediction/envelope boundary, real SQLite role/projection integration, and live cross-model admission obligations. All three remain open while implementation and independent inspection proceed. Existing legacy function behavior remains specified separately; explicit JSON output does not silently degrade. Allium llm check before and after the added annotation retains one existing external-entity source-hint warning and no errors. The whole-spec baseline remains qualified separately above; no clean-check or full-suite claim is made.
+
+## Ordinary model-plan compatibility repair — final acceptance pending
+
+MODEL-PLAN-COMPATIBILITY-1 through3 are recorded unchecked in the deterministic
+checklist. The private candidate now separates exact terminal replay from profile
+interpretation, admits completed physical receipts under a replay-only guard,
+and refuses before any unrecorded attempt when the retained profile is unknown.
+Current ordinary plan/claim commands share a same-operation/start CAS fence;
+preparation refuses historical mixed configuration buckets. Legacy/researcher
+configuration IDs remain unchanged. Seven pre-existing nonsecret client controls
+are added to the retained ordinary option data, without expanding candidate
+provider/privacy overrides or admitting credentials/effects.
+
+Focused pre-final evidence: terminal recovery RED2tests/19assertions/2failures,
+then GREEN2/19; physical receipt/retry RED4/48/2failures, then GREEN4/48;
+ownership ordering RED6/59/6failures, then GREEN6/59. Actual after-handler/before-
+append SQLite CAS interleavings passed8tests/75assertions, using nested public
+commands with the real outer append in both orderings. These are deterministic
+storage/serialization fixtures, not live model quality evidence. The sandboxed
+option fixture failed to bind loopback and is not a behavioral RED. Root's
+unchanged-source loopback retry gave9tests/101assertions/10expected option-loss
+failures, zero errors. The final seven-option change and narrow mixed-history
+fixture await root's combined run on final source; no final GREEN is claimed.
+
+The mixed-history fixture explicitly reenacts the prior demonstrated narrow CAS
+type filter during public command execution to construct historical facts, then
+checks current preparation. This is staged historical setup, not a guarantee
+that old binaries obey current CAS or that mixed-version rolling deploys are safe.
+Request/user IDs are retained accepted client data; pinned adapter serialization
+is asserted only for ZAI sampling/tool-stream/stream-options and Kimi cache/
+safety/stream-options. No unsupported adapter forwarding is inferred.
+
+Scope remains partial: researcher prime/inline/emitted preparation, completed
+parallel mapped model execution, native HTTP candidate fallback and hosted model
+semantic fidelity remain outside this compatibility slice. Root's prior ordinary
+inspection was8obligations/6covered/2uncovered; do not close those remaining
+obligations until its new source-pinned inspection/restart checks pass. No
+skeleton, weakened assertion or generated mock is counted as coverage. Existing
+Allium baseline remains39warnings/113info/0errors/0findings as last independently
+checked by root; this source-only repair does not assert a new clean check.
+
+## Independent ordinary compatibility acceptance
+
+The prior child pending report is superseded for the bounded ordinary slice by root28tests/335assertions with no failures/errors, and two actual final-source SIGKILL/fresh-JVM recovery proofs.11named ordinary/compatibility obligations,11covered,0uncovered. The corrected historical options fixture against actual earlier journal source fails10assertions/0errors, proving the retained-option regression independently. Root source review and SQLite append-window counterexamples verify current command CAS fencing, replay-only unsupported-profile behavior and mixed-history refusal. Legacy/researcher configuration identities remain unchanged.
+
+This does not establish unfamiliar plan-format versions, old-binary rolling overlap, completed mapped-model concurrency, native HTTP fallback or researcher retained preparation. Exact response-profile replay remains inside schema-version1. Local fixtures establish transport serialization and durable recovery, not remote semantics. Root caught and corrected unsupported adapter mode and wrong option-placement harness errors without removing assertions. All failures are preserved separately. Allium remains39warnings/113info/0errors and0analysefindings, not clean. Evidence: external source-pinned verification (artifacts not distributed).
+
+## Researcher effective-profile continuation
+
+`ResearcherModelProfilesSurviveRegistryChanges` makes the configured fallback intent explicit for prime, inline and emitted roles. All8newnamed obligations remain unchecked. Actual source map: external source-pinned verification (artifacts not distributed). Prime resolves defaults before its completed-effect lookup; inline exact effects bypass resolution but physical receipts do not; emitted subcall preparation excludes the new ordinary retention/request seam. These are source-supported candidate code gaps pending targeted public runtime reproduction, not established duplicate-call claims. The first planned runtime observation is fresh prime inherited-profile behavior; all other recovery/role obligations stay open. Role plan identity across saved quanta and individual request/effect identity are separate requirements. No legacy ID algorithm is changed by this clarification. Allium before/after remains39warnings/113info/0errors,0findings, not clean. Ordinary28/335andtwoSIGKILLproofs remain their prior bounded evidence.
+
+Root public fresh-prime reproduction is now executed:1test/30assertions,8expected wire-contract failures,0errors; task still succeeds with the exact summary, one completed prefix and two durable reservations. Actual primary request is paired function auto/strict, actual backup request is markers. The earliest incorrect boundary is request assembly before model inference, matching researcher-models/resolved-plan dropping the resolved profile. This is a code gap even though a tolerant controlled response completes the task. One initial fixture expectation incorrectly excluded reserved researcher diagnostics; root corrected it by explicitly asserting exact declared output, full key set and diagnostic values, preserving the original9-failure evidence. All8named researcher obligations remain unchecked. Evidence: external source-pinned verification (artifacts not distributed).
+
+
+## Retained prime role recovery
+
+The private prime slice now has independent root evidence: 45 tests / 623 assertions, with exactly the same 19 assertion failures in three original test-translation variables and no new failures or errors. All twelve new prime tests / 250 assertions pass. Root also killed the real writer after its completed backup physical response was journaled, then recovered the same SQLite workflow in a fresh JVM with both aliases absent: 1 test / 24 assertions pass. Original response, IDs, metadata and two reservations survived; no completed prefix repeated and a second resume added no events. The earlier normally returning kill-harness attempt is preserved and not counted.
+
+8 obligations, 6 covered, 2 uncovered. Only MODEL-PLAN-PRIME-1 through -6 are checked. MODEL-PLAN-INLINE-1 and MODEL-PLAN-EMITTED-1 remain code gaps requiring their own integration-shaped recovery proofs. This controlled HTTP proof does not establish real-model semantic reliability, full mapped concurrency, native HTTP fallback or multi-server rolling deployment. Allium remains 39 warnings / 113 info / 0 errors and 0 process findings, not clean. Exact root inspection, source pins, baseline failures and kill receipt: external source-pinned verification (artifacts not distributed) and `WEED-REPORT.md`.
+
+### Inline retained-profile independent acceptance
+
+8 obligations, 7 covered, 1 uncovered. MODEL-PLAN-INLINE-1 now has final-source independent focused68tests/1053assertions with19exact preexisting assertion failures/0errors, actual SIGKILL/fresh-process1test/27assertions green, and old-source writer/current-reader command migration1test/16assertions green. A deliberate cross-child selection regression was caught by3expected behavioral assertion failures with0errors. All23 subordinate witnesses were exercised; they are not separate named obligations. Legacy identity forms are byte-identical to task entry.
+
+MODEL-PLAN-EMITTED-1 stays open. Explicit checkpoint opt-out fresh profile drift remains source-supported pending its own runtime probe. No all-model/role, hosted semantics, native HTTP or multi-server rollout guarantee follows from these controlled HTTP/SQLite witnesses. The original19fixture assertion failures remain unchanged and prevent a clean broad release gate. Allium39warnings/113info/0errors/0processfindings remains the accepted non-clean baseline. Evidence: external source-pinned verification (artifacts not distributed) and `WEED-REPORT.md`.
+
+### Fresh explicit checkpoint opt-out profiles
+
+3additional named opt-out obligations,3covered,0uncovered within fresh configured prime/inline/primary-only/explicit[] protocol scope. Root independent4tests117assertions pass; deliberate legacy-mode mutation produces10captured wire failures with correct task values. Both negative-control driver mistakes and the artifact-level independent reassessment are retained, not hidden by an all-green command claim. The production change is one candidate binding; legacy identity/prepared paths remain unchanged. Existing planner safe-option/profile refusals also apply to this configured path. Allium baseline39warnings113info0errors0processfindings remains not clean. No opt-out restart, emitted recovery, hosted model parity or broad release gate follows. See external source-pinned verification (artifacts not distributed) and `WEED-REPORT.md`.
+
+### Emitted first-slice independent checkpoint
+
+Root82focusedtests/1402assertions now pass with0failures/errors after faithful correction of the3original fixture translations (native Duration retained, not stringified). All original assertions remain. Actual emitted saved-prediction SIGKILL/fresh-JVM1test/33assertions passes on the original SQLite with absent specialist aliases, original IDs/metadata/budget and no completed tool replay.8retained researcher obligations:7covered,1partiallyopen (EMITTED), because nonzero/ambiguous historical AI receipt traversal still needs its own slice. A separate actual in-flight/no-response fresh recovery probe is staged, not executed. This does not claim a clean whole-repository suite or hosted/model/deployment parity. Allium39warnings113info0errors0findings remains not clean. Root source/code/spec inspection: external source-pinned verification (artifacts not distributed) and `WEED-REPORT.md`.
+
+## Interrupted emitted model request: current authority
+
+`RejoinedGeneratedChildFreshModelAuthority` refines the existing recovery/profile/budget obligations. The actual in-flight HTTP SIGKILL/fresh-process reproduction is **failing**:1test55assertions,34pass21fail0errors. Root independently verified the exact matching parent epoch2 reclaim while the resumed child still supplied original epoch1 to durable reservation. The fresh request is rejected before HTTP; fresh journal CAS contains a second independent epoch fence. See external source-pinned verification (artifacts not distributed). Saved-response recovery remains separately accepted; it does not satisfy this obligation.
+
+The5new EMITTED-AUTH checklist obligations remain uncovered pending the exact resumed-child/current-parent binding implementation and independent command/public recovery proofs. Parent/child delivery order, stale workers, uncapped behavior and existing replay/optout controls are explicit scope. Root Allium check/analyse after this refinement remains39warnings/113info/0errors/0processfindings across12documents; check exits1 and the baseline is not clean. No production behavior is claimed implemented by this specification edit.
+
+
+## Model-contract integration checkpoint
+
+The integration branch preserves the production source hashes used by the eight-model ordinary-node cohort. The dependency manifest pins the reviewed SIO and client commits; no local-root override is required. The cohort returned 187 responses and 816 output fields with exact independent JSON-to-canonical value comparisons. Each workflow passed 13 protected consumer tests. These external source-pinned artifacts are not distributed with this library. This does not establish identical semantic quality, every researcher mode, every crash boundary, or unrestricted provider grammar support.
+
+On the pinned commits, the five focused contract/replay/budget namespaces pass 17 tests / 211 assertions. All nine SIO test namespaces pass 168 tests / 1767 assertions; the two client namespaces pass 5 tests / 63 assertions. These are integration checks, not a clean whole-repository test claim. Structural check and process analysis retain 39 warnings / 113 info / 0 errors / 0 process findings, matching the recorded baseline. Historical open obligations above remain qualified by their individual later proofs.
+
+
+## Aggregate trace consistency
+
+AggregateTraceMatchesCanonicalWrites closes AGGREGATE-TRACE-1 for complete, empty, partial and no-child map-each results and their enclosing sequence forwarders. The original CI counterexample returned four canonical results with an empty enclosing profile. Aggregate completions now identify their single canonical producer, written keys and shapes. Forwarding completions profile only their exact declared canonical references, without copying their payloads into lifecycle metadata.
+
+Independent root integration passed18tests/255assertions with zero failures/errors, including the unchanged trace-fidelity namespace, public SQLite aggregate/detail queries and SQLite value-log regressions. The targeted new regression passed2tests/143assertions; its original productive cases failed54assertions and the additional exact-reference counterexample failed1assertion before correction. 1 obligation, 1 covered, 0 uncovered within this scope. No generated mock, skipped assertion or skeleton supplies this evidence.
+
+Deliberately completing an already terminal node again can still cause historical rehydration to fold its old own writes over declared references. That staged command history is preserved as a separate existing limitation; no valid authored workflow reaching it is demonstrated. This correction does not change that resolver or claim general historical migration, nested map coordinators or restart coverage. The earlier eight-model evidence remains at its frozen sources; this later correction concerns trace metadata and empty/no-child attribution, with independent deterministic integration evidence. Allium retains39warnings/113info/0errors/0processfindings.
+
+
+## Typed workflow results and recoverable diagnostics
+
+3 changed-invariant obligations, 3 covered, 0 uncovered: child admission
+feedback, map aggregate validation, and bounded final-output correction. The
+public workflow regressions use local scripted HTTP responses, SIO, SQLite,
+canonical value projections, and the released default researcher guide.
+Before implementation, six cases produced 33 expected assertion failures out
+of 62 assertions, with zero errors. The final seven cases pass 68 assertions,
+including an additional caught-rejection case that verifies stale final
+capture cannot complete the campaign. Existing normalization and declared
+string-key compatibility tests pass 11 tests and 72 assertions.
+
+The rejected aggregate retains diagnostic evidence while successful items
+remain canonical; a valid partial control retains failure indices. Final
+correction preserves false, zero, null, optional omission, and existing call
+limits. Runtime function candidates cannot enter checkpoint error metadata.
+The admission case verifies the exact schema refusal reaches the next model
+request even when no child node executed.
+
+These checks do not establish hosted-model semantic quality, process-kill
+recovery, externally stored large candidates, or every pre-existing clause
+of the three invariants. No whole-repository test result is claimed. Allium
+check retains the existing 12-module baseline: 39 warnings, 113 informational
+diagnostics, zero errors; process analysis reports zero findings. This is a
+warning-bearing baseline, not a clean check.
+
+
+A standalone consumer control additionally passes 2 tests and 42 assertions
+through HTTP and SQLite: a generated child fails, its exact error reaches the
+next request, a corrected tree completes, and an external acceptance gate runs.
+A separate control preserves rejection without another researcher call.
+A fresh hosted workflow used three researcher calls and one generated LLM call.
+It executed the child and returned a typed result, but receipt checks rejected
+changed opaque references before semantic review. This is not accepted-answer
+or live-correction coverage. Inspection of raw requests and responses locates
+the reference changes in the model response, with canonical values unchanged
+after decoding. Consumer acceptance rules and model-visible inspection remain
+separate concerns from the three validation boundaries.
+
+
+## Shared researcher guidance and native evidence ownership
+
+1 additional changed-invariant obligation, 1 covered, 0 uncovered:
+ResearcherGuidanceMatchesCallableContracts supplies the same native-evidence
+ownership principle to legacy, recursive RLM and terminal RLM researchers.
+The three targeted guidance tests pass 224 assertions through public HTTP/SIO
+and SQLite workflows. The new all-mode test initially failed 15 assertions
+for absent guidance, with zero errors; existing native assembly behavior was
+already valid. The recursive witness runs semantic child work followed by
+ordinary code assembly and verifies canonical values. It covers opaque
+references, order, duplicate identities, false, zero and null. This scoped
+obligation does not close every historical clause of the guidance invariant.
+
+A later fresh hosted follow-up used six researcher calls, two generated LLM
+calls and one independent semantic review. Actual schema rejections reached
+the next researcher requests, and corrected child work completed without
+repeating discovery or the five source reads. Canonical catalog and
+observations equal the original source receipts. Literal checks passed;
+independent review accepted the qualified unresolved result with no defects.
+The unavailable source remained an access gap. This later result preserves
+the earlier rejected run above rather than reclassifying its outcome.
+
+Guidance introduces no helper API, parser, identifier repair, required tree
+shape or additional mandatory call. This single hosted construction case
+does not establish all-model reliability, broad delegation, process recovery
+or a return edge from the external semantic judge into the researcher.
+Interpretation citations remain model-authored; preserving native evidence
+does not itself guarantee their correctness. No generated stub, skipped
+assertion or skeleton counts as coverage. The specification diagnostics
+retain 39 warnings, 113 informational diagnostics, zero errors and zero
+process findings; this is not a clean structural check.
+
+
+## CSV entity context and definition composition
+
+1 scoped obligation, 1 covered, 0 uncovered: the authored CSV definition stage
+executes preparation and enrichment in order for each entity, passes the actual
+entity and prepared context to the model, and retains generated definition
+fields under that entity's original identity. The public SQLite/HTTP regression
+uses two distinct entities and actual canonical value readback. Before the
+correction, two cases produced 12 assertion failures out of 21 assertions, with
+zero errors. After the correction, both cases pass all 21 assertions. The old
+two-direct-child topology remains a failing negative control and produces no
+canonical definition aggregate; no required field or validator was weakened.
+
+The workflow uses its existing sequential map default. This witness does not
+establish parallel composite collection, per-item provider-failure recovery,
+process restart, whole-CSV extraction, or real-model semantic quality. Scripted
+HTTP responses prove context/transport/composition, not those broader claims.
+The failed hosted CI supplied the integration counterexample; a post-fix hosted
+result is not claimed here. No mock, placeholder, omitted assertion or skeleton
+substitutes for the named public stage obligation.
+
+## Researcher setup, output and recovery repairs
+
+The setup feedback contract covers field-level refusal details in a generated
+child and their preservation through a researcher checkpoint. Three named
+obligations are covered by public HTTP/SIO/SQLite tests; the setup and existing
+admission controls pass 4 tests and 77 assertions. Diagnostics retain an allowed
+set of public fields and trusted message strings. They do not provide arbitrary
+content redaction. A local fixture correction selects strict JSON explicitly;
+the production provider parser remains unchanged.
+
+`SandboxOutputBelongsToCurrentEvaluation` maps to host and SCI output bindings.
+The three named stdout obligations are covered by 4 tests and 78 assertions,
+plus public native output/projection checks. Binding restoration preserves
+normal return values and thrown exceptions. The repair grants no additional
+I/O and adds no persisted stdout result field.
+
+The remaining eight configuration and recovery obligations are covered:
+**8 obligations, 8 covered, 0 uncovered**. The packaged focused command passes
+66 tests and 1,378 assertions, with zero failures or errors. Its composed
+researcher-parent restart contributes 47 assertions to that total. The runner
+verifies 64 production resource origins and hashes. Earlier source-specific
+counts remain historical evidence and are not added to the current total.
+
+Specification/code mapping:
+
+- `ResearcherConfigurationSurvivesRoundTrip`: authored timeout/options through
+  construction, build, EDN export/import and source rendering.
+- `GeneratedCodeIsDurableEvidence`: exact source-bound function metadata through
+  commands, events, projections, reconstruction and conservative cleanup.
+- `RejoinedGeneratedChildFreshModelAuthority`: pending plan retention cannot
+  spend; dispatch requires current parent/frontier/claim/configuration and CAS.
+- `TimeoutScopesRemainIndependent` and the LLM failure contract: typed deadline
+  evidence survives normalization and replay; explicit non-timeout categories
+  retain priority, while a nil category remains unavailable information.
+
+Inspection exposed failures during reducible event consumption and missing or
+anomalous cleanup projections. Cleanup now retains bindings when observation is
+unknown and preserves the primary execution outcome. Nil-category timeout
+controls retain the prior explicit-category negatives. No prior assertion was
+removed to obtain these results.
+
+Reproduction and scope appear in
+[the verification guide](../docs/RESEARCHER-RECOVERY-VERIFICATION.md).
+Arbitrary captured closures, compiled-sheet export/import of callable metadata,
+all restart windows and hosted reasoning quality remain unproven. The repair
+adds no excluded production domain. The existing specification baseline remains
+12 modules, 39 warnings, 116 informational diagnostics, zero errors and zero
+process findings; check exits 1 and analyse exits 0. This is not a clean check.

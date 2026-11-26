@@ -1,0 +1,5 @@
+; brief-id: b-024
+; group: translation-glossary
+; variant: 4
+
+Hey, hope you're doing well! I’m currently buried under all the localization files for 'Starfall Chronicles'—we’ve got the English master scripts and the Italian localized builds for the Alpha, and it’s honestly a bit of a mess. The translators are using three different words for the 'mana crystals' and I'm worried it'll confuse the players. Could you pull together a proper glossary for us? I need the core terms in both languages, a quick definition for each so the lore stays consistent, and notes on where they appear, like if it's a UI button or just NPC dialogue. Definitely include a 'forbidden' list too—last time someone used 'magic stones' instead of the trademarked term and it was a whole thing with legal. Just the glossary, though, don't worry about re-translating the actual dialogue files right now. We just need a single source of truth for the voice actors. Thanks a ton!

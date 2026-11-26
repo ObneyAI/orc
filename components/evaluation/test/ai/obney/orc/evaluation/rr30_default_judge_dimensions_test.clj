@@ -36,6 +36,7 @@
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
+            [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.time.interface :as time]
@@ -59,18 +60,13 @@
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   ::cache-dir cache-dir}
-        processors (reduce-kv
-                     (fn [acc proc-name {:keys [handler-fn topics]}]
-                       (assoc acc proc-name
-                              (tp/start (cond-> {:event-pubsub ps :topics topics
-                                                 :handler-fn handler-fn :context base-ctx}
-                                          (= "evaluation" (namespace proc-name))
-                                          (assoc :processor-name proc-name)))))
-                     {} @tp/processor-registry*)]
+        ;; The same delivery production uses: checkpointed (evaluation/*) processors
+        ;; are polled one event at a time, the rest ride pubsub unnamed.
+        processors (h/start-test-processors base-ctx)]
     (assoc base-ctx :processors processors)))
 
 (defn- stop-context [ctx]
-  (doseq [[_ p] (:processors ctx)] (tp/stop p))
+  (h/stop-test-processors! ctx)
   (when-let [ps (:event-pubsub ctx)] (pubsub/stop ps))
   (when-let [c (:cache ctx)] (kv/stop c))
   (when-let [es (:event-store ctx)] (es/stop es))
@@ -189,7 +185,7 @@
                     ctx
                     {:judge-type :grounding
                      :judge-name "grounding"
-                     :fake-llm-outputs {:level 4
+                     :fake-llm-outputs {:band 4
                                         :reasoning "Adversarial review: claims trace to the source."
                                         :grounded-claims ["The answer cites the report's Q3 revenue figure directly"]
                                         :ungrounded-claims []
@@ -216,7 +212,7 @@
                     ctx
                     {:judge-type :reasoning
                      :judge-name "reasoning"
-                     :fake-llm-outputs {:level 4
+                     :fake-llm-outputs {:band 4
                                         :reasoning "Adversarial logic review: chain holds."
                                         :reasoning-strengths ["The inference chain traces cause to effect without gaps"]
                                         :reasoning-weaknesses []
@@ -243,7 +239,7 @@
                     ctx
                     {:judge-type :completeness
                      :judge-name "completeness"
-                     :fake-llm-outputs {:level 4
+                     :fake-llm-outputs {:band 4
                                         :reasoning "Adversarial coverage audit: nearly complete."
                                         :aspects-covered ["Every required section of the report is addressed"]
                                         :aspects-missing []
@@ -270,7 +266,7 @@
                     ctx
                     {:judge-type :instruction-following
                      :judge-name "instruction-following"
-                     :fake-llm-outputs {:level 4
+                     :fake-llm-outputs {:band 4
                                         :reasoning "Adversarial compliance audit: directives satisfied."
                                         :requirements-met ["The response follows the requested three-part structure"]
                                         :requirements-missed []
@@ -485,29 +481,28 @@
 
 ;; =============================================================================
 ;; Blank model feedback — found live on CI (Gemini 2.5 Flash returned "" as
-;; :feedback for a valid banded verdict). ActionableFeedback: every successful
-;; score carries dimension-specific feedback. The emitted score's :feedback
-;; must never be blank: when the model's is, the projected dimension feedback
-;; stands in for it.
+;; :feedback for a valid banded verdict). ActionableFeedback: a recorded score
+;; never carries blank feedback. S6b (NothingInvented): a default judge's rubric
+;; requires feedback, so a blank answer is a MALFORMED one: it is retried under
+;; the node's ordinary retry budget, and only if it stays blank is the judge
+;; failed ("missing-feedback"). It is never a score and never an invented
+;; sentence standing in for the missing one. (Before S6b the judge's own
+;; evidence summary stood in; the dimension feedback built from that evidence,
+;; asserted in the four cycles above, still travels with every real score.)
 ;; =============================================================================
 
-(deftest rr30-blank-model-feedback-falls-back-to-dimension-feedback
-  (testing "a valid verdict whose model feedback is blank still emits non-blank feedback, taken from its dimension"
+(deftest rr30-blank-model-feedback-is-never-recorded-as-a-score
+  (testing "a valid verdict whose model feedback stays blank through the retries records no score, so no emitted score carries blank feedback"
     (with-test-ctx [ctx]
       (let [event (run-default-judge!
                     ctx
                     {:judge-type :completeness
                      :judge-name "completeness"
-                     :fake-llm-outputs {:level 5
+                     :fake-llm-outputs {:band 5
                                         :reasoning "Every required section is present."
                                         :aspects-covered ["urgency" "sentiment" "category"]
                                         :aspects-missing []
                                         :feedback ""}
                      :host-writes {:answer "urgency, sentiment and category are all present."}})]
-        (is (some? event) "a :judge/score-emitted event must land")
-        (when event
-          (validate-score-emitted! event)
-          (is (and (string? (:feedback event)) (not (str/blank? (:feedback event))))
-              (str "the emitted feedback must not be blank when the model's is. Got: " (pr-str (:feedback event))))
-          (is (= (:feedback (first (:dimensions event))) (:feedback event))
-              "the fallback is the dimension's own feedback, not an invented sentence"))))))
+        (is (nil? event)
+            (str "no :judge/score-emitted may land for a blank-feedback verdict. Got: " (pr-str event)))))))

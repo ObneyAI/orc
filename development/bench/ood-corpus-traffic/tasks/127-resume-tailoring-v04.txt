@@ -1,0 +1,5 @@
+; brief-id: b-039
+; group: resume-tailoring
+; variant: 4
+
+Hey! So I’m finally taking the plunge and trying to move from marketing into UX design. I just stumbled upon a Junior Product Designer role at a tech startup over in Stockholm that looks like a dream fit, and I was wondering if you could help me prep my application? I’ve attached my current marketing-heavy CV and the link to the job post. Since I’m a career changer, I really need the CV overhauled to spotlight transferable stuff like user research and wireframing rather than just campaign metrics. Could you also provide a clear list of the specific changes you made so I can keep track? I’ll need a solid cover letter too—something that really sells my 'why' for switching fields and makes sure to mention my recent Figma bootcamp. Lastly, can you look at their requirements and give me a 'gap list' of any technical skills or portfolio pieces I’m missing for the Swedish market, plus some quick tips on how to bridge those gaps? Just the docs and the gap analysis please—no interview prep or rubrics for now! Thanks a ton!

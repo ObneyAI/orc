@@ -1,0 +1,12 @@
+; brief-id: b-008
+; group: recipe-scaling
+; variant: 3
+
+Please develop a comprehensive production plan for the Red Curry Laksa service at next Tuesday's park pop-up. We are scaling from our standard 4-quart home batch to a full service of 80 portions (12oz each) using the 40-quart stockpot. It is critical to adjust the aromatics—specifically the shrimp paste and lemongrass—using a regressive scaling model to ensure the flavor profile remains balanced and not overly pungent at this volume. Please format your response according to the following schema:
+
+*   **SCALED INGREDIENTS:** Provide a complete list of all ingredients measured in grams. You must apply a decreasing multiplier for the spices and aromatics to prevent bitterness.
+*   **BATCH TECHNIQUE:** Outline specific instructions for the "sweat" phase of the aromatics. Account for the high-output propane burner and the depth of the pot to provide specific sauté times and stirring intervals that prevent scorching.
+*   **PREP & SERVICE TIMELINE:** Create a chronological schedule beginning with the rempah (spice paste) grinding 24 hours out, leading up to a precise assembly line workflow for an 11:00 AM launch.
+*   **COST ANALYSIS:** Calculate the total cost per bowl using these fixed rates: $18.00/lb for prawns, $4.50/can for coconut milk, and $2.20/lb for rice noodles.
+
+Note that we are limited to a single-burner setup and minimal refrigeration, so the logistics must be optimized for space efficiency.

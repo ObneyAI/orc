@@ -1,0 +1,13 @@
+; brief-id: b-033
+; group: nutrition-labels
+; variant: 2
+
+Hi there, I hope your week is going well. I’m currently buried in paperwork for the new city health certifications, and on top of that, my youngest just started soccer practice, so I’m basically living in my minivan at this point. Anyway, I really need a hand with the nutritional breakdowns for the new lunch rotation we’re rolling out at the elementary schools next month. I’ve attached the draft recipes for the three main hot entries—the Turkey Taco Boat, the Creamy Pesto Pasta, and the Baked Zucchini Rounds—along with a spreadsheet that has the specific nutrient data for the bulk ingredients we source through our state distributor.
+
+Could you go through these and figure out the per-serving numbers for us? We need the standard calories, protein, total carbs, and fats for each one. Also, please make sure you flag any of the big allergens—dairy, soy, nuts, that sort of thing—because the school nurse is really on my case about getting the digital menu updated for parents. The tricky part is the serving sizes vary quite a bit: for the Taco Boat, a serving is one shell with 3oz of filling; for the Pesto Pasta, it’s a standard 6oz scoop; and for the Zucchini Rounds, a serving is exactly four pieces. 
+
+I’m looking for you to generate a clean, formatted nutrition label for each recipe that we can print out and post on the cafeteria line. I’m not looking to scale these up or anything—I just need the specific data for what one kid gets on their tray. My head is spinning trying to keep the ingredient weights straight versus the portion sizes, so if you could get this back to me by Thursday, I’d be forever grateful. Let me know if that makes sense!
+
+Best,
+Sarah Miller
+Nutrition Coordinator, District 42

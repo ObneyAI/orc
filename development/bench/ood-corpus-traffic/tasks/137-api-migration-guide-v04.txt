@@ -1,0 +1,5 @@
+; brief-id: b-017
+; group: api-migration-guide
+; variant: 4
+
+Hey! I'm totally underwater trying to prep for our 'Code Freeze' on Friday and I still haven't touched the documentation for the API shift. Since we're finally sunsetting the v1.2 REST endpoints and moving everyone over to the v2.0 C++ and Swift SDKs, I really need a solid migration guide to hand off to the mobile team. I’ve uploaded the header files, the new docs, and a rough list of what we broke in this sprint. Can you put together a step-by-step guide for them? It needs to be a real walkthrough of how to swap out the old networking layer. Please include a compatibility table so they can see exactly which REST calls are now handled by which SDK methods. I also need side-by-side code samples for both Swift and C++ showing how the old polling logic changes with the new event-driven webhook payloads. Oh, and definitely throw in a final checklist for them to run through before they push to the App Store. I need them to see exactly how to migrate their logic, not just a list of what's new. Thanks!

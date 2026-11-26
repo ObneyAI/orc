@@ -1,0 +1,5 @@
+; brief-id: b-018
+; group: content-calendar
+; variant: 1
+
+Draft 30-day content calendar for 'Rise & Whisk' Instagram. Objectives: drive storefront traffic and weekend pre-orders. Refer to Q3 performance report, brand guidelines, and local demographic data. Output dated schedule: 3 posts/week + daily stories. Each entry must list topic, format (Reel/Carousel), hook, CTA, and primary success metric. Framework only; no captions or SEO work required. Must strictly align with $400/week production budget for photography.

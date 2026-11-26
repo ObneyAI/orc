@@ -1,0 +1,22 @@
+{:slug "058-game-balance-v02",
+ :group "game-balance",
+ :in-domain? false,
+ :variant 2,
+ :expected-output-kind
+ "proposed numeric adjustments, a described simulation with estimated outcomes, iteration until targets are met, and a rationale",
+ :brief-id "b-009",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 531, :completion-tokens 384, :total-tokens 915},
+  :draft-prompt-sha256
+  "eb92f6e10e18b5c868a7349e0391a4fb6d82243cbcd360f874ee64450b2712aa",
+  :polish-usage
+  {:prompt-tokens 566, :completion-tokens 468, :total-tokens 1034},
+  :polish-prompt-sha256
+  "2e4a20e2b0935ec5a42eae09f548b73499d6a414eaee10593ad51054321b9207",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

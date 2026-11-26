@@ -1,11 +1,13 @@
 {:paths ["src"]
  :deps {io.github.ObneyAI/sio
         {:git/url "https://github.com/ObneyAI/sio.git"
-         :git/sha "d6d27f9bd59e2ac071396fc7942eabcdd4eabd12"}
+         :git/sha "e61e11a9abc6fdad4e19f772d9e32e2edd2dcc3b"}
 
         tech.unravel/litellm-clj
         {:git/url "https://github.com/ObneyAI/litellm-clj.git"
-         :git/sha "0570e9459b8751d4a0c3dc1cd48595804426a84d"}
+         :git/sha "f5fa99d8df32d0830e972382e8fa6db233622022"}
+
+        hato/hato {:mvn/version "0.9.0"}
 
         org.clojure/core.async {:mvn/version "1.6.681"}}
  :aliases {:test {:extra-paths ["test"]}}}

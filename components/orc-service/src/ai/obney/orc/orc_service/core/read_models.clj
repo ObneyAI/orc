@@ -6,7 +6,8 @@
    - Multimethod projections for sheets, nodes, blackboard, and ticks
    - defreadmodel registrations for L1/L2 caching
    - Helper functions for common queries (via rmp/project)"
-  (:require [ai.obney.grain.event-store-v3.interface :as es]
+  (:require [ai.obney.orc.orc-service.core.judge-definition :as judge-definition]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
             [ai.obney.orc.orc-service.core.researcher-resume-state :as researcher-resume-state]
             [ai.obney.orc.orc-service.core.trace-time :as trace-time]
@@ -47,6 +48,8 @@
     :sheet/node-decorators-set
     :sheet/node-check-set
     :sheet/node-executor-set
+    :sheet/node-model-policy-set
+    :sheet/model-fallback-policy-set
     :sheet/node-retry-set
     :sheet/node-judges-set
     :sheet/parallel-config-set
@@ -66,7 +69,8 @@
 
 (def judge-events
   "Events that affect judge read model"
-  #{:sheet/judge-declared})
+  #{:sheet/judge-declared
+    :sheet/judge-revised})
 
 (def tick-events
   "Events that affect tick/execution read model"
@@ -98,6 +102,8 @@
     :sheet/node-decorators-set
     :sheet/node-check-set
     :sheet/node-executor-set
+    :sheet/node-model-policy-set
+    :sheet/model-fallback-policy-set
     :sheet/node-retry-set
     :sheet/node-judges-set
     :sheet/parallel-config-set
@@ -108,7 +114,8 @@
     :sheet/key-declared
     :sheet/key-schema-updated
     :sheet/key-deleted
-    :sheet/judge-declared})
+    :sheet/judge-declared
+    :sheet/judge-revised})
 
 (def sheet-events
   "Events that affect sheet read model (includes draft-dirty tracking and versioning)"
@@ -355,10 +362,25 @@
       (assoc-in [(:node-id event) :executor] (:executor event))
       (assoc-in [(:node-id event) :model] (:model event))
       (assoc-in [(:node-id event) :fn] (:fn event))
+      (assoc-in [(:node-id event) :recoverable-fn] (:recoverable-fn event))
+      (assoc-in [(:node-id event) :tool] (:tool event))
       (assoc-in [(:node-id event) :tools] (:tools event))
       (assoc-in [(:node-id event) :options] (:options event))
       ;; Phase 4B: opt-in gated tool-caller builder for :code nodes.
-      (assoc-in [(:node-id event) :tool-caller-fn] (:tool-caller-fn event))))
+      (assoc-in [(:node-id event) :tool-caller-fn] (:tool-caller-fn event))
+      (assoc-in [(:node-id event) :tool-contracts] (:tool-contracts event))
+      ;; :decision executor: run-time options key, confidence floor, abstention.
+      (assoc-in [(:node-id event) :options-from] (:options-from event))
+      (assoc-in [(:node-id event) :bands-from] (:bands-from event))
+      (assoc-in [(:node-id event) :min-confidence] (:min-confidence event))
+      (assoc-in [(:node-id event) :abstain] (:abstain event))))
+
+(defmethod nodes* :sheet/node-model-policy-set [state event]
+  (update state (:node-id event) merge
+          (select-keys event [:provider :fallback-models :fallback-policy :options])))
+
+(defmethod nodes* :sheet/model-fallback-policy-set [state event]
+  (assoc-in state [(:node-id event) :model-fallback-policy] (:model-fallback-policy event)))
 
 (defmethod nodes* :sheet/node-retry-set
   [state event]
@@ -504,23 +526,47 @@
   "Apply event to judges read model"
   (fn [_state event] (:event/type event)))
 
-(defmethod judges* :sheet/judge-declared
-  [state event]
-  ;; Gap-4: judge-config may carry `:sheet-id` referring to the
-  ;; CONSUMER'S eval sheet (for `:type :custom`). The merge below
-  ;; sets `:sheet-id` to the host sheet (the framework needs
-  ;; `:sheet-id` in the judge map for partitioning + cache). To
-  ;; preserve the eval-sheet reference, we lift it to
-  ;; `:eval-sheet-id` BEFORE the merge — custom-judge sub-execution
-  ;; reads from there.
+(defn- judge-definition-entry
+  "The current-definition view of a declared judge config at a revision. The
+   declared config is kept as the host of the entry (existing readers use its
+   keys directly) and enriched with the DEFAULTED purposes."
+  [event]
   (let [jc (:judge-config event)
+        ;; Gap-4: judge-config may carry `:sheet-id` referring to the
+        ;; CONSUMER'S eval sheet (for `:type :custom`). The merge below sets
+        ;; `:sheet-id` to the host sheet (the framework needs `:sheet-id` in the
+        ;; judge map for partitioning + cache). To preserve the eval-sheet
+        ;; reference, we lift it to `:eval-sheet-id` BEFORE the merge --
+        ;; custom-judge sub-execution reads from there.
         jc+eval (cond-> jc
                   (:sheet-id jc) (assoc :eval-sheet-id (:sheet-id jc)))]
+    (merge jc+eval
+           {:sheet-id (:sheet-id event)
+            :judge-name (:judge-name event)
+            :purposes (judge-definition/effective-purposes jc)})))
+
+(defmethod judges* :sheet/judge-declared
+  [state event]
+  (let [revision (or (:revision-number event) 1)]
     (assoc state (judge-entity-id event)
-           (merge jc+eval
-                  {:sheet-id (:sheet-id event)
-                   :judge-name (:judge-name event)
-                   :criteria-version (or (:criteria-version event) 1)}))))
+           (merge (judge-definition-entry event)
+                  {:criteria-version (or (:criteria-version event) 1)
+                   :revision-number revision
+                   :revisions [{:revision-number revision
+                                :judge-config (:judge-config event)}]}))))
+
+(defmethod judges* :sheet/judge-revised
+  [state event]
+  (let [k (judge-entity-id event)
+        previous (get state k)
+        revision (:revision-number event)]
+    (assoc state k
+           (merge (judge-definition-entry event)
+                  {:criteria-version (or (:criteria-version previous) 1)
+                   :revision-number revision
+                   :revisions (conj (vec (:revisions previous))
+                                    {:revision-number revision
+                                     :judge-config (:judge-config event)})}))))
 
 (defmethod judges* :default [state _] state)
 
@@ -530,7 +576,7 @@
   (reduce judges* (or initial-state {}) events))
 
 (defreadmodel :sheet judges
-  {:events judge-events :version 3
+  {:events judge-events :version 4
    :partition-fn :sheet-id
    :entity-id-fn judge-entity-id}
   [state event] (judges* state event))
@@ -718,11 +764,37 @@
   (vals (rmp/project ctx :sheet/blackboard {:partition-key sheet-id})))
 
 (defn get-blackboard-by-key
-  "Get the blackboard for a sheet as a map keyed by key name"
+  "Get the blackboard for a sheet as a map keyed by key name, from the
+   :sheet/blackboard projection. Cheap while the sheet is being built: each
+   call only applies the events appended since the previous one."
   [ctx sheet-id]
   (into {}
         (map (juxt :key identity))
         (vals (rmp/project ctx :sheet/blackboard {:partition-key sheet-id}))))
+
+(defn get-blackboard-by-key-from-events
+  "The same map as `get-blackboard-by-key`, folded directly from the sheet's
+   own events.
+
+   Every blackboard event is tagged [:sheet sheet-id], so this reads exactly the
+   events the sheet's partition is built from, with the same reducer
+   (`blackboard`), and costs one read of THIS sheet's events however many other
+   sheets the tenant holds. The single-partition projection instead re-evaluates
+   every other sheet's key-declared events after its watermark on each call and
+   decodes each source partition (about 5 s per call with 600 foreign events).
+
+   Use it for a one-off read of a settled sheet, such as the snapshot a child
+   execution starts from. Do NOT call it once per command while a sheet is being
+   built: each call re-reads the whole sheet, so building n keys reads O(n^2)
+   events; the projection is incremental and is the right read there."
+  [ctx sheet-id]
+  (let [events (into [] (es/read (:event-store ctx)
+                                 {:tenant-id (:tenant-id ctx)
+                                  :tags #{[:sheet sheet-id]}
+                                  :types blackboard-events}))]
+    (into {}
+          (map (juxt :key identity))
+          (vals (blackboard {} events)))))
 
 (defn get-judges
   "Get all judges declared for a sheet as a map keyed by judge name"
@@ -1107,6 +1179,14 @@
   [ctx tick-id]
   (get (rmp/project ctx :sheet/tick-execution-contexts {:tags #{[:tick tick-id]}})
        tick-id))
+
+(defn assessment-origin
+  "The durable assessment origin (`{:assessment-id uuid}`) of a tick, or nil when
+   the tick is not work done for an assessment. Read from the tick's start event
+   (the origin is copied onto every child run), never from in-memory context."
+  [ctx tick-id]
+  (when tick-id
+    (get-in (get-tick-execution-context ctx tick-id) [:options :assessment-origin])))
 
 (defn get-tick-blackboard
   "Get the blackboard for a tick-scoped execution.
@@ -1947,7 +2027,8 @@
        vec))
 
 (def provider-call-reservation-fields
-  [:budget-sheet-id :budget-tick-id :sheet-id :tick-id :node-id
+  [:admission-kind :node-start-id :exec-context :candidate-index :node-attempt :campaign-sheet-id
+   :budget-sheet-id :budget-tick-id :sheet-id :tick-id :node-id
    :campaign-tick-id :campaign-node-id :iteration-index
    :logical-action-identity :invocation-identity :provider-attempt-ordinal
    :ownership-epoch :reserved-at])
@@ -1962,7 +2043,7 @@
 
 (defreadmodel :sheet provider-call-reservations
   {:events #{:sheet/provider-call-reserved}
-   :version 1
+   :version 2
    :partition-fn :budget-sheet-id
    :entity-id-fn (juxt :budget-tick-id :invocation-identity)}
   [state event]

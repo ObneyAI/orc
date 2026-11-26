@@ -1,0 +1,264 @@
+{:slug "conv-003-junior-debug-strategy",
+ :envelope
+ {:assigned-tree-id #uuid "b377a44e-6d21-3e3a-a33f-7227f899e401",
+  :parent-tree-id nil,
+  :rerank-fallback? false,
+  :reasoning
+  "The caller's intent is to provide a mentorship-based debugging strategy for a fragile, non-deterministic failure (double charging). FallbackRecovery is the best fit because it explicitly addresses 'graceful degradation' and 'real-world fragility.' The weakness 'silently masks bugs' and the recommended pattern of pairing with logging/judges directly align with the task's requirement to explain how to recognize progress vs. hitting a wall and how to add logging vs. debugging.",
+  :outcome :matched,
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit recovery path captures real-world fragility — primary may fail; backup absorbs",
+      :good-when
+      "the primary approach has a known failure mode AND the backup produces equivalent :writes",
+      :recommended-pattern
+      "[:fallback [:llm {:model \"openai/gpt-5\" :reads [:input] :writes [:result]}] [:llm {:model \"google/gemini-2.5-flash\" :reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["all children would succeed — just use the primary (no recovery needed)"
+     "you want both children's results compared — use :parallel"
+     "you want only one child to run based on a known condition — use :condition (when supported) or upfront branching at the parent level"
+     "designing an emit-tree! pattern AND wanting recovery-style branching"
+     "the primary has high token cost AND fails often"
+     "the primary is the canonical path AND silent fallback would hide degradation"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.184354-05:00"},
+    :content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :rank 5,
+    :reasoning
+    "The caller's intent is to provide a mentorship-based debugging strategy for a fragile, non-deterministic failure (double charging). FallbackRecovery is the best fit because it explicitly addresses 'graceful degradation' and 'real-world fragility.' The weakness 'silently masks bugs' and the recommended pattern of pairing with logging/judges directly align with the task's requirement to explain how to recognize progress vs. hitting a wall and how to add logging vs. debugging.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "RLM models cannot emit :fallback in emit-tree! today — pattern is canonical-DSL-only",
+      :avoid-when
+      "designing an emit-tree! pattern AND wanting recovery-style branching",
+      :recommended-alternative
+      "use a single :llm with an instruction that includes fallback guidance ('if X cannot be done, instead produce Y'); OR design the pipeline as :sequence with a downstream node that handles the missing-output case"}
+     {:trait
+      "each failed primary still runs to completion before failure is detected — total cost includes the wasted primary attempt",
+      :avoid-when "the primary has high token cost AND fails often",
+      :recommended-alternative
+      "switch the order — put the cheaper backup first; OR use a guard upstream that predicts which approach to try based on input shape"}
+     {:trait
+      "silently masks real bugs — if the primary always fails and the backup always covers, the regression is invisible",
+      :avoid-when
+      "the primary is the canonical path AND silent fallback would hide degradation",
+      :recommended-alternative
+      "add a downstream :code or judge that logs/alerts when the backup fires; OR track per-tree-run which child succeeded so degradation is visible in metrics"}],
+    :cos-good 0.9981204701024041,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9913862312626782,
+    :score 436.8415894564985,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.92,
+    :document-id ":tree-class:\"seed:tree:FallbackRecovery\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9981204701024041,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "explicit recovery path captures real-world fragility — primary may fail; backup absorbs",
+      :good-when
+      "the primary approach has a known failure mode AND the backup produces equivalent :writes",
+      :recommended-pattern
+      "[:fallback [:llm {:model \"openai/gpt-5\" :reads [:input] :writes [:result]}] [:llm {:model \"google/gemini-2.5-flash\" :reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["all children would succeed — just use the primary (no recovery needed)"
+     "you want both children's results compared — use :parallel"
+     "you want only one child to run based on a known condition — use :condition (when supported) or upfront branching at the parent level"
+     "designing an emit-tree! pattern AND wanting recovery-style branching"
+     "the primary has high token cost AND fails often"
+     "the primary is the canonical path AND silent fallback would hide degradation"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.173733-05:00"},
+    :content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :rank 4,
+    :reasoning
+    "Identical content to the top-ranked tree-class, providing the same structural fit for handling fragility and recovery semantics. It loses a small amount of fitness only because the intent specifies finding a 'tree-class' match, and this is the fingerprint granularity.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "RLM models cannot emit :fallback in emit-tree! today — pattern is canonical-DSL-only",
+      :avoid-when
+      "designing an emit-tree! pattern AND wanting recovery-style branching",
+      :recommended-alternative
+      "use a single :llm with an instruction that includes fallback guidance ('if X cannot be done, instead produce Y'); OR design the pipeline as :sequence with a downstream node that handles the missing-output case"}
+     {:trait
+      "each failed primary still runs to completion before failure is detected — total cost includes the wasted primary attempt",
+      :avoid-when "the primary has high token cost AND fails often",
+      :recommended-alternative
+      "switch the order — put the cheaper backup first; OR use a guard upstream that predicts which approach to try based on input shape"}
+     {:trait
+      "silently masks real bugs — if the primary always fails and the backup always covers, the regression is invisible",
+      :avoid-when
+      "the primary is the canonical path AND silent fallback would hide degradation",
+      :recommended-alternative
+      "add a downstream :code or judge that logs/alerts when the backup fires; OR track per-tree-run which child succeeded so degradation is visible in metrics"}],
+    :cos-good 0.9981204701024041,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9913862312626782,
+    :score 436.8415894564985,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.88,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9981204701024041,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the :fallback node returns on the FIRST child that succeeds — primary's :status :success short-circuits the backup; primary's failure transparently activates backup",
+      :good-when
+      "the primary path is preferred (cheaper, more accurate, faster) but has a non-trivial failure rate AND a backup exists that's strictly less preferred but reliable",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:max-retries 2}}] [:code {:reads [:input] :writes [:result] :fn (fn [{:keys [input]}] {:result (str \"backup: \" input)})}]]"}
+     {:trait
+      "the backup child should be :code (deterministic) — if backup is also an :llm call, you've doubled the failure surface, not reduced it",
+      :good-when
+      "a deterministic fallback exists (string template, default value, last-known-good cache lookup)",
+      :recommended-pattern
+      "[:fallback [:llm ...] [:code {:reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["the backup path is also an LLM — that's not a fallback, it's a model-cascade (use the model-cascade child instead)"
+     "both paths must run unconditionally — use :parallel instead"
+     "the failure mode requires retry-with-context — use validation-loop instead"
+     ":fallback has more than 2 children"
+     "no observability is wired to surface fallback activation rate to operators"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.187162-05:00"},
+    :content
+    "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+    :rank 10,
+    :reasoning
+    "While this covers fallback patterns, its avoid-when ('the failure mode requires retry-with-context') and strength focusing on 'deterministic alternatives' makes it a slightly less perfect fit for a complex, stateful checkout bug than the more general FallbackRecovery. However, its emphasis on 'usage tracking' and 'activation rate trends' is excellent for the junior engineer's need to understand progress and observability.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "stacking 3+ :fallback children silently masks systemic failures — if primary AND backup both fail, the third option papers over a real problem the operator should see",
+      :avoid-when ":fallback has more than 2 children",
+      :recommended-alternative
+      "exactly 2 children in :fallback (primary + backup); if a third option is needed, fail loudly to the operator instead of cascading further"}
+     {:trait
+      "no usage tracking of which child fired silently hides the primary's failure rate from operators — primary degrades quietly while backup serves traffic",
+      :avoid-when
+      "no observability is wired to surface fallback activation rate to operators",
+      :recommended-alternative
+      "always wire a usage event or write a marker (e.g., :path :primary | :backup) so operators see the activation rate trend"}],
+    :cos-good 0.9999274629778581,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9916260484749339,
+    :score 436.4883204967953,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.75,
+    :document-id
+    ":tree-class:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9999274629778581,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the :fallback node returns on the FIRST child that succeeds — primary's :status :success short-circuits the backup; primary's failure transparently activates backup",
+      :good-when
+      "the primary path is preferred (cheaper, more accurate, faster) but has a non-trivial failure rate AND a backup exists that's strictly less preferred but reliable",
+      :recommended-pattern
+      "[:fallback [:llm {:reads [:input] :writes [:result] :options {:max-retries 2}}] [:code {:reads [:input] :writes [:result] :fn (fn [{:keys [input]}] {:result (str \"backup: \" input)})}]]"}
+     {:trait
+      "the backup child should be :code (deterministic) — if backup is also an :llm call, you've doubled the failure surface, not reduced it",
+      :good-when
+      "a deterministic fallback exists (string template, default value, last-known-good cache lookup)",
+      :recommended-pattern
+      "[:fallback [:llm ...] [:code {:reads [:input] :writes [:result]}]]"}],
+    :avoid-when
+    ["the backup path is also an LLM — that's not a fallback, it's a model-cascade (use the model-cascade child instead)"
+     "both paths must run unconditionally — use :parallel instead"
+     "the failure mode requires retry-with-context — use validation-loop instead"
+     ":fallback has more than 2 children"
+     "no observability is wired to surface fallback activation rate to operators"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+     :confidence 1.0,
+     :last-update "2026-09-15T11:17:29.177096-05:00"},
+    :content
+    "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+    :rank 9,
+    :reasoning
+    "This is the fingerprint version of the Primary-backup class. It provides relevant strategies for observability and deterministic fallbacks but is ranked lower due to the intent's preference for tree-class and the specific constraints of the Primary-backup pattern compared to the broader recovery principles needed for the junior engineer's specific bug.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "stacking 3+ :fallback children silently masks systemic failures — if primary AND backup both fail, the third option papers over a real problem the operator should see",
+      :avoid-when ":fallback has more than 2 children",
+      :recommended-alternative
+      "exactly 2 children in :fallback (primary + backup); if a third option is needed, fail loudly to the operator instead of cascading further"}
+     {:trait
+      "no usage tracking of which child fired silently hides the primary's failure rate from operators — primary degrades quietly while backup serves traffic",
+      :avoid-when
+      "no observability is wired to surface fallback activation rate to operators",
+      :recommended-alternative
+      "always wire a usage event or write a marker (e.g., :path :primary | :backup) so operators see the activation rate trend"}],
+    :cos-good 0.9999274629778581,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9916260484749339,
+    :score 436.4883204967953,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.7,
+    :document-id
+    ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9999274629778581,
+    :cos-avoid 1.0}],
+  :confidence 0.92,
+  :ranked-candidates
+  [{:target-id "seed:tree:FallbackRecovery",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.92,
+    :score 436.8415894564985}
+   {:target-id "seed:tree:FallbackRecovery",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.88,
+    :score 436.8415894564985}
+   {:target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.75,
+    :score 436.4883204967953}
+   {:target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.7,
+    :score 436.4883204967953}],
+  :was-fresh-mint? false,
+  :assigned-via :match},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 5009,
+ :parent-chain []}

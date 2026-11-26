@@ -1,0 +1,5 @@
+; brief-id: b-011
+; group: security-haiku
+; variant: 1
+
+Convert the 5 findings from the recent cloud/mobile audit into haikus. Use 5-7-5 syllable structure for each. Maintain technical accuracy regarding the underlying behavior or root cause without explicitly naming the vulnerability class (avoid terms like SQLi, XSS, etc.). Do not include remediation steps, fix advice, or severity ratings. 1: S3 bucket allows public read/write via anonymous identity. 2: Hardcoded API key in Android manifest. 3: Sessions persisting after password reset. 4: DB connection string logged in plain text to CloudWatch. 5: Mobile app accepting self-signed certificates for all HTTPS traffic. Just provide the poems.

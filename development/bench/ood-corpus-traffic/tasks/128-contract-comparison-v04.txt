@@ -1,0 +1,5 @@
+; brief-id: b-002
+; group: contract-comparison
+; variant: 4
+
+Hey, I just got the revised employment offer back from the VP of Engineering candidate, and it looks like their attorney got their hands on it. I’ve uploaded my original draft and their new 'Counter_Offer_Final' version. Can you run a full comparison for me? I’m particularly worried about the changes to the equity vesting schedule and the IP assignment language—it looks like they’re trying to carve out a lot of personal projects. I need an executive summary of how much this deviates from our standard hiring package, plus a section-by-section diff quoting our original text against their proposed changes for the bonus structure, non-compete, and severance terms. Please include an impact analysis on how this might set a difficult precedent for the rest of the team and give me a clear recommendation on what we can actually sign off on versus what is a total non-starter. I need to get back to them by 5 PM today so we don't lose the hire. Thanks!

@@ -256,46 +256,51 @@ projection back** — read the relevant read model and confirm the expected
 keys/values are present — rather than trusting what a call returned. See also:
 `docs/EVENT-STORE-PATTERNS.md`, `AGENTS.md` (Grain conventions).
 
-## 9. Put a `:reasoning` field first on `:llm` nodes
+## 9. Make decision evidence an explicit output when it is needed
 
-Have every `:llm` node write a `:reasoning` field *first* — make it the first
-declared `:writes` key, so the model reasons before it emits the structured output.
+When downstream nodes or judges need an explanation, declare a described rationale
+field in the node's output contract. It may be named `:reasoning`, but it is an
+ordinary model-produced explanation, not access to the provider's private internal
+reasoning. Provider reasoning channels and accounting are separate from typed
+blackboard outputs; they are not automatically available as evidence to another node.
 
-**Why it matters.** Forcing the thinking before the answer measurably improves the
-structured output — and it's the right way to get chain-of-thought: as node
-structure, not as another paragraph bolted onto a mega-prompt. It also leaves an
-inspectable trace of *why* the node decided what it did.
+Treat the explanation as a claim to check against task inputs, tool results and
+canonical execution evidence. Field order alone does not guarantee reasoning
+quality. Measure any quality benefit on the task rather than assuming it.
 
-**How.** Declare `:reasoning` as the first `:writes` key on the `:llm` node. In
-`:parallel` and `:map-each`, **node-scope** the reasoning key (give it a per-node
-name) so concurrent siblings don't trample each other's reasoning on the shared
-blackboard. See also: `docs/DSL-REFERENCE.md`.
+In `:parallel` and `:map-each`, scope rationale writes to their owning node or
+iteration so siblings do not overwrite one another. See `docs/DSL-REFERENCE.md`.
 
-## 10. Getting a map across `:delegate` parsed is node-type-specific
+## 10. Preserve typed maps across `:delegate`
 
-`:delegate` passes values **verbatim** — keys are normalized, but values are **not
-coerced**. So whether a *map* contract arrives parsed (vs. as a JSON string) is
-determined by the **producing node type**, not by the seam:
+`:delegate` passes values verbatim; it does not repair a producer's JSON strings
+into maps. Declare described structured output schemas and verify both the
+producer's decoded value and the receiving parent's projected blackboard.
 
-- **`:llm` node** — the LLM's text is parsed against the node's `:writes` schema. A
-  bare `:map` schema arrives as a **JSON string**; you MUST declare a **structured
-  `[:map …]` / `[:map-of …]` Malli schema** for the executor to reassemble a parsed
-  map.
-- **`:repl-researcher`** — when it finalizes with a real (SCI-evaluated) Clojure
-  map, that map is persisted parsed verbatim. The load-bearing part is the
-  **prompt**: require it to finalize with EDN data and avoid routing the value back
-  out through an emitted tree's `:llm` leaf (which would re-stringify it). A
-  structured schema is good defense-in-depth here.
-- **`:code` node** — returns native Clojure, so a map arrives parsed naturally.
+- **`:llm` node:** parsing depends on the effective SIO output protocol and its
+  supported schema subset. Use an explicit supported `[:map …]` contract for a
+  structured object. Bare maps do not supply a complete field contract. With the
+  strict paired compiler, unsupported shapes fail compilation; they do not become
+  an acceptable JSON-string substitute. Verify the loaded SIO revision and paired
+  contract: the historical base rejects dictionaries, unions and optional-nullable
+  fields, while the locally repaired compiler supports a bounded subset through
+  reversible dictionary entries, disjoint branch plans and explicit presence
+  encoding. Original Malli contracts and typed key identities remain authoritative;
+  unsupported or ambiguous cases still reject. This local support is not established
+  by the base dependency pin. Legacy modes have different conversion behavior and
+  must not be described as strict-mode guarantees.
+- **`:repl-researcher`:** finalizing with native Clojure data can preserve the
+  typed value. An emitted specialist `:llm` can also produce a parsed map when
+  its actual output contract/protocol supports it; emitted execution is not
+  inherently stringifying. Verify that the specialist receives the complete
+  typed inputs and that its result is consumed under the intended contract.
+- **`:code` node:** native Clojure values still need to satisfy the declared
+  output and downstream input contracts.
 
-**Why it matters.** "I declared `:writes [:profile]`, so it'll be a map" is wrong
-for `:llm` (and a foot-gun for `:repl-researcher`). Get it wrong and a downstream
-`:code` node chokes on a JSON string it expected to be a map.
-
-**How.** Pick the fix for the producing node type (above), then **verify** the
-contract arrives parsed by reading the parent blackboard back from the projection
-(Principle 8) and asserting it's a map, not a string. See also:
-`docs/ORC-SERVICE-GUIDE.md`, `docs/EVENT-STORE-PATTERNS.md`.
+Do not add quote stripping, JSON reparsing or model-specific key cleanup at the
+composition seam. Diagnose the producer's compiled schema, actual request,
+response channel, decoder and canonical writes. See `docs/ORC-SERVICE-GUIDE.md`
+and `docs/EVENT-STORE-PATTERNS.md`.
 
 ## 11. Keep reusable workflows domain-agnostic
 
@@ -363,19 +368,23 @@ letting an unavailable observability destination stall useful work.
 
 ## 14. A parallel `:map-each` leaf must be a primitive with explicit `:writes`
 
-A `:map-each` collects each iteration's result from the leaf's **explicit declared `:writes`,
-isolated per iteration** — that isolation is exactly what makes `:parallel` safe. A **composite**
-leaf (`:fallback`/`:sequence`) completes with *empty* parent `:writes`, so the engine falls back to
-reading **all non-special keys off the per-iteration blackboard**. That composite-read path is
-**not** parallel-safe (results scramble across concurrent iterations) and **bleeds stale keys** (a
-key the taken branch didn't write keeps a prior iteration's value).
+A `:map-each` reconstructs each iteration's result in three tiers (`map-each-item-result`):
+1. the **explicit writes** recorded on that iteration's completion — isolated per iteration, which
+   is exactly what makes `:parallel` safe;
+2. else the **canonical value writes tagged with that iteration** (its `map-each-index` and parent)
+   — still isolated, so a composite leaf whose primitive children wrote under the iteration's
+   execution context is collected correctly;
+3. else, **only when both are empty**, the tick's seeds plus its **latest values** — a tick-wide
+   view that is **not** iteration-isolated.
 
-**Why it matters.** Wrapping a `:map-each` leaf in a `:fallback` — the natural reach for per-item
-recovery — silently switches collection from the isolated explicit-writes path to the racy
-composite-read path. Under `:parallel` the per-item results get **misattributed across items**; even
-sequentially, a key written by only one branch **bleeds forward** to later items. Shape/structural
-tests pass blind to this (the tree is well-formed) — only a **live, multi-iteration** run with a real
-per-item failure exposes it: the Principle-12 ceiling, not the floor.
+**Why it matters.** Tier 3 is the hazard. It is reached when an iteration completes successfully
+while nothing it wrote is attributable to it — typically a composite leaf (`:fallback`/`:sequence`)
+whose taken branch wrote nothing, or wrote outside the iteration's context. Then the result can carry
+**another iteration's value** (misattribution under `:parallel`) or a **stale key from an earlier
+item** (bleed, even sequentially). Shape/structural tests pass blind to this (the tree is well-formed)
+— only a **live, multi-iteration** run with a real per-item failure exposes it: the Principle-12
+ceiling, not the floor. (Earlier versions of this principle said every composite leaf always races;
+the source is narrower — but tier 3 is reachable, so the guidance below stands.)
 
 **How.** Keep every parallel `:map-each` leaf a **primitive** (`:llm`/`:code`) that declares its
 `:writes` explicitly; don't wrap the leaf in a composite whose writes you then depend on. For per-item

@@ -1,0 +1,12 @@
+; brief-id: b-038
+; group: property-comps
+; variant: 5
+
+Please provide a formal valuation analysis for my commercial shop unit located at 12 High Street. I need this to be a defensible document for an upcoming meeting with my lender, so ensure every figure is grounded in the provided data. Please follow these requirements:
+
+1. Construct a comprehensive adjustment table for the three comparable sales on this block. You must adjust their sale prices to align with my unit’s specific features, notably the Class E usage rights and the double-frontage window display. 
+2. Account for the lack of a rear loading bay at my unit, specifically comparing it against the layout at number 18.
+3. Provide a line-by-line explanation for every adjustment. I need to understand the exact logic for value additions or subtractions, particularly concerning the utility of cellar storage versus prime ground-floor retail space.
+4. Calculate a final estimated market value range based on these adjusted figures.
+5. Assign a confidence rating from 1 to 10 for this valuation, factoring in the high number of vacant storefronts currently on the high street.
+6. List all necessary caveats, with a specific focus on how the proposed pedestrianization of the street next year impacts current value versus future investment potential.

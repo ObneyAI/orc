@@ -1,0 +1,5 @@
+; brief-id: b-022
+; group: chess-study
+; variant: 1
+
+Generate a 4-week Caro-Kann study syllabus for an 1800 Lichess rapid player. User plays a positional, prophylactic style. Constraint: 5 hours total per week. Plan must prioritize the Advance Variation (Short System) and Exchange variations. Include five specific model games by Anatoly Karpov or Alireza Firouzja for deep analysis and specific tactical drills for standard Caro pawn structures. List three critical theoretical lines for memorization. Focus on long-term strategic plans and typical middlegame motifs rather than engine-heavy sub-variations. Requirement is a full structured weekly schedule for club-level improvement, not individual game annotations.

@@ -1,0 +1,13 @@
+; brief-id: b-024
+; group: translation-glossary
+; variant: 2
+
+Hi there, hope you're having a good week. I am absolutely buried in prep for this upcoming South Korean market launch and my head is spinning a bit. My kid has been home with a fever all week too, so I’m trying to juggle all of this between pediatrician calls and endless Zoom meetings. Anyway, we’ve finally got the source files for the new MMORPG 'Ethereal Tides' and the initial localization drafts back from the Seoul agency, but their terminology is all over the map. One document calls a 'Soul-Bound Relic' a certain term in Korean, while another uses something totally different that sounds way too formal for a fantasy game. 
+
+I really need you to help me get some order here before we send this out to the UI team. I’ve attached the English lore bible and the translated quest logs they sent over. Could you go through these and build out a formal bilingual glossary for us? I need the English term, the approved Korean translation that fits the game’s 'high-fantasy' tone, a brief definition of what the item or mechanic actually is, and some usage notes—like if it should only be used in dialogue versus in the menu UI. 
+
+Crucially, please include a 'Forbidden' column. The creative director hates the word 'magic' being translated literally; we’re using a specific neologism instead, so I need to make sure the translators know which terms are strictly off-limits so we don't have to keep correcting the same mistakes. I’m not asking you to translate the actual logs or the lore bible—just extract the key terms so we have a single source of truth for the localizers. If you could get this back to me by Thursday morning, that would be a huge lifesaver.
+
+Thanks so much, 
+
+Sarah J., Localization Lead

@@ -1,0 +1,22 @@
+{:slug "085-reorder-plan-v03",
+ :group "reorder-plan",
+ :in-domain? false,
+ :variant 3,
+ :expected-output-kind
+ "reorder points and quantities per item, a purchase schedule and the cash tied up",
+ :brief-id "b-035",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 930, :completion-tokens 290, :total-tokens 1220},
+  :draft-prompt-sha256
+  "b458dfbd8818c1da0ad312f16cfdc3e311f9f0d04cb9ea8230231de6d79e1cbe",
+  :polish-usage
+  {:prompt-tokens 468, :completion-tokens 283, :total-tokens 751},
+  :polish-prompt-sha256
+  "592c4c23123d6d6af983fffda95a981afedfacc3983a4b2515fe8224a6fd8ea7",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

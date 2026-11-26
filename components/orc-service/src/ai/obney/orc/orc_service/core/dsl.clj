@@ -50,13 +50,16 @@
    - All nodes must have unique names within a workflow
    - Reordering nodes preserves their IDs
    - Renaming a node = new identity"
-  (:require [ai.obney.orc.orc-service.test-helpers :as h]
+  (:require [ai.obney.orc.orc-service.core.model-fallback :as model-fallback]
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.decision :as decision]
             [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.anomalies.interface :as anomalies]
             [malli.core :as m]
+            [malli.registry :as mr]
             [clojure.java.io :as io]
             [clojure.pprint :as pprint]
             [clojure.string])
@@ -119,13 +122,88 @@
 ;; Content Hashing
 ;; =============================================================================
 
+(defn- unresolved-refs
+  "The `:ref` schemas still present in a dereferenced schema. Malli's
+   deref-recursive does not walk over refs, so these are exactly the recursive
+   references that cannot be inlined."
+  [schema]
+  (let [acc (volatile! [])]
+    (m/walk schema
+            (fn [s _ _ _]
+              (when (= :ref (m/type s)) (vswap! acc conj s))
+              s))
+    @acc))
+
+(defn- fresh-ref-id
+  "A ref id of the same kind as `id` that is not in `taken`."
+  [id taken]
+  (let [candidate (fn [n]
+                    (cond
+                      (keyword? id) (keyword (or (namespace id) "snapshot")
+                                             (str (name id) "-" n))
+                      (string? id) (str id "-" n)
+                      :else (str (pr-str id) "-" n)))]
+    (first (remove taken (map candidate (iterate inc 2))))))
+
+(defn- ref-placeholder
+  "A `:ref` schema to `id`, carrying the properties of `ref-schema`. Resolves
+   to `:any`; it exists so the form can be read back as `[:ref id]`."
+  [ref-schema id]
+  (let [props (not-empty (m/properties ref-schema))
+        registry (mr/composite-registry m/default-registry {id :any})]
+    (m/schema (if props [:ref props id] [:ref id]) {:registry registry})))
+
 (defn- effective-schema-form
   "Resolve every registry reference reachable from a Malli schema and return
    the resulting data form. The form is both hashed and persisted, making a
-   built workflow a snapshot of the schema registry state it depends on."
+   built workflow a snapshot of the schema registry state it depends on.
+
+   Non-recursive references are inlined. A recursive reference cannot be
+   inlined, and deref-recursive leaves it as a bare `[:ref id]` whose defining
+   registry is lost, so the form would no longer be a valid schema. Each
+   recursive reference's definition is therefore carried in a registry on a
+   wrapping `:schema`, closed over every definition reachable from it.
+
+   A reference is identified by its id AND the registry it resolves in, so two
+   local registries that define the same id differently stay distinct: the
+   first keeps its id and later ones are renamed (`::n` -> `::n-2`) in every
+   reference that resolves to them. Registry entries are ordered by printed id
+   (ids may be keywords or strings) so the form, and the content hash derived
+   from it, is deterministic."
   [schema]
   (try
-    (-> schema m/schema m/deref-recursive m/form)
+    (let [top (m/deref-recursive (m/schema schema))]
+      (if (empty? (unresolved-refs top))
+        (m/form top)
+        (let [scopes (atom {})       ; [id scope-identity] -> snapshot id
+              taken (atom #{})
+              queue (atom [])        ; [snapshot-id ref-schema] to define
+              canon! (fn [r]
+                       (let [id (m/-ref r)
+                             k [id (:registry (m/options r))]]
+                         (or (get @scopes k)
+                             (let [sid (if (contains? @taken id)
+                                         (fresh-ref-id id @taken)
+                                         id)]
+                               (swap! scopes assoc k sid)
+                               (swap! taken conj sid)
+                               (swap! queue conj [sid r])
+                               sid))))
+              rewrite (fn [sch]
+                        (m/form
+                         (m/walk sch
+                                 (fn [s _ children _]
+                                   (if (= :ref (m/type s))
+                                     (ref-placeholder s (canon! s))
+                                     (m/-set-children s children))))))
+              top-form (rewrite top)
+              registry (loop [registry (sorted-map-by #(compare (pr-str %1) (pr-str %2)))]
+                         (if-let [[sid r] (first @queue)]
+                           (do (swap! queue subvec 1)
+                               (recur (assoc registry sid
+                                             (rewrite (m/deref-recursive (m/deref r))))))
+                           registry))]
+          [:schema {:registry registry} top-form])))
     (catch Exception e
       (throw (ex-info (str "Unable to resolve blackboard schema " (pr-str schema))
                       {:schema schema}
@@ -155,10 +233,20 @@
 ;; Node Builders (Data Structures)
 ;; =============================================================================
 
+(defn- validate-model-config-keys! [config allowed]
+  (when (and (contains? config :fallback-models)
+             (not-every? allowed (keys config)))
+    (throw (ex-info "Unknown configured model node option" {:type :invalid-model-fallback})))
+  config)
+
 (defn llm
   "Define an LLM executor leaf node.
 
    Options:
+     :provider - Optional registered provider for this node's primary model
+     :fallback-models - Ordered backup maps {:model id :provider optional :options optional};
+       [] explicitly disables inherited backups
+     :fallback-policy - :temporary-transport (default) or explicit :all-transport
      :model - OpenRouter model ID (e.g., \"google/gemini-2.5-flash\")
      :instruction - Prompt for the LLM
      :reads - Vector of blackboard keys to read (e.g., [:student-profile :programs])
@@ -172,8 +260,11 @@
                  :tree-id uuid  ;; for self-learning
                  :self-learning? true}
      :options - Executor options passed through to ORC LLM for this node"
-  [name & {:keys [model instruction reads writes retry judges context options]}]
-  (cond-> {:node-type :leaf
+  [name & {:keys [model instruction reads writes retry judges context options provider fallback-models fallback-policy] :as config}]
+  (validate-model-config-keys! config #{:model :instruction :reads :writes :retry :judges :context :options :provider :fallback-models :fallback-policy})
+  (model-fallback/validate-config!
+   (merge (select-keys config [:provider :fallback-models :fallback-policy])
+         (cond-> {:node-type :leaf
            :name name
            :executor :ai
            :model model
@@ -183,7 +274,60 @@
     retry (assoc :retry retry)
     judges (assoc :judges (vec judges))
     context (assoc :context context)
-    options (assoc :options options)))
+    options (assoc :options options)))))
+
+(defn llm-decision
+  "Define a model decision: a data-producing leaf that asks the model to choose
+   and writes its answer to ONE declared blackboard key. The key's blackboard
+   schema determines the decision: `:boolean` asks whether a proposition holds;
+   a finite `[:enum {:descriptions {id description}} id ...]` asks which member
+   applies. Options may instead be supplied at run time by a declared read key
+   (`:options-from`) holding a vector of `{:id :description}`; the answer key may
+   then be `:string`. Any other answer key is rejected when the workflow is built.
+
+   A valid answer is a successful assessment (false and a declared none/other
+   option included). A missing, malformed or out-of-set answer fails the node and
+   writes nothing.
+
+   Options:
+     :provider - Optional registered provider for this node's primary model
+     :fallback-models - Ordered backup maps {:model id :provider optional :options optional};
+       [] explicitly disables inherited backups
+     :fallback-policy - :temporary-transport (default) or explicit :all-transport
+     :instruction - What the model is deciding
+     :reads - Evidence keys (like every node); must include :options-from's key
+     :writes - Exactly one answer key
+     :options-from - Optional read key holding run-time `[{:id :description}]`
+     :bands-from - Optional read key holding a run-time rubric
+                   `{:bands {1 \"desc\" 2 \"desc\" ...} :criterion \"..\" :stance \"..\"}`;
+                   the model selects ONE ordered band and the integer band number is
+                   written to the (integer) answer key. Exclusive with :options-from;
+                   rejects :min-confidence/:abstain.
+     :min-confidence - Optional confidence floor; requires :abstain
+     :abstain - Option written instead when confidence is below the floor or
+                none is reported; must be one of the offered options
+     :model - Optional per-node model
+     :retry - {:max-attempts n :backoff-ms [100 500]}
+     :judges - Vector of judge names (defined in sheet/judges)
+     :options - Executor options passed through to ORC LLM for this node"
+  [name & {:keys [model instruction reads writes options-from bands-from min-confidence abstain retry judges options provider fallback-models fallback-policy] :as config}]
+  (validate-model-config-keys! config #{:model :instruction :reads :writes :options-from :bands-from :min-confidence :abstain :retry :judges :options :provider :fallback-models :fallback-policy})
+  (model-fallback/validate-config!
+   (merge (select-keys config [:provider :fallback-models :fallback-policy])
+         (cond-> {:node-type :leaf
+           :name name
+           :executor :decision
+           :model model
+           :instruction instruction
+           :reads (vec reads)
+           :writes (vec writes)}
+    options-from (assoc :options-from options-from)
+    bands-from (assoc :bands-from bands-from)
+    min-confidence (assoc :min-confidence (double min-confidence))
+    (some? abstain) (assoc :abstain abstain)
+    retry (assoc :retry retry)
+    judges (assoc :judges (vec judges))
+    options (assoc :options options)))))
 
 (defn code
   "Define a code executor leaf node.
@@ -193,8 +337,13 @@
      :reads - Vector of blackboard keys to read (e.g., [:input])
      :writes - Vector of blackboard keys to write (e.g., [:output])
      :retry - {:max-attempts n :backoff-ms [100 500]}
-     :judges - Vector of judge names (defined in sheet/judges)"
-  [name & {:keys [fn reads writes retry judges]}]
+     :judges - Vector of judge names (defined in sheet/judges)
+     :tool-caller-fn - Optional FQN of a consumer tool-gate builder
+                       (fn [blackboard context] call-tool-fn). When named, every
+                       tool call the leaf makes uses that gate; an unresolvable
+                       gate fails the node, never falling back to the ungated
+                       caller."
+  [name & {:keys [fn reads writes retry judges tool-caller-fn tool-contracts]}]
   (cond-> {:node-type :leaf
            :name name
            :executor :code
@@ -202,33 +351,81 @@
            :reads (vec reads)
            :writes (vec writes)
            :retry retry}
-    judges (assoc :judges (vec judges))))
+    judges (assoc :judges (vec judges))
+    tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+    tool-contracts (assoc :tool-contracts tool-contracts)))
+
+(defn tool
+  "Define a tool executor leaf node: one tool, named when the workflow is
+   authored, called through the node's tool caller.
+
+   Options:
+     :tool - the authored tool name (required, non-blank)
+     :reads - blackboard keys whose values become the tool's arguments
+              (read key -> keyword-keyed argument; nil reads are omitted)
+     :writes - exactly one blackboard key; receives the tool's result
+     :retry - {:max-attempts n :backoff-ms [100 500]}
+     :judges - Vector of judge names (defined in sheet/judges)
+     :tool-caller-fn - Optional FQN of a consumer tool-gate builder, applied
+                       exactly as for a code leaf
+     :tool-contracts - Declared per-tool argument/result contracts, applied
+                       exactly as for a code leaf"
+  [name & {:keys [tool reads writes retry judges tool-caller-fn tool-contracts]}]
+  (when-not (and (string? tool) (not (clojure.string/blank? tool)))
+    (throw (ex-info "A tool leaf requires an authored :tool name"
+                    {:node name :tool tool})))
+  (when-not (= 1 (count writes))
+    (throw (ex-info "A tool leaf declares exactly one write key"
+                    {:node name :writes writes})))
+  (cond-> {:node-type :leaf
+           :name name
+           :executor :tool
+           :tool tool
+           :reads (vec reads)
+           :writes (vec writes)
+           :retry retry}
+    judges (assoc :judges (vec judges))
+    tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+    tool-contracts (assoc :tool-contracts tool-contracts)))
 
 (defn condition
   "Define a condition node.
 
    Options:
      :check - {:key :bb-key :op :equals/:gt/:lt/etc :value expected}
-     :on-fail - :failure (default) or :success"
-  [name & {:keys [check on-fail]}]
-  {:node-type :condition
-   :name name
-   :check check
-   :on-fail (or on-fail :failure)})
+     :on-fail - :failure (default) or :success
+     :judges - Vector of judge names (defined in sheet/judges). A condition
+               completes like any node, so a judge may monitor it."
+  [name & {:keys [check on-fail judges]}]
+  (cond-> {:node-type :condition
+           :name name
+           :check check
+           :on-fail (or on-fail :failure)}
+    judges (assoc :judges (vec judges))))
 
 (defn llm-condition
   "Define an LLM condition node - uses LLM to evaluate true/false.
 
    Options:
+     :provider - Optional registered provider for this node's primary model
+     :fallback-models - Ordered backup maps {:model id :provider optional :options optional};
+       [] explicitly disables inherited backups
+     :fallback-policy - :temporary-transport (default) or explicit :all-transport
      :model - OpenRouter model ID (e.g., \"google/gemini-2.5-flash\")
      :instruction - Prompt describing what to evaluate (should be a yes/no question)
-     :reads - Vector of blackboard keys to read as context (e.g., [:student-profile])"
-  [name & {:keys [model instruction reads]}]
-  {:node-type :llm-condition
-   :name name
-   :model model
-   :instruction instruction
-   :reads (vec reads)})
+     :reads - Vector of blackboard keys to read as context (e.g., [:student-profile])
+     :options - Shared generation settings, including bounded same-model retries
+     :judges - Vector of judge names (defined in sheet/judges)"
+  [name & {:keys [model instruction reads judges options provider fallback-models fallback-policy] :as config}]
+  (validate-model-config-keys! config #{:model :instruction :reads :judges :options :provider :fallback-models :fallback-policy})
+  (model-fallback/validate-config!
+   (merge (select-keys config [:provider :fallback-models :fallback-policy :options])
+         (cond-> {:node-type :llm-condition
+           :name name
+           :model model
+           :instruction instruction
+           :reads (vec reads)}
+    judges (assoc :judges (vec judges))))))
 
 (defn repl-researcher
   "Define a repl-researcher node for iterative LLM+code research.
@@ -240,6 +437,10 @@
    4. Loop continues until FINAL_ANSWER or max iterations
 
    Options:
+     :provider - Optional registered provider for this node's primary model
+     :fallback-models - Ordered backup maps {:model id :provider optional :options optional};
+       [] explicitly disables inherited backups
+     :fallback-policy - :temporary-transport (default) or explicit :all-transport
      :model - OpenRouter model ID (e.g., \"google/gemini-2.5-flash\")
      :instruction - Research goal/question
      :reads - Vector of blackboard keys (metadata only shown to LLM, not values)
@@ -250,7 +451,9 @@
      :tool-caller-fn - FQN of a consumer builder (fn [blackboard context] call-tool-fn)
      :browser-tools - Vector of agent-browser tool names (e.g., [\"open\" \"snapshot\" \"click\"])
      :max-iterations - Max research iterations (default 10)
+     :timeout-ms - Optional positive total Phase 1 + cumulative Phase 2 budget in ms
      :rlm - Enable RLM mode with BT primitives (default: false)
+     :judges - Vector of judge names (defined in sheet/judges)
      :options - Per-node executor/ORC LLM options map. W38-F2:
        :tool-arg-specs {\"tool-name\" [\"arg-key\" ...]} declares a bound
        tool's REAL argument keys; declared tools render those keys verbatim
@@ -260,6 +463,12 @@
    Browser tools are shell-based (no session management) and include:
      open, snapshot, click, fill, type, press, scroll, wait,
      get-text, get-url, get-title, back, forward, screenshot
+
+   RLM model defaults:
+     Node routing config applies to prime calls. :rlm may separately declare
+     :sub-model, :sub-provider, :sub-options, :sub-fallback-models and
+     :sub-fallback-policy for inline/emitted specialists. Subcall overrides win;
+     overriding only :model retains inherited backups.
 
    RLM Mode:
      When :rlm true, the sandbox gains behavior tree primitives:
@@ -273,8 +482,14 @@
      - (final! {:key value}) - Capture validated output
      - (get-input :key) - Load full input value
      - inputs - Preview map (metadata only)"
-  [name & {:keys [model instruction reads writes mcp-tools tool-contracts tool-caller-fn browser-tools max-iterations rlm context options]}]
-  (cond-> {:node-type :repl-researcher
+  [name & {:keys [model instruction reads writes mcp-tools tool-contracts tool-caller-fn browser-tools max-iterations rlm judges context options provider fallback-models fallback-policy timeout-ms] :as config}]
+  (validate-model-config-keys! config #{:model :instruction :reads :writes :mcp-tools :tool-contracts :tool-caller-fn :browser-tools :max-iterations :rlm :judges :context :options :provider :fallback-models :fallback-policy :timeout-ms})
+  (when (and (some? timeout-ms) (not (pos-int? timeout-ms)))
+    (throw (ex-info "Researcher :timeout-ms must be a positive integer"
+                    {:timeout-ms timeout-ms})))
+  (model-fallback/validate-config!
+   (merge (select-keys config [:provider :fallback-models :fallback-policy])
+         (cond-> {:node-type :repl-researcher
            :name name
            :model model
            :instruction instruction
@@ -284,6 +499,8 @@
            :browser-tools (vec (or browser-tools []))
            :max-iterations (or max-iterations 10)}
     (some? rlm) (assoc :rlm rlm)
+    (some? timeout-ms) (assoc :timeout-ms timeout-ms)
+    judges (assoc :judges (vec judges))
     tool-contracts (assoc :tool-contracts tool-contracts)
     tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
     ;; :context is the ontology-injection config (same shape :leaf llm nodes
@@ -293,7 +510,7 @@
     ;; this DSL wedge plus the relaxed command-side guard wire it through
     ;; for :repl-researcher.
     context (assoc :context context)
-    options (assoc :options options)))
+    options (assoc :options options)))))
 
 (defn delegate
   "Define a delegate node for subworkflow execution.
@@ -309,6 +526,8 @@
      :timeout-ms - Max execution time for the delegation (default: 300000ms)
      :max-ticks - Positive child retick limit (default: runtime default)
      :inherit-ontology? - Share ontology context with target (default: true)
+     :judges - Vector of judge names (defined in sheet/judges); a judge on a
+               delegate grades the whole delegated behaviour
 
    Example:
    ```clojure
@@ -318,7 +537,7 @@
      :writes [:analysis-result :metrics]
      :timeout-ms 60000)
    ```"
-  [name & {:keys [target-sheet-id reads writes timeout-ms max-ticks inherit-ontology?]
+  [name & {:keys [target-sheet-id reads writes timeout-ms max-ticks inherit-ontology? judges]
            :or {inherit-ontology? true}}]
   (when (and (some? timeout-ms) (not (pos-int? timeout-ms)))
     (throw (ex-info "Delegate :timeout-ms must be a positive integer"
@@ -333,25 +552,56 @@
            :writes (vec (or writes []))}
     timeout-ms (assoc :timeout-ms timeout-ms)
     max-ticks (assoc :max-ticks max-ticks)
+    judges (assoc :judges (vec judges))
     (some? inherit-ontology?) (assoc :inherit-ontology? inherit-ontology?)))
+
+(defn- split-leading-options
+  "Split a composite's trailing arguments into [options children]. Leading
+   keyword/value pairs are options (`:judges [\"j\"]`); a leading options map is
+   also accepted. Everything from the first node map onward is a child."
+  [args]
+  (loop [args args opts {}]
+    (cond
+      (and (keyword? (first args)) (next args))
+      (recur (drop 2 args) (assoc opts (first args) (second args)))
+
+      :else [opts (vec args)])))
+
+(defn- with-judges
+  "Attach `:judges` (a vector of judge names) to a node when given."
+  [node judges]
+  (cond-> node
+    (seq judges) (assoc :judges (vec judges))))
 
 (defn sequence
   "Define a sequence node (runs children in order, fails on first failure).
 
-   Name is required for stable identity across rebuilds."
-  [name & children]
-  {:node-type :sequence
-   :name name
-   :children (vec children)})
+   Name is required for stable identity across rebuilds.
+
+   Options (leading keyword arguments, before the children):
+     :judges - Vector of judge names (defined in sheet/judges); a judge on a
+               composite grades the whole of what the composite did."
+  [name & args]
+  (let [[opts children] (split-leading-options args)]
+    (with-judges {:node-type :sequence
+                  :name name
+                  :children children}
+      (:judges opts))))
 
 (defn fallback
   "Define a fallback node (runs children in order, succeeds on first success).
 
-   Name is required for stable identity across rebuilds."
-  [name & children]
-  {:node-type :fallback
-   :name name
-   :children (vec children)})
+   Name is required for stable identity across rebuilds.
+
+   Options (leading keyword arguments, before the children):
+     :judges - Vector of judge names (defined in sheet/judges)"
+  [name & args]
+  (let [[opts children] (split-leading-options args)]
+    (when (contains? opts :model-fallback-policy)
+      (throw (ex-info "Configure fallback-models on a model node instead"
+                      {:type :invalid-model-fallback})))
+    (with-judges {:node-type :fallback :name name :children children}
+      (:judges opts))))
 
 (defn parallel
   "Define a parallel node (runs all children concurrently).
@@ -360,17 +610,21 @@
 
    Options:
      :success-policy - :all (default), :any, :majority
-     :failure-policy - :any (default), :all"
+     :failure-policy - :any (default), :all
+     :judges - Vector of judge names (defined in sheet/judges)"
   [name & args]
   (let [[opts children] (if (and (map? (first args))
-                                 (contains? (first args) :success-policy))
+                                 (or (contains? (first args) :success-policy)
+                                     (contains? (first args) :failure-policy)
+                                     (contains? (first args) :judges)))
                           [(first args) (rest args)]
                           [{} args])]
-    {:node-type :parallel
-     :name name
-     :success-policy (or (:success-policy opts) :all)
-     :failure-policy (or (:failure-policy opts) :any)
-     :children (vec children)}))
+    (with-judges {:node-type :parallel
+                  :name name
+                  :success-policy (or (:success-policy opts) :all)
+                  :failure-policy (or (:failure-policy opts) :any)
+                  :children (vec children)}
+      (:judges opts))))
 
 (defn map-each
   "Define a map-each node (iterates over a list).
@@ -379,7 +633,8 @@
      :from - Blackboard key containing the source list (e.g., :programs)
      :as - Blackboard key for the current item (e.g., :current-program)
      :into - Blackboard key for the results list (e.g., :scored-programs)
-     :parallel - Max parallel executions (default 1 = sequential)"
+     :parallel - Max parallel executions (default 1 = sequential)
+     :judges - Vector of judge names (defined in sheet/judges)"
   [name & args]
   (let [[opts children] (if (keyword? (first args))
                           ;; Parse keyword args
@@ -388,14 +643,15 @@
                                 opts-map (apply hash-map kw-args)]
                             [opts-map rest-args])
                           [{} args])]
-    {:node-type :map-each
-     :name name
-     :source-key (:from opts)
-     :item-key (:as opts)
-     :output-key (:into opts)
-     :max-concurrency (:parallel opts)
-     :preserve-failures? (:preserve-failures? opts)
-     :children (vec children)}))
+    (with-judges {:node-type :map-each
+                  :name name
+                  :source-key (:from opts)
+                  :item-key (:as opts)
+                  :output-key (:into opts)
+                  :max-concurrency (:parallel opts)
+                  :preserve-failures? (:preserve-failures? opts)
+                  :children (vec children)}
+      (:judges opts))))
 
 ;; =============================================================================
 ;; Blackboard Schema Builder
@@ -446,6 +702,21 @@
        :sheet-id #uuid \"...\"
        :weight 0.2}})
    ```
+
+   Optional fields on any judge:
+     :rubric     - {:criterion str :stance str :bands {1 \"...\" 2 \"...\"}
+                    :feedback :required|:none} the judge grades by
+     :purposes   - subset of #{:monitoring :learning}; default both, or
+                   #{:monitoring} when the rubric's feedback is :none. A
+                   :learning judge must require feedback.
+     :model      - model id or registered provider name; absent resolves like
+                   any ORC model node (declared model, else runtime provider)
+     :timeout-ms - positive integer
+     :assess-failures? - boolean, default false. A completion that failed,
+                   timed out or blocked is recorded ungradable (:subject-failed)
+                   without running the judge; true judges it like any other.
+   Rebuilding a workflow whose judge definition changed REVISES the judge
+   (its revision number increases); an unchanged judge is left alone.
 
    Judge types:
      :grounding - Hallucination detection
@@ -543,6 +814,16 @@
     (when node-name
       (run-build-command! ctx (h/make-set-node-name-command sheet-id node-id node-name)))
 
+    (when (or (some #(contains? node %) [:provider :fallback-models :fallback-policy])
+              (and (= :llm-condition node-type) (contains? node :options)))
+      (run-build-command! ctx
+        (merge {:command/id (random-uuid) :command/timestamp (time/now)
+                :command/name :sheet/set-node-model-policy
+                :sheet-id sheet-id :node-id node-id}
+               (select-keys node [:provider :fallback-models :fallback-policy :options]))))
+
+
+
     ;; Configure based on node type
     (case node-type
       :leaf
@@ -552,7 +833,14 @@
           (h/make-set-node-executor-command sheet-id node-id (:executor node)
             :model (:model node)
             :fn (:fn node)
-            :options (:options node)))
+            :tool (:tool node)
+            :tool-caller-fn (:tool-caller-fn node)
+            :tool-contracts (when (#{:code :tool} (:executor node)) (:tool-contracts node))
+            :options (:options node)
+            :options-from (:options-from node)
+            :bands-from (:bands-from node)
+            :min-confidence (:min-confidence node)
+            :abstain (:abstain node)))
         ;; Set instruction if AI node
         (when (:instruction node)
           (run-build-command! ctx
@@ -565,10 +853,6 @@
           (run-build-command! ctx
             (h/make-set-node-retry-command sheet-id node-id
               (:max-attempts retry) (:backoff-ms retry))))
-        ;; Set judges if configured
-        (when-let [judges (:judges node)]
-          (run-build-command! ctx
-            (h/make-set-node-judges-command sheet-id node-id judges)))
         ;; Set ontology context if configured (for self-learning injection)
         (when-let [context (:context node)]
           (run-build-command! ctx
@@ -599,6 +883,7 @@
             :max-iterations (:max-iterations node)
             :browser-tools (:browser-tools node)
             :rlm (:rlm node)
+            :timeout-ms (:timeout-ms node)
             :options (:options node)))
         ;; Set ontology context if configured. The runtime processor's
         ;; apply-ontology-context reads :context from the node and prepends
@@ -647,6 +932,12 @@
       (doseq [[idx child] (map-indexed vector (:children node))]
         (build-node! ctx sheet-id child node-id idx)))
 
+    ;; Any node may carry judges (leaves, researchers, composites, delegates,
+    ;; conditions): an attached judge monitors the node it is attached to.
+    (when-let [judges (seq (:judges node))]
+      (run-build-command! ctx
+        (h/make-set-node-judges-command sheet-id node-id (vec judges))))
+
     node-id))
 
 (defn- delete-node-tree!
@@ -683,10 +974,19 @@
     (run-build-command! ctx
       (h/make-declare-key-command sheet-id key-name schema)))
 
-  ;; Declare judges
-  (doseq [[judge-name judge-config] judges-schema]
-    (run-build-command! ctx
-      (h/make-declare-judge-command sheet-id (name judge-name) judge-config)))
+  ;; Declare judges. Judges are not cleared with the rest of a rebuilt sheet:
+  ;; a judge that already exists keeps its name and is REVISED when its
+  ;; declared definition changed (revision number up), or left alone when it
+  ;; did not. Never re-declared.
+  (doseq [[judge-name judge-config] judges-schema
+          :let [judge-name (name judge-name)
+                existing (rm/get-judge ctx sheet-id judge-name)]]
+    (cond
+      (nil? existing)
+      (run-build-command! ctx (h/make-declare-judge-command sheet-id judge-name judge-config))
+
+      (not= judge-config (:judge-config (peek (:revisions existing))))
+      (run-build-command! ctx (h/make-revise-judge-command sheet-id judge-name judge-config))))
 
   ;; Build the tree
   (when root-node
@@ -708,6 +1008,27 @@
     (when (seq duplicate-names)
       (throw (ex-info (str "Workflow node names must be unique: " duplicate-names)
                       {:duplicate-node-names duplicate-names})))
+    (doseq [node nodes]
+      (model-fallback/validate-config! node))
+    (doseq [node nodes
+            :when (= :decision (:executor node))
+            :let [error (decision/declaration-error node blackboard-schema)]
+            :when error]
+      (throw (ex-info error {:node (:name node) :decision-declaration-error true})))
+    ;; DelegateInputIdentityIsExact: parent keys reach the child by name, so
+    ;; two distinct parent keys with the same name would silently collapse.
+    (doseq [node nodes
+            :when (= :delegate (or (:node-type node) (:type node)))
+            :let [by-child-input (group-by name (distinct (:reads node)))
+                  collision (first (filter #(> (count (val %)) 1) by-child-input))]
+            :when collision]
+      (throw (ex-info (str "Delegate " (pr-str (:name node))
+                           " reads distinct parent keys " (pr-str (vec (val collision)))
+                           " that would all supply the child input "
+                           (pr-str (key collision)))
+                      {:node (:name node)
+                       :child-input (key collision)
+                       :colliding-keys (vec (val collision))})))
     (doseq [node nodes
             key (concat (:reads node) (:writes node)
                         (when-let [k (get-in node [:check :key])] [k])
@@ -839,17 +1160,36 @@
         (cond-> {:id (:id node)
                  :type (:type node)
                  :name (:name node)}
+          true (merge (cond-> (select-keys node [:provider :fallback-models :fallback-policy :options])
+                        (nil? (:options node)) (dissoc :options)))
+          (:model-fallback-policy node) (assoc :model-fallback-policy (:model-fallback-policy node))
+          ;; Any node may carry attached judges
+          (seq (:judges node)) (assoc :judges (vec (:judges node)))
           ;; Leaf-specific fields
           (= :leaf (:type node))
           (merge (cond-> {}
                    (:executor node) (assoc :executor (:executor node))
                    (:model node) (assoc :model (:model node))
+                   (:options node) (assoc :options (:options node))
                    (:fn node) (assoc :fn (:fn node))
+                   (and (= :tool (:executor node)) (:tool node))
+                   (assoc :tool (:tool node))
+                   (and (#{:code :tool} (:executor node)) (:tool-caller-fn node))
+                   (assoc :tool-caller-fn (:tool-caller-fn node))
+                   (and (#{:code :tool} (:executor node)) (:tool-contracts node))
+                   (assoc :tool-contracts (:tool-contracts node))
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (seq (:writes node)) (assoc :writes (:writes node))
                    (:retry node) (assoc :retry (:retry node))
-                   (:context node) (assoc :context (:context node))))
+                   (:context node) (assoc :context (:context node))
+                   (= :decision (:executor node))
+                   (merge (cond-> {}
+                            (:options-from node) (assoc :options-from (:options-from node))
+                            (:bands-from node) (assoc :bands-from (:bands-from node))
+                            (:min-confidence node) (assoc :min-confidence (:min-confidence node))
+                            (some? (:abstain node)) (assoc :abstain (:abstain node))
+                            (:options node) (assoc :options (:options node))))))
           ;; Condition-specific
           (= :condition (:type node))
           (merge (cond-> {}
@@ -860,7 +1200,8 @@
           (merge (cond-> {}
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))
-                   (:model node) (assoc :model (:model node))))
+                   (:model node) (assoc :model (:model node))
+                   (:options node) (assoc :options (:options node))))
           ;; Parallel-specific
           (= :parallel (:type node))
           (merge {:success-policy (or (:success-policy node) :all)
@@ -884,7 +1225,9 @@
                    (:tool-caller-fn node) (assoc :tool-caller-fn (:tool-caller-fn node))
                    (seq (:browser-tools node)) (assoc :browser-tools (:browser-tools node))
                    (:model node) (assoc :model (:model node))
+                   (:options node) (assoc :options (:options node))
                    (:max-iterations node) (assoc :max-iterations (:max-iterations node))
+                   (some? (:timeout-ms node)) (assoc :timeout-ms (:timeout-ms node))
                    (some? (:rlm node)) (assoc :rlm (:rlm node))
                    (:context node) (assoc :context (:context node))
                    (:options node) (assoc :options (:options node))))
@@ -921,6 +1264,12 @@
      :blackboard-schema (into {}
                               (map (fn [bb] [(:key bb) (:schema bb)])
                                    blackboard))
+     ;; Judges as DECLARED (the definition in force), keyed like sheet/judges.
+     :judges-schema (into {}
+                          (map (fn [[judge-name judge]]
+                                 [(keyword judge-name)
+                                  (:judge-config (peek (:revisions judge)))]))
+                          (rm/get-judges ctx sheet-id))
      :nodes (build-node-tree nodes (:root-node-id sheet))}))
 
 (defn- import-node!
@@ -938,6 +1287,16 @@
     (when (:name node)
       (h/run-and-apply! ctx (h/make-set-node-name-command sheet-id node-id (:name node))))
 
+    (when (or (some #(contains? node %) [:provider :fallback-models :fallback-policy])
+              (and (= :llm-condition node-type) (contains? node :options)))
+      (run-build-command! ctx
+        (merge {:command/id (random-uuid) :command/timestamp (time/now)
+                :command/name :sheet/set-node-model-policy
+                :sheet-id sheet-id :node-id node-id}
+               (select-keys node [:provider :fallback-models :fallback-policy :options]))))
+
+
+
     ;; Configure based on node type
     (case node-type
       :leaf
@@ -947,7 +1306,15 @@
           (h/run-and-apply! ctx
             (h/make-set-node-executor-command sheet-id node-id (:executor node)
               :model (:model node)
-              :fn (:fn node))))
+              :fn (:fn node)
+              :tool (:tool node)
+              :tool-caller-fn (:tool-caller-fn node)
+              :tool-contracts (when (#{:code :tool} (:executor node)) (:tool-contracts node))
+              :options (:options node)
+              :options-from (:options-from node)
+              :bands-from (:bands-from node)
+              :min-confidence (:min-confidence node)
+              :abstain (:abstain node))))
         ;; Set instruction if AI node
         (when (:instruction node)
           (h/run-and-apply! ctx
@@ -988,6 +1355,7 @@
               :max-iterations (:max-iterations node)
               :browser-tools (:browser-tools node)
               :rlm (:rlm node)
+              :timeout-ms (:timeout-ms node)
               :options (:options node))))
         (when-let [context (:context node)]
           (h/run-and-apply! ctx
@@ -1029,6 +1397,11 @@
       (doseq [[idx child] (map-indexed vector (:children node))]
         (import-node! ctx sheet-id child node-id idx)))
 
+    ;; Attached judges (declared on the sheet before the tree is imported)
+    (when-let [judges (seq (:judges node))]
+      (h/run-and-apply! ctx
+        (h/make-set-node-judges-command sheet-id node-id (vec judges))))
+
     node-id))
 
 (defn import-sheet
@@ -1042,6 +1415,8 @@
   (let [sheet-name (get-in exported [:sheet :name])
         blackboard-schema (:blackboard-schema exported)
         root-node (:nodes exported)
+        _ (doseq [node (tree-seq #(seq (:children %)) :children root-node)]
+            (model-fallback/validate-config! node))
 
         ;; Create new sheet
         sheet-result (h/run-and-apply! ctx
@@ -1052,6 +1427,11 @@
     (doseq [[key-name schema] blackboard-schema]
       (h/run-and-apply! ctx
         (h/make-declare-key-command sheet-id key-name schema)))
+
+    ;; Declare judges (exports from before judges were exported have none)
+    (doseq [[judge-name judge-config] (:judges-schema exported)]
+      (h/run-and-apply! ctx
+        (h/make-declare-judge-command sheet-id (name judge-name) judge-config)))
 
     ;; Build the node tree
     (when root-node
@@ -1148,7 +1528,7 @@
    keys explicitly named in preserve-empty-keys.
    Returns a flat sequence of [:key value :key value ...] sorted by key name."
   ([opts-map]
-   (build-keyword-args opts-map #{}))
+   (build-keyword-args opts-map #{:fallback-models}))
   ([opts-map preserve-empty-keys]
    (->> opts-map
         (remove (fn [[k v]] (or (nil? v)
@@ -1165,23 +1545,60 @@
         name (:name node)]
     (case executor
       :ai (let [opts (build-keyword-args
-                       {:model (:model node)
+                       {:provider (:provider node)
+                        :fallback-models (:fallback-models node)
+                        :fallback-policy (:fallback-policy node)
+                        :model (:model node)
+                        :options (:options node)
                         :instruction (:instruction node)
                         :reads (:reads node)
                         :writes (:writes node)
-                        :retry (:retry node)})]
+                        :retry (:retry node)
+                        :judges (:judges node)})]
             (if (empty? opts)
               (list (dsl-sym 'llm) name)
               (apply list (dsl-sym 'llm) name opts)))
 
       :code (let [opts (build-keyword-args
                          {:fn (:fn node)
+                          :tool-caller-fn (:tool-caller-fn node)
+                          :tool-contracts (:tool-contracts node)
                           :reads (:reads node)
                           :writes (:writes node)
-                          :retry (:retry node)})]
+                          :retry (:retry node)
+                        :judges (:judges node)})]
               (if (empty? opts)
                 (list (dsl-sym 'code) name)
                 (apply list (dsl-sym 'code) name opts)))
+
+      :tool (let [opts (build-keyword-args
+                         {:tool (:tool node)
+                          :tool-caller-fn (:tool-caller-fn node)
+                          :tool-contracts (:tool-contracts node)
+                          :reads (:reads node)
+                          :writes (:writes node)
+                          :retry (:retry node)
+                        :judges (:judges node)})]
+              (apply list (dsl-sym 'tool) name opts))
+
+      :decision (let [opts (build-keyword-args
+                             {:provider (:provider node)
+                        :fallback-models (:fallback-models node)
+                        :fallback-policy (:fallback-policy node)
+                        :model (:model node)
+                              :instruction (:instruction node)
+                              :reads (:reads node)
+                              :writes (:writes node)
+                              :options-from (:options-from node)
+                              :bands-from (:bands-from node)
+                              :min-confidence (:min-confidence node)
+                              :abstain (:abstain node)
+                              :retry (:retry node)
+                              :options (:options node)
+                              :judges (:judges node)})]
+                  (if (empty? opts)
+                    (list (dsl-sym 'llm-decision) name)
+                    (apply list (dsl-sym 'llm-decision) name opts)))
 
       ;; Default fallback for unknown executors
       (list (dsl-sym 'llm) name))))
@@ -1193,7 +1610,8 @@
         on-fail (:on-fail node)
         ;; Only include on-fail if it's not the default :failure
         opts (build-keyword-args
-               (cond-> {:check (when check (into (sorted-map) check))}
+               (cond-> {:check (when check (into (sorted-map) check))
+                        :judges (:judges node)}
                  (and on-fail (not= on-fail :failure))
                  (assoc :on-fail on-fail)))]
     (if (empty? opts)
@@ -1204,9 +1622,14 @@
   "Convert an llm-condition node to DSL form."
   [node]
   (let [opts (build-keyword-args
-               {:model (:model node)
+               {:provider (:provider node)
+                        :fallback-models (:fallback-models node)
+                        :fallback-policy (:fallback-policy node)
+                        :model (:model node)
+                :options (:options node)
                 :instruction (:instruction node)
-                :reads (:reads node)})]
+                :reads (:reads node)
+                :judges (:judges node)})]
     (if (empty? opts)
       (list (dsl-sym 'llm-condition) (:name node))
       (apply list (dsl-sym 'llm-condition) (:name node) opts))))
@@ -1215,7 +1638,10 @@
   "Convert a repl-researcher node to DSL form."
   [node]
   (let [opts (build-keyword-args
-               {:model (:model node)
+               {:provider (:provider node)
+                        :fallback-models (:fallback-models node)
+                        :fallback-policy (:fallback-policy node)
+                        :model (:model node)
                 :instruction (:instruction node)
                 :reads (:reads node)
                 :writes (:writes node)
@@ -1224,10 +1650,12 @@
                 :tool-caller-fn (:tool-caller-fn node)
                 :browser-tools (:browser-tools node)
                 :max-iterations (:max-iterations node)
+                :timeout-ms (:timeout-ms node)
                 :rlm (:rlm node)
+                :judges (:judges node)
                 :context (:context node)
                 :options (:options node)}
-               #{:rlm :context})]
+               #{:rlm :context :fallback-models :options})]
     (if (empty? opts)
       (list (dsl-sym 'repl-researcher) (:name node))
       (apply list (dsl-sym 'repl-researcher) (:name node) opts))))
@@ -1241,7 +1669,8 @@
                 :writes (:writes node)
                 :timeout-ms (or (:timeout-ms node) (:delegate-timeout-ms node))
                 :max-ticks (or (:max-ticks node) (:delegate-max-ticks node))
-                :inherit-ontology? (:inherit-ontology? node)})]
+                :inherit-ontology? (:inherit-ontology? node)
+                :judges (:judges node)})]
     (if (empty? opts)
       (list (dsl-sym 'delegate) (:name node))
       (apply list (dsl-sym 'delegate) (:name node) opts))))
@@ -1250,8 +1679,10 @@
   "Convert a sequence or fallback node to DSL form."
   [fn-sym node]
   (let [name (:name node)
-        children (mapv node->dsl-form (:children node))]
-    (apply list (dsl-sym fn-sym) name children)))
+        children (mapv node->dsl-form (:children node))
+        opts (build-keyword-args (cond-> {:judges (:judges node)}
+                                         (:model-fallback-policy node) (assoc :model-fallback-policy (:model-fallback-policy node))))]
+    (apply list (dsl-sym fn-sym) name (concat opts children))))
 
 (defn- parallel-node->form
   "Convert a parallel node to DSL form."
@@ -1265,7 +1696,9 @@
                (and success-policy (not= success-policy :all))
                (assoc :success-policy success-policy)
                (and failure-policy (not= failure-policy :any))
-               (assoc :failure-policy failure-policy))]
+               (assoc :failure-policy failure-policy)
+               (seq (:judges node))
+               (assoc :judges (vec (:judges node))))]
     (if (empty? opts)
       (apply list (dsl-sym 'parallel) name children)
       (apply list (dsl-sym 'parallel) name opts children))))
@@ -1281,7 +1714,8 @@
                 :as (:item-key node)
                 :into (:output-key node)
                 :parallel (:max-concurrency node)
-                :preserve-failures? (:preserve-failures? node)})]
+                :preserve-failures? (:preserve-failures? node)
+                :judges (:judges node)})]
     (apply list (dsl-sym 'map-each) name (concat opts children))))
 
 (defn- node->dsl-form
@@ -1306,14 +1740,21 @@
   (when (and schema-map (seq schema-map))
     (list (dsl-sym 'blackboard) (into (sorted-map) schema-map))))
 
+(defn- judges->form
+  "Convert declared judges to a `judges` DSL form."
+  [judges-schema]
+  (list (dsl-sym 'judges) (into (sorted-map) judges-schema)))
+
 (defn- workflow->form
   "Convert an exported sheet to a complete workflow DSL form."
   [exported]
   (let [name (get-in exported [:sheet :name])
         bb-schema (:blackboard-schema exported)
+        judges-schema (:judges-schema exported)
         root-node (:nodes exported)
         parts (cond-> []
                 (seq bb-schema) (conj (blackboard->form bb-schema))
+                (seq judges-schema) (conj (judges->form judges-schema))
                 root-node (conj (node->dsl-form root-node)))]
     (apply list (dsl-sym 'workflow) name parts)))
 
@@ -1363,10 +1804,14 @@
   [form indent-level]
   (let [indent (indent-str indent-level)
         child-indent (indent-str (inc indent-level))
-        [fn-sym name & children] form]
+        [fn-sym name & args] form
+        ;; leading keyword/value options (e.g. :judges [...]) precede the children
+        [opts children] (let [[o c] (split-with (complement list?) args)]
+                          [(partition 2 o) c])
+        opts-str (apply str (map (fn [[k v]] (str " " k " " (pr-str v))) opts))]
     (if (empty? children)
-      (str "(" fn-sym " \"" (escape-string name) "\")")
-      (str "(" fn-sym " \"" (escape-string name) "\"\n"
+      (str "(" fn-sym " \"" (escape-string name) "\"" opts-str ")")
+      (str "(" fn-sym " \"" (escape-string name) "\"" opts-str "\n"
            (->> children
                 (map #(str child-indent (form->pretty-string % (inc indent-level))))
                 (clojure.string/join "\n"))
@@ -1442,11 +1887,15 @@
   "Pretty print a complete workflow form."
   [form]
   (let [[fn-sym wf-name & parts] form
-        bb-form (first (filter #(and (list? %) (= "blackboard" (name (first %)))) parts))
-        root-form (first (filter #(and (list? %) (not= "blackboard" (name (first %)))) parts))]
+        part-name (fn [p] (name (first p)))
+        bb-form (first (filter #(and (list? %) (= "blackboard" (part-name %))) parts))
+        judges-form (first (filter #(and (list? %) (= "judges" (part-name %))) parts))
+        root-form (first (filter #(and (list? %) (not (#{"blackboard" "judges"} (part-name %)))) parts))]
     (str "(" fn-sym " \"" (escape-string wf-name) "\"\n"
          (when bb-form
            (str "  " (blackboard-form->pretty-string bb-form 1) "\n\n"))
+         (when judges-form
+           (str "  " (blackboard-form->pretty-string judges-form 1) "\n\n"))
          (when root-form
            (str "  " (form->pretty-string root-form 1)))
          ")")))
@@ -1479,7 +1928,7 @@
       (map-each-form->pretty-string form indent-level)
 
       ;; Leaf nodes
-      (and fn-sym (contains? #{"llm" "code" "condition" "llm-condition"} fn-name))
+      (and fn-sym (contains? #{"llm" "code" "condition" "llm-condition" "llm-decision"} fn-name))
       (leaf-form->pretty-string form indent-level)
 
       ;; Blackboard

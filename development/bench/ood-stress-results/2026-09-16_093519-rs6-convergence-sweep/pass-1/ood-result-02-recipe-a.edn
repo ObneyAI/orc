@@ -1,0 +1,425 @@
+{:assigned-tree-id #uuid "b8fa45a8-a3a9-3012-8cd2-a3813d5d76d3",
+ :tick-id #uuid "ce7633ca-8be8-4dbc-a64d-961f92adb22f",
+ :slug "02-recipe-a",
+ :parent-tree-id #uuid "0f80961b-9318-329c-91c3-8f77cda96c43",
+ :domain-label "recipe-scaling-and-catering-prep",
+ :outcome :matched,
+ :domain-deferral nil,
+ :domain-verdict
+ {:domain-coverage :uncovered,
+  :domain-label "recipe-scaling-and-catering-prep",
+  :domain-reasoning
+  "The candidate's structural shape (N children writing to DISTINCT keys) perfectly matches the task's multi-key output requirements, though the specific domain of culinary scaling is not explicitly mentioned."},
+ :node-id #uuid "69c288ee-64a6-489b-aa08-953e32bd65f8",
+ :top-1
+ {:target-id "seed:tree:ParallelIndependent",
+  :fitness-score 0.95,
+  :rerank-source :reranker,
+  :domain-coverage :uncovered,
+  :domain-label "recipe-scaling-and-catering-prep"},
+ :minted-events
+ [{:parent-tree-id #uuid "0f80961b-9318-329c-91c3-8f77cda96c43",
+   :child-tree-id #uuid "b8fa45a8-a3a9-3012-8cd2-a3813d5d76d3",
+   :domain-label "recipe-scaling-and-catering-prep"}],
+ :classified-event
+ {:assigned-tree-id #uuid "b8fa45a8-a3a9-3012-8cd2-a3813d5d76d3",
+  :parent-tree-id #uuid "0f80961b-9318-329c-91c3-8f77cda96c43",
+  :domain-label "recipe-scaling-and-catering-prep",
+  :classified-at "2026-09-16T09:35:49.854825-05:00",
+  :reasoning
+  "The task requires generating four distinct, non-overlapping outputs from a single input (the chef-tested recipe). ParallelIndependent's recommended pattern specifically handles generating a set of transformations (summary, entities, key-dates) onto a single input, which aligns perfectly with the four required keys: :scaled-ingredients, :technique, :workflow, and :cost-per-plate. Since these can be generated independently (the workflow describes stations, the cost estimate describes finances, the scaling describes chemistry/volume), parallel execution is the most efficient fit.",
+  :outcome :matched,
+  :source-node-id #uuid "69c288ee-64a6-489b-aa08-953e32bd65f8",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+    :confidence 0.9,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task requires integrating a chef-tested recipe with new constraints (scale, technique, workflow, cost) into a cohesive multi-part artifact. The Synthesis candidate's recommended-pattern for long artifacts (scaffolding via a structured outline that an :llm fills section-by-section) perfectly matches the need to produce a four-part output including workflow and technique. It handles the non-linear reasoning needed for scaling and station setup better than mechanical transformation.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "ce7633ca-8be8-4dbc-a64d-961f92adb22f",
+  :event/tags
+  #{[:tick #uuid "ce7633ca-8be8-4dbc-a64d-961f92adb22f"]
+    [:description-target
+     #uuid "b8fa45a8-a3a9-3012-8cd2-a3813d5d76d3"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-16T14:35:49.855034Z",
+  :domain-verdict
+  {:domain-coverage :uncovered,
+   :domain-label "recipe-scaling-and-catering-prep",
+   :domain-reasoning
+   "The candidate's structural shape (N children writing to DISTINCT keys) perfectly matches the task's multi-key output requirements, though the specific domain of culinary scaling is not explicitly mentioned."},
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "wall-time equals the slowest child instead of the sum of all children",
+      :good-when
+      "the same source data needs 2-3+ independent transformations AND children's latencies are similar AND children's :writes don't overlap",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:document] :writes [:summary]}] [:llm {:reads [:document] :writes [:entities]}] [:llm {:reads [:document] :writes [:key-dates]}]] [:final {:keys [:summary :entities :key-dates]}]]"}],
+    :avoid-when
+    ["the work is per-item over a collection — use :map-each (collection iteration), not :parallel (independent transformations)"
+     "any child depends on any other child's output — use :sequence"
+     "only one child exists — drop the :parallel wrapper"
+     "any two children declare the same key in their :writes"
+     "one child is dramatically slower than the others AND a downstream node needs all children's results"
+     "a child's :reads include a key another sibling writes to"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ParallelIndependent",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.731207-05:00"},
+    :domain-label "recipe-scaling-and-catering-prep",
+    :content
+    "ParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.",
+    :domain-coverage :uncovered,
+    :rank 9,
+    :reasoning
+    "The task requires generating four distinct, non-overlapping outputs from a single input (the chef-tested recipe). ParallelIndependent's recommended pattern specifically handles generating a set of transformations (summary, entities, key-dates) onto a single input, which aligns perfectly with the four required keys: :scaled-ingredients, :technique, :workflow, and :cost-per-plate. Since these can be generated independently (the workflow describes stations, the cost estimate describes finances, the scaling describes chemistry/volume), parallel execution is the most efficient fit.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "two children with overlapping :writes race — the surviving value is non-deterministic",
+      :avoid-when
+      "any two children declare the same key in their :writes",
+      :recommended-alternative
+      "give each child a distinct :writes key; OR use :sequence so writes happen in order; OR aggregate via :code after the :parallel"}
+     {:trait
+      "uneven child latencies mean the parallel speedup is bottlenecked by the slowest",
+      :avoid-when
+      "one child is dramatically slower than the others AND a downstream node needs all children's results",
+      :recommended-alternative
+      "split the slow child into smaller pieces via :map-each so its work parallelizes too; OR restructure so the slow child runs in :sequence with a downstream node that doesn't need siblings' results"}
+     {:trait
+      "children cannot read each other's outputs — they execute concurrently",
+      :avoid-when
+      "a child's :reads include a key another sibling writes to",
+      :recommended-alternative
+      "use :sequence to chain dependent computations; OR ensure each child reads only from blackboard keys set BEFORE the :parallel"}],
+    :domain-reasoning
+    "The candidate's structural shape (N children writing to DISTINCT keys) perfectly matches the task's multi-key output requirements, though the specific domain of culinary scaling is not explicitly mentioned.",
+    :cos-good 0.9975979689245289,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9969797922134748,
+    :score 445.4937573545534,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.95,
+    :document-id ":tree-class:\"seed:tree:ParallelIndependent\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9975979689245289,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "wall-time equals the slowest child instead of the sum of all children",
+      :good-when
+      "the same source data needs 2-3+ independent transformations AND children's latencies are similar AND children's :writes don't overlap",
+      :recommended-pattern
+      "[:sequence [:parallel [:llm {:reads [:document] :writes [:summary]}] [:llm {:reads [:document] :writes [:entities]}] [:llm {:reads [:document] :writes [:key-dates]}]] [:final {:keys [:summary :entities :key-dates]}]]"}],
+    :avoid-when
+    ["the work is per-item over a collection — use :map-each (collection iteration), not :parallel (independent transformations)"
+     "any child depends on any other child's output — use :sequence"
+     "only one child exists — drop the :parallel wrapper"
+     "any two children declare the same key in their :writes"
+     "one child is dramatically slower than the others AND a downstream node needs all children's results"
+     "a child's :reads include a key another sibling writes to"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ParallelIndependent",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.714214-05:00"},
+    :domain-label "recipe-scaling-and-catering-prep",
+    :content
+    "ParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.",
+    :domain-coverage :uncovered,
+    :rank 10,
+    :reasoning
+    "Identical to the tree-class, this fingerprint represents the structural pattern of taking a single input and producing a set of independent transformations into distinct keys, matching the four requested output sections.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "two children with overlapping :writes race — the surviving value is non-deterministic",
+      :avoid-when
+      "any two children declare the same key in their :writes",
+      :recommended-alternative
+      "give each child a distinct :writes key; OR use :sequence so writes happen in order; OR aggregate via :code after the :parallel"}
+     {:trait
+      "uneven child latencies mean the parallel speedup is bottlenecked by the slowest",
+      :avoid-when
+      "one child is dramatically slower than the others AND a downstream node needs all children's results",
+      :recommended-alternative
+      "split the slow child into smaller pieces via :map-each so its work parallelizes too; OR restructure so the slow child runs in :sequence with a downstream node that doesn't need siblings' results"}
+     {:trait
+      "children cannot read each other's outputs — they execute concurrently",
+      :avoid-when
+      "a child's :reads include a key another sibling writes to",
+      :recommended-alternative
+      "use :sequence to chain dependent computations; OR ensure each child reads only from blackboard keys set BEFORE the :parallel"}],
+    :domain-reasoning
+    "Matches the required output structure but lacks specific domain mentions for culinary tasks.",
+    :cos-good 0.9975979689245289,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9969797922134748,
+    :score 445.4937573545534,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.95,
+    :document-id ":tree-fingerprint:\"seed:tree:ParallelIndependent\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9975979689245289,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "separating per-chunk research from cross-chunk synthesis lets each :llm focus on a narrower job",
+      :good-when
+      "the input is a large document AND the answer requires reasoning across the whole document AND the final answer is a narrative/recommendation (not a flat extraction)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Extract anything relevant to the research question in this chunk.\"}]] [:aggregate {:from :per-chunk-notes :writes [:all-notes]}] [:llm {:reads [:all-notes] :writes [:synthesis] :instruction \"Integrate the per-chunk notes into a cohesive answer to the research question.\"}] [:final {:keys [:synthesis]}]]"}
+     {:trait
+      "the synthesis :llm sees the aggregated notes rather than the raw document — fits long documents into a single final context",
+      :good-when
+      "the raw document would exceed the synthesis :llm's context window AND the aggregated per-chunk notes are concise enough to fit",
+      :recommended-pattern
+      "[:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Summarize this chunk in <300 tokens, retaining only material relevant to the research question.\"}]]"}],
+    :avoid-when
+    ["the cross-chunk combine is mechanical — use MapReduce (:code reducer) instead"
+     "the :aggregate alone is the answer (flat extraction across chunks) — use ChunkedExtraction instead"
+     "the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win"
+     "the answer must be strictly traceable to source material AND no grounding judge follows — synthesis :llm can hallucinate at the integration step"
+     "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks"
+     "the answer must be strictly traceable to source material AND no grounding judge / citation step follows"
+     "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.733014-05:00"},
+    :domain-label "recipe-scaling-and-catering-prep",
+    :content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :domain-coverage :uncovered,
+    :rank 3,
+    :reasoning
+    "The task does not involve a 'large document' that exceeds a context window, nor does it require aggregating 'per-chunk notes'. The input is a 'small restaurant' recipe. The avoid-when 'the document fits in a single :llm context' fires here, as a single ratatouille recipe is well within a single LLM's context window, making the chunking/aggregation overhead unnecessary.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "if per-chunk extraction is too aggressive, the aggregated material can itself exceed the synthesis :llm's context window",
+      :avoid-when
+      "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks",
+      :recommended-alternative
+      "constrain the per-chunk :llm via :output-schemas + a token-budget instruction ('summarize in <300 tokens'); OR add an intermediate :map-each [:llm] compression pass before final synthesis; OR split the synthesis into a 2-stage reduce-tree"}
+     {:trait
+      "the synthesis :llm can introduce claims not grounded in any per-chunk note — hallucination risk at the integration step",
+      :avoid-when
+      "the answer must be strictly traceable to source material AND no grounding judge / citation step follows",
+      :recommended-alternative
+      "add :output-schemas requiring per-claim citations on the synthesis :llm; OR add a downstream grounding judge that scores synthesis claims against the aggregated notes; OR ask the synthesis :llm to quote source notes verbatim for each claim"}
+     {:trait
+      "two :llm passes per chunk's worth of work (per-chunk extract + final synthesize) costs more than a single :llm or a :code reducer",
+      :avoid-when
+      "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill",
+      :recommended-alternative
+      "use MapReduce instead (:code reducer for mechanical aggregation); OR use ChunkedExtraction if the :aggregate merge alone is enough"}],
+    :domain-reasoning
+    "The task is a scaling/transformation task, not a document synthesis or briefing task. The domain of culinary recipes is not covered.",
+    :cos-good 0.9993563528185978,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9979604616224182,
+    :score 445.82222231823505,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.2,
+    :document-id ":tree-class:\"seed:tree:ResearchThenSynthesize\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9993563528185978,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "separating per-chunk research from cross-chunk synthesis lets each :llm focus on a narrower job",
+      :good-when
+      "the input is a large document AND the answer requires reasoning across the whole document AND the final answer is a narrative/recommendation (not a flat extraction)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Extract anything relevant to the research question in this chunk.\"}]] [:aggregate {:from :per-chunk-notes :writes [:all-notes]}] [:llm {:reads [:all-notes] :writes [:synthesis] :instruction \"Integrate the per-chunk notes into a cohesive answer to the research question.\"}] [:final {:keys [:synthesis]}]]"}
+     {:trait
+      "the synthesis :llm sees the aggregated notes rather than the raw document — fits long documents into a single final context",
+      :good-when
+      "the raw document would exceed the synthesis :llm's context window AND the aggregated per-chunk notes are concise enough to fit",
+      :recommended-pattern
+      "[:map-each {:from :chunks :as :chunk :into :per-chunk-notes :max-concurrency 3} [:llm {:reads [:chunk] :writes [:notes] :instruction \"Summarize this chunk in <300 tokens, retaining only material relevant to the research question.\"}]]"}],
+    :avoid-when
+    ["the cross-chunk combine is mechanical — use MapReduce (:code reducer) instead"
+     "the :aggregate alone is the answer (flat extraction across chunks) — use ChunkedExtraction instead"
+     "the document fits in a single :llm context — chunking + 2-pass synthesis adds overhead with no win"
+     "the answer must be strictly traceable to source material AND no grounding judge follows — synthesis :llm can hallucinate at the integration step"
+     "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks"
+     "the answer must be strictly traceable to source material AND no grounding judge / citation step follows"
+     "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.715555-05:00"},
+    :domain-label "recipe-scaling-and-catering-prep",
+    :content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :domain-coverage :uncovered,
+    :rank 4,
+    :reasoning
+    "Matches the ResearchThenSynthesize class. The shape is wrong for the task because it assumes a chunking-research-synthesis pipeline for large documents, which contradicts the input of a single small recipe. The avoid-when for single-context inputs applies.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "if per-chunk extraction is too aggressive, the aggregated material can itself exceed the synthesis :llm's context window",
+      :avoid-when
+      "per-chunk :llm prompts ask for verbatim quotes / long excerpts AND the document has many chunks",
+      :recommended-alternative
+      "constrain the per-chunk :llm via :output-schemas + a token-budget instruction ('summarize in <300 tokens'); OR add an intermediate :map-each [:llm] compression pass before final synthesis; OR split the synthesis into a 2-stage reduce-tree"}
+     {:trait
+      "the synthesis :llm can introduce claims not grounded in any per-chunk note — hallucination risk at the integration step",
+      :avoid-when
+      "the answer must be strictly traceable to source material AND no grounding judge / citation step follows",
+      :recommended-alternative
+      "add :output-schemas requiring per-claim citations on the synthesis :llm; OR add a downstream grounding judge that scores synthesis claims against the aggregated notes; OR ask the synthesis :llm to quote source notes verbatim for each claim"}
+     {:trait
+      "two :llm passes per chunk's worth of work (per-chunk extract + final synthesize) costs more than a single :llm or a :code reducer",
+      :avoid-when
+      "the cross-chunk combine is mechanical (count, sum, dedup, flatten) — synthesis :llm is overkill",
+      :recommended-alternative
+      "use MapReduce instead (:code reducer for mechanical aggregation); OR use ChunkedExtraction if the :aggregate merge alone is enough"}],
+    :domain-reasoning
+    "Gap: This is for document analysis, not formulaic scaling or workflow generation.",
+    :cos-good 0.9993563528185978,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9979604616224182,
+    :score 445.82222231823505,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.2,
+    :document-id
+    ":tree-fingerprint:\"seed:tree:ResearchThenSynthesize\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9993563528185978,
+    :cos-avoid 1.0}
+   {:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :strengths
+    [{:trait
+      "the synthesis stage's :llm has access to ALL per-chunk extracted material in :reads — produces a narrative that reasons across chunks rather than concatenating per-chunk summaries",
+      :good-when
+      "the briefing needs to identify cross-chunk patterns (recurring themes, contradictions, progression of an argument)",
+      :recommended-pattern
+      "[:sequence [:chunk-document {:from :source :size 4000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :extracts :max-concurrency 3} [:llm {:reads [:chunk] :writes [:key-points :quotes]}]] [:aggregate {:from :extracts :writes [:all-points :all-quotes]}] [:llm {:reads [:all-points :all-quotes :briefing-prompt] :writes [:briefing]}] [:final {:keys [:briefing]}]]"}
+     {:trait
+      "extract specific QUOTES alongside summaries in the per-chunk step — the synthesis stage can then ground claims to source quotes, supporting traceability",
+      :good-when
+      "the briefing audience may verify claims against source material AND traceability matters",
+      :recommended-pattern
+      "[:llm {:reads [:chunk] :writes [:key-points :supporting-quotes] :output-schemas {:key-points [:vector :string] :supporting-quotes [:vector :string]}}]"}],
+    :avoid-when
+    ["the output is a structured triple (summary + entities + dates) — use document-analysis (chunked-extraction-as-task-class) instead"
+     "no cross-chunk reasoning needed — use chunked-extraction (terminal :aggregate without synthesis)"
+     "the source fits in a single :llm context — direct :llm without chunking is simpler"
+     "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15"
+     "the briefing is going to a decision-maker AND no grounding check is wired downstream"],
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+     :confidence 1.0,
+     :last-update "2026-09-16T09:34:28.739286-05:00"},
+    :domain-label "recipe-scaling-and-catering-prep",
+    :content
+    "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+    :domain-coverage :uncovered,
+    :rank 6,
+    :reasoning
+    "This candidate is specific to 'Briefing generation'. The avoid-when 'the source fits in a single :llm context' applies here as well. The task is to scale a recipe, not to identify cross-chunk patterns or recurring themes from a large corpus.",
+    :cos-good-with-content 1.0,
+    :weaknesses
+    [{:trait
+      "the synthesis stage's context can overflow when per-chunk extracts are too rich AND the chunk count is high — synthesizer truncates or hallucinates connections",
+      :avoid-when
+      "per-chunk extraction emits >500 tokens per chunk AND chunk count is >15",
+      :recommended-alternative
+      "either reduce per-chunk extraction granularity (key-points-only, no quotes) OR add an intermediate :code stage that selects top-K per-chunk extracts before synthesis"}
+     {:trait
+      "without a grounding judge, the synthesis stage can fabricate connections between per-chunk extracts that aren't actually in the source — a 'plausible narrative' that doesn't survive verification",
+      :avoid-when
+      "the briefing is going to a decision-maker AND no grounding check is wired downstream",
+      :recommended-alternative
+      "wire a grounding judge on the briefing output that checks each claim against the source quotes — catches fabricated connections before the briefing ships"}],
+    :domain-reasoning
+    "The candidate is highly specialized for briefings and narrative synthesis, which is unrelated to the subject matter of catering prep.",
+    :cos-good 0.9964133087817004,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.9973360293839986,
+    :score 445.6798272749554,
+    :cos-avoid-sans-content 1.0,
+    :fitness-score 0.15,
+    :document-id
+    ":tree-class:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.9964133087817004,
+    :cos-avoid 1.0}],
+  :event/type :ontology/task-classified,
+  :domain-children-considered [],
+  :event/id #uuid "01a0aaa5-38df-706d-93e2-34c22202a9ae",
+  :confidence 0.95,
+  :source-sheet-id #uuid "e9789020-e6a3-4357-85b8-8435a06081b9",
+  :ranked-candidates
+  [{:target-id "seed:tree:ParallelIndependent",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.95,
+    :score 445.4937573545534}
+   {:target-id "seed:tree:ParallelIndependent",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.95,
+    :score 445.4937573545534}
+   {:target-id "seed:tree:ResearchThenSynthesize",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.2,
+    :score 445.82222231823505}
+   {:target-id "seed:tree:ResearchThenSynthesize",
+    :granularity :tree-fingerprint,
+    :rerank-source :reranker,
+    :fitness-score 0.2,
+    :score 445.82222231823505}
+   {:target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.15,
+    :score 445.6798272749554}],
+  :was-fresh-mint? true,
+  :assigned-via :mint-domain-child},
+ :deferred-events [],
+ :domain-children-considered [],
+ :sheet-id #uuid "e9789020-e6a3-4357-85b8-8435a06081b9",
+ :payload-domain
+ {:assigned-via :mint-domain-child,
+  :parent-tree-id #uuid "0f80961b-9318-329c-91c3-8f77cda96c43",
+  :child-tree-id #uuid "b8fa45a8-a3a9-3012-8cd2-a3813d5d76d3",
+  :domain-label "recipe-scaling-and-catering-prep"},
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — the runtime has already assigned this task to a domain child of the top match (label: recipe-scaling-and-catering-prep); design for that domain under the parent's shape, do NOT mint a structural child yourself.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns (top 2 from corpus retrieval)\n#### Top match — ParallelIndependent (confidence: 0.95)\nWhy this fits: The task requires generating four distinct, non-overlapping outputs from a single input (the chef-tested recipe). ParallelIndependent's recommended pattern specifically handles generating a set of transformations (summary, entities, key-dates) onto a single input, which aligns perfectly with the four required keys: :scaled-ingredients, :technique, :workflow, and :cost-per-plate. Since these can be generated independently (the workflow describes stations, the cost estimate describes finances, the scaling describes chemistry/volume), parallel execution is the most efficient fit.\n\nPattern guidance (seed `:summary`):\nParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.\n\n\n#### Alternative #1 — ParallelIndependent (confidence: 0.95)\nWhy this fits: Identical to the tree-class, this fingerprint represents the structural pattern of taking a single input and producing a set of independent transformations into distinct keys, matching the four requested output sections.\n\nPattern guidance (seed `:summary`):\nParallelIndependent is a :parallel of N children where each child writes to DISTINCT keys. Wall-time equals the slowest child instead of their sum. Use when the same input needs 2-3+ independent transformations and child latencies are similar. Children CANNOT read each other's outputs; overlapping :writes keys race; the slowest child bottlenecks total time. Distinct from :map-each — :map-each iterates a COLLECTION of inputs; this iterates a SET of TRANSFORMATIONS on one input.\n\n\nAssigned to domain child b8fa45a8-a3a9-3012-8cd2-a3813d5d76d3 (label: recipe-scaling-and-catering-prep) under the top match — this campaign's outcome is that child's first evidence.\n\n### Behavioral competencies (top 1 from corpus retrieval)\n1. Behavioral: Synthesis (confidence: 0.90)\n   Why this fits: The task requires integrating a chef-tested recipe with new constraints (scale, technique, workflow, cost) into a cohesive multi-part artifact. The Synthesis candidate's recommended-pattern for long artifacts (scaffolding via a structured outline that an :llm fills section-by-section) perfectly matches the need to produce a four-part output including workflow and technique. It handles the non-linear reasoning needed for scaling and station setup better than mechanical transformation.\n\n   Guidance (seed `:summary`):\n   Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).\n\nCapabilities:\n  - given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation\n  - natural fit at the tail of a tree where multiple parallel branches converge\n  - outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where (confidence 1.00, evidence-count 1)\n    - Good when: synthesis needs to attribute claims to sources OR balance per-source weight\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]\n      ```\n\n  - **Trait:** for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs (confidence 1.00, evidence-count 1)\n    - Good when: the final artifact is multi-section AND each section maps to a distinct cluster of inputs\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently (confidence 1.00, evidence-count 1)\n    - Avoid when: input count >5 AND each input is substantive\n    - Recommended fix: hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives\n\n  - **Failure mode:** free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages need to verify specific sections are present\n    - Recommended fix: declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - multi-source briefing: extracts from N articles → single executive summary with citations\n  - comparative report: per-vendor extractions → structured comparison + recommendation\n  - investigation conclusion: per-witness extractions → integrated timeline + assessment\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent 2bce84a1-d186-3892-8131-c19b59e4543e)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\nA small restaurant has a chef-tested ratatouille recipe that yields 6 plates. Scale it to 60 plates for a catering event: scaled ingredient quantities (seasoning does not scale linearly), a revised batch-cooking technique for the larger volume, a prep workflow with station setup, and a cost estimate per plate. Output: {:scaled-ingredients ... :technique ... :workflow ... :cost-per-plate ...}",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? false},
+ :elapsed-ms 16371,
+ :confidence 0.95,
+ :was-fresh-mint? true,
+ :assigned-via :mint-domain-child}

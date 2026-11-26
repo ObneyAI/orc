@@ -1,0 +1,7 @@
+; brief-id: b-027
+; group: cloud-cost-review
+; variant: 4
+
+Hey, sorry to drop this on you so late, but our AWS bill for the startup just hit and we've managed to blow through our compute budget again. We're super compute-heavy with all the ML training jobs running, and I’m worried we’re paying for way more capacity than we actually use during the off-hours. I’ve uploaded the CSV with the service breakdown and the latest usage metrics from the dashboard. 
+
+Can you go through this and find where we can trim the fat? I need a ranked list of savings opportunities. For each one, tell me roughly what we’d save each month, how risky it is (we can't afford the training nodes crashing mid-job), and the specific steps to fix it. Focus on things like rightsizing the EC2 instances, maybe moving some dev clusters to Graviton, or cleaning up those massive EBS volumes that aren't attached to anything. Just keep it to these immediate technical tweaks—I don't need a lecture on switching to serverless or a projected budget for next year, just the quick wins I can implement tomorrow. Thanks!

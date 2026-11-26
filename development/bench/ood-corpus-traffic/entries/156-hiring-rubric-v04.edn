@@ -1,0 +1,22 @@
+{:slug "156-hiring-rubric-v04",
+ :group "hiring-rubric",
+ :in-domain? false,
+ :variant 4,
+ :expected-output-kind
+ "competencies with behavioural indicators, scoring anchors, interview questions per competency and a decision rule",
+ :brief-id "b-019",
+ :review-status :pending,
+ :fixture? false,
+ :confounder-of nil,
+ :expected-seed-id nil,
+ :generator
+ {:draft-usage
+  {:prompt-tokens 1235, :completion-tokens 279, :total-tokens 1514},
+  :draft-prompt-sha256
+  "1d11782badee4d06e44d06309dbebb0ff55b12f7790100377d5824dbdce18c8d",
+  :polish-usage
+  {:prompt-tokens 448, :completion-tokens 279, :total-tokens 727},
+  :polish-prompt-sha256
+  "e17edf20b20da4393c40f346884a1dda6bf5361296811b6244d85aba076b09f4",
+  :model "google/gemini-3-flash-preview"},
+ :flags []}

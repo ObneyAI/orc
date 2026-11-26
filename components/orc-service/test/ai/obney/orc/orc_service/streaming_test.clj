@@ -413,8 +413,11 @@
     ch))
 
 (defmacro with-stub-predict-stream-v2 [& body]
-  `(with-redefs [llm/predict-stream-v2 stub-stream-ch]
-     ~@body))
+  `(do
+     (llm/register-provider! :openrouter
+       {:provider :openrouter :model "fixture/stream" :config {:api-key "synthetic-not-sent"}})
+     (with-redefs [llm/predict-stream-v2 stub-stream-ch]
+       ~@body)))
 
 (deftest llm-token-streaming-test
   (testing "an :ai leaf streams field snapshots and raw deltas when a subscriber opted in"

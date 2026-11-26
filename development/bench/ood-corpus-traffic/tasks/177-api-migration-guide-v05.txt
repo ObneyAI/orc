@@ -1,0 +1,13 @@
+; brief-id: b-017
+; group: api-migration-guide
+; variant: 5
+
+Please put together a draft for the 'Enterprise API v5 Transition Guide' before my 4 PM sync today. We need to help users move from our legacy .NET and Java wrappers to the new cross-platform Rust and TypeScript SDKs. Using the attached spec sheets and breaking-changes document, please structure the guide according to the following requirements:
+
+1. Draft a clear, 4-step initialization sequence that shows developers how to migrate their client configurations from the old singleton pattern to the new factory-based setup.
+2. Provide side-by-side code transformation blocks comparing 'Legacy v4' to 'Unified v5' for both Java and TypeScript. Focus specifically on demonstrating how the new session-based authentication replaces the old header-token method.
+3. Include a payload mapping table that cross-references the old flat webhook JSON fields with our new multi-part encrypted event structure.
+4. Create a schema bridging section that provides a detailed technical guide on mapping our previous RESTful GET routes to the new GraphQL resource nodes.
+5. Conclude with a functional release checklist that covers essential go-live steps like cache-clearing, namespace renaming, and certificate rotation.
+
+Ensure the final document reads as a cohesive, functional migration manual with logical transitions between sections rather than just a dry changelog.

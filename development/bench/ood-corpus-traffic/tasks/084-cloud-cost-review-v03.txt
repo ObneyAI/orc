@@ -1,0 +1,12 @@
+; brief-id: b-027
+; group: cloud-cost-review
+; variant: 3
+
+Analyze the uploaded GCP billing export and Stackdriver traffic metrics to identify immediate cost-reduction opportunities across our 1PB infrastructure. We are specifically targeting the high egress fees between US and EU clusters and mounting storage overhead. Provide a prioritized list of actionable recommendations adhering strictly to the following schema:
+
+* **Recommendation**: A concise, descriptive title for the optimization.
+* **Est. Monthly Savings**: The projected USD reduction based on current usage patterns.
+* **Risk Assessment**: A rating of Low, Medium, or High, detailing potential impacts on data availability, consistency, or query latency.
+* **Execution Path**: A brief technical summary of the gcloud CLI commands or Console steps required for implementation.
+
+Your analysis must focus on near-term technical adjustments rather than architectural shifts. Specifically, evaluate Object Lifecycle Management for bucket versioning, termination of idle Cloud SQL instances, and the optimization of inter-zone/inter-region data transfers. Avoid proposing multi-cloud migrations or long-term spend projections. Priority must be assigned to the highest ROI tasks that maintain our current customer-facing SLAs. Do not include any filler; provide only the technical directives required to turn these knobs immediately.

@@ -1,0 +1,5 @@
+; brief-id: b-029
+; group: research-synthesis
+; variant: 1
+
+Process 28 interview transcripts from the B2B churn study and consumer pricing feedback. Synthesize notes into key themes; each theme requires minimum three direct supporting quotes. Rank all opportunities by retention impact. Provide specific product recommendations for onboarding flow and pricing tiers. Include a confidence rating (High/Med/Low) for every recommendation based on data density. Do not develop personas. Deliverables must be limited to themes, ranking, and recommendations only.

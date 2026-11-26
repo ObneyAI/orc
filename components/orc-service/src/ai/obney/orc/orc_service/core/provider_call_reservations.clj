@@ -1,5 +1,7 @@
 (ns ai.obney.orc.orc-service.core.provider-call-reservations
-  "Pure identity and atomic-admission rules for durable provider-call budget facts.")
+  "Pure identity and atomic-admission rules for durable provider-call budget facts."
+  (:require [ai.obney.orc.orc-service.core.value-log :as value-log]
+            [ai.obney.orc.orc-service.core.emitted-model-authority :as emitted-authority]))
 
 (def reservation-event-type :sheet/provider-call-reserved)
 
@@ -18,128 +20,117 @@
        "/epoch/" ownership-epoch
        "/provider-attempt/" provider-attempt-ordinal))
 
+(def fact-types
+  #{:sheet/tree-tick-started :sheet/tree-tick-completed :sheet/tick-cancelled
+    :sheet/node-execution-started :sheet/node-execution-completed
+    :rlm/researcher-frontier-claimed :rlm/researcher-effect-claimed
+    :sheet/provider-call-reserved :sheet/emitted-model-work-authorized
+    :sheet/model-plan-retained :sheet/model-candidate-claimed :sheet/model-candidate-recorded
+    :sheet/model-request-recorded :rlm/researcher-effect-completed})
+
+(defn reservation-identity
+  "Keep campaign identities compatible; ordinary ownership includes the exact
+   canonical start, item context, logical action, candidate and node attempt."
+  [{:keys [admission-kind budget-tick-id tick-id node-start-id exec-context
+           logical-action-identity candidate-index node-attempt ownership-epoch
+           provider-attempt-ordinal]}]
+  (if (= :ordinary admission-kind)
+    (pr-str [:ordinary budget-tick-id tick-id node-start-id
+             (mapv #(get exec-context %) [:ai.obney.orc.orc-service.core.todo-processors/map-each-index
+                                         :ai.obney.orc.orc-service.core.todo-processors/map-each-parent
+                                         :ai.obney.orc.orc-service.core.todo-processors/tick-iteration])
+             logical-action-identity candidate-index node-attempt provider-attempt-ordinal])
+    (invocation-identity budget-tick-id logical-action-identity ownership-epoch
+                         provider-attempt-ordinal)))
+
+(defn- lineage [starts tick-id root-id]
+  (loop [tick tick-id seen #{} path []]
+    (cond
+      (or (nil? tick) (contains? seen tick) (nil? (get starts tick))) nil
+      (= tick root-id) (conj path tick)
+      :else (recur (:parent-tick-id (get starts tick)) (conj seen tick) (conj path tick)))))
+
 (defn reservation-decision
-  "Classify a reservation against one authoritative root-tag event stream.
-
-   `:admit` means every relationship is valid and capacity remains. A duplicate
-   identity is classified before capacity so a redelivery can never masquerade
-   as budget exhaustion. `:exhausted` is returned only when every other
-   admission requirement is valid."
-  [{:keys [budget-sheet-id budget-tick-id sheet-id tick-id node-id
-           campaign-sheet-id campaign-tick-id campaign-node-id iteration-index
-           invocation-identity ownership-epoch]}
+  "Consume the dedicated root stream once. Duplicates cannot masquerade as
+   exhaustion; canonical ownership and terminal fences are inside the CAS."
+  [{:keys [budget-sheet-id budget-tick-id sheet-id tick-id node-id node-start-id
+           exec-context admission-kind campaign-sheet-id campaign-tick-id
+           campaign-node-id iteration-index invocation-identity ownership-epoch model-configuration-id model-logical-action-id]
+    :as reservation}
    events]
-  (let [{:keys [root-start invoking-start node-execution-started?
-                campaign-start campaign-epoch campaign-iterations duplicate?
-                reservation-count]}
-        (reduce
-         (fn [state event]
-           (case (:event/type event)
-             :sheet/tree-tick-started
-             (cond-> state
-               (and (= budget-tick-id (:tick-id event))
-                    (= budget-sheet-id (:sheet-id event)))
-               (assoc :root-start event)
+  (let [events (into [] events)
+        execution-key [tick-id node-id (or exec-context {})]
+        state (reduce
+                (fn [state event]
+                  (let [type (:event/type event)
+                        node-key [(:tick-id event) (:node-id event) (value-log/exec-context (:inputs event))]]
+                    (case type
+                      :sheet/tree-tick-started
+                      (update state :starts #(if (contains? % (:tick-id event)) % (assoc % (:tick-id event) event)))
+                      :sheet/tick-cancelled (update state :terminals conj (:tick-id event))
+                      :sheet/tree-tick-completed
+                      (if (= :running (:root-status event)) state (update state :terminals conj (:tick-id event)))
+                      :sheet/node-execution-started
+                      (-> state (assoc-in [:node-starts node-key] event) (update :node-completed disj node-key))
+                      :sheet/node-execution-completed
+                      (if (= :tree-generated (:completion-kind event)) state (update state :node-completed conj node-key))
+                      :rlm/researcher-frontier-claimed
+                      (if (and (= campaign-sheet-id (:sheet-id event)) (= campaign-tick-id (:tick-id event))
+                               (= campaign-node-id (:node-id event)))
+                        (update state :epoch max (:ownership-epoch event)) state)
+                      :rlm/researcher-effect-claimed
+                      (if (and (= campaign-sheet-id (:sheet-id event)) (= campaign-tick-id (:tick-id event))
+                               (= campaign-node-id (:node-id event)) (= ownership-epoch (:ownership-epoch event)))
+                        (update state :iterations conj (:iteration-index event)) state)
+                      :sheet/provider-call-reserved
+                      (-> state (update :count inc)
+                          (update :duplicate? #(or % (= invocation-identity (:invocation-identity event)))))
+                      state)))
+                {:starts {} :node-starts {} :node-completed #{} :terminals #{}
+                 :epoch 0 :iterations #{} :count 0 :duplicate? false} events)
+        starts (:starts state)
+        root (get starts budget-tick-id)
+        invoking (get starts tick-id)
+        campaign (get starts campaign-tick-id)
+        path (lineage starts tick-id budget-tick-id)
+        campaign-path (when campaign-tick-id (lineage starts campaign-tick-id budget-tick-id))
+        start (get-in state [:node-starts execution-key])
+        ordinary? (= :ordinary admission-kind)
+        budget (get-in root [:options :llm-call-budget])
+        history-known? (= 1 (get-in root [:options :llm-budget-accounting-version]))
+        valid? (and root invoking path
+                    (= budget-sheet-id (:sheet-id root)) (= sheet-id (:sheet-id invoking))
+                    (integer? budget) (pos? budget)
+                    (not-any? (:terminals state) path)
+                    (if ordinary?
+                      (and start (= node-start-id (:event/id start)) (= sheet-id (:sheet-id start))
+                           (not (true? (get-in invoking [:options :checkpointed-campaign?])))
+                           (not (contains? (:node-completed state) execution-key)))
+                      (and campaign campaign-path
+                           start (= node-start-id (:event/id start))
+                           (= sheet-id (:sheet-id start))
+                           (not (contains? (:node-completed state) execution-key))
+                           (= campaign-sheet-id (:sheet-id campaign))
+                           (not-any? (:terminals state) campaign-path)
+                           (= ownership-epoch (:epoch state))
+                           (or (= tick-id campaign-tick-id)
+                               (emitted-authority/fresh-authorized?
+                                 (cond-> {:sheet-id sheet-id :tick-id tick-id :node-id node-id :node-start-id node-start-id
+                                          :exec-context (or exec-context {}) :logical-action-id model-logical-action-id}
+                                   (some? model-configuration-id) (assoc :configuration-id model-configuration-id))
+                                 {:sheet-id campaign-sheet-id :tick-id campaign-tick-id :node-id campaign-node-id
+                                  :exec-context (or (get-in invoking [:options :researcher-campaign-exec-context]) {})
+                                  :ownership-epoch (get-in invoking [:options :researcher-ownership-epoch])
+                                  :iteration-index iteration-index} events))
+                           (contains? (:iterations state) iteration-index))))]
+    (merge {:current (:count state) :budget budget :root-tick-id budget-tick-id :root-sheet-id budget-sheet-id}
+           {:decision (cond (not history-known?) :incomplete-history
+                            (not valid?) :rejected
+                            (:duplicate? state) :duplicate
+                            (>= (:count state) budget) :exhausted
+                            :else :admit)})))
 
-               (and (= tick-id (:tick-id event))
-                    (= sheet-id (:sheet-id event)))
-               (assoc :invoking-start event)
-
-               (and (= campaign-tick-id (:tick-id event))
-                    (= campaign-sheet-id (:sheet-id event)))
-               (assoc :campaign-start event))
-
-             :sheet/node-execution-started
-             (if (and (= sheet-id (:sheet-id event))
-                      (= tick-id (:tick-id event))
-                      (= node-id (:node-id event)))
-               (assoc state :node-execution-started? true)
-               state)
-
-             :rlm/researcher-frontier-claimed
-             (if (and (= campaign-sheet-id (:sheet-id event))
-                      (= campaign-tick-id (:tick-id event))
-                      (= campaign-node-id (:node-id event)))
-               (assoc state :campaign-epoch
-                      (max (or (:campaign-epoch state) 0)
-                           (:ownership-epoch event)))
-               state)
-
-             :rlm/researcher-effect-claimed
-             (if (and (= campaign-sheet-id (:sheet-id event))
-                      (= campaign-tick-id (:tick-id event))
-                      (= campaign-node-id (:node-id event))
-                      (= ownership-epoch (:ownership-epoch event)))
-               (update state :campaign-iterations conj
-                       (:iteration-index event))
-               state)
-
-             :sheet/provider-call-reserved
-             (-> state
-                 (update :reservation-count inc)
-                 (cond-> (= invocation-identity
-                            (:invocation-identity event))
-                   (assoc :duplicate? true)))
-
-             state))
-         {:root-start nil
-          :invoking-start nil
-          :node-execution-started? false
-          :campaign-start nil
-          :campaign-epoch 0
-          :campaign-iterations #{}
-          :duplicate? false
-          :reservation-count 0}
-         events)
-        budget (get-in root-start [:options :llm-call-budget])
-        valid? (and root-start
-                    invoking-start
-                    node-execution-started?
-                    campaign-start
-                    (integer? budget)
-                    (pos? budget)
-                    (= ownership-epoch campaign-epoch)
-                    (contains? campaign-iterations iteration-index))]
-    (merge
-     {:current reservation-count
-      :budget budget
-      :root-tick-id budget-tick-id
-      :root-sheet-id budget-sheet-id}
-     (cond
-      (not valid?) {:decision :rejected}
-      duplicate? {:decision :duplicate}
-      (>= reservation-count budget)
-      {:decision :exhausted}
-      :else {:decision :admit}))))
-
-(defn reservation-cas
-  "Atomically admit one provider attempt against a durable budget root.
-
-   The event-store supplies an IReduce stream. Consume it exactly once. All
-   relevant facts carry the root tick tag, so the CAS itself uses that one tag
-   (Grain combines multiple tags with AND semantics)."
-  [{:keys [budget-sheet-id budget-tick-id sheet-id tick-id node-id
-           campaign-sheet-id campaign-tick-id campaign-node-id iteration-index
-           invocation-identity ownership-epoch]}]
-  {:tags #{[:tick budget-tick-id]}
-   :types #{:sheet/tree-tick-started
-            :sheet/node-execution-started
-            :rlm/researcher-frontier-claimed
-            :rlm/researcher-effect-claimed
-            reservation-event-type}
-   :predicate-fn
-   (fn [events]
-     (= :admit (:decision (reservation-decision
-                           {:budget-sheet-id budget-sheet-id
-                            :budget-tick-id budget-tick-id
-                            :sheet-id sheet-id
-                            :tick-id tick-id
-                            :node-id node-id
-                            :campaign-sheet-id campaign-sheet-id
-                            :campaign-tick-id campaign-tick-id
-                            :campaign-node-id campaign-node-id
-                            :iteration-index iteration-index
-                            :invocation-identity invocation-identity
-                            :ownership-epoch ownership-epoch}
-                           events))))})
-
+(defn reservation-cas [reservation]
+  {:tags #{[:llm-budget-root (:budget-tick-id reservation)]}
+   :types fact-types
+   :predicate-fn (fn [events] (= :admit (:decision (reservation-decision reservation events))))})

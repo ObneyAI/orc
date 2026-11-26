@@ -1,0 +1,5 @@
+; brief-id: b-009
+; group: game-balance
+; variant: 1
+
+Run 10,000 simulations on the attached Tier 1/Tier 2 decks against current card pool stats. Objective: normalize 'Frostbite' archetype. Current win rate is 62%; target is 49-51%. Must maintain a minimum 10% pick rate. Reference the attached CSV for mana/damage data. Propose specific numeric nerfs for 'Ice Spike' and 'Glacier Giant', then re-run sims against 'Aggro Burn' matchups. Iterate until the delta between the top four archetypes is under 3%. Deliver final adjusted stat blocks and a rationale ensuring the changes prevent the existing combo-stalling loop. ticket_id: 8829.

@@ -669,8 +669,9 @@
                                :total_tokens 3}})]
         (let [result (sheet/execute ctx sheet-id {} :timeout-ms 10000)
               tick-id (:trace-id result)
-              node-id (:id (first (filter #(= "researcher" (:name %))
-                                          (sheet/get-nodes-for-sheet ctx sheet-id))))
+              node (first (filter #(= "researcher" (:name %))
+                                  (sheet/get-nodes-for-sheet ctx sheet-id)))
+              node-id (:id node)
               campaign-events
               (filterv #(contains? #{:rlm/researcher-frontier-claimed
                                      :rlm/researcher-effect-claimed
@@ -691,7 +692,9 @@
                               :model "deterministic-model"
                               :module (:module @observation)
                               :inputs (:inputs @observation)
-                              :options (:options @observation)}))
+                              ;; The logical request precedes physical retry normalization.
+                              ;; This fixture authors no retry option; dispatch adds zero.
+                              :options (dissoc (:options @observation) :max-retries)}))
               projected (rm/get-researcher-effect-claims
                          ctx sheet-id tick-id node-id)]
           (is (= :success (:status result)) (pr-str result))
@@ -705,6 +708,10 @@
                  (mapv :event/type campaign-events))
               (pr-str campaign-events))
           (is (ifn? identity-fn))
+          (is (not (contains? (:options node) :max-retries))
+              "this fixture does not author the later physical retry control")
+          (is (= 0 (get-in @observation [:options :max-retries]))
+              "the physical predictor receives normalized zero internal retries")
           (is (= expected-logical (:logical-action-identity provider-claim)))
           (is (= :completed (:status (first projected))))
           (is (string? (:claimed-at (first projected))))
@@ -1166,7 +1173,10 @@
       (reset! ctx-ref ctx)
       (let [definition
             (sheet/workflow "rr7-inline-provider-claim"
-              (sheet/blackboard {:summary :string})
+              (sheet/blackboard
+                {:summary :string
+                 :detail [:time/duration
+                          {:description "Native duration returned by the controlled inline provider."}]})
               (sheet/repl-researcher "researcher"
                 :instruction "make one inline provider call"
                 :writes [:summary]
@@ -1212,6 +1222,11 @@
                                       provider-claims))))
                 "outer and generated-code-origin provider calls have distinct content identities")
             (is (every? #(= :completed (:status %)) provider-claims))
+            (is (some #(= duration
+                          (get-in (executor/decode-checkpoint-value [codec] (:result %))
+                                  [:outputs :detail]))
+                      provider-claims)
+                "projected checkpoint data decodes to the original native Duration")
             (is (some #(= (executor/encode-checkpoint-value [codec]
                                                             inline-result)
                            (:result %))
@@ -1236,7 +1251,9 @@
                                    :total_tokens 2}}
             definition
             (sheet/workflow "rr10-inline-provider-recovery"
-              (sheet/blackboard {:summary :string})
+              (sheet/blackboard
+                {:summary :string
+                 :detail [:string {:description "Typed inline result retained across the ownership retry."}]})
               (sheet/repl-researcher "researcher"
                 :instruction "recover one inline provider"
                 :writes [:summary]
@@ -1298,16 +1315,20 @@
                                           (:event/type %))
                                        (= node-id (:node-id %)))
                                  (h/read-all-events ctx))))
-                recovered-worker
+                recovered-worker-finished (promise)
+                ;; The async processor returns nil. Observe its existing exact
+                ;; worker-exit capability instead of interpreting a return value.
+                recovered-dispatch-result
                 (when start-event
                   (todo/execute-repl-researcher-node
                    (assoc ctx
                           :llm-provider :test
+                          :researcher-worker-finished-fn
+                          #(deliver recovered-worker-finished true)
                           :event (assoc start-event
                                         :researcher-ownership-epoch 2))))
                 recovered-result
-                (when recovered-worker
-                  (deref recovered-worker 10000 ::timeout))
+                (deref recovered-worker-finished 10000 ::timeout)
                 result (deref execution 15000 ::timeout)
                 tick-id (:trace-id result)
                 provider-claims
@@ -1327,6 +1348,8 @@
               (is inline-result-observed?
                   "the old inline provider returned before its outcome append")
               (is (some? start-event))
+              (is (true? recovered-result)
+                  "the newer worker must actually finish the original inline recovery boundary")
               (is (not= ::timeout recovered-result))
               (is (= :success (:status result)) (pr-str result))
               (is (= "inline-value" (get-in result [:outputs :summary])))

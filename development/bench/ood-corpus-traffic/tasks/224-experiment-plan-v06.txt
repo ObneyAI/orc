@@ -1,0 +1,12 @@
+; brief-id: b-028
+; group: experiment-plan
+; variant: 6
+
+I’m currently stuck in the airport waiting for a delayed flight and my laptop is running on fumes, so I could really use your help getting this experiment plan drafted before I land. We need to settle a debate in the dev team regarding our e-commerce ranking system. The core question is: "Can we improve the Mean Reciprocal Rank (MRR) for 'cold-start' items by 10% if we switch from our current matrix factorization approach to a Graph Neural Network (GNN) that leverages item-attribute metadata?"
+
+I've pulled the core stats for the 'MarketStream-Global' dataset to give you the necessary context:
+{ "Interactions": "15M (clicks/purchases)", "Metadata": "Categories, Brand IDs, Price Tiers", "Baseline": "Factor-X (SVD++)", "Budget": "$6,500 AWS SageMaker" }
+
+I need a professional experiment plan that includes three hypotheses specifically focused on how graph embeddings might resolve the sparsity issue for new products compared to latent factors. Please provide a detailed experiment matrix comparing 'Factor-X' against a LightGCN implementation and a GraphSAGE variant. Define the primary metrics as MRR@10, Normalized Discounted Cumulative Gain (NDCG), and coverage, using an evaluation protocol with a 'time-split' validation strategy to simulate the real-world arrival of new items.
+
+Additionally, I need a budget allocation for the $6,500, splitting it between graph construction/pre-processing, hyperparameter optimization, and final model evaluation. Finally, include clear decision criteria—specifically, what delta in MRR and what maximum increase in inference latency would justify the infrastructure overhead of moving to a GNN. Keep it strictly to the strategy and roadmap; I have the engineering team ready to code, I just need the rigorous plan to get leadership to sign off on the compute spend. Thanks!

@@ -1,0 +1,7 @@
+; brief-id: b-023
+; group: tax-estimate
+; variant: 4
+
+Hey! I’m finally sitting down to look at my 2024 finances and I’m a bit stressed about what I’ll owe the IRS. I’m a freelance copywriter based in Austin, Texas, and since I don't have an employer withholding anything, I really need to stay on top of my estimated taxes. This year, I’m expecting to bring in $92,000 in gross income from my client work. For deductions, I’ve got about $8,500 in business expenses (mostly software subs, a new laptop, and some travel for a conference). Last year was pretty quiet—I only cleared about $40,000—so I know my quarterly payments need to jump quite a bit.
+
+Can you help me figure out my total tax liability for the year, including self-employment tax? I need to see the math behind the estimate, the specific amounts I should be paying for each remaining quarterly deadline, and those actual due dates. Also, please list what assumptions you're making—like the SE tax deduction or standard deduction—so I can have a clear list to run by my CPA next month. I just want to make sure I’m setting aside enough each month so I don't panic in April! Thanks!

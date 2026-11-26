@@ -1,0 +1,113 @@
+{:index-id-at-classify #uuid "962b40ef-3dcd-4455-906c-902bdc5c582b",
+ :assigned-tree-id #uuid "281bb47e-b9af-4e9a-a40c-8546c7bb570c",
+ :tick-id #uuid "ff88a0ee-3216-4521-8d86-faaa67b52a49",
+ :slug "004-marathon-training-v02",
+ :parent-tree-id nil,
+ :domain-label nil,
+ :timed-out? false,
+ :outcome :novel,
+ :reached-via :mint,
+ :domain-deferral nil,
+ :rerank-calls 2,
+ :newborn-in-index? false,
+ :usage
+ {:prompt-tokens 13324, :completion-tokens 1458, :total-tokens 14782},
+ :confounder-of nil,
+ :domain-verdict nil,
+ :corpus-in-domain? false,
+ :status :ok,
+ :node-id #uuid "784d90d9-c82a-4c6c-9195-c5621ccf9c77",
+ :top-1
+ {:target-id "b41117ea-da98-31d3-a4cf-d98b78882a44",
+  :fitness-score 0.1,
+  :rerank-source :reranker,
+  :domain-coverage :uncovered,
+  :domain-label "marathon-training-plan"},
+ :corpus-group "marathon-training",
+ :expected-seed-id nil,
+ :minted-events [],
+ :classified-event
+ {:assigned-tree-id #uuid "281bb47e-b9af-4e9a-a40c-8546c7bb570c",
+  :classified-at "2026-09-22T09:56:30.971787-05:00",
+  :reasoning
+  "This candidate is a poor fit for the intent. It is specifically designed for legal document analysis and risk flagging in vendor agreements, whereas the user's task is a generative planning task for physical training. The structural pattern of identifying 'issues to flag' does not align with 'laying out a plan'.",
+  :outcome :novel,
+  :source-node-id #uuid "784d90d9-c82a-4c6c-9195-c5621ccf9c77",
+  :behavioral-subtrees
+  [{:behavior-id #uuid "abe48812-ad0f-3a27-a142-806558801fc0",
+    :confidence 0.95,
+    :was-fresh-mint? false,
+    :reasoning
+    "The task is to produce a specific plan (mileage build-up) based on goal (marathon) and constraints (16 weeks, 10K base, 20-mile peak). The 'Design' behavior is the best fit as it produces a 'single committable plan/spec from inputs (goal + constraints)'. The recommended pattern of using a :map for named sections like 'decisions' (mileage targets) and 'risks' (injury prevention) is highly effective for a structured training schedule.",
+    :rerank-source :reranker}
+   {:behavior-id #uuid "bf47c816-2833-320e-9fbd-6ae109275ab0",
+    :confidence 0.6,
+    :was-fresh-mint? false,
+    :reasoning
+    "While primarily for code, the 'Code-building' behavior is a strong structural match for generating a structured schedule from a 'spec' (the training requirements). However, its avoid-when guard 'no spec exists yet - run design first' suggests this is a secondary step to the actual planning. The task here is both the planning and the generation.",
+    :rerank-source :reranker}],
+  :source-tick-id #uuid "ff88a0ee-3216-4521-8d86-faaa67b52a49",
+  :event/tags
+  #{[:tick #uuid "ff88a0ee-3216-4521-8d86-faaa67b52a49"]
+    [:description-target
+     #uuid "281bb47e-b9af-4e9a-a40c-8546c7bb570c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-09-22T14:56:30.971986Z",
+  :top-candidates
+  [{:rerank-source :reranker,
+    :domain-penalty-sans-content 0.0,
+    :positive-signal :good-when,
+    :document-metadata
+    {:granularity :tree-class,
+     :target-id "b41117ea-da98-31d3-a4cf-d98b78882a44",
+     :confidence 0.0,
+     :last-update "2026-09-22T09:56:15.334799-05:00"},
+    :domain-label "marathon-training-plan",
+    :content
+    "Representative uses: INSTRUCTION:\n\nHere is an excerpt from a vendor services agreement: Section 4.2 lets the vendor subcontract any portion of the work without notice; Section 7.1 has the client indemnify the vendor for any third-party claim regardless of fault. What issues should I flag before signing?\n\nREADS: (none)\nWRITES: (none)\nMCP-TOOLS: (none)\nBROWSER-TOOLS: (none).",
+    :domain-coverage :uncovered,
+    :rank 1,
+    :reasoning
+    "This candidate is a poor fit for the intent. It is specifically designed for legal document analysis and risk flagging in vendor agreements, whereas the user's task is a generative planning task for physical training. The structural pattern of identifying 'issues to flag' does not align with 'laying out a plan'.",
+    :cos-good-with-content 1.0,
+    :domain-reasoning
+    "The candidate's representative use is strictly focused on legal contract review and indemnity clauses. There is zero overlap with marathon training, athletic scheduling, or mileage progression.",
+    :cos-good 0.0,
+    :domain-penalty-with-content 0.0,
+    :cos-avoid-with-content 0.0,
+    :score 448.5507011235728,
+    :cos-avoid-sans-content 0.0,
+    :fitness-score 0.1,
+    :document-id
+    ":tree-class:#uuid \"b41117ea-da98-31d3-a4cf-d98b78882a44\"",
+    :domain-penalty 0.0,
+    :cos-good-sans-content 0.0,
+    :cos-avoid 0.0}],
+  :event/type :ontology/task-classified,
+  :event/id #uuid "01a0c99e-50fc-70b8-ac74-22c421eacf10",
+  :confidence 0.1,
+  :source-sheet-id #uuid "a095428d-96ba-46cc-ba6c-0f65e1cf28ec",
+  :ranked-candidates
+  [{:target-id "b41117ea-da98-31d3-a4cf-d98b78882a44",
+    :granularity :tree-class,
+    :rerank-source :reranker,
+    :fitness-score 0.1,
+    :score 448.5507011235728}],
+  :was-fresh-mint? true,
+  :assigned-via :mint},
+ :deferred-events [],
+ :domain-children-considered nil,
+ :sheet-id #uuid "a095428d-96ba-46cc-ba6c-0f65e1cf28ec",
+ :payload-domain nil,
+ :pass 1,
+ :rendered-instruction
+ "## Suggested patterns from corpus\n\nThese are concrete EXAMPLES retrieved from the seed corpus based on classification of your task. Each example includes:\n  - WHY the candidate fits (reranker reasoning)\n  - The pattern's prose summary (seed `:summary`)\n  - Capabilities it provides\n  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n  - Representative uses where this pattern has shipped\n\nYou always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n  - ADOPT — use a reference as-is when it is an EXACT fit.\n  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\nA match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n### Structural patterns\nNo high-confidence structural match was returned by the classifier. Design at the abstract pattern level — the structural shape is the primary signal you have. The behavioral suggestions below reflect what the task ACCOMPLISHES.\n\n### Behavioral competencies (top 2 from corpus retrieval)\n1. Behavioral: Design (confidence: 0.95)\n   Why this fits: The task is to produce a specific plan (mileage build-up) based on goal (marathon) and constraints (16 weeks, 10K base, 20-mile peak). The 'Design' behavior is the best fit as it produces a 'single committable plan/spec from inputs (goal + constraints)'. The recommended pattern of using a :map for named sections like 'decisions' (mileage targets) and 'risks' (injury prevention) is highly effective for a structured training schedule.\n\n   Guidance (seed `:summary`):\n   Design produces a single committable plan/spec/architecture from inputs (goal + constraints + optional candidate options). Always structure as :map with named sections (decisions / open-questions / risks) — downstream automated stages bind on these. For non-trivial designs with interacting decisions, iterate via draft → critique → refined-spec. ALWAYS require an :open-questions field — empty means 'I'm confident', non-empty surfaces the gap before downstream stages run against an implicit guess. Composes into iterative-refinement (draft → critique → finalize) and sequential-pipeline (analysis → design → code-building) shells. Avoid when the task is option generation (use ideation) or execution against a known plan (use code-building).\n\nCapabilities:\n  - given a goal + constraints + (optionally) candidate options, produce a single concrete plan/spec/architecture as the chosen direction\n  - natural fit as the convergence stage after research/extraction/analysis/ideation; the gate before code-building or execution\n  - outputs are typically a single structured spec (sections / decisions / open-questions) with explicit decisions rather than a list of options\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** structure the design output as :map with named sections (decisions / open-questions / risks) — downstream code-building or execution can :read specific sections without re-parsing prose (confidence 1.00, evidence-count 1)\n    - Good when: the design will feed automated downstream stages (code-building, validation, execution)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:goal :constraints :options] :writes [:spec] :output-schemas {:spec [:map [:decisions [:vector :string]] [:open-questions [:vector :string]] [:risks [:vector :string]]]}}]\n      ```\n\n  - **Trait:** iterate design via draft → critique → refined-spec when the design is non-trivial — single-pass design tends to leave decisions implicit (confidence 1.00, evidence-count 1)\n    - Good when: the design has multiple interacting decisions AND the cost of a wrong call is high\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:goal] :writes [:draft-spec]}] [:llm {:reads [:draft-spec :goal] :writes [:critique]}] [:llm {:reads [:draft-spec :critique] :writes [:refined-spec]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** designs that leave open-questions implicit force the downstream stage to either fail or guess — both produce drift between intended and actual outcome (confidence 1.00, evidence-count 1)\n    - Avoid when: downstream stages will execute against the design\n    - Recommended fix: require an explicit :open-questions field in the spec output — empty means 'I'm confident'; non-empty surfaces the gap\n\n  - **Failure mode:** design without explicit consideration of the constraints (as part of :reads) tends to produce specs that look reasonable but violate the constraints in subtle ways (confidence 1.00, evidence-count 1)\n    - Avoid when: the task has hard constraints (budget / API limits / shape requirements)\n    - Recommended fix: always include constraints as a separate :reads input on the design stage AND require the spec output to reference how each constraint was honored\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - technical architecture spec from a problem brief + constraints\n  - experiment design from a research question + dataset constraints\n  - API contract design from a feature spec + backwards-compat requirements\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent abe48812-ad0f-3a27-a142-806558801fc0)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n2. Behavioral: Code-building (confidence: 0.60)\n   Why this fits: While primarily for code, the 'Code-building' behavior is a strong structural match for generating a structured schedule from a 'spec' (the training requirements). However, its avoid-when guard 'no spec exists yet - run design first' suggests this is a secondary step to the actual planning. The task here is both the planning and the generation.\n\n   Guidance (seed `:summary`):\n   Code-building produces executable code / scripts / config from a spec. Always structure output as :map with :file-path / :language / :imports / :code — downstream automated stages bind on these. For non-trivial code, iterate via draft → critique → refined-code; single-pass produces higher defect rates. NEVER feed code-building a raw goal — always pipe through a design stage first so the input is a spec, not an open-ended ask. For long files (>200 lines), scaffold then :map-each per-section to preserve cross-section consistency. Composes into iterative-refinement (draft → critique → finalize) and sequential-pipeline (design → code → validate) shells. Avoid for mechanical transformation (use transformation) or code review (use critique).\n\nCapabilities:\n  - given a spec + constraints + (optionally) examples, produce executable code / scripts / config as the artifact\n  - natural fit at the tail of a tree after design has produced the spec, before validation gates the result\n  - outputs are typically code strings with :file-path / :language / :imports / :tests so downstream stages can persist or execute\n\nStrengths (proven traits — these patterns have been observed to work; mimic where they fit, adapt as needed):\n  - **Trait:** structure the code output as :map with :file-path / :language / :imports / :code so downstream stages (validation / persistence / execution) can bind on specific fields rather than re-parse a code blob (confidence 1.00, evidence-count 1)\n    - Good when: the code feeds automated downstream stages (linting, test runs, file writes)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:llm {:reads [:spec] :writes [:artifact] :output-schemas {:artifact [:map [:file-path :string] [:language :string] [:imports [:vector :string]] [:code :string]]}}]\n      ```\n\n  - **Trait:** iterate code via draft → critique → refined-code when the code is non-trivial — single-pass code has higher defect rates than draft-critique-refine for the same prompt (confidence 1.00, evidence-count 1)\n    - Good when: the code involves multiple interacting decisions (error handling / edge cases / type contracts)\n    - Worked example DSL (corpus reference — adapt to your task):\n      ```clojure\n      [:sequence [:llm {:reads [:spec] :writes [:draft-code]}] [:llm {:reads [:draft-code :spec] :writes [:critique]}] [:llm {:reads [:draft-code :critique] :writes [:refined-code]}]]\n      ```\n\nWeaknesses (observed failure modes — avoid these patterns, apply the recommended fix where applicable):\n  - **Failure mode:** code-building without an explicit :spec input (just a goal string) produces code that maps to the model's first guess at what the goal meant — divergence from intent surfaces only at test time (confidence 1.00, evidence-count 1)\n    - Avoid when: the goal is ambiguous OR the consequences of wrong-interpretation are expensive\n    - Recommended fix: always pipe code-building's :reads through a design stage first; the design's :spec field is the input to code-building, not the raw goal\n\n  - **Failure mode:** single-shot generation of a long file (>200 lines) produces code with internal inconsistencies — function signatures mismatch their callers, imports declared but unused (confidence 1.00, evidence-count 1)\n    - Avoid when: the artifact is a long file with multiple cohesive sections\n    - Recommended fix: scaffold via :code-built outline (top-of-file imports / function-declarations / glue), then :map-each per-section generation, then :code-stitched final — preserves consistency across sections\n\nRepresentative uses (concrete tasks this pattern has shipped on):\n  - function implementation from a typed spec + examples\n  - config file generation from a deployment plan\n  - test case generation from a behavior specification\n\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths describe a more general shape than your task, or its `:avoid-when` flags your context), mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent (it is retrievable on subsequent classify-behaviors calls):\n\n       (mint-behavior! \"<short-kebab-name>\"\n                       {:capabilities [\"<concrete action verb + object>\"]\n                        :strengths [{:trait \"<what works AND why>\"\n                                     :good-when \"<context guard>\"\n                                     :recommended-pattern \"<concrete DSL snippet>\"\n                                     :confidence 0.7\n                                     :evidence-count 1}]\n                        :weaknesses [{:trait \"<what fails AND why>\"\n                                      :avoid-when \"<context guard>\"\n                                      :recommended-alternative \"<concrete fix>\"\n                                      :confidence 0.7\n                                      :evidence-count 1}]\n                        :representative-uses [\"<concrete task this child shipped on>\"]\n                        :avoid-when [\"<concrete anti-context>\"]\n                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n                        :version 1\n                        :consolidated-from-event-count 0}\n                       :parent bf47c816-2833-320e-9fbd-6ae109275ab0)\n\n   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior), mint an adjacent behavior the same way with `:parent nil` (or under whichever listed reference is the true nearest parent).\n   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard + concrete recommended action + :confidence + :evidence-count) — a vector of bare strings fails schema validation; the rejection is returned in iteration history for correction.\n\n\n---\n\nI signed up for a marathon 16 weeks out and I've never run more than a 10K. Can you lay out a mileage build-up plan that gets me to a 20-mile long run before tapering, with rest days built in?",
+ :june-flags
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? false},
+ :elapsed-ms 12924,
+ :confidence 0.1,
+ :was-fresh-mint? true,
+ :assigned-via :mint}

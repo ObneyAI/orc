@@ -16,6 +16,7 @@
    - Embedding generation and semantic search (Phase 4)
    - Hybrid search combining graph BFS + embeddings via RRF"
   (:require [ai.obney.ontology.interface :as ontology]
+            [clojure.string]
             [ai.obney.orc.ontology.core.static-ontology :as static]
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.serialization :as serialization]
@@ -715,6 +716,89 @@
                 (distinct))
           (get-enforcing-claims ctx granularity target-id))))
 
+(def family-label-list-bound
+  "CV-A (domain-child convergence, item 1 + item 6): the bound on the
+   tenant-wide family-label list — one number shared by the classifier's
+   tenant-wide family landing (`existing-domain-families`) and the
+   reranker's bounded `:existing-domain-labels` blackboard slot, so the two
+   never drift apart."
+  50)
+
+(defn- tree-class-uri->target-id
+  "Strip the 'tree-class:' prefix from a concept URI and parse as UUID when
+   possible. Mirrors task-classifier's private `uri->target-id` — duplicated
+   here rather than shared, matching this codebase's existing precedent for
+   this exact derivation (commands.clj's `tree-class-uri` helper)."
+  [uri]
+  (let [bare (if (and (string? uri) (clojure.string/starts-with? uri "tree-class:"))
+               (subs uri (count "tree-class:"))
+               uri)]
+    (try (java.util.UUID/fromString bare)
+         (catch Exception _ bare))))
+
+(defn existing-domain-families
+  "CV-A item 1 (`DomainChildIdentityIsStable`, `DomainChildrenAreAlwaysConsidered`):
+   every tree-class concept minted as a domain family, TENANT-WIDE across
+   every parent — provenance :agent-authored, a non-blank :label that is
+   not the concept's own bare id (the generic placeholder an ordinary,
+   non-domain tree-class concept carries as its label). Most-recently-
+   minted first, bounded by `family-label-list-bound`.
+
+   Returns [{:target-id :domain-label :parent-id} ...] — :parent-id is the
+   family's own birth shape (its first skos:broader edge), nil when the
+   concept carries none.
+
+   A genuine read failure PROPAGATES — never caught here. The classifier's
+   `:domain-families-fn` seam (and the reranker's label-list builder) decide
+   how a failure is handled; a lookup that cannot be resolved must defer,
+   never silently read as \"no families\" (DomainCoverageIsJudgedNotInferred)."
+  [ctx]
+  (let [concepts (rm/get-concepts ctx {:scope :tree-class})]
+    (->> concepts
+         (keep (fn [c]
+                 (let [label (:label c)
+                       uri (:uri c)
+                       bare (if (and (string? uri) (clojure.string/starts-with? uri "tree-class:"))
+                              (subs uri (count "tree-class:"))
+                              uri)]
+                   (when (and (string? label)
+                              (not (clojure.string/blank? label))
+                              (not= label bare))
+                     (let [broader-uri (first (:broader c))]
+                       {:target-id (tree-class-uri->target-id uri)
+                        :domain-label label
+                        :parent-id (when broader-uri (tree-class-uri->target-id broader-uri))
+                        ::created-at (:created-at c)})))))
+         (sort-by ::created-at #(compare %2 %1))
+         (take family-label-list-bound)
+         (mapv #(dissoc % ::created-at)))))
+
+(defn- existing-domain-child-labels
+  "R-Inject specialisation (weed 1.1, DomainChildIdentityIsStable): the labels
+   of a tree-class candidate's existing domain children — its narrower
+   concepts whose :label is a judged domain label (non-blank and not the
+   concept's own identifier; every other tree-class concept carries its
+   identifier as its label). Shown to the reranker so a repeat of a known
+   domain REUSES the label instead of coining a variant that would mint a
+   sibling. Best-effort: a failed read yields nil (the reranker simply is not
+   shown children; RS-2's own lookup still defers on failure)."
+  [ctx target-id]
+  (try
+    (let [parent-uri (str "tree-class:" target-id)
+          child-uris (or (rm/get-narrower-concepts ctx parent-uri) #{})]
+      (->> child-uris
+           (keep (fn [uri]
+                   (let [label (:label (rm/get-concept-by-uri ctx uri))
+                         bare (subs uri (min (count uri) (count "tree-class:")))]
+                     (when (and (string? label)
+                                (not (clojure.string/blank? label))
+                                (not= label bare))
+                       label))))
+           sort
+           vec
+           not-empty))
+    (catch Exception _ nil)))
+
 (defn- enrich-candidate-evidence
   "Add :avoid-when (top-level body guards + per-weakness guards) and compact
    :strengths/:weaknesses from the candidate's body to the candidate map.
@@ -736,8 +820,11 @@
         per-weakness-guards (into [] (keep :avoid-when) weaknesses)
         avoid-when (vec (distinct (concat (:avoid-when body) per-weakness-guards)))
         enforcing (when source
-                    (enforcing-avoid-strings ctx (:granularity source) (:target-id source)))]
+                    (enforcing-avoid-strings ctx (:granularity source) (:target-id source)))
+        existing-children (when (= "tree-class" (granularity-name granularity))
+                            (existing-domain-child-labels ctx target-id))]
     (cond-> c
+      (seq existing-children) (assoc :existing-domain-children existing-children)
       (some? enforcing) (assoc ::domain-penalty/enforcing-avoid-when enforcing)
       (seq avoid-when)        (assoc :avoid-when avoid-when)
       (seq (:strengths body)) (assoc :strengths (compact-strengths (:strengths body)))
@@ -911,11 +998,24 @@
         ;; candidates, same order, same count — less per-candidate detail for
         ;; the non-critical (low-scoring CHILD) ones.
         prompt-candidates (shape-candidate-richness annotated)
+        ;; CV-A item 6: the tenant-wide, bounded label list — every domain
+        ;; family's own label, not one parent's children. Best-effort, like
+        ;; `existing-domain-child-labels`: a failed read simply shows the
+        ;; reranker no list rather than failing the whole rerank call — the
+        ;; classifier's OWN tenant-wide lookup (item 1) is the fail-closed
+        ;; path; this is a prompt-shaping aid only.
+        existing-domain-labels (try
+                                  (->> (existing-domain-families ctx)
+                                       (mapv :domain-label)
+                                       distinct
+                                       vec)
+                                  (catch Exception _ []))
         reranked (try
                    (reranker/rerank! ctx
                      {:query query
                       :intent rerank-intent
                       :candidates prompt-candidates
+                      :existing-domain-labels existing-domain-labels
                       :model model})
                    (catch Throwable t
                      (u/log ::rerank-failed
@@ -929,7 +1029,19 @@
                              (-> orig
                                  (assoc :reasoning (:reasoning r))
                                  (assoc :fitness-score (:fitness-score r))
-                                 (assoc :rerank-source :reranker))))
+                                 (assoc :rerank-source :reranker)
+                                 ;; RS-2: widen the JOIN to also carry RS-1's
+                                 ;; domain verdict. Present on every reranked
+                                 ;; entry since RS-1's parse (parse-reranked-json
+                                 ;; always defaults these three keys -- :unknown/
+                                 ;; nil when the model omitted them, never
+                                 ;; simply absent) so the classifier can apply
+                                 ;; MintDomainChild / LandOnDomainChild /
+                                 ;; MintSiblingDomainChild after a :tree-class
+                                 ;; match.
+                                 (assoc :domain-coverage (:domain-coverage r))
+                                 (assoc :domain-label (:domain-label r))
+                                 (assoc :domain-reasoning (:domain-reasoning r)))))
                          reranked)
             ;; EL-5: contrastive domain penalty + re-sort, then take k. The
             ;; scorer is config-selected (ADR 0016 amendment): :colbert (DEFAULT)
@@ -963,6 +1075,48 @@
                          (assoc :fitness-score nil)
                          (assoc :rerank-source source)))))))))
 
+(def ^:private tree-axis-names #{"tree-class" "tree-fingerprint"})
+
+(defn- tree-axis-target [c]
+  (let [g (granularity-name (-> c :document-metadata :granularity))]
+    (when (contains? tree-axis-names g)
+      (str (-> c :document-metadata :target-id)))))
+
+(defn tree-class-representatives
+  "Every tree class is indexed on BOTH tree axes with the same description, so
+   a reranker fed raw rows spends two of its slots on each class and sees half
+   as many classes as its budget allows (a live in-domain task lost its seed
+   this way, ColBERT's near-flat scores deciding which five classes made it).
+   Returns `{:representatives :siblings}`: one row per tree class, in ColBERT
+   order, preferring the instruction-aware :tree-class row; every other row
+   passes through unchanged. `:siblings` maps a class's target id to its other
+   axis rows, for `restore-axis-siblings`."
+  [rows]
+  (let [by-target (group-by tree-axis-target (filter tree-axis-target rows))
+        pick (fn [t] (let [rs (get by-target t)]
+                       (or (some #(when (= "tree-class" (granularity-name (-> % :document-metadata :granularity))) %) rs)
+                           (first rs))))
+        reps (loop [[r & more] rows seen #{} out []]
+               (if-not r
+                 out
+                 (if-let [t (tree-axis-target r)]
+                   (if (seen t) (recur more seen out) (recur more (conj seen t) (conj out (pick t))))
+                   (recur more seen (conj out r)))))
+        rep-ids (set (map :document-id reps))]
+    {:representatives reps
+     :siblings (into {} (map (fn [[t rs]] [t (vec (remove #(rep-ids (:document-id %)) rs))])) by-target)}))
+
+(defn restore-axis-siblings
+  "After the rerank, give each tree class's other axis row the SAME judgement
+   as its representative (fitness, reasoning, domain verdict, enrichment) with
+   its own identity fields, placed right after it. Downstream sees both axis
+   rows exactly as before, now judged once."
+  [reranked siblings]
+  (vec (mapcat (fn [r]
+                 (cons r (for [sib (get siblings (tree-axis-target r))]
+                           (merge r (select-keys sib [:document-id :document-metadata :score :rank :content])))))
+               reranked)))
+
 (defn search-descriptions
   "C-2b-1+C-2b-2: parameterized retrieval over the ColBERT-indexed
    Living Description corpus. Returns top-K results, optionally
@@ -989,6 +1143,26 @@
                              :rerank-with-intent is also provided; nil
                              is a no-op (the reranker resolves its own
                              evidence-tested default).
+       :exclude?           - CV-E (`DomainFamilyIsALeafOnTheDomainAxis`,
+                             revised C5'): optional (fn [ctx candidate] ->
+                             truthy) applied WITH the granularity filter —
+                             before `tree-class-representatives` and any
+                             take — so an excluded candidate never reaches
+                             the reranker or a plain take-k result. Absent
+                             (the default for every caller but
+                             `classify-task`) leaves this function's
+                             behaviour byte-identical to before this opt
+                             existed. Invoked at most ONCE per distinct
+                             candidate id (a class's :tree-class and
+                             :tree-fingerprint rows share one answer) —
+                             the caller is free to make it expensive (a
+                             store read) without paying for it twice.
+                             When present, the ColBERT fetch over-fetches
+                             an EXTRA 2x (on top of the existing 3x
+                             granularity-filter over-fetch) so exclusion
+                             still leaves the reranker its usual candidate
+                             count wherever the index holds enough
+                             survivors.
 
    Returns a vector of result maps:
      [{:content \"...\" :score 0.87 :rank 1 :document-id \"...\"
@@ -1003,12 +1177,20 @@
    Rerank-failure semantics: if the LLM call throws or returns nil,
    fall back to the pure-ColBERT top-K + log ::rerank-failed. The
    caller sees no exception."
-  [ctx {:keys [query granularity k rerank-with-intent model]
+  [ctx {:keys [query granularity k rerank-with-intent model exclude?]
         :or {granularity :all k 10}}]
   (if-let [index (latest-ontology-descriptions-index ctx)]
-    (let [fetch-k (if rerank-with-intent
-                    (rerank-fetch-k k)
-                    (if (= granularity :all) k (* 3 k)))
+    (let [filtered? (not= granularity :all)
+          ;; A granularity filter is applied AFTER the fetch, so a filtered
+          ;; search over-fetches 3x — on the rerank path as well: without it
+          ;; the reranker's set was cut to whatever share of the top 2k happened
+          ;; to be allowed (4 of 10 in a live legal task, the legal seed 7th
+          ;; and never shown to the reranker). CV-E: an :exclude? predicate
+          ;; over-fetches an EXTRA 2x — same rationale, a second filter that
+          ;; can shrink the allowed set further still.
+          fetch-k (if rerank-with-intent
+                    (cond-> (rerank-fetch-k k) filtered? (* 3) exclude? (* 2))
+                    (cond-> k filtered? (* 3) exclude? (* 2)))
           raw-results (mapv normalize-search-result
                             ((colbert-fn 'search) ctx
                               {:query query
@@ -1026,14 +1208,35 @@
                           (= granularity :all) nil ;; nil => no filter
                           (set? granularity)   (into #{} (map granularity-name) granularity)
                           :else                #{(granularity-name granularity)})
-          filtered (if (nil? allowed-names)
-                     raw-results
-                     (filterv #(contains? allowed-names
-                                          (granularity-name
-                                            (-> % :document-metadata :granularity)))
-                              raw-results))]
+          granularity-filtered (if (nil? allowed-names)
+                                  raw-results
+                                  (filterv #(contains? allowed-names
+                                                       (granularity-name
+                                                         (-> % :document-metadata :granularity)))
+                                           raw-results))
+          ;; CV-E: the :exclude? predicate runs HERE — with the granularity
+          ;; filter, before tree-class-representatives dedups by target and
+          ;; before any take — so an excluded candidate can never occupy a
+          ;; reranker slot or a plain-k result. Cached per distinct candidate
+          ;; id within this one call (`classify-task` calls search-descriptions
+          ;; once per classification, so this bounds the predicate to one read
+          ;; per distinct candidate per classification).
+          filtered (if exclude?
+                     (let [seen (atom {})
+                           excluded? (fn [c]
+                                       (let [id (-> c :document-metadata :target-id)]
+                                         (if (contains? @seen id)
+                                           (get @seen id)
+                                           (let [v (boolean (exclude? ctx c))]
+                                             (swap! seen assoc id v)
+                                             v))))]
+                       (filterv (complement excluded?) granularity-filtered))
+                     granularity-filtered)]
       (if rerank-with-intent
-        (apply-rerank ctx filtered rerank-with-intent query k model)
+        (let [{:keys [representatives siblings]} (tree-class-representatives filtered)
+              reranked (apply-rerank ctx (vec (take (rerank-fetch-k k) representatives))
+                                     rerank-with-intent query k model)]
+          (vec (take k (restore-axis-siblings reranked siblings))))
         (vec (take k filtered))))
     (do
       (u/log ::search-cold-no-index

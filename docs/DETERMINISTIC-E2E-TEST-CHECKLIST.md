@@ -14,6 +14,11 @@ Do not mark a candidate complete solely because unit or component tests cover
 some of its behavior. Completion requires an integration-shaped workflow test
 that verifies the stated observable results.
 
+## Provider failure evidence and scoped model alternatives
+
+- [x] **DET-E2E-322 — Safe typed ordinary transport failure.** Through the real HTTP client, SIO, public ORC execution and Grain events, return a controlled non-JSON502. Verify recognized type/status survive command validation, node completion and trace readback, while a fictional credential marker and raw cause do not escape through the public failure. Preserve the valid strict-output control. Independent focused verification:11 tests/158 assertions, zero failures/errors; three local HTTP requests, zero paid calls. Source: `ai.obney.orc.orc-service.ordinary-transport-failure-e2e-test` and `ai.obney.orc.llm.transport-failure-evidence-test`. Native status has its separate DET324 proof; chat streaming is outside this proof.
+- [x] **DET-E2E-323 — Bounded same-task model alternative (scoped consumer example).** Independent verification:1 test/108 assertions, zero failures/errors; seven loopback requests, zero paid calls. Two concurrent roots reuse one delegated task: only its owned502 admits the alternative; the healthy root's valid false answer remains successful, and each completed fixture tool runs once. Exact quota429, authentication401, schema-validation failure and family call-budget exhaustion prevent an alternative request. Unknown, contradictory, wrong-owner and mapped-context mismatches are local predicate controls, not separate HTTP scenarios. Candidate inputs, contract and options remain unchanged except model. DET323 observes frozen deadlines; the separate DET325 proof covers exact parent-cap propagation and actual expiry. DET324 covers native status, and DET326 covers actual rate-limit429. Chat streaming, arbitrary model compatibility and consumer policy migration remain outside these proofs. Source: `ai.obney.orc.orc-service.scoped-model-alternative-e2e-test`. This is an example policy, not a global fallback policy.
+
 ## P0 — Core execution contract
 
 - [x] **DET-E2E-001 — Sequence success.** Three code nodes append markers. Verify left-to-right output, execution-event order, success status, and all three node traces.
@@ -141,6 +146,175 @@ that verifies the stated observable results.
   noncanonical spellings fail with the original provider value in trace detail,
   marker and function-calling transports agree, and projected blackboard values
   contain canonical nested keywords.
+- [ ] **DET-E2E-296 — Optional-means-nullable holds at every depth through the
+  workflow boundary.** Execute provider-backed leaves (blocking and streaming)
+  whose structured outputs declare optional entries nested inside a map, a
+  vector item, and a `:multi` branch, alongside required siblings at the same
+  depths. Verify the provider-facing tool schema and marker prompt offer every
+  optional field/entry — at any depth — as nullable while required
+  fields/entries are unchanged; a null the provider returns for an optional
+  field/entry at any depth normalizes to absence before validation for both
+  transports; a null for a required output or required nested entry still
+  fails; and a field already declared `[:maybe ...]` keeps its returned null;
+  through the public workflow boundary, durable node trace, and projection
+  read-back. Supersedes DET-E2E-149's top-level-only, post-validation
+  normalization with the `@invariant OptionalOutputPresence` rule
+  (specs/llm.allium). Component-boundary coverage for the same rule (stubbed
+  provider, no workflow) landed in
+  `components/llm/test/ai/obney/orc/llm/core_test.clj`
+  (`ai.obney.orc.llm.core-test`, the `OptionalOutputPresence` test group); this
+  item is open because narrower component coverage does not establish the
+  end-to-end workflow-level contract this checklist requires.
+- [x] **DET-E2E-297 — A model-backed condition preserves its answer and shares
+  leaf execution policy.** Through the public DSL, build and execute, with only
+  the provider seam injected (honouring its bare/metadata return shapes): a
+  valid true succeeds and runs the guarded action; a valid false fails with
+  `:condition-answer false` and no failure kind; a missing or non-boolean
+  answer fails with a structured failure kind and no answer; the per-node model
+  reaches the provider; the default provider retry applies; condition
+  invocations consume the shared LLM-call budget; no invocation begins after the
+  execution deadline; the completion event and `node-trace-detail` record the
+  read values, answer, resolved model and usage; an exhausted provider failure
+  records its failure kind. Contract `ModelBackedCondition`
+  (specs/orc-service.allium). Verified by
+  `model_backed_condition_test.clj` (10 tests); the budget and deadline tests
+  were proven non-vacuous by breaking the policy wiring and watching them fail.
+- [x] **DET-E2E-298 — REAL-LLM model-backed condition.** Under the
+  `ORC_OPENROUTER_E2E_TESTS` gate with the pinned OpenRouter model: a true claim
+  succeeds with a durable true answer, model and usage; a false claim fails as a
+  semantic negative with no failure kind; an unknown model id fails with a
+  structured failure kind and no recorded answer. Verified by
+  `real_llm_model_condition_e2e_test.clj`.
+- [x] **DET-E2E-299 — Native decision models through the ordinary prediction call.** A
+  provider registered with `:protocol :decision` answers `llm/predict` and `predict-stream-v2`
+  through the decision protocol (never a conversational completion): boolean outputs are asked
+  as noul and enum outputs as choice with every option's description; non-finite outputs are
+  refused before invocation; malformed answers (unknown option, wrong primitive, bad or
+  non-argmax distribution, inconsistent confidence, NaN/out-of-range/0.5 noul) fail as
+  schema-invalid; metadata keeps reported distribution/confidence/probability, model, usage and
+  cost and never synthesises them; transport failures are classified without leaking the
+  credential. Component boundary verified by `components/llm/.../decision_protocol_test.clj`
+  (17 tests), a local-HTTP transport probe, the workflow-level
+  `model_decision_protocol_test.clj`, and REAL Jev calls (`real_jev_decision_test.clj`,
+  `real_llm_decision_e2e_test.clj`). Real OpenRouter responses round probabilities and confidence
+  to 0.01; validation holds the definitions to within that reported resolution.
+- [x] **DET-E2E-300 — `llm-decision` is a blackboard-first data-producing decision leaf.**
+  Public DSL → build → execute with the provider seam injected: the answer key's schema decides
+  boolean vs enum; run-time options come from a declared read key and are kept verbatim; the
+  model is offered every option with its description; an out-of-set, missing or malformed answer
+  fails with a structured kind and writes nothing; false and a declared none option succeed;
+  non-finite answer keys and unoffered abstention options are rejected at build; a confidence
+  floor writes the abstention option and records the set-aside answer; per-node model, shared
+  call budget (proven non-vacuous) and structured output by default; the completion event and
+  `node-trace-detail` carry the decision record (offered, answer, abstained, reported
+  distribution/confidence/probability); a published version keeps its decision configuration.
+  Contract `ModelDecision`. Verified by `model_decision_test.clj` (15 tests),
+  `model_decision_protocol_test.clj` (5 tests) and the `dsl_roundtrip_test.clj` decision case.
+- [x] **DET-E2E-301 — REAL-model `llm-decision` workflows.** The same routing, run-time catalog
+  and boolean decision trees on real Jev (OpenRouter decisions) and on the pinned conversational
+  model: correct routes dispatch through ordinary guards, "hmm" ends in clarify, catalog ids stay
+  verbatim, true/false both succeed, Jev records distribution/confidence/probability, the chat
+  model records none and a floor on it abstains explicitly. Verified twice by
+  `real_llm_decision_e2e_test.clj` (2 tests / 23 assertions each run).
+- [x] **DET-E2E-302 — An authored code leaf keeps its tool gate.** `sheet/code :tool-caller-fn`
+  survives authoring, build, the stored definition and DSL round-trip (same sheet id); every tool
+  call uses the gate, never the ungated caller; an unresolvable gate or one that builds no caller
+  fails the node with no fallback; with no gate the ordinary caller is unchanged; the gate is built
+  with the node, node id, tick id and the execution's absolute deadline. LeafExecutor
+  `CodeLeafToolGateIsPreserved`, `ToolGateSeesInvocationIdentity`. Verified by
+  `code_leaf_tool_gate_test.clj` (7 tests).
+- [x] **DET-E2E-303 — Declared tool contracts are enforced through one seam.** Researcher (plain,
+  RLM sandbox, checkpointed) and code-leaf tool calls: invalid arguments never reach the tool and a
+  checkpointed researcher claims no effect; invalid results are never returned as success; a field
+  under two spellings is rejected; the tool receives and the caller sees original values; every
+  researcher-facing failure (typed or untyped, plain or checkpointed) is a stable kind with a safe
+  message — never raw exception text — plus any host-declared `:orc.tool/message`; a code leaf
+  gets contract outcomes and sees its own tool exceptions unchanged; `sheet/code :tool-contracts`
+  round-trips. LeafExecutor `DeclaredToolContractsAreEnforced`, `ToolArgumentIdentityIsExact`,
+  `ToolOutcomesAreStructured`. Verified by `tool_contract_enforcement_test.clj` (14 tests).
+- [x] **DET-E2E-304 — Recovery never replays healthy work; abandoned work stays recoverable.**
+  Every leaf/delegate start carries a durable lease (owner, expiry); the owner renews it while the
+  work runs; recovery (requested, periodic, or the actual registered scheduler) resumes a start
+  only once its latest lease has expired and the recovering worker is not running it — a healthy
+  gated leaf is invoked exactly once (the same test fails with two invocations on the pre-lease
+  code), a queued start under a live lease (own or foreign) is not resumed, an expired lease is
+  resumed exactly once with a fresh lease owned by the recoverer, and a resumed start whose resumer
+  also stopped is resumed again in turn. ExecutionRecovery `OwnedWorkIsNotAbandoned`,
+  `AbandonedWorkStaysRecoverable`. Verified by `execution_lease_recovery_test.clj` (9 tests);
+  in-process restart tests (DET-E2E-108, 152/153, 205, 274) now view recovery through an injected
+  clock an hour later, assertions unchanged. Open: the fresh-JVM SQLite restart probe.
+- [x] **DET-E2E-305 — Generated children honour contracts; MCP executors use the node's caller.**
+  A researcher's declared tool contracts govern its generated child's tool calls (invalid arguments
+  never reach the tool). Both the generic and the generated MCP executors resolve their tool through
+  the node's gated, contract-checked caller, else the execution's MCP session (a generated executor
+  now sees a live session inside a real workflow), else a marked stand-in only on an explicit
+  `:mcp/dry-run?`, else an explicit failure — never a fabricated success. orc-service
+  `DeclaredToolContractsAreEnforced` (generated subtree), mcp-sheet-builder
+  `ExecutorsUseTheNodesToolCaller`. Verified by `tool_seam_unification_test.clj` (7 tests).
+- [x] **DET-E2E-306 — Generated-child tool calls are checkpointed; tool leaves call only authored
+  tools.** A checkpointed campaign's generated child calls a checkpoint-safe tool and its worker
+  dies; after lease-expiry recovery the child re-runs and the tool's durable receipt is returned
+  instead of calling it again (one claim, one call). `sheet/tool` calls one authored tool with its
+  reads as arguments through the node's gate and contracts, writes its single write key, fails
+  explicitly without a caller, requires an authored tool name and round-trips. Verified by
+  `generated_child_receipts_test.clj` (2 tests) and `tool_leaf_test.clj` (6 tests).
+- [x] **DET-E2E-307 — Delegation boundary.** Every delegated child draws on the family LLM-call
+  budget (no invocation once it is spent); the parent's tool context reaches the child's gate; two
+  parent keys that would supply one child input are rejected at build; `sheet/get-family-usage`
+  returns family totals with each provider call counted once — including non-recursive, recursive
+  and checkpointed researchers whose own usage folds in their generated children (`:own-usage`).
+  Contract `DelegationBoundary`. Verified by `delegation_boundary_test.clj` (7 tests).
+- [x] **DET-E2E-308 — GEPA optimises every model instruction.** Decision instructions are extracted
+  as optimisable components, and a candidate instruction patched in for evaluation reaches the
+  decision's and the model-backed condition's provider call (it previously never reached a
+  condition). gepa `EveryModelInstructionIsAComponent`. Verified by
+  `components/gepa/.../decision_instructions_test.clj` (3 tests).
+- [x] **DET-E2E-309 — REAL-model end-to-end decision + tool runtime.** One workflow under the
+  `ORC_OPENROUTER_E2E_TESTS` gate: a native decision model (Jev, selected per node by `:model`)
+  routes; the lookup branch calls a contract-enforced tool leaf and delegates a summary to a
+  conversational child under the family budget (family usage includes it); the research branch
+  runs a real recursive checkpointed researcher whose contract-enforced, checkpoint-safe tool call
+  carries ORC's idempotency key to the host; an empty request ends in clarify with no tool effect.
+  Verified by `real_llm_arc_e2e_test.clj` (1 test / 15 assertions). Also verified out of band: a
+  two-JVM crash/restart probe on one SQLite file (an abruptly halted owner's leaf is left alone
+  under its live lease, then resumed exactly once by another worker after expiry, completing).
+- [x] **DET-E2E-310 — Shipped judge workflows build.** Every exported judge sheet and suite builds;
+  a recursive blackboard schema snapshots with its definitions (shadowed and mixed-type ids keep
+  their meaning) and a stable hash. `recursive_schema_snapshot_test.clj`, `shipped_workflows_build_test.clj`.
+- [x] **DET-E2E-311 — Banded decisions.** `llm-decision :bands-from` reads a rubric from the
+  blackboard; a native decision model answers a Score question, an exact tie fails `:undecided`
+  without retry, and a chat model answers a described string band. `model_decision_bands_test.clj`.
+- [x] **DET-E2E-312 — Provider boundary honesty.** A provider finish error is `:provider-finish-error`;
+  metadata is never written as output; input descriptions reach function calling; declared string
+  keys stay strings; requested and resolved models are both recorded. `provider_finish_error_test.clj`,
+  `declared_string_keys_test.clj`, `resolved_model_test.clj`, llm `core_test.clj`.
+- [x] **DET-E2E-313 — Judges are behaviours.** Built-in judges run as workflows grading against a
+  rubric value; nothing is invented (out-of-rubric band, blank required feedback after retry,
+  incomplete dimension, unresolved model all fail). `judges_are_behaviours_test.clj`.
+- [x] **DET-E2E-314 — Durable assessments.** One assessment per (completion, judge, revision);
+  redelivery and restart judge nothing twice; the request set is fixed at first processing; only
+  learning judges with feedback emit learning records. `assessment_lifecycle_test.clj`.
+- [x] **DET-E2E-315 — Assessment origin.** Work done for an assessment is never auto-assessed, across
+  delegates, generated children and a processor restart. `assessment_origin_test.clj`.
+- [x] **DET-E2E-316 — Judges on any node.** Judges attach to composites, delegates and the root; a
+  judged composite runs durably; published versions are judged through their source node.
+  `judge_attachment_scope_test.clj`, `judged_composites_durable_test.clj`, `published_versions_judged_test.clj`.
+- [x] **DET-E2E-317 — Behaviour-level evidence and waits.** Composite judges see the whole and the
+  original task; family and child assessments are opt-in; a parent waits for its children; the
+  composite is per subject with coverage. `behaviour_judging_test.clj`, `execution_family_test.clj`.
+- [x] **DET-E2E-318 — Performance and alerts.** Performance per node version; opt-in alerts signal
+  crossings once and degraded coverage separately. `node_performance_test.clj`.
+- [x] **DET-E2E-319 — Failed subjects.** Failed, timed-out and blocked executions are ungradable
+  `:subject-failed` without a judge call; partial ones are judged. `failed_subjects_test.clj`.
+- [x] **DET-E2E-320 — Production-like processor delivery in tests.** Checkpointed processors are
+  delivered one event at a time; an earlier slow effect is not lost behind a later one.
+  `test_helpers_delivery_test.clj`. A rejected completion fails its node instead of hanging the run:
+  `completion_rejection_test.clj`.
+- [x] **DET-E2E-321 — REAL-model judging end to end.** Under `ORC_OPENROUTER_E2E_TESTS`: grounding
+  (learning, with an alert) and a Jev score-only monitor on map-each leaves, completeness on a
+  delegate, a custom root judge reading child assessments, and a published-version rerun.
+  `real_llm_judging_arc_e2e_test.clj` (7 of 8 live runs green; the eighth surfaced the
+  failed-subject rule now covered by DET-E2E-319).
 
 ## P1 — Observability and streaming
 
@@ -163,7 +337,7 @@ that verifies the stated observable results.
 
 - [x] **DET-E2E-073 — Command → event → projection.** A real code-only build and execution verifies that every scoped mutation event has a registered passing Malli schema and reconstructs sheet, nodes, blackboard, and durable trace through public queries.
 - [x] **DET-E2E-074 — Projection replay.** Clean reductions of the complete event stream through the production sheet, node, blackboard, and trace reducers exactly match their live public query results.
-- [x] **DET-E2E-075 — Judge opt-in disabled.** An attached heuristic structural judge produces no score event while Living Description evaluation remains disabled.
+- [x] **DET-E2E-075 — Attached judge assesses with evaluation disabled.** An explicitly attached heuristic structural judge produces exactly one score while Living Description evaluation remains disabled; only the default researcher judges are opt-in.
 - [x] **DET-E2E-076 — Deterministic structural judge.** A known sequence → map-each → final tree emits the exact 0.5 structural score, two perfect dimensions, and the same projected judge-score entry.
 - [x] **DET-E2E-077 — Multiple deterministic judges.** A throwing custom code judge is isolated while its sibling heuristic judge emits the sole valid score and the host execution remains successful.
 - [x] **DET-E2E-078 — Judge score idempotency.** Re-appending the real leaf completion retains exactly one score for the sheet/node/tick/judge identity tuple.
@@ -638,3 +812,546 @@ prove isolation, lineage, terminal fencing, or durable recovery.
 Extraction verification: standalone 20 tests / 123 assertions; ORC focused
 regression 156 tests / 836 assertions, all passing. All 76 ontology test
 namespaces load. Live model execution was not part of this extraction check.
+
+## Reconciled experiment runtime
+
+- [x] RECON-1: shown nested input meanings reach marker, function, strict JSON and native boolean/choice/score requests.
+- [x] RECON-2: strict ordered-band decisions retain declared order, meanings and exact decoding; malformed annotations fail.
+- [x] RECON-3: prediction metadata remains separate; absent/null output envelopes cannot fabricate required nullable writes.
+- [x] RECON-4: described enums, required null, optional absence and declared string keys survive delegated values and cold readback.
+- [x] RECON-5: provider failures preserve observations and exact invocation ownership without accepted generated writes.
+- [x] RECON-6: score-only and feedback assessments retain exact node/composite subjects across parallel/repeated executions and cold readback.
+
+- [x] RECON-7: missing required writes have explicit durable key evidence without fabricated rejected values; judges retain missing-feedback classification and retry behavior.
+
+- [x] RECON-8: test-context processor restart handles both checkpoint pollers and pubsub systems through their matching lifecycle APIs. The public workflow still executes a code node after restart, returns its declared output, and records its durable terminal event. Verified by `processor-restart-retains-executable-context` together with `trace-assembly-test`: 13 tests, 78 assertions, zero failures/errors (`evidence/reconciliation/root-ci-harness-green.log` in the reconciliation lab). This verifies the deterministic test harness and trace readiness; it does not establish live GEPA resume success.
+
+- [x] RECON-9: native decision requests preserve absent optional inputs as absent, explicit null/false/empty inputs as present, and exclude undeclared inputs; the guide describes exactly the supplied declared fields. Verify through public `llm/predict` and the registered transport seam. The old coupon=nil snapshot was a test-translation bug. Separately, SIO `validate-inputs` currently skips absent/nil/false inputs through `when-let`; required-input validation is not repaired or proven by this request-rendering test. Marker prompt ordering is reconciled as a specification correction to the existing golden-layout contract, not a rendering change.
+
+Reconciliation proof ledger: RECON-1/2/3/5/7 are covered by the changed
+ORC namespaces (157 tests/976 assertions), the SIO/compiler gate (114/1405),
+the client boundary gate (283/1009), and the judge compatibility gate (93/492).
+RECON-4 additionally executes `delegated_structured_contract_test.clj` (1/30):
+strict HTTP adapter, described enum, required null, optional absence, literal
+string keys, delegate ownership and typed consumer, followed by SQLite close/reopen
+with a fresh cache. Existing nullable continuation also verifies fresh-process
+readback. RECON-6 uses the real-model compatibility run (9 calls, 7 assessments)
+and exact fresh-process event/family/assessment/report/provider-attempt equality.
+RECON-8's deterministic lifecycle/trace gate is 13/78. RECON-9's native public
+prediction and workflow guide gate is 25/125. Counts overlap, not a unique total.
+No paid provider is hidden inside the deterministic gates; captured real-model
+evidence is separate. Full repository CI and live GEPA remain separate gates.
+
+## Retained provider usage in learning provenance
+
+- [x] **RECON-10 — Description provenance preserves rich provider usage.** Public description commands and real consolidation execution persist decimal cost and nested provider details, project the successor, and reject malformed token counts without appending an event.
+- [x] **RECON-11 — Claim-delta provenance preserves rich provider usage.** Public claim recording persists the same usage and projects the claim; malformed token counts remain rejected. The retired anti-recency event shares the additive usage contract; its absent producer is audited rather than inventing a new writer.
+
+## Parallel reconciliation verification
+
+- [x] **RECON-12 — Ordinary absent outputs retain diagnostic identity.** A public workflow fails without accepted or fabricated rejected writes, records the missing required key in its completion and public trace, and preserves the ordinary retry policy. Explicit nullable values and the separate schema-error retry policy retain their existing coverage.
+- [x] **RECON-13 — Parallel children honor their own contracts in either invocation order.** The real tree executor returns exact distinct child values and canonical producer ownership with a bounded, contract-aware model fake. The original arrival-order fake remains documented as failed diagnostic evidence rather than production behavior.
+
+RECON-12/13: independent public-boundary verification passed 39 tests / 214 assertions
+across reconciled contracts, generated-tree execution and provider failures.
+The ordinary diagnostic regression first failed both completion and trace metadata
+assertions, then passed without changing retry policy. The corrected parallel test
+passes 24 assertions across both arrival orders, including no cross-owner writes.
+These deterministic fakes prove execution contracts, not provider HTTP behavior.
+
+## Living-description CI evidence
+
+These obligations verify test-only diagnostics. Production behavior, Allium
+specifications, model configuration, prompts, and live assertions are unchanged.
+
+- [x] **LIVE-EVIDENCE-1 — Exact asynchronous HTTP evidence.** A local HTTP server proves request and response entity bodies are retained without changing successful JSON decoding, malformed JSON failures, or HTTP error behavior.
+- [x] **LIVE-EVIDENCE-2 — Failure snapshots precede teardown.** A real Grain fixture retains tenant events and public trace evidence when its test body fails; separate cases do not overwrite one another.
+- [x] **LIVE-EVIDENCE-3 — Credentials never enter artifacts.** Header/configuration secrets and exception payloads are excluded; a credential found inside an otherwise capturable body produces an explicit withheld marker.
+
+3 obligations, 3 covered, 0 uncovered. The focused diagnostic namespace passes
+7 tests / 32 assertions using real local HTTP and Grain boundaries, including
+malformed JSON, HTTP errors, unavailable artifact storage, synthetic credential
+withholding, actual leaf ownership, unrelated-request exclusion, command-failure
+capture, and snapshots before teardown. Provider completions are controlled test
+responses; this is not a live-model proof or a diagnosis of the historical CI failure.
+
+## Replay observation boundary
+
+- [x] REPLAY-074: A real sequence/code execution whose terminal command returns after its initial trace is published must retain exact full replay equality after the final routing summary is projected. Exercise a bounded command-return gate; preserve the original projection assertions, and verify both composite evidence and leaf parent linkage before freezing the event prefix. No production behavior or specification changes.
+
+REPLAY-074: **1 obligation, 1 covered, 0 uncovered**. The original test fails
+under a controlled legal ordering: replay sees six source events while the later
+query sees seven, including the final routing summary. The corrected test waits
+for both node traces and their parent link before freezing its event prefix.
+Every original full projection comparison remains. Independent restoration of
+the old test in memory makes the durable regression fail at that same equality
+(9 passing assertions, 1 failure, 0 errors). The corrected controlled probe
+passes 1 test / 7 assertions. Independent execution of the complete event/evaluation
+and diagnostic namespaces passes 16 tests / 108 assertions.
+
+## Nullable continuation fresh-process harness
+
+- [x] NULLABLE-CP-1: The existing required-null sequence/SQLite test must retain every nullable and complete cold-replay assertion when run in Polylith's real isolated project classloader; the child inherits effective project paths rather than only the tool bootstrap classpath. Child failures expose captured diagnostics. No production or specification behavior changes.
+
+NULLABLE-CP-1: **1 obligation, 1 covered, 0 uncovered**. The original launch
+fails through Polylith's actual isolated loader because the child cannot locate
+the test namespace (10 passing assertions, 1 failure). The corrected launch
+passes 1 test / 15 assertions, independently repeated on the main thread. All
+original nullable, complete event equality, replay, digest and timeout checks
+remain. Allium check/analyse retain 114 information diagnostics, 39 warnings,
+zero errors and no analysis findings. No production code changes.
+
+## Concurrent GEPA result publication
+
+- [x] GEPA-RESULT-1: Two actual public result commands whose empty dedup reads overlap publish one durable terminal result and charge the metric budget once, under DurableOptimizationLifecycle.ResumeFromRecordedBoundary.
+
+- [x] GEPA-RESULT-2: Public resume plus the real subsample pubsub processor both complete their result-command paths without worker faults; one durable start produces one terminal result. Other optimization stages remain outside this focused boundary, and task-call ledger evidence is retained separately.
+
+GEPA result verification: budget namespace3tests19assertions; actual resume/subscriber integration1test9assertions.2obligations,2covered,0uncovered for result publication only. Independent root inspection pending. A separate task-ownership gap is proven: the integration emits4task-call facts for2stable IDs and executes4trees; atomic result publication does not repair concurrent task dispatch or its accounting. Full resume safety remains open.
+
+## GEPA recovery integration
+
+- [x] GEPA-RECOVERY-1: Concurrent resume/subscriber share two intended task trees and metric calls, two task records, one aggregate, and correct projected spend.
+- [x] GEPA-RECOVERY-2: Durable task admission, last-slot competition, renewable ownership and stale-owner fencing through real Grain commands.
+- [x] GEPA-RECOVERY-3: Restart before dispatch, during execution, after tree completion, and after task completion preserves original work and charges.
+- [x] GEPA-RECOVERY-4: Same metric identity survives cold restart; missing custom registration requires visible recovery.
+- [x] GEPA-RECOVERY-5: Safe metric retry uses original outputs and new charged attempt; unsafe unknown outcomes require attention; errors are not invented scores.
+- [x] GEPA-RECOVERY-6: Legacy adoption and new accounting agree across all public budget views without double charge.
+- [x] GEPA-RECOVERY-7: Periodic recovery discovers abandoned GEPA tasks, including post-tree work, without manual resume or stealing healthy ownership.
+- [x] GEPA-RECOVERY-8: Public durable tree-result lookup is read-only, tenant-isolated, and reconstructs exact outputs after SQLite restart.
+
+Implementation briefs: docs/issues/gepa-recovery/. Existing GEPA-RESULT checks cover terminal publication only, not execution exclusivity.
+
+- [x] GEPA-RECOVERY-9: Concurrent candidate-result and legacy task-result commands append one result for each durable identity; candidate spend increments once, with actual command/projection evidence.
+
+- [x] GEPA-RECOVERY-10: Managed aggregate commands reject unfinished, unrelated or mismatched task evidence; legitimate parent-perfect skips are explicit; terminal completion preserves admitted unfinished work.
+
+## GEPA reflection from the parent's training minibatch
+
+Source: `components/gepa/test/ai/obney/orc/gepa/parent_minibatch_reflection_test.clj`, plus the wired
+`feedback_path_test.clj` and `output_path_test.clj` (distinct training and validation sets). Contract
+`ReflectiveInstructionProposer` (`ReflectionFromTheParentsTrainingMinibatch`, `FailureFocusedReflection`),
+`ParetoPopulationSelection.StrictMutationAcceptance`, rules `ReflectOnTheParentsMinibatch` and
+`SkipAParentPerfectOnItsMinibatch`.
+
+- [x] GEPA-REFLECT-1: With distinct training and validation sets (training longer, and shorter), every reflective example's inputs, generated output and feedback belong to one training example; no validation value or empty input reaches the proposer.
+- [x] GEPA-REFLECT-2: Reordered equal examples stay paired by identity; failing examples come first.
+- [x] GEPA-REFLECT-3: The examples come from the sampled parent evaluated on its minibatch, not the just-evaluated candidate.
+- [x] GEPA-REFLECT-4: The parent's minibatch is evaluated before the proposer call and once only: the acceptance gate reuses those tasks (no second dispatch, metric call or charge), and a redelivered round reuses them.
+- [x] GEPA-REFLECT-5: A parent perfect on its minibatch makes no proposer call, publishes the skipped comparison, creates no candidate, and does not block completion; with `:skip-perfect-score false` the proposer is called.
+- [x] GEPA-REFLECT-6: A training set smaller than the minibatch size reflects on each example once (distinct indices) and reaches the proposer.
+- [x] GEPA-REFLECT-7: A metric exception or failed workflow yields no score on the unmanaged path (refuses with `:gepa/evaluation-status :failed`) and no task result on the managed path.
+- [x] GEPA-REFLECT-8: The wired loop (`gepa/optimize!`) hands the proposer feedback and outputs of the parent's training examples only.
+- [x] GEPA-REFLECT-9: A round interrupted during the parent's evaluation is recorded first; `resume!` continues the same round (same parent, component and minibatch), does not run or charge completed parent tasks again, and reaches `proposal-ready`; a second `resume!` makes no second proposal.
+- [x] GEPA-REFLECT-10: A round that already has its proposal, or a published skip, is not resumed as a round.
+- [x] GEPA-REFLECT-11: `:gepa/request-recovery` carries an interrupted round to its proposal through the recovery processor.
+
+- [x] GEPA-RECOVERY-11: Built-in metrics select canonical keyword blackboard answer fields rather than echoed inputs; configured reflection generation limits reach the provider request.
+
+- [x] GEPA-RECOVERY-12: After SQLite close/reopen before task-manifest creation, the actual named GEPA evaluation processor catches up the durable evaluation-start event without manual resume; one task, workflow, metric invocation and aggregate result survive repeated named startup. Existing-behavior verification for DurableOptimizationLifecycle.ResumeFromRecordedBoundary; expected green, with no production changes.
+
+Recovery obligation evidence: `docs/issues/gepa-recovery/09-final-verification.md`
+records the independent command, workflow, named-startup and separate-process
+proofs. These completed obligations do not imply a completed full CI gate.
+
+
+## Execution deadline evidence
+
+- [x] **DET-E2E-325 — Original deadline across delegation and model alternatives.** Separately observe (A) a real-clock child-start barrier through public execution, asserting the child's frozen absolute deadline never exceeds its parent's, and (B) an explicitly deadline-bound public tick whose primary local HTTP failure precedes a code gate held until that recorded deadline expires. Require the alternate to fail for the exact deadline reason with no second HTTP request, retained deadline/budget identity and one completed fixture tool. The second observation must not rely on a blocking caller's cancellation timer. Real epoch clocks only; no paid calls. Propagation inflation and post-expiry provider admission are distinct claims. Independently verified after the local repair: 3 tests/34 assertions; delayed child retains exact parent cap, spent cap stays spent, shorter local allowance wins, expired alternative sends no second HTTP request. In-memory Grain store and loopback HTTP; no paid calls. Provider-admission cap only, not arbitrary-code preemption or shorter caller wait; streaming is outside scope.
+
+## Native decision failure evidence
+
+- [x] **DET-E2E-324 — Native status through direct execution and wrapper terminal.** Independent verification:2 tests/51 assertions, zero failures/errors; three loopback requests, zero paid calls. Direct hato status control, public native ORC execution with canonical completion/trace detail, and the native decision wrapper preserve bounded status-only transport evidence. No invented category, fixture marker or unsafe cause; exactly one wrapper error followed by close. Public prediction checks omit absent, malformed and out-of-range statuses. This does not establish custom-client category/status precedence, chat streaming, partial-output failover, temporary-only fallback eligibility, or a persistent streaming projection. Source: `ai.obney.orc.orc-service.native-transport-status-e2e-test` and the status-boundary checks in `ai.obney.orc.llm.decision-protocol-test`.
+
+## Opt-in prompt request layout
+
+- [x] PROMPT-CACHE-1: Public prediction through the pinned HTTP serializer preserves function schemas, described fields, dynamic values and exact image payloads with cache/generic flags enabled; local flags do not reach the body, defaults remain unchanged, and marker mode keeps its existing content.
+- [x] PROMPT-CACHE-2: A real ORC strict-output workflow with caching enabled preserves the exact output schema, input/output meanings, required nullable values, absent optional values and durable writes. The generic-description flag does not change strict-mode results. Provider cache hits are outside this deterministic contract.
+
+## Public accounting absence
+
+- [x] GEPA-ACCOUNTING-ABSENCE-1: An optimization created through a public command in tenant B remains absent from tenant A summary/full/population views and queries; unknown IDs also remain absent, while existing tenant B accounting stays intact. Verify `absent-optimizations-remain-absent-in-public-accounting-views` and existing positive accounting controls.
+
+## Rate-limit evidence
+
+- [x] **DET-E2E-326 — Actual rate-limit versus quota response.** Through public execution/delegation and the exact-owner gate, observe primary HTTP429 classified as rate-limit followed by one same-task alternative, and quota429 with no alternative. Independent verification:1 test/57 assertions, zero failures/errors; exactly three loopback requests, zero paid calls. Exact typed categories/status and predecessor ownership, unchanged task inputs/options except model, one fixture tool per task, and the original budget/deadline are retained. This characterizes the pinned client's response-body heuristic; it does not establish universal provider classification or streaming safety. Source: `ai.obney.orc.orc-service.rate-limit-model-alternative-e2e-test`. No new library behavior or missing-feature RED claim applies to this characterization.
+
+## Configured model alternatives
+
+- [x] MODEL-FALLBACK-1: Public constructor rejects invalid candidates/policies and preserves common contracts plus candidate model/options through build, snapshot and export/rebuild. Overlapping old/new configurations retain their respective candidate lists; candidate options cannot weaken common privacy or replace host runtime identity, budgets, deadlines or callbacks.
+- [x] MODEL-FALLBACK-2: Real Grain/local HTTP execution selects ordered candidates, preserves false success, rejects permanent/schema/unknown failures under temporary policy, and reports exact terminal exhaustion evidence. Explicit all-transport policy remains distinguishable.
+- [x] MODEL-FALLBACK-3: Concurrent users and parallel mapped/delegated work retain their own inputs and predecessor identity; duplicate/stale completion does not send an extra request; preceding effects run once.
+- [x] MODEL-FALLBACK-4: Actual shared call-budget and deadline exhaustion prevent further HTTP requests without renewing limits. Candidate retries are bounded and recorded.
+
+Configured fallback acceptance: independent focused run of
+`configured-model-fallback-test`, `configured-model-fallback-configuration-test`
+and the existing `scoped-model-alternative-e2e-test`: 11 tests, 288 assertions,
+zero failures/errors. Real Grain in-memory store/cache and local HTTP; 39
+physical fixture requests across the scoped cases. Shared-store tenant proof
+uses the production tenant poller; duplicate replay uses Grain's processor.
+No paid calls, restart/load or model-quality claim. See
+`docs/issues/model-fallback/INSPECTION.md` for scope and measurement corrections.
+
+## Standard-node model fallback (supersedes wrapper-only acceptance)
+
+- [x] NODE-FALLBACK-1: standard-node configuration, invalid combinations, inherited/disabled overrides, snapshot/export, overlapping versions.
+- [x] NODE-FALLBACK-2: ordinary/condition/decision provider routing, negative/abstain/schema refusal, ordered exhaustion and safe exact-owner attempt evidence.
+- [x] NODE-FALLBACK-3: physical retry counts, actual deadline/budget refusal, duplicates, mapped items and shared-store tenant isolation.
+- [x] NODE-FALLBACK-4: prime/inline/emitted calls retain options and progress; sticky role selection, concurrent ordering and checkpoint recovery without repeated tools.
+- [x] NODE-FALLBACK-5: native and streaming safe transport evidence; failover before first visible output only, no replacement after partial output.
+- [x] NODE-FALLBACK-6: independent fresh-agent standard-node and researcher recipe with public trace diagnosis.
+
+Standard-node independent acceptance: 20 tests/371 assertions passed with the local client repair. Source/client manifests matched after the run. SQLite recovery closes/reopens store/runtime after a persisted quantum; separate-process hard-kill recovery is not claimed.
+
+## Model contract campaign
+
+- [x] AGGREGATE-TRACE-1: Public map-each execution preserves the aggregate's canonical producer/value and matching completion/trace keys and shape profiles. An enclosing composite forwarding that aggregate must also report the actual shape. Verify complete, empty and partial aggregates, exact event ordering, rehydrated values and no lifecycle payload duplication. The original trace-fidelity assertion remains unchanged and now passes. Independent root integration: 18 tests / 255 assertions, zero failures/errors, including actual SQLite aggregate/detail checks and canonical value-log regression coverage. Deliberately repeated historical terminal completions remain separately unqualified.
+
+- [x] MODEL-CONTRACT-24: StrictOutputGuidanceHasOneStructuralAuthority — public SQLite ordinary/emitted specialist captures show paired strict structural guidance without contradictory generated legacy summaries, preserving every distinct authored field/schema/nested meaning and exact canonical values. Node-selected and provider-inherited strict modes agree; marker/function requests and direct caller-authored descriptions stay unchanged. Preserve typed colliding keys, reserved names, finite dictionaries and absence/null; invalid output still fails. This deterministic correction alone does not establish model-quality improvement. Root94949 independently passed3tests/184assertions with four physical SQLite/loopback cases, full legacy adapter-body equality and canonical/meaning audit controls; see strict-guidance-repair/ROOT-REVIEW.md. No frozen live runtime promotion yet.
+
+- [x] MODEL-CONTRACT-23: EmittedTreeStructureIsValidatedBeforeExecution — public SQLite researcher with loopback HTTP emits a recognized fixed-arity node containing an unsupported operand. Reject before child creation/transport, preserve original generated source and provide actual next-prime feedback with node path and expected structure; a corrected tree then produces exact typed downstream canonical values. Cover all six fixed-arity tags, invalid node/options shape, nested paths, and valid variadic/Unicode controls without inventing a minimum composite arity or stripping model output. Root session70131 independently passed3tests/75assertions; root-canonical-audit confirms one corrected child, no malformed child, exact next-prime diagnostic/source and typed consumer writes, contrasted against preserved pre-repair two-child evidence. Scoped deterministic acceptance only; paid runtime unchanged. See emitted-grammar-repair/ROOT-REVIEW.md. Existing compatibility retry expectations remain separately failing.
+
+- [x] MODEL-CONTRACT-21: ResearcherFeedbackMatchesCurrentState — public SQLite researcher/emitted-child execution across a quantum boundary presents current local values instead of parent placeholders, distinguishes absent/null/false/zero/empty, and supplies truthful child outcome/intermediate-write evidence in the next actual provider request. Root52643: 14 tests/170 assertions across focused feedback/setup/nullable/legacy namespaces; independent actual-capture checks include real SQLite reopen, child identity and altered-status/null-feedback controls. Evidence research-feedback-review/ROOT-REVIEW.md. This closes the scoped deterministic obligation only: no forced finalization in the live experiment, original failed run preserved, live emitted acceptance still pending. Existing get-input semantics, nested-map parent attribution and derived-input contracts are explicitly not claimed fixed.
+- [x] MODEL-CONTRACT-22: MapEachAggregateHasCanonicalProducer — public SQLite map-each with one successful and one failed item retains the partial aggregate under the parent completion's canonical write identity. Public value-log resolution and next researcher feedback return that aggregate; per-item values remain separately attributed and do not replace the aggregate or a global local binding. Preserve status and failure evidence. Root session54583: 1 test/9 assertions passed; independent canonical audit confirms exactly one aggregate, matching parent producer, :partial status, exact [{:part 1}] public parent output and no item-key substitution. Evidence research-feedback-review/root-aggregate-check.log and root-aggregate-green-audit.json. This is scoped deterministic SQLite/HTTP proof, not live-model or general nested-map acceptance.
+
+- [x] MODEL-CONTRACT-19: GeneratedChildSetupMustSucceedBeforeExecution — through real SQLite and public researcher execution, a rejected emitted-child schema or I/O setup returns the precise setup failure to the researcher and sends zero child provider requests. A later valid generated tree still executes with persisted reads/writes and typed outputs. Preserve rejected events/results and prove that no empty-schema success substitutes for failed setup.
+- [x] MODEL-CONTRACT-20: GeneratedChildrenReuseDeclaredContracts — through public researcher execution and real SQLite/loopback, an absent described output is inherited by an emitted child without generated schema duplication or null seeding; complete wire meanings and canonical downstream values survive. Identical redeclarations succeed, conflicting inherited or new-key declarations fail before child transport, and explicitly typed new computed keys remain supported.
+
+MODEL-CONTRACT-19/20 deterministic acceptance: root combined run 83202 executed 38 tests/422 assertions, with four failures confined to the existing nullable fixture's conflicting generated schema. All new setup/inheritance assertions passed. The fixture now inherits its authored contract with every case/assertion unchanged; root rerun 71218 passed one test/78 assertions. Real SQLite/loopback and canonical projections; no paid-model acceptance. See campaign `complex-portability/corrected-live/emitted-review/ROOT-REPAIR-REVIEW.md` for proof scope and the preserved failure.
+
+
+- [x] MODEL-CONTRACT-1: Real researcher requests in marker, function, node-strict and provider-strict modes contain one consistent envelope instruction and return the same typed final value; inherited specialist paths retain their contracts.
+
+MODEL-CONTRACT-1 independent verification: 1 test/104 assertions,16 local HTTP calls across four modes, typed final output and durable root success. Controlled responses prove protocol consistency, not live model quality. Root artifact: focused-boundaries/root-acceptance.edn in the model-contract campaign.
+
+- [x] MODEL-CONTRACT-2 — AuthoredModelOptionsReachEveryNodeKind: public condition and decision executions preserve explicit completion allowance, strict output and provider routing options at serialized HTTP; runtime-owned limits and ownership remain authoritative. Exercise primary and configured-backup paths, valid false versus provider failure, and canonical attempt/projection evidence. Independent public regression passed 1 test/61 assertions; seven live condition providers returned typed false with explicit options intact. Root replay: root-final-proof-replay.edn. Qwen remains capacity-blocked; this is not all-model acceptance.
+
+- [x] MODEL-CONTRACT-3 — Controlled two-user ownership probe: two byte-identical strict HTTP requests overlap and finish out of order; real SQLite provider attempts, canonical writes and root projections retain each execution's result. Independent root run384565a9 passed40checks/2calls. Executable campaign artifact: concurrent-contracts/probe.clj. This is an experimental proof, not installed regression coverage or live provider capacity evidence.
+- [x] MODEL-CONTRACT-4 — F8 composed saved-quantum recovery: delegated typed producer, researcher inline/emitted specialist, saved frontier, fresh runtime/store/cache, public recovery and downstream typed consumer. Preserve full nested values, exact role/attempt ownership and original tick; completed producer/specialist steps must not replay. Implemented variants and limitations must be reported separately. External campaign proof: composed-resume run1196394a-7462-4df5-b091-095884726d17 independently passed128 checks/8 local HTTP calls, with both inline and emitted specialists. This is controlled saved-frontier recovery, not kill-9/in-flight provider recovery; not an installed repository regression.
+
+- [x] MODEL-CONTRACT-5 — Actual attached custom judge BT: deterministic typed host, explicit monitoring attachment, strict model verdict with rationale/band/feedback, real SQLite assessment lifecycle and public query. Verify subject completion, judge revision/tick, provider owner, typed writes, valid score derivation and missing-band non-score failure; reopen for projection readback. External campaign attached-judge run bffdc3bc-fc46-4a02-b712-c2a28ebeae7b independently passed94 checks/2 local HTTP calls and reopened projection comparison. This is a contract/lifecycle proof, not judge-quality calibration or an installed repository regression. F6 ordinary judge-shaped outputs do not cover this obligation.
+
+- [x] MODEL-CONTRACT-6 — Fresh-author skill reproduction: an agent without campaign harness context authors a public-API workflow from staged/canonical skills, using real SQLite and loopback transport. Switch two configured models while preserving the same typed nested/false/zero/empty contract; distinguish semantic-negative condition from explicit unsupported-contract or transport failure and inspect canonical writes. Parent independently reviews/runs the resulting proof. No paid-provider or all-model generalization follows from this authoring check.
+
+MODEL-CONTRACT-6 independent acceptance: root run5af3b7a7-f9c8-418a-bd6a-47f42a78d3fd passed32 checks/3 local HTTP calls with native typed delegate inputs and full-wire comparison. Source hash and scope are in fresh-author/ROOT-ACCEPTANCE.json. This external authoring fixture is not an installed repository regression or a new live-provider matrix.
+
+
+## Complex model portability continuation
+
+- [ ] MODEL-CONTRACT-7: Public inline researcher carries declared input schemas, nested descriptions and present-null values through actual HTTP and original typed canonical outputs; missing keys remain absent. Preserve field-type/options behavior.
+- [ ] MODEL-CONTRACT-8: Shared complex delegate/grandchild, parallel specialist, decision, researcher and downstream consumer scenarios retain the same task and typed contracts when switching model ID; strict/privacy policy remains unchanged while documented reasoning-model allowances and enclosing deadlines may increase. Preserve the original16384 baseline separately. Full values/descriptions, ownership and concurrent conversation isolation verified.
+- [ ] MODEL-CONTRACT-9: Rich paired compiler preserves field identity, disjoint unions, finite variants, optional-nullable presence and dynamic map keys; invalid/ambiguous data cannot become canonical writes.
+
+- [ ] MODEL-CONTRACT-10: Flattened duplicate output names, namespaced nested keys and string/keyword keys remain exact through strict model request, delegate and typed downstream canonical writes.
+
+- [x] MODEL-CONTRACT-11: All-optional closed record survives strict decoding as a present empty map through a downstream consumer and canonical writes; omission of every child does not omit the required parent.
+
+MODEL-CONTRACT-11 proof: real SQLite producer→consumer and canonical write readback in rich_codec_integration_test; root3tests23assertions and independent review25tests117assertions passed. Partial-stream and missing-envelope controls do not invent a completed parent. Rich-model portability obligations remain open.
+
+- [ ] MODEL-CONTRACT-12: Paired input presentation preserves mixed keyword/string keys, nested null meanings, applicable union branches and typed dictionary identities through actual marker/function/strict/streaming HTTP and native decision state. Original domain values/contracts and canonical downstream writes remain unchanged; malformed false/null inputs fail before provider invocation. Check a real SQLite delegate/consumer path in addition to request-boundary cases.
+
+- [ ] MODEL-CONTRACT-13: Actual researcher prime request explains full specialist reads versus previews and keyed storage versus lexical locals; exposes reusable declared intermediate contracts separately from final writes; inline and emitted examples follow their actual schema APIs. Real parser failures return truthful delimiter guidance. Verify through actual HTTP/SQLite iteration feedback, not prompt substring tests alone.
+
+- [x] MODEL-CONTRACT-14: Dynamic dictionary output preserves distinct keyword/string keys with the same JSON spelling through paired strict compilation/decoding and real SQLite downstream canonical writes. Declared key meanings remain visible; duplicate decoded domain keys fail before map construction. Root independently verified 46 tests/283 assertions (session34615), an eight-key identity probe (82383), and the public SQLite producer/delegate/consumer witness with child projection/ownership and exact canonical reads/writes (session61653, 1 test/20 assertions). Evidence dictionary-key-repair/ROOT-REVIEW.md and root-permitted.edn. Source hash e1a286872ffd583ce6aa9b3889fdd64ec9ebd7e5c01d29a5ab4eed27c26bb79c promoted to the local integration snapshot only; richer whole-graph/live-model acceptance remains separate.
+
+- [x] MODEL-CONTRACT-15: Already-valid typed provider outputs retain exact values through ORC validation and canonical writes; a second raw-JSON decoding pass cannot stringify namespaced keyword dictionary keys or collapse typed keys. Existing raw JSON enum conversion remains supported when decoding is actually needed, including a raw sibling alongside an already-canonical nested dictionary. Independently verified by root session43421 (6 tests, 28 assertions) and real SQLite/loopback session76529, run conversation-ops-inline-69a699d9-d796-48bd-894c-22cfc0e21916 (six graph oracles, six HTTP calls). Source core hash60914e69e59aecae03e52660fc269e4487bafb4199a79afe6485dca0b1a6f9f6; evidence complex-portability/rich-shapes/ROOT-REVIEW.md. This closes the deterministic decoding obligation, not cross-model semantic acceptance.
+- [x] MODEL-CONTRACT-16: Every recipient's actual INPUT-guide section preserves applicable union/multi branch descriptions, multi-entry meanings and enum-option descriptions with unambiguous branch-scoped references. Root independently verified78tests/975assertions (47058) and actual eight-case SQLite captures via unchanged exhaustive audit27496:52requests,40exact full-value recipients,12controller checks,0missing meanings,all recipient/mutation controls passed. Earlier missing authorization/route meanings retained under rich-shapes/before-guide-fix/. Source SIO core58069423; evidence rich-shapes/ROOT-INPUT-AUDIT.md. This proves deterministic request fidelity, not live model understanding, overlap, or the separately pending code-null behavior.
+- [x] MODEL-CONTRACT-17: Through a real SQLite researcher/emitted-tree cycle, a completed typed nullable write replaces a prior non-null value with explicit null, while a later incomplete or absent write preserves previously successful data. Read canonical completed-leaf write provenance and researcher state; do not infer actual writes from initialized output key presence. Root combined verification executed the six-case SQLite/HTTP regression including the retained-old controls: 42 tests / 655 assertions across nine focused namespaces, zero failures/errors. The pure helper concern did not reproduce as runtime value loss after canonical restoration; no merge-helper change was made.
+- [x] MODEL-CONTRACT-18: Public execution-family inputs, outputs and seed resolution preserve explicit null from an actual canonical value event, alongside false/zero, including delegated/generated child ticks. Missing or dangling references must not manufacture a present null. Root independently verified the emitted-child null/false/zero cases, canonical producer ownership, public value-log parity, absent output placeholders and an injected dangling-reference readback control in the combined 42-test / 655-assertion checkpoint. This is deterministic real SQLite with scripted HTTP responses, not paid-model proof.
+
+- [x] MODEL-CONTRACT-25: StrictOutputGuidanceHasOneStructuralAuthority — preserve authored containing-map descriptions through output flattening with exact original typed group scope. Public SQLite ordinary/emitted and provider-inherited strict captures must include outer, entry and nested meanings for two aggregate outputs plus an unrelated scalar. Preserve aliases/property order, paired decoder, validation and canonical values. Marker/function compatibility remains unchanged. MODEL-CONTRACT-24 did not cover an authored outer-map description.
+
+- [x] MODEL-CONTRACT-26: GeneratedAbsenceMeaningIsVisible (SIO) / StrictOutputGuidanceHasOneStructuralAuthority (ORC integration) — public SQLite root→delegate→researcher with loopback prime/inline captures delivers the generated optional-nonnullable null-as-absence description in the actual strict schema and embedded output guide. Permit only the annotation null-branch description delta; every other request field, instruction segment, required nullable/tagged schema, raw fixture response and paired canonical value remains unchanged. Root72121 completed independently; sentinel-candidate-replay/ROOT-REVIEW.json verifies exact bounded delta, unchanged decoded result, source hashes and owners. The original captured semantic error remains an error. Mutable SIO candidate only; no frozen-runtime or canonical-skill promotion and no live-model improvement claim. Public SIO presence proof:6tests/42assertions; separate stale string-dictionary spec/test reconciliation:2tests/11assertions. These do not establish whole-suite success.
+
+
+## Mixed ordinary and researcher family budget
+
+All items remain open. The preserved budget-six RED is a defect witness, not
+repaired coverage. Seven obligations, zero covered, seven uncovered.
+
+- [ ] BUDGET-1 — FamilyAdmissionCountsOrdinaryAndCampaignCalls: real SQLite mixed ordinary/researcher/ordinary execution enforces one native family cap in both boundary orderings; native decision and condition use the same admission authority. Read canonical reservations and provider dispatch, not only a helper counter.
+- [ ] BUDGET-2 — MixedFamilyAdmissionIsAtomic: actual command/CAS contention for the last family slot admits one ordinary or researcher attempt, never both; use a barrier, preserve identities and verify the store projection.
+- [ ] BUDGET-3 — PhysicalAttemptsAreChargedOnce: each actual retry/candidate/descendant attempt consumes one distinct slot; completed receipt replay consumes none; identical item/candidate configurations remain distinct without double charging emitted leaves.
+- [ ] BUDGET-4 — FamilyAdmissionSurvivesRestart: five calls remain spent across a saved researcher frontier and fresh JVM on the original SQLite/tenant/ticks; sixth may dispatch, seventh is blocked; repeated recovery adds no invocation or charge. Include ordinary-first admission after reopen.
+- [ ] BUDGET-5 — AdmissionRequiresActualOwnership: public commands reject wrong tenant/root/start/context, duplicate attempt and stale campaign epoch without dispatch or falsely cancelling for exhaustion; actual node and campaign authority remain distinct.
+- [ ] BUDGET-6 — AdmissionAnomaliesFailClosed: failed durable reads/appends permit no provider invocation; unknown outcomes retain reservations; only authoritative capacity exhaustion uses the native budget cancellation path and failure evidence remains faithful.
+- [ ] BUDGET-7 — LegacyAndOptOutBudgetPolicyIsExplicit: checkpoint opt-out retains durable enforcement for capped roots; unlimited roots retain no cap; legacy bounded roots with incomplete counts refuse admission as a compatibility failure rather than guessing zero or reporting exhaustion. Preserve inspectable historical evidence.
+- [x] BUDGET-7a — CappedCheckpointOptOutUsesDurableAdmission: through public build/execute, real SQLite and loopback HTTP, ordinary prefix plus a researcher with checkpointing explicitly disabled share durable native cap4; all four admitted calls have durable ordinary reservations, inline call5 is refused, and active/root cancellation returns the native reason. Compare immutable pre-repair source to the current candidate; no synthesized campaign ownership or process-local counter proof.
+- [x] BUDGET-7b — LegacyBoundedResumeRefusesUnknownCount: start a real mixed bounded family on the immutable pre-repair runtime, retain its actual in-progress SQLite state without a complete-history marker, then reopen a copy on the current candidate with the same ticks and capabilities. Further provider calls must be refused with explicit compatibility/history failure, not guessed zero or false exhaustion; preserve original store and prove no post-restart HTTP dispatch. A separate fresh current-format control must reach the provider.
+
+- [x] JUDGE-CAL-1 — AuthoredCalibrationWriterAndJudgeBoundary: real SQLite public workflow writes the unchanged authored artifact through a deterministic code leaf, binds its actual canonical writer start/completion/value ownership, delegates to the unchanged typed ordinary judge, and preserves native input/output meanings through loopback HTTP and projected results. Reject mismatched artifact/tick/tenant ownership. This proves mechanics only, not semantic judgment.
+
+- [x] BUDGET-7c — ResearcherAdmissionFailureMetadataIsRetained: a real SQLite researcher execution retains typed failure and sanitized evidence through canonical completion and public family failure. First exercise an actual loopback transport failure through the unchanged provider boundary; then the natural legacy-resume witness must expose budget-history-unavailable without any new provider call. Preserve the existing root result contract; do not infer classification from text.
+
+- [x] BUDGET-2a — LiveOwnerDuplicateAdmissionHasOneWinner: keep a real public researcher node running, race identical physical reservation deliveries against the actual current owner in SQLite, and prove one append winner and no second dispatch permission; do not race reservations after the node has already completed.
+
+- [x] BUDGET-5a — CompletedOwnerCannotAcquireNewProviderReservation: after a public researcher execution has completed, both attempted duplicate/new reservations are rejected without provider entry or additional ledger rows. Keep this separate from live contention coverage.
+
+- [x] **BUDGET-CACHE-A — DurableAdmissionIgnoresProcessLocalBudgetCorruption:** preserve the checkpointed max7/quantum3 five-store workflow through actual SQLite, public execution and loopback HTTP. Corrupt, evicted, nil, stale-high and stale-low root-local counter values cannot alter durable cap5: exactly5 physical calls/reservations, no sixth call, native5/5 exhaustion, actual canonical/public owner joins and owned cleanup. BUDGET-6 remains open; independent root verification passed1test/120assertions in14-root-cache-corruption.
+
+### Independent scoped witness receipts
+
+The checked narrow campaign witnesses above have external source-pinned verification; artifacts are not distributed. These are integration-shaped deterministic witnesses, not live-model quality proofs. The seven aggregate BUDGET-1 through BUDGET-7 obligations remain unchecked because their broader call-path/restart/ownership/fault/unlimited cases remain open.
+
+- [x] **BUDGET-5b — CampaignAdmissionRequiresExactCanonicalStartAndContext:** through public SQLite execution with an actual campaign owner held inside real loopback HTTP, reject a new ordinal1 reservation with wrong schema-valid engine context both when the actual canonical start ID is supplied and when only that ID is omitted. No new admission/row/HTTP or false exhaustion; actual owner completes after release. Preserve historical event readability and approved unknown-history refusal.
+
+BUDGET-5b independent root receipt: budget-test-contract-reconciliation/18-root-owner-composed/ROOT-REVIEW.json (8tests/126assertions), with scoped WEED-CHECK.md. Aggregate BUDGET-5 remains open.
+
+## Paired function output profile
+
+- [ ] MODEL-CONTRACT-FUNCTION-1 — PairedFunctionOutputPreservesTheDeclaredContract: public prediction through the real OpenRouter adapter and controlled HTTP response presents the rich schema and meanings as the response function parameters; paired decoding preserves colliding keyword/string keys, typed dictionaries and absent/null/text/false/zero/literal values. Exercise node and provider inherited selection, and reject malformed/missing/multiple/wrong-name/refused/truncated output without repair. Legacy function and explicit strict JSON controls retain their original behavior. A deterministic HTTP fixture is not a live-model proof.
+- [ ] MODEL-CONTRACT-FUNCTION-2 — PairedFunctionRolesAndProjection: real SQLite root/delegate workflow verifies ordinary, conversational condition/decision, researcher prime, inline and emitted roles receive the effective paired function profile, retain nested input/output meanings and write exact native values into canonical projections. Exercise fallback candidates with the same contract and typed failure evidence. Unsupported streaming must not dispatch marker requests.
+- [ ] MODEL-CONTRACT-FUNCTION-3 — LiveCrossModelFunctionContract: existing OpenRouter access and unchanged privacy restrictions; use the same described complex contract and ordinary node API across admitted models, including the exact free Nemotron route if admitted. Capture final requests, raw response/function arguments and canonical projected values. Retain unsupported or privacy/capacity admission failures; do not count paid siblings or hand-built low-level calls as normal-node success.
+
+Independent partial FUNCTION-1/2 receipt: paired-function-profile-slice3-root/ROOT-REVIEW.json,14targetedtests/212assertions; exact normal-node SQLite/subscriber and predictor envelope/complex-value scope. The three aggregate function obligations stay unchecked pending remaining role/model coverage. No live-model inference from controlled HTTP fixtures.
+
+- [x] MODEL-CONTRACT-FUNCTION-AUTO — Paired function profile defaults to automatic response-function selection through the actual HTTP adapter; explicit forcing retains a named tool choice. Empty, absent automatic and absent forced calls retain distinct typed failure/evidence. Generated function guidance carries the identical rich schema without requesting a competing plain JSON envelope. Real SQLite normal-node inherited/explicit profile projections remain exact. A fixture response is not live-model evidence.
+
+Independent AUTO receipt: paired-auto-choice-root/ROOT-REVIEW.json;15tests224assertions,0fail/errors, actual SQLite and controlled HTTP, joined. This does not establish live model compliance or close FUNCTION1/2/3.
+
+- [x] MODEL-CONTRACT-FUNCTION-STRICT — The shared paired function profile requests `strict:true` in its response-function definition for every model, through the actual HTTP adapter. Node and provider inherited modes retain automatic choice, the identical rich schema and exact SQLite producer/consumer projections. Legacy function preference and explicit strict JSON behavior remain unchanged. Local malformed/refusal/schema rejection remains mandatory; controlled fixture success does not establish upstream endpoint enforcement.
+
+Independent STRICT receipt: paired-strict-tool-root/ROOT-REVIEW.json;15tests226assertions0fail/errors plus strict-only actual serialized request comparison in paired-function-strict-cohort/ROOT-MECHANICS-REVIEW.json. Provider enforcement remains unproven until actual endpoint testing.
+
+## Retained ordinary fallback profiles
+
+- [x] MODEL-PLAN-ORDINARY-1 — Fresh inherited paired function primary503 then backup200 retains the same auto/strict rich schema, canonical string/false values, exact ownership and two durable reservations; completed prefix runs once.
+- [x] MODEL-PLAN-ORDINARY-2 — Reopen actual SQLite after the primary outcome before backup dispatch; changed registry defaults do not alter the retained profile/configuration, replay the primary or repeat completed prefix work.
+- [x] MODEL-PLAN-ORDINARY-3 — Exact historical terminal ordinary receipts replay through production node recovery with zero HTTP/reservations despite registry change/removal; original identities remain reachable.
+- [x] MODEL-PLAN-ORDINARY-4 — Incomplete/ambiguous unversioned ordinary history fails typed compatibility before HTTP/reservation; no new-hash escape or repeated completed physical request.
+- [x] MODEL-PLAN-ORDINARY-5 — Two competing first preparations select one durable effective plan under stable scope; stale ownership is refused, tenant/context isolation and monotonic selection hold.
+
+- [x] MODEL-PLAN-ORDINARY-6 — Kill a real fixture JVM after the parsed physical response is journaled but before candidate finalization; a new JVM with provider registrations removed replays exact outputs without HTTP/reservation, reconciles the original provider invocation once, preserves the completed prefix, and makes repeated recovery a no-op. This is separate from historical-format fixture coverage.
+
+- [x] MODEL-PLAN-ORDINARY-7 — Reopen a staged retained legacy plan after provider defaults change to a paired profile; refuse typed incompatibility before fresh reservation/observation/transport rather than silently changing mode. Exact completed receipts continue to bypass registry checks.
+
+- [x] MODEL-PLAN-ORDINARY-8 — Actual serialized local HTTP/SQLite primary503→backup200 preserves stop, reasoning-effort and thinking controls in the durable plan and wire body, including documented thinking precedence and configuration identity changes. Unsupported/credential options reject before retention/dispatch instead of disappearing.
+
+- [x] MODEL-PLAN-COMPATIBILITY-1 — An exact retained terminal outcome with an unfamiliar response-profile version replays through public SQLite recovery with its original configuration, zero HTTP/reservations and idempotent repeated resume. Exact completed physical receipts before candidate finalization also replay; a failed completed receipt cannot authorize a fresh retry under the unfamiliar profile. Incomplete unfamiliar profiles still refuse before registry resolution or provider work. Final source independent acceptance pending.
+- [x] MODEL-PLAN-COMPATIBILITY-2 — A legacy candidate claim interleaved between operation-history inspection and plan retention prevents a new configuration bucket; the current command implementation also refuses the reverse ordering. Same-operation CAS must protect actual append interleavings without weakening fresh contender or tenant/context ownership fences. No mixed-old-binary rollout claim.
+- [x] MODEL-PLAN-COMPATIBILITY-3 — Existing accepted nonsecret client request controls survive ordinary plan resolution, durable SQLite retention and supported adapter serialization. Include do-sample, tool-stream, stream-options, cache/safety identifiers and accepted request/user IDs; do not claim wire forwarding where the pinned adapter has none. Unknown controls and credential overrides still refuse.
+
+Independent bounded acceptance:28tests/335assertions, zero failures/errors, plus both final-source SIGKILL/fresh-JVM cutpoints. Evidence: external source-pinned verification (artifacts not distributed).11obligations/11covered/0uncovered within this named ordinary scope. Unsupported response-profile names replay exact bytes under schema-version1 only; no fresh dispatch. Current CAS fence does not establish mixed-old-binary rollout, completed parallel models, native HTTP fallback or researcher role preparation. Original fixture failures and historical RED remain preserved; ZAI/Kimi option proof uses legacy function flag in node options, not their unsupported paired mode.
+
+## Researcher effective model profiles
+
+- [x] MODEL-PLAN-PRIME-1 — A public checkpointed recursive researcher inherits paired-function mode from its primary provider, receives primary503 and backup200, and sends the same described function contract/auto/strict profile to both compatible providers. Read actual serialized requests, canonical final output and durable family reservations; no preceding code/tool replay.
+- [x] MODEL-PLAN-PRIME-2 — A completed prime effect remains reachable after provider registration removal, before any current-registry resolution. Public SQLite recovery reuses original result/effect identity with zero new HTTP/reservations.
+- [x] MODEL-PLAN-PRIME-3 — Kill a real JVM after the prime's completed physical response is journaled but before candidate/enclosing-effect completion. A fresh JVM on the same SQLite store with providers removed finalizes that exact response, original request/effect identity and ownership, with no extra HTTP/reservation or completed prefix effects; repeated recovery is a no-op.
+- [x] MODEL-PLAN-PRIME-4 — Unidentifiable incomplete or ambiguous legacy prime history refuses typed compatibility before provider lookup, reservation or HTTP, without changing legacy logical/configuration IDs or escaping to a fresh bucket. Identifiable completed historical outcomes remain replayable.
+- [x] MODEL-PLAN-PRIME-5 — Unchanged authored prime configuration retains its original effective candidates and monotonic backup selection across saved quanta and later iterations despite changed registry defaults. Distinct later inputs generate their own responses rather than replaying a prior iteration.
+- [x] MODEL-PLAN-PRIME-6 — Retained prime preparation and request/effect completion respect tenant, campaign/node, iteration and current execution ownership; competing preparations select one plan and stale owners cannot overwrite progress. Do not infer whole multi-server deployment safety from this focused boundary.
+- [x] MODEL-PLAN-INLINE-1 — Inline specialist recovery separately proves inherited effective profile plus exact physical-response replay before enclosing effect completion after registry drift/removal. Preserve original effect identity, typed inputs/outputs, budget/deadline, and completed tools. Prime-only coverage does not close this.
+- [ ] MODEL-PLAN-EMITTED-1 — Emitted specialist recovery separately proves effective profile plus physical-response replay before candidate completion on the original child tick and execution context. Registry changes must not create a new candidate bucket or repeat completed child/tools. Full mapped-model concurrency requires its own evidence.
+
+
+### Inline retained-profile integration witnesses
+
+These are required witnesses for the existing MODEL-PLAN-INLINE-1 obligation, not new independent completion claims. Root independently executed the full focused gate and actual SIGKILL/fresh-process boundary. Witness boundaries and original baseline failures are recorded in the root inspection; controlled HTTP is not hosted-model semantic proof.
+
+- [x] `inline-inherits-paired-profile-through-configured-backup`: public SQLite and serialized HTTP preserve described paired auto/strict contract across primary503/backup200, exact native nested output, completed prefix/tool and durable reservations.
+- [x] `inline-role-plan-and-backup-survive-quantum-with-distinct-next-input`: saved quantum plus changed registry defaults retains one authored-role plan and selected backup, while later changed inputs produce a distinct request and response.
+- [x] `inline-physical-response-replays-before-current-provider-resolution`: original completed physical response before candidate/effect completion rejoins with registry removed, original identities/metadata and no new reservation or completed-effect replay. Closing/reopening is a useful witness but does not substitute for actual SIGKILL acceptance.
+- [x] `completed-inline-effect-bypasses-retained-profile-and-provider-resolution`: exact completed enclosing effect returns before current profile interpretation or registry access.
+- [x] `inline-frontier-advance-between-validation-and-cas-refuses-stale-receipt`: advance actual parent frontier after owner validation and before append; stale outcome cannot enter the durable log.
+- [x] `inline-plan-arriving-after-legacy-owner-validation-fences-old-bucket`: a newly retained role plan wins the late append race against a legacy owner without the required epoch/configuration; no escape to a new model bucket.
+- [x] `emitted-sibling-selection-keeps-global-campaign-cas`: two actual child ticks share one campaign selection scope; strengthening parent inline ownership must preserve the original cross-child monotonic selection condition. This is a command-boundary compatibility witness, not whole emitted restart acceptance.
+
+- [x] `old-inline-effect-without-journal-refuses-before-registry-and-fresh-claim`: an exact historical inline effect without a retained effective profile fails with outward typed compatibility evidence before registry, another provider reservation or a new inline claim. Generic SCI repair must not escape the refusal through later iterations/new request identities; ordinary repairable code/tool errors remain repairable.
+
+- [x] `exact-historical-inline-physical-response-replays-with-original-configuration`: Locate an identifiable historical inline physical response under its original configuration and request identity before current provider lookup, with no new dispatch or reservation. Root must classify the executed boundary faithfully; a command-level fixture is not an actual process-kill proof.
+
+- [x] `exact-historical-inline-terminal-outcome-replays-with-original-configuration`: Replay an exact historical candidate terminal outcome under its original association rather than regenerating a configuration bucket. Root must classify the executed boundary faithfully; a command-level fixture is not an actual process-kill proof.
+
+- [x] `unfamiliar-inline-profile-refuses-fresh-work-but-replays-exact-physical-response`: An unfamiliar response profile cannot authorize fresh work but does not hide an exact already recorded prediction; preserve identity and accounting. Root must classify the executed boundary faithfully; a command-level fixture is not an actual process-kill proof.
+
+- [x] `unfamiliar-inline-profile-replays-exact-terminal-outcome`: Return a known decoded terminal outcome before interpreting an unfamiliar profile for dispatch. Root must classify the executed boundary faithfully; a command-level fixture is not an actual process-kill proof.
+
+- [x] `competing-inline-preparations-retain-one-role-plan-for-distinct-requests`: Competing current inline requests select one immutable authored role plan while retaining distinct request/effect identities. Root must classify the executed boundary faithfully; a command-level fixture is not an actual process-kill proof.
+
+- [x] `exact-historical-inline-response-at-later-physical-retry-replays-without-dispatch`: Reach an exact saved success at its original nonzero physical retry ordinal without inferring a fresh retry allowance or dispatching.
+
+- [x] `exact-historical-prime-response-at-later-physical-retry-replays-without-dispatch`: Shared PRIME compatibility control for the repaired recorded-response traversal, preserving original role/effect association.
+
+- [x] `historical-inline-known-success-after-missing-earlier-attempt-replays-with-partial-accounting`: A uniquely identifiable saved success survives missing earlier outcomes; preserve original receipt/prediction and label partial accounting as runtime-derived rather than complete usage.
+
+- [x] `historical-inline-failed-attempt-gap-refuses-before-unrecorded-request`: When no exact saved success can be identified, a missing next attempt refuses before any reservation, registry lookup or HTTP.
+
+- [x] `historical-inline-conflicting-receipts-for-one-ordinal-refuse`: Conflicting physical receipts at one ordinal refuse rather than arbitrarily selecting a request identity.
+
+- [x] `historical-inline-competing-known-successes-refuse`: Competing distinct recorded successes with ambiguous intended result refuse without further work.
+
+- [x] `identical-inline-receipt-facts-replay-idempotently-with-original-identity`: Deduplicate identical physical receipt facts while retaining original request identity; do not confuse equal output values from different requests with duplicate facts.
+
+- [x] `inline-plan-arriving-after-current-epoch-legacy-validation-fences-old-bucket`: a current positive-epoch legacy owner on a different request cannot append unretained configuration work after another request commits an inline role plan. Verify actual atomic ordering, not only stale/nil-epoch refusal.
+
+- [x] Inline role-plan compatibility control: deliberately different authored configurations with their own retained plans remain admissible in one campaign; the role-level fence must not reject every nonidentical plan.
+
+- [x] Inline historical-incorporation control: an exact identifiable old-configuration response can still be incorporated under current ownership after another configuration is retained, without authorizing a genuinely new old-configuration physical request.
+
+Independent bounded acceptance: 8 obligations, 7 covered, 1 uncovered (emitted). Root focused68/1053 with19exact unchanged baseline failures/0errors, actual inline SIGKILL1/27 green, and old/current command migration1/16 green. The deliberate sibling-selection regression causes3expected assertions to fail. Evidence: external source-pinned verification (artifacts not distributed) and `WEED-REPORT.md`. Explicit opt-out fresh profiles, emitted recovery and full live model-role parity remain separate work.
+
+## Explicit checkpoint opt-out fresh profiles
+
+- [x] MODEL-PLAN-OPTOUT-PRIME-1 — A fresh explicitly noncheckpointed recursive prime preserves its primary effective described response envelope across a compatible backup; actual serialized HTTP, canonical native nested zero/false/null outputs, original ordinary family reservations and no invented checkpoint facts. Fresh profile behavior only, not durable campaign recovery.
+- [x] MODEL-PLAN-OPTOUT-INLINE-1 — A fresh explicitly noncheckpointed inline specialist preserves the same effective envelope and full nested described inputs/outputs across a backup, with one prefix/tool and exact ordinary reservations. No bespoke parser or app-level output-mode workaround.
+
+- [x] MODEL-PLAN-OPTOUT-CONTROLS-1 — Unconfigured primary-only noncheckpointed researcher retains its existing dispatch behavior; predictor metadata/validation/evidence controls remain forwarded by the corrected configured path. The inline host uses its documented two-argument capability seam and verifies actual tool result/count.
+
+Independent opt-out acceptance:3named obligations,3covered,0uncovered within fresh protocol scope. Root4tests117assertions green; separate legacy-mode mutation caught10wirefailures while native outputs stayed correct. Root driver source/counter mistakes are disclosed in external source-pinned verification (artifacts not distributed), alongside exact source/post-run/loaded-resource evidence. No opt-out recovery or hosted semantic claim.
+
+### Emitted specialist retention witnesses
+
+These are subordinate witnesses for existing MODEL-PLAN-EMITTED-1, not separate completion claims.
+
+- [x] `fresh-capped-emitted-retains-effective-profile-and-physical-response` — Complete described paired profile across primary503/backup200, real decoded physical response retained before candidate completion, original child lineage/native values/budget/prefix/tools.
+- [x] `fresh-uncapped-emitted-retains-effective-profile-and-physical-response` — Same public protocol and prediction retention without requiring a new cap or configuration knob; no synthetic reservation.
+- [x] Multiple distinct emitted children and saved quantum/default change share authored specialist plan/monotonic selection, preserve distinct request/results, and share equivalent inline/emitted scope without changing old IDs.
+- [x] Actual emitted physical-prediction SIGKILL/fresh-JVM recovery on original SQLite, with removed emitted aliases and only original outer finalizer restored; exact child/result/metadata, no new emitted HTTP/tool replay; second resume no events.
+- [ ] Emitted current-owner/competing-plan/global-selection CAS controls, exact legacy terminal/physical replay before registry, and typed incomplete/ambiguous refusal without new buckets. Unknown-profile/nonzero physical ordinal coverage must use actual AI loop, not inline helper evidence.
+
+- [x] `fresh-optout-emitted-preserves-profile-without-campaign-checkpoints` — Compatibility/role-mapping positive control: an explicitly noncheckpointed generated model leaf uses ordinary node preparation, keeps the original durable family cap and ordinary admission, and never invents a campaign epoch. The preexisting flag-only capped-child reservation failure is a separate library defect, not model/profile failure.
+- [x] `canonical-specialist-start-read-failure-and-partial-metadata-refuse` — A failed canonical read yields safe typed refusal before resolver/provider work; malformed partial advertised metadata causes public fault and no appended tick, not an unindexed legacy fallback.
+- [x] `incomplete-emitted-epoch-refuses-before-provider-or-new-plan` — Identifiable emitted topology lacking fresh ownership refuses before new plan/provider work; exact known-result replay is separately required.
+- [x] `known-emitted-response-replays-before-missing-epoch-fresh-admission` and `known-emitted-response-replays-after-parent-epoch-changes` — Actual child-local completed physical prediction survives missing/new parent epoch with no reservation/provider lookup and original identity/metadata; direct command-state proof is not SIGKILL acceptance.
+- [x] `emitted-child-start-advance-fences-stale-physical-response` and `emitted-parent-frontier-advance-fences-fresh-physical-request` — Actual append-window ownership changes refuse stale completion/fresh dispatch without physical fact pollution.
+
+## Interrupted emitted request without a saved prediction
+
+- [x] MODEL-PLAN-EMITTED-FRESH-RECOVERY-1 — After a backup HTTP request has actually arrived but before any response/prediction, hard-kill the owned JVM. On the same SQLite, original cap6/deadline/ticks/effects, recover the real current parent generated-child claim and original child; restore providers and perform one genuinely fresh backup plus finalizer. Require5conservative reservations, distinct physical request identities, no repeated primary/prefix/tools, correct native result, current matched authority without rewriting persisted child epoch, and repeated resume no events. This is separate from exact-response replay and from a provably unsent reserved slot; keep open pending real public reproduction and any required reauthorization fix.
+
+Independent emitted checkpoint:82focusedtests/1402assertions green and actualSIGKILL/fresh-process1test/33assertions green. Normal saved-response witness closes; combined current-owner/history item stays open for AI nonzero/ambiguous receipt selection, and in-flight fresh recovery stays open. Parent MODEL-PLAN-EMITTED-1 remains partially open, not universally closed. Evidence: external source-pinned verification (artifacts not distributed).
+
+Actual unsaved-response reproduction: owned writer44624/PID47255 received the third HTTP request with only2responses/3reservations, then root verified121sourcepins and killed that exact PID (exit137). Fresh recovery86247/PID56415 ran1test55assertions:34pass,21fail,0errors. The real matching parent reclaim reached epoch2; the original child reservation still carried epoch1 and fresh backup dispatch failed at durable reservation CAS. No new backup HTTP occurred; the root exhausted its iterations. The obligation remains unchecked pending a verified exact-child reauthorization repair. Evidence: external source-pinned verification (artifacts not distributed). Both owned PIDs are absent; no paid calls.
+
+### Exact resumed-child model authority repair obligations
+
+Derived from `RejoinedGeneratedChildFreshModelAuthority`; all remain unchecked until independently executed and reviewed. The existing actual in-flight crash RED is preserved rather than repeated before implementation.
+
+- [ ] EMITTED-AUTH-1 — One durable binding names the canonical resumed child execution and exact current parent start/frontier/generated-child claim/configuration/iteration; duplicates are idempotent and competing bindings cannot fork authority.
+- [ ] EMITTED-AUTH-2 — Original child worker, superseded child start, advanced parent frontier, wrong stable child/claim/iteration/configuration refuse both fresh budget admission and fresh request journaling under real command CAS.
+- [ ] EMITTED-AUTH-3 — Both actual parent-first and child-first public recovery delivery orders converge on the original child without permanently recording a model failure merely because authorization is pending; wait respects original deadline/cancellation.
+- [ ] EMITTED-AUTH-4 — Capped interrupted requests retain spent reservations and original cap/deadline while fresh dispatch consumes a distinct slot/request; uncapped recovery has the same ownership fence without inventing a cap.
+- [ ] EMITTED-AUTH-5 — Exact saved-response replay precedes fresh authority and performs no provider lookup/reservation; ordinary and checkpoint-opted-out nodes retain their original admission behavior.
+
+- [x] EMITTED-AUTH-6 — A primary-only emitted model leaf with no configured alternatives recovers fresh work under the same exact resumed-child/current-parent authority and original durable cap/deadline. No invented model plan, configuration bucket, extra author option or fake epoch is required. Configured-fallback proof alone does not establish this standard-node path.
+
+- [x] CT-TIMEOUT-1 — Shared client normalization preserves Java HTTP timeout meaning for direct and asynchronous wrapped exceptions; existing typed errors, status503/401 and generic non-timeout failures retain their meaning. A controlled actual Hato request timeout200ms before outer3000ms must normalize as timeout without invented HTTP status/model/usage. External source-pinned verification artifacts are not distributed. The governing invariant `HttpTimeoutMeaningSurvivesAsyncBoundary` has1existingexternal-hintwarning/0errors/0findings, not clean. Original root rawcause proof observed ExecutionException→HttpTimeoutException normalized incorrectly to provider-error through both direct/capturedpaths.
+
+CT-TIMEOUT-1 independent proof: external source-pinned verification (artifacts not distributed) (2tests24assertions plus2actualHato requests), originaltyped/status semantics preserved, exact runtime resources/sourcepins and first root helperfailure disclosed. No hosted or fullORC fallback coverage inferred.
+
+Independent configured in-flight checkpoint: root88tests1521assertions green, plus actual SIGKILL/fresh-JVM1test55assertions green. Original cap6,3→5reservations, original child epoch1 retained with one exact current bindingepoch2; backup+outerfinalizer onlyHTTP, no completedprefix/tool replay, secondresume0events. Source127pins matchbefore/after. The original configuredbackup obligation is closed at its observed-parentclaim cutpoint; AUTH3 uncontrolled scheduling and AUTH6 primary-only recovery remain open. Exact report: external source-pinned verification (artifacts not distributed).
+
+Independent AUTH6 public proof: primary-only actualSIGKILL/freshJVM1test37assertions GREEN with no schedulerwrapper/stagedclaim,2→4reservations/originalcap6,noplan/configinvented,originalticks/deadline/nativevalues andno completedprefix/tool replay. Finaldelta20tests425assertions passed with acceptedtimeoutclient; Hatoresolved0.9.0is separatelyqualified. Rootreport external source-pinned verification (artifacts not distributed).
+
+### Isolated historical AI physical-response replay
+
+- [x] AI-REPLAY-1 — Actual AI-loop/public SQLite recovery incorporates one schema-accepted later physical response under an unsupported retained profile before provider lookup, with aliases absent, exact nativefalse/zero/requirednull andno newrequest/plan/config/reservation. Missing earlier receipts/usage remain explicit partial runtime-derived accounting.
+- [x] AI-REPLAY-2 — Predictor-success/schema-rejected physical0 cannot be accepted; recorded valid1 can replay despite current retry allowance0. Original declared-output validation and provider-outcome rejection remain authoritative.
+- [x] AI-REPLAY-3 — Two unresolved accepted physical responses or conflicting identical physical identity refuse typedambiguity, while current command conflict refusal and legitimate retryordinal resets retain distinct meanings. Candidate terminal outcome/currentowner/config/selection scopes remain intact.
+
+- [x] TRACE-RLM-BOOKEND-1 — Real public SQLite execution/trace publication followed by actual :sheet/record-rlm-tree-execution-completion command refreshes that completed child to include the late bookend, retains one creation and monotonic/idempotent revisions, and never targets the separate source-campaign instead. Root LP1 actual3HTTP/RLM fixture already exposed canonical10vs11 stale child revision; source counterpart remains open pending independent repair/qualification.
+
+Independent replay/trace integration evidence: `complex-portability/ai-receipt-replay-root` (13 tests / 205 assertions plus order, duplicate and ambiguity probes) and `late-bookend-trace-slice` with root rerun (3 tests / 26 assertions). Native receipt fixtures do not establish hosted-model semantics. Full emitted-RLM lifecycle requalification remains open in the experiment runtime.
+
+## Supplied input shape without examples
+
+- [ ] INPUT-SHAPE-1 — Public request construction retains nested optional-field, empty collection item and null-container contract meanings without adding values or exposing an absent top-level input; shown-field guide remains value-focused.
+- [ ] INPUT-SHAPE-2 — Marker/streaming, strict JSON, paired/legacy function and native decision request paths preserve the same declared input shape, actual values and presentation identities, including applicable union/enum meanings. No output-schema-only substitute for input meanings.
+- [x] INPUT-SHAPE-3 — Actual post-repair wire and canonical read-back on a hosted complex graph with empty inputs confirms supplied contracts arrive without model-specific caller changes. Earlier20-call batch remains at its original frozen source.
+
+- [ ] INPUT-SHAPE-4 — Valid compiled/local-registry/schema/ref input contracts retain accurate provider-visible structural types and nested meanings without dumping opaque objects, inventing values or looping on recursive references. Root public reproduction currently accepts `[:schema {:registry ...} :example/record]` but renders packet as str and drops its described optional child. Preserve bounded structural proofs separately from arbitrary extension support.
+
+INPUT-SHAPE-3 verification: private final runtime manifest aac96291, eight hosted cases/56 raw-schema-valid responses, all actual input descriptions and sent/native values independently audited. Six exact task successes; MiniMax ordering and MiMo literal-fidelity failures were correctly rejected, not presented as successful semantics. Evidence: complex-portability/protocol-hosted-described/ROOT-REVIEW.json and hosted-described-read-audit/EIGHT-CASE-REPORT.md. INPUT-SHAPE-1/2/4 retain their scoped constructor/metadata proof separately; no claim of an all-mode datastore E2E from this strict-JSON batch.
+
+## Typed workflow results and recoverable diagnostics
+
+- [x] RESEARCHER-ADMISSION-FEEDBACK — Public HTTP/SIO/SQLite execution returns a child admission refusal and exact nested schema reason in the next researcher request, then executes only the corrected child and publishes its canonical result.
+- [x] MAP-AGGREGATE-OUTPUT — Successful scalar-item observations cannot publish an invalid parent aggregate. The parent fails with exact schema evidence, the rejected candidate remains diagnostic, and successful item values stay canonical. Valid partial aggregation preserves status and failure indices.
+- [x] RESEARCHER-FINAL-REPAIR — Nested invalid final attempts yield schema feedback before completion and permit bounded correction. Native false/zero/null and optional omission remain intact; function candidates checkpoint safely, a caught later rejection clears an earlier final capture, and exhausted allowance cannot publish invalid values or dispatch extra calls.
+- [x] RESEARCHER-NATIVE-EVIDENCE — Public researcher requests in legacy, recursive and RLM terminal modes receive shared native-evidence ownership guidance. Executed code assembles a typed result from unchanged native observations and separately produced interpretation, preserving opaque references, order, duplicate identities, false, zero and null without matching or repairing identifiers. A recursive emitted semantic-child plus code-assembly case verifies the same ownership through canonical projections.
+
+
+## Generated researcher setup diagnostics
+
+Derived from `ResearcherFeedbackMatchesCurrentState`. Controlled HTTP/SIO/SQLite
+proves transport and recovery, not unscripted semantic quality.
+
+- [x] RESEARCHER-SETUP-FEEDBACK — A generated LLM missing its required instruction is refused before child execution. The actual next researcher request names the setup command, refusal category/reason and offending field. A corrected subsequent child runs once and its typed output is canonical.
+- [x] RESEARCHER-SETUP-CHECKPOINT — The same safe setup diagnostic survives an actual researcher checkpoint/quantum boundary; both the next request and durable child outcome retain actionable field information. Bounded iteration excerpts do not hide the field behind a generic prefix.
+- [x] RESEARCHER-SETUP-BOUNDARY — Refusals without field details retain that absence. Diagnostic propagation excludes raw commands, authorization, source values and unrelated handler data, and preserves existing child-admission feedback.
+
+## CSV per-entity definition enrichment
+
+- [x] CSV-ENTITY-CONTEXT — Public SQLite execution of the authored CSV definition stage prepares and enriches two distinct entities, exposes each entity's full native context to the actual model request, and publishes the generated fields under their original entity identities without global or prior-item bleed. The original two-direct-child topology remains a failing negative control; the aggregate contract stays strict. Controlled HTTP proves transport/composition, not live semantic quality.
+
+## GEPA component rotation, reflection prompt template and reflection token budget
+
+Source: `components/gepa/test/ai/obney/orc/gepa/rotation_prompt_budget_test.clj`.
+
+- [ ] GEPA-ROTATE-1: Successive rounds of one parent rotate through its components in a stable order; a round skipped for a perfect parent does not advance the rotation; a redelivered round keeps its recorded component; a child continues from its parent's pointer while an unrelated candidate starts at the first component.
+- [ ] GEPA-PROMPT-1: A template string reaches every component's proposer prompt; a map reaches its component while another component gets the default; a template missing a placeholder is refused at start, before any evaluation; the template is used after `resume!`.
+- [ ] GEPA-PROMPT-2: The optional `general-rules-prompt-template` is GEPA's default plus the three sentences, passes validation, is re-exported from the public interface, and reaches the proposer prompt when passed as `:reflection-prompt-template`.
+- [ ] GEPA-TOKENS-1: With `:max-reflection-tokens` set, no round opens and no proposer call starts once the recorded tokens reach it, and the run completes with the best fully evaluated candidate (or fails naming the budget when none exists); a completed proposer call reused on redelivery or resume is not counted again; progress and `resume!` report the tokens used.
+- [ ] GEPA-TOKENS-2: A provider-reported cost is kept in the proposer-call evidence.
+
+
+## Checkpointed emission recovery and mixed delegate admission
+
+- [x] **RESEARCHER-PARTIAL-EMISSION-RECOVERY** — Public HTTP/SIO/SQLite execution repairs a quoted emit followed by a parse error without dispatching the rejected tree; prior executed tree raw/source, ordinary native scratch and an actual completed tool receipt survive once. Clean emission still succeeds. Unsupported user KeySeq and function scratch still fail explicitly. Source: `ai.obney.orc.orc-service.emission-parse-recovery-regression-test`.
+- [x] **MIXED-TARGET-MODEL-ADMISSION** — One delegated target runs ordinary producer, checkpointed researcher and ordinary consumer under a positive shared call budget; false/zero/null and nested values survive, and real native reservation/campaign identities remain owned by the actual invoking node. Exhaustion prevents a request beyond the cap. Source: `ai.obney.orc.orc-service.mixed-target-admission-regression-test`.
+
+The two regression namespaces pass 4 tests and 51 assertions through public ORC/Grain commands, SQLite and scripted loopback HTTP. These checks establish recovery and admission mechanics, not hosted semantic quality.
+
+## SCI output capture repair
+
+- [x] SCI-STDOUT-EVALUATION — Actual plain and recursive researcher evaluation retains exact mixed permitted printer output, normal no-print computation and real failure with printed prefix; unavailable host I/O stays unavailable.
+- [x] SCI-STDOUT-GENERATED — Actual public HTTP/SQLite recursive emission executes a generated SCI function that prints through the caller destination and produces exact canonical/projected output; authored host code retains its original behavior.
+- [x] SCI-STDOUT-RESTORATION — Distinct surrounding host/SCI destinations are restored after success and failure, including original thrown exception identity at the writer helper. Native output observation is separate from persisted code-leaf output APIs.
+
+The stdout namespace passes 4 tests and 78 assertions. Public HTTP/SQLite
+workflows additionally verify caller output, canonical values and restoration
+of surrounding output bindings. Generated stdout remains a caller observation,
+not a new persisted leaf-result field.
+
+## Researcher configuration and recovery contracts
+
+- [x] RESEARCHER-TIMEOUT-ROUNDTRIP — Public constructor, fresh/changed/no-op build, EDN import/export and executable source rendering preserve an explicitly positive total-work timeout and honest omission; absent, empty and supplied options retain their distinct valid meaning. Existing node/tick/fallback precedence and immutable deadline remain unchanged.
+- [x] GENERATED-FN-SOURCE-BOUNDARY — Exact version/context/source/hash and empty-capture metadata survives public command/event/projection boundaries and reconstructs only supported functions; malformed, captured/shadowed or identity-conflicting definitions refuse without widening capabilities.
+- [x] GENERATED-FN-LIFETIME — Restored callable uses the original identity, refuses different bindings and releases only its matching terminal binding after all actual live users finish. Healthy shared/unrelated work remains.
+- [x] GENERATED-FN-COLD-RECOVERY — A distinct owned process/registry lifetime reconstructs admitted code at the actual pending/abandoned-callable boundary, preserving original tick/node/source/deadline and once-only completed effects. A completed-child terminal boundary consumes the saved result without reinvocation; these are separate controls.
+- [x] EMITTED-AUTH-RETENTION — A legitimately late first generated descendant may retain its exact plan while frontier/claim installation is pending, but pending retention causes no provider reservation or request; configuration and original budget/deadline remain authoritative.
+- [x] EMITTED-AUTH-ORDER — Both actual parent/child delivery orders preserve valid first-start ownership, while stale/unresumed/superseded/conflicting configurations and changed facts at append/CAS refuse before spend. No completed prefix/tool work is replayed.
+
+- [x] RESEARCHER-PROVIDER-TIMEOUT — Typed Java provider deadlines and normalized transport-timeout evidence survive LLM normalization and durable researcher receipts, allowing later classification without an exception cause. Explicit non-timeout categories take precedence; prose or HTTP status alone cannot imply timeout. Existing candidate exhaustion, deadline, cancellation and call-budget rules remain authoritative; replay classification alone causes no dispatch.
+
+- [x] RESEARCHER-REPAIR-COMPOSITION — The assembled repair source runs an actual checkpointed researcher through public local HTTP/SIO/SQLite, emits self-contained typed code plus a later semantic descendant, survives a genuinely new owned JVM while callable work is pending, preserves original campaign/child/function/deadline/cap and completed prefix effects, and returns exact canonical output without replaying completed work. This integration is distinct from generic callable-leaf recovery and staged-parent authority controls; no hosted quality or uncertain external-effect exactly-once claim.
+
+The eight configuration and recovery obligations above are covered. The
+packaged focused command passes 66 tests and 1,378 assertions, with zero
+failures or errors. The composed two-JVM researcher restart contributes 47
+assertions to that total. The runner verifies 64 production resource origins
+and hashes before execution. Counts from earlier source cuts remain historical
+evidence and are not added to this total.
+
+Source namespaces and reproducible commands are listed in
+[RESEARCHER-RECOVERY-VERIFICATION.md](RESEARCHER-RECOVERY-VERIFICATION.md).
+Hosted semantic quality, arbitrary captured closures and compiled-sheet
+export/import of callable metadata remain outside this proof. Specification
+checking retains 39 warnings, 116 informational diagnostics, zero errors and
+zero process findings. Check exits 1; analyse exits 0. The baseline is not clean.
+
+
+## Researcher timeout meaning across model boundaries
+
+- [x] RESEARCHER-TIMEOUT-1 — Raw and wrapped typed timeouts, safely normalized timeout evidence, and durable recorded timeout outcomes retain provider-timeout meaning through actual researcher execution. The original iteration limit/retry/checkpoint contract remains intact. Ordinary and native LLM normalization preserve timeout type without raw causes/payloads or invented status/model/usage. Configured receipt replay does not redispatch, and configured fallback exhaustion acquires no extra retry allowance. Ordinary errors and misleading timeout prose stay distinct.
+
+Earlier RESEARCHER-TIMEOUT-1 verification: independent 142 tests / 1,133 assertions across the offline LLM boundary, actual Grain campaigns and SQLite receipt replay. Existing timeout classification tests remain unchanged. Recorded receipt replay makes no additional dispatch or event write. Full process restart and hosted provider failure are outside this bounded contract.
+
+Reconciliation with the merged recovery repair preserves all 70 runtime files.
+The focused native-input checks pass 149 tests and 750 assertions, including
+all 48 RLM mode tests, six reconciled-contract cases and retained timeout replay.
+The corrected score assertions distinguish supplied evidence, declared optional
+shape, native predictor inputs and JSON-ready transport values. The earlier
+two failed expectations remain documented; no production contract or assertion
+is weakened.

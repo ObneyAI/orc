@@ -1,0 +1,16 @@
+; brief-id: b-028
+; group: experiment-plan
+; variant: 3
+
+Please draft a formal experiment plan for the computer vision team regarding our autonomous drone navigation project. We need to determine if transitioning from a standard ResNet-50 backbone to a multi-scale Vision Transformer (ViT) architecture improves object detection mAP for small-scale obstacles in low-light environments by at least 8%.
+
+Base your analysis on the 'AeroScan-Dark' dataset (1.2TB of thermal and low-light RGB 4K frames). The current baseline is our 'V3-Nav' model (ResNet-50 + custom FPN head). We have a total compute budget of 2,500 A100-GPU hours for this sprint. I need the strategic roadmap only, formatted according to the following schema:
+
+- **Hypotheses**: Three distinct theories regarding architectural impact on small-feature saliency.
+- **Experiment Matrix**: A detailed comparison table including the 'V3-Nav' baseline, a Swin Transformer variant, and a Cross-Scale Vision Transformer.
+- **Metrics**: Definitions for mAP@.5:.95, inference latency (ms), and FLOPs.
+- **Evaluation Protocol**: Procedures for 5-fold cross-validation and the specific "Low-Light/High-Noise" holdout set.
+- **Budget Allocation**: A specific breakdown of the 2,500 hours across initial training, hyperparameter tuning, and final validation.
+- **Decision Criteria**: The performance and cost-efficiency thresholds required to approve a hardware-wide firmware update.
+
+I’m slammed with the quarterly hardware audit, so please ensure this is stakeholder-ready by tomorrow morning. Do not include training scripts or model definitions.

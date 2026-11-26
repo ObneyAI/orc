@@ -1,0 +1,17 @@
+; brief-id: b-003
+; group: risk-analysis
+; variant: 2
+
+Hey, I hope you’re having a decent week so far and staying a bit drier than I am—it has been absolutely pouring here all morning and my basement is starting to show some concerning damp spots, which is just the last thing I need to deal with right now. Honestly, I’m feeling a bit underwater in more ways than one today. My youngest woke up with a nasty fever and I’ve been juggling Tylenol doses between three back-to-back board meetings this afternoon, so I’m really struggling to keep my head above water with this new project hitting my desk at the same time.
+
+I’ve attached that 112-page RFP we just got from the Department of Transportation regarding the regional highway maintenance and emergency response contract. It’s an absolute beast of a document, and with the way my day is going, I honestly don't have the four hours it would take to properly comb through all that fine print before our strategy session tomorrow morning at 9:00 AM. 
+
+Could you do me a huge favor and go through this thing with a fine-tooth comb? I need you to pull out every single specific obligation we’d be taking on if we sign this, as well as the exact financial penalties for missed KPIs—they usually hide those in the appendices or the small print of the service level agreements. I need this broken down section by section so I can see exactly where the potential traps are hiding. 
+
+On top of that, I really need you to build a risk matrix for me. Could you rate each identified liability as HIGH, MEDIUM, or LOW? Please make sure to include a clear justification for why you gave it that specific rating based on the actual language used in the RFP. Finally, please wrap the whole thing up with a concise executive summary that points out where our biggest exposures are. Just to be clear, I don't need a general overview of the project scope, the submission dates, or who the stakeholders are—I’ve already got a handle on that stuff. I really just need a deep dive into the risks and the specific legal or operational language that binds us. 
+
+Thanks a ton for helping me out with this on such short notice, it’s a total lifesaver while I’m dealing with all this chaos.
+
+Best,
+
+Mark

@@ -8,3 +8,6 @@
 (def register-provider! core/register-provider!)
 (def quick-setup! core/quick-setup!)
 (def list-providers core/list-providers)
+
+(def preflight-provider! core/preflight-provider!)
+(def transport-timeout? core/transport-timeout?)

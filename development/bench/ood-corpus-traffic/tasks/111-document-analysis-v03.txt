@@ -1,0 +1,15 @@
+; brief-id: b-004
+; group: document-analysis
+; variant: 3
+
+Please perform a detailed data extraction and analysis of the attached 85-page Lumina-Tech Corp Q4 Global Strategy & Earnings Report. Your response must adhere strictly to the following structural schema without deviation:
+
+*   **Executive Summary**: Provide a three-paragraph synthesis covering the company’s fiscal performance for the quarter and their defined expansion goals for the 2024 calendar year.
+*   **Critical Timeline**: Generate a chronological list of dates formatted as MM/DD/YYYY. Each date must be paired with its specific corporate milestone, including but not limited to quarterly dividend payouts, product launch windows, and scheduled board meetings.
+*   **Named Entity Catalog**:
+    *   **Organizations**: List all mentioned partner firms, direct competitors, and governmental regulatory bodies.
+    *   **People**: Document every C-suite executive and all regional directors mentioned in the text.
+    *   **Geographic Locations**: Identify specific cities or sub-regions explicitly targeted for the construction of new facilities.
+    *   **Financial Values**: Extract all specific USD amounts associated with R&D investments and debt reduction initiatives.
+
+Constraint: Provide an objective extraction of these data points only. Do not include analysis regarding market volatility, risk factors, or external economic commentary.

@@ -6,8 +6,12 @@
    - Return {:command-result/events [...]} on success
    - Return cognitect anomaly on failure
    - Last write wins (no optimistic concurrency)"
-  (:require [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
+  (:require [ai.obney.orc.orc-service.core.budget-facts :as budget-facts]
+            [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
+            [ai.obney.orc.orc-service.core.execution-lease :as execution-lease]
+            [ai.obney.orc.orc-service.core.judge-definition :as judge-definition]
             [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.model-fallback :as model-fallback]
             [ai.obney.orc.orc-service.core.provider-call-reservations :as provider-call-reservations]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
@@ -451,7 +455,8 @@
    - :ai executor uses ORC LLM with optional model selection
    - :code executor runs a Clojure function
    - :tool executor directly invokes a tool"
-  [{{:keys [sheet-id node-id executor model fn tools options tool-caller-fn]} :command
+  [{{:keys [sheet-id node-id executor model fn tool tools options tool-caller-fn tool-contracts recoverable-fn
+                options-from bands-from min-confidence abstain]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)]
     (cond
@@ -467,6 +472,11 @@
       {::anom/category ::anom/incorrect
        ::anom/message "Code executor requires :fn (fully-qualified function symbol)"}
 
+      (and (= executor :tool)
+           (not (and (string? tool) (not (clojure.string/blank? tool)))))
+      {::anom/category ::anom/incorrect
+       ::anom/message "Tool executor requires :tool (the authored tool name)"}
+
       :else
       {:command-result/events
        [(->event
@@ -478,14 +488,37 @@
                          :executor executor}
                   model (assoc :model model)
                   fn (assoc :fn fn)
+                  recoverable-fn (assoc :recoverable-fn recoverable-fn)
+                  tool (assoc :tool tool)
                   tools (assoc :tools (vec tools))
                   options (assoc :options options)
                   tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
+                  tool-contracts (assoc :tool-contracts tool-contracts)
+                  options-from (assoc :options-from options-from)
+                  bands-from (assoc :bands-from bands-from)
+                  min-confidence (assoc :min-confidence min-confidence)
+                  (some? abstain) (assoc :abstain abstain)
                   (:executor node) (assoc :previous-executor (:executor node))
                   (:model node) (assoc :previous-model (:model node))
                   (:fn node) (assoc :previous-fn (:fn node))
                   (:tools node) (assoc :previous-tools (:tools node))
                   (:options node) (assoc :previous-options (:options node)))})]})))
+
+(defcommand :sheet set-node-model-policy
+  {:authorized? authenticated?}
+  "Persist provider routing and ordered backups for a model-capable node."
+  [{{:keys [sheet-id node-id] :as command} :command :as ctx}]
+  (if-let [node (rm/get-node ctx sheet-id node-id)]
+    (if (or (#{:llm-condition :repl-researcher} (:type node))
+            (and (= :leaf (:type node))
+                 (or (nil? (:executor node)) (#{:ai :decision} (:executor node)))))
+      {:command-result/events
+       [(->event {:type :sheet/node-model-policy-set
+                  :tags #{[:sheet sheet-id] [:node node-id]}
+                  :body (merge {:sheet-id sheet-id :node-id node-id}
+                               (select-keys (model-fallback/validate-config! command) [:provider :fallback-models :fallback-policy :options]))})]}
+      {::anom/category ::anom/incorrect ::anom/message "Node cannot call a model"})
+    {::anom/category ::anom/not-found ::anom/message "Node not found"}))
 
 (defcommand :sheet set-node-retry
   {:authorized? authenticated?}
@@ -933,10 +966,9 @@
       {::anom/category ::anom/conflict
        ::anom/message (str "Judge '" judge-name "' already declared")}
 
-      (and (= :custom (:type judge-config))
-           (not (:sheet-id judge-config)))
+      (judge-definition/config-error judge-config)
       {::anom/category ::anom/incorrect
-       ::anom/message "Custom judge type requires :sheet-id"}
+       ::anom/message (judge-definition/config-error judge-config)}
 
       :else
       {:command-result/events
@@ -946,17 +978,57 @@
           :body {:sheet-id sheet-id
                  :judge-name judge-name
                  :judge-config judge-config
+                 :revision-number 1
                  :criteria-version 1}})]})))
+
+(defcommand :sheet revise-judge
+  {:authorized? authenticated?}
+  "Revise a declared judge's definition (rubric, purposes, model, type, ...).
+   The config is the COMPLETE new definition. The judge keeps its name and its
+   revision number increases, so results graded by the old and new definitions
+   never blend. Revising to an identical definition is a conflict: it is not a
+   new revision."
+  [{{:keys [sheet-id judge-name judge-config]} :command
+    :as ctx}]
+  (let [sheet (rm/get-sheet ctx sheet-id)
+        judge (rm/get-judge ctx sheet-id judge-name)]
+    (cond
+      (not sheet)
+      {::anom/category ::anom/not-found
+       ::anom/message "Sheet not found"}
+
+      (not judge)
+      {::anom/category ::anom/not-found
+       ::anom/message (str "Judge '" judge-name "' not declared; declare it first")}
+
+      (judge-definition/config-error judge-config)
+      {::anom/category ::anom/incorrect
+       ::anom/message (judge-definition/config-error judge-config)}
+
+      (= judge-config (:judge-config (peek (:revisions judge))))
+      {::anom/category ::anom/conflict
+       ::anom/message (str "Judge '" judge-name "' unchanged: revising to the same "
+                           "definition is not a new revision")}
+
+      :else
+      {:command-result/events
+       [(->event
+         {:type :sheet/judge-revised
+          :tags #{[:sheet sheet-id]}
+          :body {:sheet-id sheet-id
+                 :judge-name judge-name
+                 :judge-config judge-config
+                 :revision-number (inc (:revision-number judge))}})]})))
 
 (defcommand :sheet set-node-judges
   {:authorized? authenticated?}
   "Set which evaluation judges apply to a node.
 
-   Gap-5: accepts both `:leaf` and `:repl-researcher` node types. The
-   judge runtime fires on `:sheet/node-execution-completed` events
-   regardless of executor kind; allowing repl-researcher attachment
-   lets consumers override the Gap-5 default-attachment behavior on
-   any repl-researcher node."
+   Any node of the sheet may carry judges: leaves, researchers, composites
+   (sequence, parallel, fallback, map-each), delegates, conditions and the
+   root. An attached judge monitors the completions of the node it is
+   attached to, so a judge on a composite or delegate grades the whole.
+   An unknown node, or a judge name not declared on the sheet, is rejected."
   [{{:keys [sheet-id node-id judges]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)
@@ -966,10 +1038,6 @@
       (not node)
       {::anom/category ::anom/not-found
        ::anom/message "Node not found"}
-
-      (not (contains? #{:leaf :repl-researcher} (:type node)))
-      {::anom/category ::anom/incorrect
-       ::anom/message "Only :leaf and :repl-researcher nodes can have evaluation judges"}
 
       (seq unknown-judges)
       {::anom/category ::anom/not-found
@@ -1000,6 +1068,7 @@
             tool-context]} :command
     :as context}]
   (let [new-tick-id (or tick-id (random-uuid))
+        options (budget-facts/start-options context sheet-id new-tick-id parent-tick-id options)
         tick-start-cas {:types #{:sheet/tree-tick-started}
                         :tags #{[:tick new-tick-id]}
                         :predicate-fn
@@ -1076,7 +1145,7 @@
                                               (reduce-kv (fn [acc k entry]
                                                            (assoc acc k (dissoc entry :value)))
                                                          {} (or entries {}))))
-                started-event (->event
+                started-event (budget-facts/event context
              {:type :sheet/tree-tick-started
               :tags (cond-> #{[:sheet sheet-id]
                               [:tick new-tick-id]}
@@ -1123,7 +1192,7 @@
 
           :else
           {:command-result/events
-           [(->event
+           [(budget-facts/event context
              {:type :sheet/tree-tick-started
               :tags (cond-> #{[:sheet sheet-id]
                               [:tick new-tick-id]}
@@ -1172,15 +1241,17 @@
       :else
       (let [new-tick-id (or tick-id (random-uuid))]
         {:command-result/events
-         [(->event
+         [(budget-facts/event ctx
            {:type :sheet/node-execution-started
             :tags #{[:sheet sheet-id]
                     [:node node-id]
                     [:tick new-tick-id]}
-            :body {:sheet-id sheet-id
-                   :tick-id new-tick-id
-                   :node-id node-id
-                   :inputs inputs-with-overrides}})]}))))
+            :body (execution-lease/stamp
+                   ctx node
+                   {:sheet-id sheet-id
+                    :tick-id new-tick-id
+                    :node-id node-id
+                    :inputs inputs-with-overrides})})]}))))
 
 (defcommand :sheet resume-node-execution
   {:authorized? authenticated?}
@@ -1225,7 +1296,7 @@
 
       :else
       {:command-result/events
-       [(->event
+       [(budget-facts/event ctx
          {:type :sheet/node-execution-started
           :tags #{[:sheet sheet-id] [:node node-id] [:tick tick-id]}
           :body (cond-> {:sheet-id sheet-id
@@ -1233,6 +1304,18 @@
                          :node-id node-id
                          :inputs inputs
                          :resumed-from-event-id original-start-event-id}
+                  ;; AbandonedWorkStaysRecoverable: the resumed start is itself
+                  ;; leased by the recovering worker.
+                  (execution-lease/leased-node?
+                   (get-in (rm/get-tick-execution-context ctx tick-id)
+                           [:nodes-by-id node-id]))
+                  (as-> body
+                        (do (execution-lease/track-queued!
+                             ctx (get-in (rm/get-tick-execution-context ctx tick-id)
+                                         [:nodes-by-id node-id])
+                             {:sheet-id sheet-id :tick-id tick-id
+                              :node-id node-id :inputs inputs})
+                            (merge body (execution-lease/fields ctx))))
                   researcher-ownership-epoch
                   (assoc :researcher-ownership-epoch
                          researcher-ownership-epoch))})]
@@ -1260,6 +1343,23 @@
                                       (= original-start-event-id
                                          (:resumed-from-event-id %))))
                            later))))}})))
+
+(defcommand :sheet renew-node-execution-lease
+  {:authorized? authenticated?}
+  "Extend the durable ownership lease of one running leaf or delegate start."
+  [{{:keys [sheet-id tick-id node-id exec-context start-event-id
+            lease-owner lease-expires-at]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :sheet/node-execution-lease-renewed
+      :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+      :body (cond-> {:sheet-id sheet-id
+                     :tick-id tick-id
+                     :node-id node-id
+                     :start-event-id start-event-id
+                     :lease-owner lease-owner
+                     :lease-expires-at lease-expires-at}
+              (seq exec-context) (assoc :exec-context exec-context))})]})
 
 (defn- commit-researcher-iteration-v2
   [{{:keys [sheet-id tick-id node-id resume-state iteration-record inputs resume?
@@ -1348,7 +1448,7 @@
                           :saved-at now}})]
                  (not= false resume?)
                  (conj
-                  (->event
+                  (budget-facts/event ctx
                    {:type :sheet/node-execution-started
                     :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
                     :body {:sheet-id sheet-id
@@ -1490,7 +1590,7 @@
                           :checkpointed-at (str (java.time.Instant/now))}})]
                  (not= false resume?)
                  (conj
-                  (->event
+                  (budget-facts/event ctx
                    {:type :sheet/node-execution-started
                     :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
                     :body {:sheet-id sheet-id
@@ -1518,10 +1618,10 @@
   {:authorized? authenticated?}
   "Atomically acquire one checkpointed researcher campaign frontier epoch."
   [{{:keys [sheet-id tick-id node-id budget-root-tick-id ownership-epoch claimed-at
-            campaign-started-at-ms campaign-deadline-ms]} :command}]
+            campaign-started-at-ms campaign-deadline-ms]} :command :as ctx}]
   (let [campaign-tag (researcher-effects/campaign-tag sheet-id tick-id node-id)]
     {:command-result/events
-     [(->event
+     [(budget-facts/event ctx
        {:type :rlm/researcher-frontier-claimed
         :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]
                         [:node node-id] campaign-tag}
@@ -1545,7 +1645,7 @@
   "Atomically claim an effect under the campaign's current ownership epoch."
   [{{:keys [sheet-id tick-id node-id budget-root-tick-id iteration-index logical-action-identity
             attempt-identity attempt-ordinal ownership-epoch kind claimed-at]}
-    :command}]
+    :command :as ctx}]
   (let [campaign-tag (researcher-effects/campaign-tag sheet-id tick-id node-id)
         expected-attempt-identity
         (researcher-effects/attempt-identity
@@ -1555,7 +1655,7 @@
        ::anom/message
        "Researcher effect attempt identity does not match logical action, epoch, and ordinal"}
       {:command-result/events
-       [(->event
+       [(budget-facts/event ctx
          {:type :rlm/researcher-effect-claimed
           :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]
                           [:node node-id] campaign-tag}
@@ -1581,38 +1681,30 @@
 (defcommand :sheet reserve-provider-call
   {:authorized? authenticated?}
   "Atomically consume one durable provider-call slot before dispatch."
-  [{{:keys [budget-sheet-id budget-tick-id sheet-id tick-id node-id
-            campaign-sheet-id campaign-tick-id campaign-node-id iteration-index
-            logical-action-identity invocation-identity
-            provider-attempt-ordinal ownership-epoch reserved-at]
+  [{{:keys [budget-sheet-id budget-tick-id tick-id node-id admission-kind
+            campaign-sheet-id campaign-tick-id campaign-node-id invocation-identity]
      :as reservation} :command}]
-  (let [expected-invocation-identity
-        (provider-call-reservations/invocation-identity
-         budget-tick-id logical-action-identity ownership-epoch
-         provider-attempt-ordinal)]
-    (if (not= expected-invocation-identity invocation-identity)
-      {::anom/category ::anom/incorrect
-       ::anom/message
-       "Provider invocation identity does not match logical action, epoch, and ordinal"}
-      {:command-result/events
-       [(->event
-         {:type provider-call-reservations/reservation-event-type
-          :tags #{[:sheet budget-sheet-id]
-                  [:tick budget-tick-id]
-                  [:provider-invoking-tick tick-id]
-                  [:provider-node node-id]
-                  [:researcher-campaign-tick campaign-tick-id]
-                  (researcher-effects/campaign-tag
-                   campaign-sheet-id campaign-tick-id campaign-node-id)}
-          :body (select-keys reservation
-                             [:budget-sheet-id :budget-tick-id
-                              :sheet-id :tick-id :node-id
-                              :campaign-tick-id :campaign-node-id
-                              :iteration-index :logical-action-identity
-                              :invocation-identity :provider-attempt-ordinal
-                              :ownership-epoch :reserved-at])})]
-       :command-result/cas
-       (provider-call-reservations/reservation-cas reservation)})))
+  (if (not= (provider-call-reservations/reservation-identity reservation) invocation-identity)
+    {::anom/category ::anom/incorrect
+     ::anom/message "Provider invocation identity does not match its canonical owner and physical attempt"}
+    {:command-result/events
+     [(->event
+       {:type provider-call-reservations/reservation-event-type
+        :tags (cond-> #{[:sheet budget-sheet-id] [:tick budget-tick-id]
+                        [:llm-budget-root budget-tick-id]
+                        [:provider-invoking-tick tick-id] [:provider-node node-id]}
+                (not= :ordinary admission-kind)
+                (conj [:researcher-campaign-tick campaign-tick-id]
+                      (researcher-effects/campaign-tag campaign-sheet-id campaign-tick-id campaign-node-id)))
+        :body (select-keys reservation
+                           [:admission-kind :budget-sheet-id :budget-tick-id
+                            :sheet-id :tick-id :node-id :node-start-id :exec-context
+                            :candidate-index :node-attempt
+                            :campaign-sheet-id :campaign-tick-id :campaign-node-id
+                            :iteration-index :logical-action-identity :invocation-identity
+                            :provider-attempt-ordinal :ownership-epoch :reserved-at
+                            :model-configuration-id :model-logical-action-id])})]
+     :command-result/cas (provider-call-reservations/reservation-cas reservation)}))
 
 (defcommand :sheet complete-researcher-effect
   {:authorized? authenticated?}
@@ -1702,10 +1794,11 @@
 
    Optional :usage carries per-node token counts from LLM calls."
   [{{:keys [sheet-id tick-id node-id completion-id researcher-ownership-epoch
-            status writes rejected-writes write-sources write-references? duration-ms
-            observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage model
-            node-type completion-kind raw-response failure-kind provider-evidence
-            block-payload read-sources]} :command
+            status writes rejected-writes missing-write-keys write-sources write-references? duration-ms
+            observed-quantum-duration-ms max-observed-quantum-duration-ms error inputs usage own-usage model
+            node-type completion-kind raw-response failure-kind provider-evidence model-fallback
+            condition-answer decision block-payload read-sources
+            requested-model resolved-model]} :command
     :as ctx}]
   (if (or (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
           (and completion-id
@@ -1782,6 +1875,16 @@
         forwarded-sources (into {}
                                 (for [[k source] (or write-sources {})]
                                   [k source]))
+        ;; Forwarders publish references rather than copying payloads. Their
+        ;; shape describes these exact canonical references, not merely the
+        ;; (usually empty) :writes argument or prior writes of the same node.
+        forwarded-writes (when (seq forwarded-sources)
+                           (value-log/resolve-values
+                            ctx (:tenant-id ctx) tick-id
+                            (into {} (map (fn [[k source]] [k {:source source}]))
+                                  forwarded-sources)
+                            (keys forwarded-sources)))
+        write-profile (profile/profile-values (merge forwarded-writes writes))
         cross-tick-sources (if write-references?
                              (into {}
                                    (filter (fn [[_ source]]
@@ -1799,7 +1902,7 @@
                                                    (seq exec-context)
                                                    (assoc :exec-context exec-context))}))
                                cross-tick-sources)
-        completion-event (->event
+        completion-event (budget-facts/event ctx
                            {:type :sheet/node-execution-completed
                             :tags #{[:sheet sheet-id]
                                     [:node node-id]
@@ -1820,7 +1923,8 @@
                                     (or (seq writes) (seq forwarded-sources))
                                     (assoc :write-keys (vec (distinct (concat (keys writes)
                                                                              (keys forwarded-sources))))
-                                           :write-profile (profile/profile-values writes))
+                                           :write-profile write-profile)
+                                    (seq missing-write-keys) (assoc :missing-write-keys missing-write-keys)
                                     (seq rejected-writes)
                                     (assoc :rejected-write-keys (vec (keys rejected-writes))
                                            :rejected-write-profile (profile/profile-values rejected-writes))
@@ -1843,6 +1947,9 @@
                                     ;; (node-output <node-id>) drill-down.
                                     raw-response (assoc :raw-response raw-response)
                                     failure-kind (assoc :failure-kind failure-kind)
+                                    model-fallback (assoc :model-fallback model-fallback)
+                                    (boolean? condition-answer) (assoc :condition-answer condition-answer)
+                                    decision (assoc :decision decision)
                                     provider-evidence (assoc :provider-evidence provider-evidence)
                                     ;; :inputs keeps ONLY the namespaced
                                     ;; execution-context keys. Those are not
@@ -1862,7 +1969,12 @@
                                     (seq read-sources)
                                     (assoc :read-sources read-sources)
                                     (seq usage) (assoc :usage usage)
+                                    (seq own-usage) (assoc :own-usage own-usage)
                                     model (assoc :model model)
+                                    ;; ModelLeafRecordsResolvedModel: the configured
+                                    ;; and the provider-reported model, kept apart.
+                                    requested-model (assoc :requested-model requested-model)
+                                    resolved-model (assoc :resolved-model resolved-model)
                                     ;; C-2a-2: propagate :node-type so the
                                     ;; per-node-type aggregator can partition
                                     ;; without looking up via the sheets RM.
@@ -2069,7 +2181,7 @@
     {:command-result/events []}
     (cond->
      {:command-result/events
-      [(->event
+      [(budget-facts/event ctx
         {:type :sheet/node-execution-completed
          :tags #{[:sheet sheet-id]
                  [:node node-id]
@@ -2136,7 +2248,7 @@
     (if (contains? #{:completed :cancelled} (:status (rm/get-tick ctx tick-id)))
       {:command-result/events []}
       {:command-result/events
-       [(->event
+       [(budget-facts/event ctx
          {:type :sheet/tick-cancelled
           :tags #{[:sheet sheet-id]
                   [:tick tick-id]}
@@ -2163,9 +2275,9 @@
 (defcommand :sheet emit-tick-started
   {:authorized? authenticated?}
   "System command: record that a tree tick execution has started (for in-progress tracking)."
-  [{{:keys [sheet-id tick-id]} :command}]
+  [{{:keys [sheet-id tick-id]} :command :as ctx}]
   {:command-result/events
-   [(->event {:type :sheet/tree-tick-started
+   [(budget-facts/event ctx {:type :sheet/tree-tick-started
               :tags #{[:sheet sheet-id] [:tick tick-id]}
               :body {:sheet-id sheet-id
                      :tick-id tick-id}})]})
@@ -2178,7 +2290,7 @@
             block-payload error]} :command
     :as ctx}]
   {:command-result/events
-     [(->event {:type :sheet/tree-tick-completed
+     [(budget-facts/event ctx {:type :sheet/tree-tick-completed
                 :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
                         correlation-id (conj [:correlation correlation-id]))
                 :body (cond-> {:sheet-id sheet-id
@@ -2281,19 +2393,32 @@
     (let [node (get nodes-by-id root-id)]
       (when node
         (cond-> {:id (:id node)
+                 ;; The draft node this snapshot node came from: a published
+                 ;; run is judged and measured as this node.
+                 :source-node-id (:id node)
                  :type (:type node)
                  :name (:name node)}
+          true (merge (select-keys node [:provider :fallback-models :fallback-policy :options]))
+          (:model-fallback-policy node) (assoc :model-fallback-policy (:model-fallback-policy node))
           ;; Leaf-specific fields
           (= :leaf (:type node))
           (merge (cond-> {}
                    (:executor node) (assoc :executor (:executor node))
                    (:model node) (assoc :model (:model node))
+                   (:options node) (assoc :options (:options node))
                    (:fn node) (assoc :fn (:fn node))
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (seq (:writes node)) (assoc :writes (:writes node))
                    (:tools node) (assoc :tools (:tools node))
-                   (:retry node) (assoc :retry (:retry node))))
+                   (:retry node) (assoc :retry (:retry node))
+                   (= :decision (:executor node))
+                   (merge (cond-> {}
+                            (:options-from node) (assoc :options-from (:options-from node))
+                            (:bands-from node) (assoc :bands-from (:bands-from node))
+                            (:min-confidence node) (assoc :min-confidence (:min-confidence node))
+                            (some? (:abstain node)) (assoc :abstain (:abstain node))
+                            (:options node) (assoc :options (:options node))))))
           ;; Condition-specific
           (= :condition (:type node))
           (merge (cond-> {}
@@ -2304,6 +2429,11 @@
                    (:instruction node) (assoc :instruction (:instruction node))
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (:model node) (assoc :model (:model node))))
+          ;; Researcher definitions must freeze the complete execution contract.
+          (= :repl-researcher (:type node))
+          (merge (select-keys node [:instruction :reads :writes :model :options :rlm
+                                    :mcp-tools :browser-tools :tool-contracts :tool-caller-fn
+                                    :max-iterations :context :judges]))
           ;; Parallel-specific
           (= :parallel (:type node))
           (merge {:success-policy (or (:success-policy node) :all)
@@ -2705,6 +2835,9 @@
           :ontology/record-task-classification-deferral
           (requiring-resolve
            'ai.obney.orc.ontology.core.commands/ontology-record-task-classification-deferral)
+          :ontology/mint-domain-child
+          (requiring-resolve
+           'ai.obney.orc.ontology.core.commands/ontology-mint-domain-child)
           nil)]
     (if (and handler
              (m/validate (:command/name effect-command) effect-command))
@@ -2757,10 +2890,34 @@
     :ontology/record-task-classification-deferral})
 
 (def ^:private researcher-classification-effect-priority
-  {:ontology/record-claim-deltas 10
+  {;; RS-3: the domain child's concept + skos:broader edge exist before
+   ;; anything (the CV-1 capture, the assignment) references the child.
+   :ontology/mint-domain-child 5
+   :ontology/record-claim-deltas 10
    :sheet/record-injection 20
    :ontology/assign-task-class 100
    :ontology/record-task-classification-deferral 100})
+
+(def ^:private domain-mint-assignment-vias
+  #{:mint-domain-child :mint-sibling-domain-child})
+
+(defn- domain-axis-deferral?
+  "RS-3: the domain-axis deferral recorded BESIDE a structural assignment
+   (the wedge's :domain-classification-deferral effect) — the deferral
+   command with :fallback-source :domain-coverage. By name it looks like a
+   second outcome; it is the domain axis of the same outcome."
+  [effect]
+  (and (= :ontology/record-task-classification-deferral (:command/name effect))
+       (= :domain-coverage (:fallback-source effect))))
+
+(defn- researcher-classification-effect-order
+  "One order on both paths (spec ClassificationEffectsCommitAsOneBoundedSet):
+   mint, capture, injection, assignment, then the domain-axis deferral that
+   rides the assignment."
+  [effect]
+  (if (domain-axis-deferral? effect)
+    110
+    (get researcher-classification-effect-priority (:command/name effect) 50)))
 
 (defn- researcher-classification-commit-error
   [{:keys [sheet-id tick-id node-id ownership-epoch effects]}]
@@ -2780,8 +2937,9 @@
     :else
     (let [outcomes
           (filterv
-           #(contains? researcher-classification-outcome-command-names
-                       (:command/name %))
+           #(and (contains? researcher-classification-outcome-command-names
+                            (:command/name %))
+                 (not (domain-axis-deferral? %)))
            effects)
           outcome (first outcomes)
           injections
@@ -2789,52 +2947,85 @@
           convergence-captures
           (filterv #(= :ontology/record-claim-deltas (:command/name %)) effects)
           convergence-capture (first convergence-captures)
+          assignment? (= :ontology/assign-task-class (:command/name outcome))
           fresh-mint-assignment?
-          (and (= :ontology/assign-task-class (:command/name outcome))
-               (true? (:was-fresh-mint? outcome)))]
+          (and assignment? (true? (:was-fresh-mint? outcome)))
+          ;; RS-3: the domain-child mint and the domain-axis deferral.
+          domain-mint-assignment?
+          (and assignment?
+               (contains? domain-mint-assignment-vias (:assigned-via outcome)))
+          mints (filterv #(= :ontology/mint-domain-child (:command/name %)) effects)
+          mint (first mints)
+          domain-deferrals (filterv domain-axis-deferral? effects)
+          domain-deferral (first domain-deferrals)
+          bound-to-campaign?
+          (fn [effect]
+            (= [sheet-id tick-id node-id]
+               [(:source-sheet-id effect)
+                (:source-tick-id effect)
+                (:source-node-id effect)]))]
       (cond
-      (not= 1 (count outcomes))
-      "Researcher classification commit requires exactly one outcome"
+        (not= 1 (count outcomes))
+        "Researcher classification commit requires exactly one outcome"
 
-      (not= [sheet-id tick-id node-id ownership-epoch]
-            [(:source-sheet-id outcome)
-             (:source-tick-id outcome)
-             (:source-node-id outcome)
-             (:researcher-ownership-epoch outcome)])
-      "Researcher classification outcome does not belong to the committing campaign epoch"
+        (not (and (bound-to-campaign? outcome)
+                  (= ownership-epoch (:researcher-ownership-epoch outcome))))
+        "Researcher classification outcome does not belong to the committing campaign epoch"
 
-      (> (count injections) 1)
-      "Researcher classification commit accepts at most one injection record"
+        (> (count injections) 1)
+        "Researcher classification commit accepts at most one injection record"
 
-      (not-every? #(= [sheet-id tick-id node-id]
-                      [(:sheet-id %) (:tick-id %) (:node-id %)])
-                  injections)
-      "Researcher classification injection does not belong to the committing campaign"
+        (not-every? #(= [sheet-id tick-id node-id]
+                        [(:sheet-id %) (:tick-id %) (:node-id %)])
+                    injections)
+        "Researcher classification injection does not belong to the committing campaign"
 
-      (> (count convergence-captures) 1)
-      "Researcher classification commit accepts at most one convergence capture"
+        (> (count convergence-captures) 1)
+        "Researcher classification commit accepts at most one convergence capture"
 
-      (and fresh-mint-assignment?
-           (not= 1 (count convergence-captures)))
-      "Fresh-mint classification requires one convergence capture"
+        (and fresh-mint-assignment?
+             (not= 1 (count convergence-captures)))
+        "Fresh-mint classification requires one convergence capture"
 
-      (and (not fresh-mint-assignment?) (seq convergence-captures))
-      "Only a fresh-mint assignment may publish convergence capture"
+        (and (not fresh-mint-assignment?) (seq convergence-captures))
+        "Only a fresh-mint assignment may publish convergence capture"
 
-      (and fresh-mint-assignment?
-           (or (not= :tree-class (:granularity convergence-capture))
-               (not= (:assigned-tree-id outcome)
-                     (:target-identifier convergence-capture))))
-      "Researcher convergence capture does not belong to the assigned tree class"
+        (and fresh-mint-assignment?
+             (or (not= :tree-class (:granularity convergence-capture))
+                 (not= (:assigned-tree-id outcome)
+                       (:target-identifier convergence-capture))))
+        "Researcher convergence capture does not belong to the assigned tree class"
+
+        (> (count mints) 1)
+        "Researcher classification commit accepts at most one domain-child mint"
+
+        (and domain-mint-assignment? (not= 1 (count mints)))
+        "Domain-child classification requires its domain-child mint"
+
+        (and (not domain-mint-assignment?) (seq mints))
+        "Only a domain-child assignment may publish a domain-child mint"
+
+        (and domain-mint-assignment?
+             (or (not (bound-to-campaign? mint))
+                 (not= (:assigned-tree-id outcome) (:child-tree-id mint))))
+        "Researcher domain-child mint does not belong to the assigned domain child"
+
+        (> (count domain-deferrals) 1)
+        "Researcher classification commit accepts at most one domain-axis deferral"
+
+        (and (some? domain-deferral)
+             (or (not assignment?)
+                 (not (bound-to-campaign? domain-deferral))
+                 (not= ownership-epoch
+                       (:researcher-ownership-epoch domain-deferral))))
+        "Researcher domain-axis deferral does not belong to the committing assignment"
 
         :else nil))))
 
 (defn- canonical-researcher-classification-effects
   [effects]
   (->> effects
-       (sort-by #(get researcher-classification-effect-priority
-                      (:command/name %)
-                      50))
+       (sort-by researcher-classification-effect-order)
        vec))
 
 (defcommand :sheet commit-researcher-classification

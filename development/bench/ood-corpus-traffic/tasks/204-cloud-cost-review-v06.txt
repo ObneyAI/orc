@@ -1,0 +1,17 @@
+; brief-id: b-027
+; group: cloud-cost-review
+; variant: 6
+
+Hey, I just pulled the latest GCP billing export for our data-processing engine and the 'Networking' and 'BigQuery' lines are looking pretty scary. We are definitely data-egress-heavy right now, and I suspect a lot of it is inefficient cross-zone traffic within our multi-region setup that doesn't actually need to be there. 
+
+Here is a snippet of the high-level spend I’m seeing:
+{
+  "Compute Engine": "$12,400 (Inter-zone egress: $4,200)",
+  "BigQuery": "$8,900 (High slot utilization in non-prod)",
+  "Cloud Storage": "$3,100 (Class A operations spike)",
+  "Unallocated Snapshots": "$950"
+}
+
+I’ve uploaded the full breakdown and the usage metrics for the last 30 days. Can you go through this and give me a ranked list of savings opportunities? I need to know exactly how much we’d save monthly for each item, the risk level (we absolutely cannot break the real-time ingestion pipeline), and the specific gcloud or console steps to implement them. 
+
+Keep your focus on things like optimizing egress, rightsizing idle BigQuery slots, and cleaning up storage—I’m looking for technical knobs we can turn today. Please don't waste time on an architecture redesign or any five-year budget projections. I just need to get these costs down without hitting our reliability. Thanks!

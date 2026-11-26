@@ -1,0 +1,14 @@
+; brief-id: b-018
+; group: content-calendar
+; variant: 2
+
+Hi there, I hope you’re having a good week. I’m honestly drowning over here—my kid started soccer practice three nights a week and between the commute and the actual games, I feel like I haven't sat down at my desk for more than twenty minutes at a time. Anyway, I really need to get our LinkedIn presence sorted for the next month because it's been totally stagnant while we've been focused on the product launch.
+
+I’ve attached the internal deck that outlines our brand voice for 'Nucleus Systems' (we're really trying to hit that B2B SaaS sweet spot of 'authoritative but approachable'), plus a CSV of our post analytics from the last six months. You'll see that our 'Founders' series did okay, but the technical deep-dives really tanked, so we need to pivot. Our main goal for this month is to drive demos for our mid-market segment. We have a strict constraint of only two video posts per month because our editor is on paternity leave, so everything else needs to be text or static images.
+
+Could you put together a full content calendar for next month? I’m looking for a cadence of three posts per week—Monday, Wednesday, Friday seems to work best for our audience. For each date, I need you to list the specific topic, the format (like a text-only 'thought leadership' piece vs. a single image), a compelling hook to stop the scroll, a clear call to action (directing them to the demo page or a whitepaper), and the specific success metric we should be tracking for that post (like click-through rate or comments). 
+
+Please don't actually write out the full posts or do any SEO keyword research—I just need the high-level strategic roadmap so I can show my boss what the plan is. I'm going to go try to find where I put my car keys now, but let me know if you have questions!
+
+Best,
+Sarah

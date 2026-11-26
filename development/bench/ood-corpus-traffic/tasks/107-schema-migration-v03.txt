@@ -1,0 +1,14 @@
+; brief-id: b-010
+; group: schema-migration
+; variant: 3
+
+I need a detailed technical plan for migrating our legacy SQL Server 'Orders' table to a new partitioned structure. We are decoupling the 'OrderDetails' blob into a dedicated 'OrderLineItems' table to improve search performance without impacting transactional throughput. This must be a zero-downtime operation to support our 24/7 warehouse requirements.
+
+Please provide a specification following this schema:
+
+- **Migration Sequence**: A chronological breakdown of all required DDL changes and application-level code deployments.
+- **Dual-Write & Backfill Strategy**: A mechanism for handling concurrent writes to both schemas during the transition, including a specific batching strategy for migrating the 400M existing rows that prevents primary key blocking.
+- **Cut-over & Rollback**: Defined triggers for the final production switch and a granular "undo" procedure to be executed in the event of latency spikes or data anomalies.
+- **Verification**: A suite of T-SQL queries designed to validate checksum parity between the newly split tables and the original source data.
+
+Focus exclusively on the structural transition and data integrity. Ignore index tuning or query optimization. Ensure all proposed steps avoid locks that could hang the checkout service. Refer to the attached .sql definitions for field mapping.
