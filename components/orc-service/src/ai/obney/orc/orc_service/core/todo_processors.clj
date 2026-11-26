@@ -1860,12 +1860,14 @@
 
         final!-fn (fn [output]
                     (reset! final-output nil)
-                    (let [candidate (logic/validate-final! output declared-writes optional-writes)
+                    (let [candidate (-> (logic/validate-final! output declared-writes optional-writes)
+                                        (logic/strip-nil-researcher-optional-writes optional-writes))
                           result (logic/validate-outputs
                                    blackboard {:status :success :outputs candidate} false)]
                       (when (= :failure (:status result))
                         (throw (ex-info (:error result)
                                         {:failure-kind :final-output-schema-invalid
+                                         ::rejected-final-writes (:rejected-writes result)
                                          :rejected-write-keys (vec (keys (:rejected-writes result)))})))
                       (reset! final-output (:outputs result))
                       (str "FINAL_ANSWER: " (pr-str (:outputs result)))))
@@ -3410,6 +3412,30 @@
 
               (some? stdout-profile)
               (assoc :stdout-profile stdout-profile))))
+        iteration-limit-result
+        (fn [history]
+          (let [total-elapsed (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
+                final-sandbox @sandbox-vars
+                surviving-vars (dissoc final-sandbox
+                                       :generated-tree :generated-tree-raw
+                                       :generated-tree-source
+                                       :iteration-reasonings :tree-results)
+                generated-tree-raw (:generated-tree-raw final-sandbox)
+                generated-tree-source (:generated-tree-source final-sandbox)
+                iteration-reasonings (:iteration-reasonings final-sandbox)]
+            (cond-> {:status :failure
+                     :error "Max iterations reached without final!"
+                     :outputs surviving-vars
+                     :iterations history
+                     :duration-ms total-elapsed
+                     :usage @total-usage
+                     :cumulative-tree-ms @cumulative-tree-ms
+                     :cumulative-thinking-ms (max 0 (- total-elapsed @cumulative-tree-ms))}
+              generated-tree-raw (assoc :generated-tree-raw generated-tree-raw)
+              generated-tree-source
+              (assoc :generated-tree-source generated-tree-source)
+              (seq iteration-reasonings) (assoc :iteration-reasonings
+                                                (vec iteration-reasonings)))))
         checkpoint-result
         (fn [next-iteration history attempt-start-ms]
           (when checkpointed?
@@ -3595,28 +3621,7 @@
            :usage @total-usage}
 
           (>= iteration max-iterations)
-          (let [total-elapsed (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
-                final-sandbox @sandbox-vars
-                surviving-vars (dissoc final-sandbox
-                                       :generated-tree :generated-tree-raw
-                                       :generated-tree-source
-                                       :iteration-reasonings :tree-results)
-                generated-tree-raw (:generated-tree-raw final-sandbox)
-                generated-tree-source (:generated-tree-source final-sandbox)
-                iteration-reasonings (:iteration-reasonings final-sandbox)]
-            (cond-> {:status :failure
-                     :error "Max iterations reached without final!"
-                     :outputs surviving-vars
-                     :iterations history
-                     :duration-ms total-elapsed
-                     :usage @total-usage
-                     :cumulative-tree-ms @cumulative-tree-ms
-                     :cumulative-thinking-ms (max 0 (- total-elapsed @cumulative-tree-ms))}
-              generated-tree-raw (assoc :generated-tree-raw generated-tree-raw)
-              generated-tree-source
-              (assoc :generated-tree-source generated-tree-source)
-              (seq iteration-reasonings) (assoc :iteration-reasonings
-                                                (vec iteration-reasonings))))
+          (iteration-limit-result history)
 
           (and (>= (long (campaign-now-ms-fn)) campaign-deadline-ms)
                (not= :phase-budget campaign-deadline-source))
@@ -4157,11 +4162,20 @@
                                             :stdout (:stdout exec-result)
                                             :error-class (:error-class exec-result)
                                             :error enhanced-error
-                                            :error-data (:error-data exec-result)
+                                            :error-data (dissoc (:error-data exec-result) ::rejected-final-writes)
                                             :vars-created []})]
-                    (or (checkpoint-result (inc iteration) error-history
-                                           attempt-start-ms)
-                        (recur (inc iteration) error-history)))
+                    (if (and (= (inc iteration) max-iterations)
+                             (contains? (:error-data exec-result) ::rejected-final-writes))
+                      (persist-terminal-result
+                       iteration error-history
+                       (assoc (iteration-limit-result error-history)
+                              :error enhanced-error
+                              :failure-kind :schema-validation-failed
+                              :outputs {}
+                              :rejected-writes (get-in exec-result [:error-data ::rejected-final-writes]))
+                       attempt-start-ms)
+                      (or (checkpoint-result (inc iteration) error-history attempt-start-ms)
+                          (recur (inc iteration) error-history))))
 
                   (and recursive-mode?
                        final-output
