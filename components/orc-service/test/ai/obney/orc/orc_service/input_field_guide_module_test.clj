@@ -78,16 +78,25 @@
 (def ^:private fields-no-value-carries
   ["region" "sent-at" "internal-memo"])
 
-(deftest a-function-request-through-the-executor-names-no-field-the-values-lack
-  (let [text (text-of (request :function))]
-    (testing "the guide is there"
-      (is (str/includes? text "Your input fields are:")))
-    (doseq [absent fields-no-value-carries]
-      (is (not (str/includes? text absent))
-          (str "an absent nested field is named nowhere: " absent)))))
+(defn- guide-sections [text]
+  (let [[shown rest-of-request] (str/split text #"\n\nDECLARED CONTRACT \(not supplied evidence\):\n" 2)
+        [declared remaining] (when rest-of-request (str/split rest-of-request #"\n\n" 2))]
+    [shown declared remaining]))
+
+(defn- check-omitted-input-fields [mode]
+  (let [[shown declared remaining] (guide-sections (text-of (request mode)))]
+    (is (str/includes? shown "Your input fields are:"))
+    (doseq [field fields-no-value-carries]
+      (is (not (str/includes? shown field)) (str "Shown inputs omit " field))
+      (is (and declared (str/includes? declared field)) (str "The declared shape includes " field))
+      (is (and remaining (not (str/includes? remaining field))) (str "The request values omit " field)))))
+
+(deftest a-function-request-keeps-omitted-input-fields-in-the-declared-contract
+  (check-omitted-input-fields :function))
 
 (deftest a-shown-field-keeps-its-meaning-and-an-undescribed-one-is-listed-by-name-and-type
-  (let [text (text-of (request :function))]
+  (let [text (text-of (request :function))
+        [shown] (guide-sections text)]
     (doseq [meaning ["The ticket subject line"
                      "Promo code the customer quoted"
                      "The customer account"
@@ -96,10 +105,10 @@
                      "One message"
                      "human means a staff member, never the customer's own words"
                      "What was written"]]
-      (is (str/includes? text meaning) (str "carries: " meaning)))
+      (is (str/includes? shown meaning) (str "carries: " meaning)))
     (testing "an input with no declared meaning is listed by name and type, with no generated text"
-      (is (str/includes? text "`order-id` (str)\n"))
-      (is (str/includes? text "`attachments` (json object)\n"))
+      (is (str/includes? shown "`order-id` (str)\n"))
+      (is (str/includes? shown "`attachments` (json object)\n"))
       (is (not (str/includes? text "Blackboard key"))))
     (testing "a description is the declared meaning, not the meaning plus the declared type"
       (is (not (str/includes? text "object with")))
@@ -109,7 +118,7 @@
 
 (def ^:private outputs-before
   (clojure.edn/read-string
-   "[{:name :reply, :original-key :reply, :nested-key nil, :spec [:string {:description \"The reply to send\"}], :description \"The reply to send (string)\"} {:name :priority, :original-key :plan, :nested-key \"priority\", :original-nested-key :priority, :string-key? false, :spec [:enum \"low\" \"high\"], :optional false, :description \"How urgent (one of: low, high)\"} {:name :steps, :original-key :plan, :nested-key \"steps\", :original-nested-key :steps, :string-key? false, :spec [:vector [:map [:action {:description \"What to do\"} :string] [:note {:optional true, :description \"A note for the step\"} :string]]], :optional false, :description \"The steps, in order (list of object with {action: string, note (optional): string})\"} {:name :aside, :original-key :plan, :nested-key \"aside\", :original-nested-key :aside, :string-key? false, :spec :string, :optional true, :description \"An optional aside (string)\"}]"))
+   "[{:name :reply, :orc/strict-description \"The reply to send\", :original-key :reply, :nested-key nil, :spec [:string {:description \"The reply to send\"}], :description \"The reply to send (string)\"} {:name :priority, :orc/strict-description \"How urgent\", :original-key :plan, :nested-key \"priority\", :original-nested-key :priority, :string-key? false, :spec [:enum \"low\" \"high\"], :optional false, :description \"How urgent (one of: low, high)\"} {:name :steps, :orc/strict-description \"The steps, in order\", :original-key :plan, :nested-key \"steps\", :original-nested-key :steps, :string-key? false, :spec [:vector [:map [:action {:description \"What to do\"} :string] [:note {:optional true, :description \"A note for the step\"} :string]]], :optional false, :description \"The steps, in order (list of object with {action: string, note (optional): string})\"} {:name :aside, :orc/strict-description \"An optional aside\", :original-key :plan, :nested-key \"aside\", :original-nested-key :aside, :string-key? false, :spec :string, :optional true, :description \"An optional aside (string)\"}]"))
 
 (def ^:private tools-before
   "[{\"type\":\"function\",\"function\":{\"name\":\"submit_response\",\"description\":\"Draft the reply to send to the customer.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"reply\":{\"description\":\"The reply to send (string)\",\"type\":\"string\"},\"priority\":{\"type\":\"string\",\"enum\":[\"low\",\"high\"],\"description\":\"How urgent (one of: low, high)\"},\"steps\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"action\":{\"description\":\"What to do\",\"type\":\"string\"},\"note\":{\"description\":\"A note for the step\",\"oneOf\":[{\"type\":\"string\"},{\"type\":\"null\"}]}},\"required\":[\"action\"]},\"description\":\"The steps, in order (list of object with {action: string, note (optional): string})\"},\"aside\":{\"oneOf\":[{\"type\":\"string\"},{\"type\":\"null\"}],\"description\":\"An optional aside (string)\"}},\"required\":[\"reply\",\"priority\",\"steps\"]}}}]")
@@ -127,6 +136,7 @@
 
 (deftest a-marker-request-through-the-executor-describes-inputs-by-their-declared-meaning-only
   (let [text (text-of (request :marker))
+        [shown] (guide-sections text)
         input-section (-> text
                           (str/split #"Your output fields are:" 2)
                           first)]
@@ -135,7 +145,7 @@
                      "The customer account"
                      "Support tier"
                      "human means a staff member, never the customer's own words"]]
-      (is (str/includes? input-section meaning) (str "carries: " meaning)))
+      (is (str/includes? shown meaning) (str "carries: " meaning)))
     (is (not (str/includes? input-section "Blackboard key"))
         "no generated text for an undescribed input")
     (is (not (str/includes? input-section "object with"))
@@ -159,9 +169,5 @@
       (is (every? #(not (contains? % :description))
                   (filter (comp #{:order-id :attachments} :name) fields))))))
 
-(deftest a-marker-request-through-the-executor-names-no-field-the-values-lack
-  (let [text (text-of (request :marker))]
-    (is (str/includes? text "Your input fields are:"))
-    (doseq [absent fields-no-value-carries]
-      (is (not (str/includes? text absent))
-          (str "an absent nested field is named nowhere: " absent)))))
+(deftest a-marker-request-keeps-omitted-input-fields-in-the-declared-contract
+  (check-omitted-input-fields :marker))

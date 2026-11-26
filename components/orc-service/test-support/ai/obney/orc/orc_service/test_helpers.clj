@@ -305,7 +305,7 @@
     (tp/stop-polling poller)))
 
 (defn start-test-processors
-  "Start every registered todo processor against an existing async context.
+  "Start the context's configured todo processors.
    Kept separate so recovery tests can tear down and rebuild processors while
    retaining the same strongly consistent event store, cache, and pubsub.
 
@@ -313,9 +313,10 @@
    every other processor stays on pubsub with no checkpoint.
 
    `without` (a set of processor names) leaves those processors out, for a test
-   that drives one stage itself."
+   that drives one stage itself. The optional namespaces select the consumer's
+   processor composition when other components are loaded in the same JVM."
   ([base-ctx] (start-test-processors base-ctx #{}))
-  ([base-ctx without]
+  ([{::keys [processor-namespaces] :as base-ctx} without]
   (reduce-kv
    (fn [acc proc-name {:keys [handler-fn topics] :as config}]
      (assoc acc proc-name
@@ -326,7 +327,8 @@
                          :handler-fn handler-fn
                          :context base-ctx}))))
    {}
-   (apply dissoc @tp/processor-registry* without))))
+   (cond->> (apply dissoc @tp/processor-registry* without)
+     processor-namespaces (into {} (filter (comp processor-namespaces namespace key)))))))
 
 (defn stop-test-processors! [ctx]
   (doseq [[proc-name processor] (:processors ctx)]
@@ -379,6 +381,8 @@
    Returns context map with :processors key containing started processors.
 
    Options:
+     :processor-namespaces - set of namespace strings for the processors to start.
+                             Defaults to all registered namespaces.
      :count-cache? - wrap the LMDB cache so every put/get is accounted
                      (see l2-stats / l2-write-bytes). The wrapper must be in
                      place BEFORE processors start, since each processor
@@ -387,7 +391,7 @@
                          in-memory store; recovery tests use this seam to
                          close and reopen a persistent SQLite store."
   ([] (create-async-test-context {}))
-  ([{:keys [count-cache? context event-store-conn]}]
+  ([{:keys [count-cache? context event-store-conn processor-namespaces]}]
   (rmp/l1-clear!)
   (let [dir (str "/tmp/sheet-async-test-" (random-uuid))
         background-supervisor (atom {:accepting? true :work #{}})
@@ -410,7 +414,8 @@
                          #(acquire-background-work! background-supervisor)
                          :orc/submit-background!
                          (tracked-background-submitter background-supervisor)
-                         ::cache-dir dir}
+                         ::cache-dir dir
+                         ::processor-namespaces processor-namespaces}
                         context)
         processors (start-test-processors base-ctx)]
     (assoc base-ctx

@@ -224,7 +224,8 @@
       (llm/register-provider! provider {:provider :openrouter :model "fixture/primary"
                                       :config {:api-base (:url server) :api-key http-fixture/fixture-token :timeout 15000}})
       (let [runs
-            (h/with-async-test-context [ctx {:context {:tenant-id (random-uuid) :llm-provider provider
+            (h/with-async-test-context [ctx {:processor-namespaces #{"sheet"}
+                                             :context {:tenant-id (random-uuid) :llm-provider provider
                                                        :fixture-effects effects :fixture-admissions admissions}}]
               (let [package (build-package! ctx)
                     a (future (execute-task ctx package "TASK-A" 2))

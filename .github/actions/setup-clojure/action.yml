@@ -1,6 +1,11 @@
 name: Setup Clojure
 description: Install Java 21, Clojure CLI, and restore dependency caches.
 
+inputs:
+  cli-version:
+    description: Clojure CLI release to install and cache.
+    default: '1.12.7.1681'
+
 runs:
   using: composite
   steps:
@@ -11,9 +16,17 @@ runs:
         java-version: '21'
 
     - name: Setup Clojure
-      uses: DeLaGuardo/setup-clojure@12.5
+      id: clojure
+      continue-on-error: true
+      uses: DeLaGuardo/setup-clojure@13.7.0
       with:
-        cli: latest
+        cli: ${{ inputs.cli-version }}
+
+    - name: Retry Clojure installation
+      if: steps.clojure.outcome == 'failure'
+      uses: DeLaGuardo/setup-clojure@13.7.0
+      with:
+        cli: ${{ inputs.cli-version }}
 
     - name: Cache dependencies
       uses: actions/cache@v4

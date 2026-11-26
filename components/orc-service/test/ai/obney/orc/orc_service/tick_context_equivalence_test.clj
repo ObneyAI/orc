@@ -126,7 +126,9 @@
   (let [sheet-id (new-sheet! ctx nm {:items [:vector :int]
                                      :current-item [:or :int :string]
                                      :note :string
-                                     :results [:vector :string]})
+                                     :results [:vector (if composite?
+                                                         [:map {:closed true} [:note :string]]
+                                                         :string)]})
         me-id (add-node! ctx sheet-id :map-each)]
     (if composite?
       (let [child (add-node! ctx sheet-id :sequence :parent-id me-id :index 0)]

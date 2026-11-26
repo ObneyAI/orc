@@ -41,7 +41,8 @@
     (try
       (llm/register-provider! fixture/provider {:provider :openrouter :model "fixture/primary"
         :config {:api-base (:url server) :api-key http/fixture-token :timeout 15000}})
-      (h/with-async-test-context [ctx {:context {:tenant-id (random-uuid) :llm-provider fixture/provider
+      (h/with-async-test-context [ctx {:processor-namespaces #{"sheet"}
+                                       :context {:tenant-id (random-uuid) :llm-provider fixture/provider
                                                  :fixture-effects effects}}]
         (let [package (package! ctx)
               a (future (fixture/execute-task ctx package "TASK-A" 2))
@@ -145,7 +146,8 @@
     (try
       (llm/register-provider! :configured-chain {:provider :openrouter :model "fixture/default"
         :config {:api-base (:url server) :api-key http/fixture-token :timeout 15000}})
-      (h/with-async-test-context [ctx {:context {:tenant-id (random-uuid) :llm-provider :configured-chain}}]
+      (h/with-async-test-context [ctx {:processor-namespaces #{"sheet"}
+                                       :context {:tenant-id (random-uuid) :llm-provider :configured-chain}}]
         (let [sheet (orc/build-workflow! ctx (orc/workflow "three-models" (orc/blackboard fixture/board)
                                              (chain-node "models" nil)))
               input (fn [id] {:request {:item-id id :question "Assess"}
@@ -207,7 +209,8 @@
     (try
       (llm/register-provider! :configured-limits {:provider :openrouter :model "fixture/default"
         :config {:api-base (:url server) :api-key http/fixture-token :timeout 15000}})
-      (h/with-async-test-context [ctx {:context {:tenant-id (random-uuid) :llm-provider :configured-limits}}]
+      (h/with-async-test-context [ctx {:processor-namespaces #{"sheet"}
+                                       :context {:tenant-id (random-uuid) :llm-provider :configured-limits}}]
         (let [sheet (orc/build-workflow! ctx (orc/workflow "active-chain" (orc/blackboard fixture/board)
                                               (chain-node "models" nil)))
               input (fn [id] {:request {:item-id id :question "Assess"}
