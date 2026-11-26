@@ -90,26 +90,60 @@ This managed path is distinct from attached judge assessments: those have durabl
 
 ## Training in rounds
 
-A completed optimization is final. `resume!` continues only an interrupted run
+A completed optimization is final: `resume!` continues only an interrupted run
 and answers `:already-terminal` for a completed one. To keep training, start a
-new `optimize!` on the same workflow: it begins from the best scored candidates
-of the earlier runs, so no round loses the best result of the rounds before it.
+new `optimize!` on the same workflow. It inherits the best candidates of the
+earlier runs and continues from where they stopped, so a budget split into
+rounds adds up to one run of the same total.
 
-Several short rounds do not equal one long run. Each new run:
+What carries over to a new run:
 
-- restarts the training minibatch schedule, which is deterministic per round
-  number (seed 42), so it draws the same minibatches in the same order as the
-  run before it;
-- opens one mutation chain for each starting candidate (its own instructions and
-  each inherited one). The chains share the budget, so near its end another
-  chain's rounds can take the calls that an accepted proposal needs for its full
-  evaluation. A proposal without a full evaluation is not inherited;
-- scores the workflow's own instructions again, one validation pass.
+- **The minibatch schedule.** Training minibatches follow one deterministic
+  schedule. A run that inherits continues it from the furthest point reached by
+  the runs it inherits from, so it never repeats their minibatches in order. A
+  run that inherits nothing starts the schedule from its beginning.
+- **The best candidates.** By default, the Pareto candidates of every completed
+  earlier run of the workflow: one per distinct instruction set, best aggregate
+  first, at most `:inherit-limit` in `:config` (default 10). With
+  `:inherit-from <optimization-id>`, only that run's Pareto candidates, even
+  when `:inherit-from-previous` is false. With `:inherit-from-previous false`,
+  at the top level of `optimize!` or in `:config`, none. Only completed runs
+  pass on candidates, so resume an interrupted round to completion first. Each
+  inherited candidate carries the mutation reason
+  `"inherited-from-previous-run"` and its `:source-optimization-id`.
+- **Their recorded scores.** A score is recorded per example under a
+  fingerprint of the example content, the workflow content hash and the metric
+  identity (kind, id, revision, configuration). A starting candidate (each
+  inherited one, and the seed when an identical instruction set was scored
+  before) reuses every recorded score whose fingerprint matches, in any order,
+  and is evaluated only on the examples without one. A new or edited example
+  costs one metric call per starting candidate; an unchanged one costs nothing
+  wherever it moved. An edited workflow, including its seed instructions, or a
+  changed metric reuses nothing. When one instruction set appears in several
+  runs, its scores merge by the maximum per fingerprint.
 
-In a deterministic check, four rounds of 30 metric calls in separate processes
-never passed the best candidate of the first round, while one run of 120 calls
-improved three times. Prefer one run with the whole budget; use rounds to keep a
-best result safe across processes, not to split one budget.
+How a run spends its budget:
+
+- One mutation round is undecided at a time. The seed and the inherited
+  candidates are evaluated before the first round opens.
+- A round opens only when the budget left can finish it: two minibatch
+  evaluations plus one full validation pass.
+- Parents come from the Pareto front with dominated programs removed.
+
+Measured:
+
+- Deterministic chain, each round in its own process on one SQLite file,
+  repeated 5 times: four rounds of 30 metric calls reached the same best as one
+  run of 120 in every repeat (0.33, 0.50, 0.83, 1.00).
+- Live, with a small model through OpenRouter on a six-example labeling task,
+  each round in its own process on one SQLite file: round 2 inherited round 1's
+  candidates at 0 calls with equal scores and continued the schedule. Round 3,
+  after one validation example was added at the front and one was edited,
+  charged each starting candidate exactly 2 calls and scored only those two
+  examples. Round 4 ended its own process mid-run; `resume!` in a new process
+  finished it with only the 11 missing evaluations, and nothing was scored or
+  charged twice. Every round's best was already 1.00 on this easy task, so the
+  live check proves the mechanics, not score gains.
 
 Every round needs:
 
@@ -119,43 +153,31 @@ Every round needs:
   name, so rebuild under that name in each process.
 - **A stable metric identity.** Pass `:metric-id` with a custom `:metric-fn`,
   and a new `:metric-revision` whenever the scoring changes. Without
-  `:metric-id` each run gets a fresh identity, so no recorded score is reused
-  and every inherited candidate is evaluated again at full cost.
-- **The metric restored before recovery** (`register-metric!`, above).
+  `:metric-id` each run gets a fresh identity, so no recorded score is reused.
+- **A task step that always answers.** Give each model step enough output
+  tokens for any reasoning the model does first. In the live check, a 64-token
+  cap made both a small Anthropic model and a reasoning model return no answer
+  text on some calls, and each such call stalled its round (see below).
 
-What a new run inherits:
+Recovering an interrupted round:
 
-- By default, the Pareto candidates of every completed earlier run of the
-  workflow: one per distinct instruction set, best aggregate first, at most
-  `:inherit-limit` in `:config` (default 10).
-- With `:inherit-from <optimization-id>`, only that run's Pareto candidates,
-  even when `:inherit-from-previous` is false. A run of another workflow
-  supplies none.
-- With `:inherit-from-previous false`, at the top level of `optimize!` or in
-  `:config`, nothing: the run starts from the workflow's own instructions.
-
-Only completed runs pass on candidates by default, so resume an interrupted or
-stalled round to completion before starting the next one. Each inherited
-candidate is created with the mutation reason `"inherited-from-previous-run"`
-and its `:source-optimization-id`.
-
-When an inherited candidate costs nothing:
-
-- Recorded scores are keyed per example by a fingerprint of the example
-  content, the workflow content hash and the metric identity (kind, id,
-  revision, configuration).
-- The candidate costs 0 metric calls only when every example of the new
-  validation set has a recorded score under an equal fingerprint, in any order.
-  Otherwise it is evaluated on the whole new validation set when the run starts,
-  and the calls are charged to the new run's budget.
-- One added or changed validation example therefore re-evaluates every
-  inherited candidate on every example. So does any edit to the workflow,
-  including its seed instructions, and any change to the metric. With the
-  default limit and n validation examples, that can take up to 10 × n metric
-  calls before the first new proposal; size the budget for it, or narrow it
-  with `:inherit-limit` or `:inherit-from`.
-- When one instruction set appears in several runs, its scores merge by the
-  maximum per fingerprint.
+- The run's state is in the durable store. In a new process, rebuild the
+  workflow under the same name and restore the metric: `metric-runtime/register!`
+  with the stored `:metric-descriptor` (in `:gepa/optimization-started`) and the
+  function, or `:gepa/metric-fn` in the context. The registration `optimize!`
+  made does not survive the process.
+- Then call `resume!` until it answers `:already-terminal`. Each call advances
+  the first missing step (a candidate evaluation, a parent minibatch, a
+  proposal, a subsample), and the processors carry on from there.
+- A task held by the process that died is taken over only after its lease
+  lapses (`:gepa/task-lease-ms` in the context, default 90 seconds); until then
+  `resume!` answers `:resumed` without progress.
+- Nothing already scored is scored again, and no attempt is charged twice.
+- A workflow call that fails, such as a model step that returns no usable
+  output, is not retried. The task records `:gepa/task-recovery-required` with
+  reason `workflow-failed`, the run stays `:running`, and `resume!` does not
+  retry it. Inspect those events, fix the cause (often the token cap above) and
+  run the round again.
 
 On a durable store, concurrent evaluation tasks can conflict on a ledger write.
 The ledger retries a conflict that the store reports under a key named `cas`,
@@ -173,7 +195,8 @@ GEPA directly calls `resume!` until it answers `:already-terminal`.
 
 Before relying on continuation, run two short rounds on the durable store and
 check round 2: the inherited candidates and their source runs in
-`:gepa/candidate-created`, and the metric calls charged in `get-progress`.
+`:gepa/candidate-created`, that they were charged 0 metric calls in
+`get-progress`, and that its first minibatch continues round 1's schedule.
 
 ## Configuring reflection
 
