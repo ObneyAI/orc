@@ -390,6 +390,14 @@ clj -M:poly test :all-bricks         # all bricks
 clj -M:poly test brick:orc-service   # specific brick
 ```
 
+CI runs the aggregate `orc` project on eight parallel runners. Each test
+namespace goes to one runner by name. To reproduce the first runner locally,
+use index 0. The other indices run from 1 through 7.
+
+```bash
+ORC_TEST_SHARD_INDEX=0 ORC_TEST_SHARD_COUNT=8 clj -M:poly:ci-shard test project:orc :all-bricks with:ci-shard
+```
+
 ### Project Structure
 
 See the [Component Map](docs/COMPONENT-MAP.md) for component responsibilities and dependencies.

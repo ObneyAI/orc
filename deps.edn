@@ -70,6 +70,7 @@
                                 "components/predict-rlm-redaction-tools/test"
                                 "components/predict-rlm-invoice-tools/test"]}
 
+           :ci-shard {:extra-paths ["scripts/ci"]}
            :poly {:main-opts ["-m" "polylith.clj.core.poly-cli.core"]
                   :extra-deps {polylith/clj-poly {:mvn/version "0.2.22"}}
                   :jvm-opts ["--add-opens=java.base/java.nio=ALL-UNNAMED"
