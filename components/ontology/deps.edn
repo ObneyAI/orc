@@ -1,5 +1,6 @@
 {:paths ["src" "resources"]
- :deps {ai.obney/ontology {:local/root "../../../ontology-exp"}
+ :deps {ai.obney/ontology {:git/url "https://github.com/ObneyAI/ontology.git"
+                          :git/sha "b7147e9c74a4d07e8432709f009501eea7909833"}
         ai.djl/api {:mvn/version "0.31.1"}
         ai.djl.huggingface/tokenizers {:mvn/version "0.31.1"}
         ai.djl.pytorch/pytorch-engine {:mvn/version "0.31.1"}

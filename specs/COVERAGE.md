@@ -118,7 +118,7 @@ are represented in a checked Allium specification.
 | `langfuse` | Trace destination adapter | `observability.allium` | Distilled and checked with the managed exporter lifecycle exposed by `orc-service` |
 | `llm` | Structured provider prediction and streaming | `llm.allium` | Distilled and checked |
 | `mcp-sheet-builder` | Workflow generation and portable MCP transport lifecycle | `mcp-sheet-builder.allium`, `mcp-client.allium` | Distilled, specified, and verified through DET-E2E-145 |
-| `ontology` | Agent learning, classification, extraction and build coordination; graph library consumer | `ontology.allium` plus `../../ontology-exp/specs/ontology.allium` | Split ownership; graph contracts imported |
+| `ontology` | Agent learning, classification, extraction and build coordination; graph library consumer | `ontology.allium` plus the pinned graph specification | Split ownership; graph contracts imported |
 | `orc-service` | Behavior-tree execution and RLM runtime | `orc-service.allium` | Distilled and checked |
 | `predict-rlm-image-tools` | Image benchmark deterministic transforms | `predict-rlm-tools.allium` | Distilled and checked |
 | `predict-rlm-invoice-tools` | Invoice workbook transform | `predict-rlm-tools.allium` | Distilled and checked |
@@ -1195,8 +1195,7 @@ zero errors. Combined analysis reports zero process findings.
 
 Graph lifecycle, tenant-qualified identity, predicate policy, source versions,
 contribution idempotency/revision, canonical resolution/merge, deterministic RDF,
-scoped search and export now belong to the standalone ontology specification at
-`../../ontology-exp/specs/ontology.allium`. ORC's ontology specification retains
+scoped search and export now belong to the [standalone ontology specification](https://github.com/ObneyAI/ontology). ORC's ontology specification retains
 all claim, description, classification, recurrence, consolidation, harvest,
 proven-pattern and extraction/build obligations. Each completed source extraction requests its own graph contribution import
 immediately. Build completion follows final export after all sources are
@@ -1204,16 +1203,22 @@ committed or skipped; extraction does not mutate library projections directly. S
 interpretation. Caller extraction policy and graph contribution retry identity
 are separate responsibilities. No backward compatibility is required.
 
-Validate both modules together from ORC using:
+From the ORC repository root, resolve the graph specification from the same Git dependency used by the published ontology package. Then validate both modules.
 
 ```sh
-allium check specs ../ontology-exp/specs
-allium analyse specs ../ontology-exp/specs
+graph_root=$(cd projects/orc-ontology && clojure -M -e '(require (quote clojure.java.basis)) (print (get-in (clojure.java.basis/current-basis) [:libs (quote ai.obney/ontology) :deps/root]))')
+mkdir -p target/ontology-spec
+cp "$graph_root/specs/ontology.allium" target/ontology-spec/ontology.allium
+allium check specs target/ontology-spec
+allium analyse specs target/ontology-spec
 ```
 
-The current combined 13-spec result is 232 diagnostics: 198 information,
-34 warnings, 0 errors, and 0 process findings. ORC's ontology module accounts
-for 49 diagnostics (44 information and 5 warnings); the new library contributes
+Verification with the pinned dependency covers 13 specs and reports 203 informational
+diagnostics, 38 warnings, zero errors and zero process findings.
+
+At extraction, the combined checks reported 198 informational diagnostics and
+34 warnings. ORC's ontology module accounted
+for 49 diagnostics (44 information and 5 warnings). The library contributed
 17 (16 information and 1 external-caller source-hint warning). Its retained
 fields are descriptive/provenance output, and its caller is intentionally
 application-independent. The ORC ontology residuals comprise 26 unused fields,

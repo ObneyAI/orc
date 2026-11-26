@@ -111,11 +111,10 @@ mutations, returns stable identities, and supports command-ID retry reconciliati
 `evolve` extracts sources and submits versioned contributions to those ontologies.
 
 The standalone library owns graph persistence, resolution, predicates, scoped
-search and RDF snapshots. It depends on Grain and Clojure only. ORC retains
+search and RDF snapshots. ORC retains
 source extraction workflows, model adapters, task classification, claims,
-Living Descriptions and harvesting. The local dependency in
-`components/ontology/deps.edn` expects a sibling `ontology-exp` checkout; replace
-that coordinate with a pinned library release when publishing the extraction.
+Living Descriptions and harvesting. Clojure fetches the graph library at the Git revision pinned in the
+[ontology component](../components/ontology/deps.edn).
 This is a clean break: old evolutionary graph events and registry APIs are not
 replayed. See [the migration boundary](ONTOLOGY-EXTRACTION.md).
 

@@ -4,7 +4,7 @@
 -- ORC owns learning, classification and source-extraction coordination.
 -- Graph entities and lifecycle belong to the standalone ontology project.
 
-use "../../ontology-exp/specs/ontology.allium" as graph
+use "../target/ontology-spec/ontology.allium" as graph
 
 external entity OntologyConsumer {}
 external entity EvaluationTrace { tree_id: String }

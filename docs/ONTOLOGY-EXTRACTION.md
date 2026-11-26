@@ -1,7 +1,7 @@
 # Ontology extraction
 
-The general graph library lives in the sibling `ontology-exp` project under
-`ai.obney.ontology`. ORC depends on its public interface and pure algorithms.
+ORC uses the public interface and pure algorithms in `ai.obney.ontology`. The
+component pins the standalone library to a Git commit. [Dependency declaration](../components/ontology/deps.edn)
 
 The library owns ontology and concept identity, typed predicates, source versions,
 contributions, resolution, atomic graph validation, revision snapshots and RDF.
@@ -27,10 +27,11 @@ an ontology ID. Each accepted source contribution is atomic and durable; a
 multi-source workflow may have committed earlier contributions when a later
 source fails. Retry deduplication uses committed source versions.
 
-Run the standalone suite with `clojure -M:test` in `ontology-exp`. The ORC
+Run the standalone suite with `clojure -M:test` from a checkout of the pinned
+ontology revision. The ORC
 contribution integration test exercises a real Grain store and substitutes only
 the model extractor. The claims, hierarchy, and behavior composition regression
 tests exercise the application side of the boundary.
 
-The sibling local dependency is intentional for this extraction checkout.
-Publishing the library and selecting a release coordinate is a separate action.
+After changing the Git pin, refresh the graph specification from the resolved
+dependency before running Allium. [Spec verification](../specs/COVERAGE.md#ontology-extraction-ownership-18-september-2026)
