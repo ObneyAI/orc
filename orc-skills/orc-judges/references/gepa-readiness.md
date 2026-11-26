@@ -90,11 +90,6 @@ This managed path is distinct from attached judge assessments: those have durabl
 
 ## Training in rounds
 
-This section describes ORC with the GEPA continuation changes (branch
-`fix/gepa-durable-continuation`, pending merge). Earlier
-revisions do not continue training this way, so check that the consuming
-revision includes them before relying on it.
-
 A completed optimization is final: `resume!` continues only an interrupted run
 and answers `:already-terminal` for a completed one. To keep training, start a
 new `optimize!` on the same workflow. It inherits the best candidates of the
