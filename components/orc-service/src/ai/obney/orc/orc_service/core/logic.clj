@@ -3564,19 +3564,6 @@
   [opts]
   (mapcat (fn [[k v]] [k v]) opts))
 
-(def ^:private default-llm-retry
-  "Default retry configuration for LLM nodes.
-   3 attempts with exponential-ish backoff: 1s, 2s, 4s"
-  {:max-attempts 3
-   :backoff-ms [1000 2000 4000]})
-
-(defn- add-default-retry
-  "Add default retry config to opts if not already present."
-  [opts]
-  (if (:retry opts)
-    opts
-    (assoc opts :retry default-llm-retry)))
-
 (defn- transform-node
   "Transform S-expr RLM DSL to canonical ORC DSL.
 

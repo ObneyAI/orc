@@ -1584,7 +1584,8 @@
               "a failed frontier append cannot dispatch the provider"))))))
 
 (deftest completed-effect-projection-rejoins-when-legacy-action-write-is-lost
-  (let [tool-calls (atom 0)
+  (let [provider-calls (atom 0)
+        tool-calls (atom 0)
         duration (java.time.Duration/ofSeconds 42)
         codec {:tag :java-duration
                :match? #(instance? java.time.Duration %)
@@ -1622,6 +1623,7 @@
             real-process-command cp/process-command]
         (with-redefs [llm/predict
                       (fn [& _]
+                        (swap! provider-calls inc)
                         {:outputs {:code source}
                          :usage {:prompt_tokens 2
                                  :completion_tokens 1
@@ -1635,25 +1637,21 @@
                           (real-process-command command-context)))]
           (let [first-result (sheet/execute ctx sheet-id {} :timeout-ms 10000)
                 tick-id (:trace-id first-result)
-                node (:node
-                      (first (filter #(= "researcher" (:name (:node %)))
-                                     (map (fn [n] {:node n})
-                                          (sheet/get-nodes-for-sheet ctx sheet-id)))))
+                snapshot (:execution-snapshot
+                          (sheet/value-log-tick-started-event ctx (:tenant-id ctx) tick-id))
+                node (get-in snapshot [:nodes-by-id (:root-node-id snapshot)])
                 node-id (:id node)
                 claims (rm/get-researcher-effect-claims
                         ctx sheet-id tick-id node-id)
                 tool-claim (first (filter #(= :tool (:kind %)) claims))
                 legacy-actions (rm/get-researcher-actions
                                 ctx sheet-id tick-id node-id)
-                replay-blackboard
-                {:summary {:key :summary
-                           :schema :string
-                           :value nil
-                           :version 0}}
+                replay-blackboard (:blackboard-entries snapshot)
                 replay-context
                 {:sheet-id sheet-id
                  :tick-id tick-id
                  :node-id node-id
+                 :command-registry (:command-registry ctx)
                  :researcher-ownership-epoch 2
                  :researcher-effect-claims claims
                  :researcher-actions legacy-actions
@@ -1689,6 +1687,8 @@
             (is (= "PT42S"
                    (get-in stale-legacy-replay-result [:outputs :summary]))
                 "the guarded completion deterministically overrides a stale legacy mirror")
+            (is (= 1 @provider-calls)
+                "both replays reuse the completed provider response")
             (is (= 1 @tool-calls)
                 "replay does not re-fire the completed external tool")))))))
 
@@ -2127,9 +2127,8 @@
 (deftest det-e2e-272-indeterminate-generated-child-rejoins-one-stable-tick
   (testing "a newer parent attempt rejoins the child completed before outcome recording"
     (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
-      (let [sheet-id (random-uuid)
-            tick-id (random-uuid)
-            node-id (random-uuid)
+      (let [tick-id (random-uuid)
+            execute-tree-tick todo/execute-tree-tick
             provider-calls (atom 0)
             child-attempts (atom [])
             drop-first-child-completion? (atom true)
@@ -2140,21 +2139,19 @@
                       :fn (fn [_] {:summary "durable-child"})}]
               [:final {:keys [:summary]}]]
             code (str "(emit-tree! (quote " (pr-str source-tree) "))")
-            node {:id node-id
-                  :type :repl-researcher
-                  :instruction "rejoin one durable generated child"
-                  :writes [:summary]
-                  :max-iterations 1
-                  :model "deterministic-model"
-                  :rlm {:checkpointed? true
-                        :recursive? false
-                        :timeouts {:provider-ms 2000
-                                   :iteration-ms 5000
-                                   :campaign-ms 15000}}}
-            blackboard {:summary {:key :summary
-                                  :schema :string
-                                  :value nil
-                                  :version 0}}
+            sheet-id (sheet/build-workflow!
+                      ctx (sheet/workflow "rr7-generated-child-rejoin"
+                            (sheet/blackboard {:summary :string})
+                            (sheet/repl-researcher "researcher"
+                              :instruction "rejoin one durable generated child"
+                              :writes [:summary]
+                              :max-iterations 1
+                              :model "deterministic-model"
+                              :rlm {:checkpointed? true :recursive? false
+                                    :timeouts {:provider-ms 2000 :iteration-ms 5000
+                                               :campaign-ms 15000}})))
+            node (first (sheet/get-nodes-for-sheet ctx sheet-id))
+            node-id (:id node)
             claim!
             (fn [ownership-epoch]
               (fn [{:keys [iteration-index logical-action-identity
@@ -2192,7 +2189,11 @@
                              :ownership-epoch ownership-epoch
                              :result result
                              :resolved-at "2030-01-01T00:00:04Z"})))))]
-        (with-redefs [llm/predict
+        (with-redefs [todo/execute-tree-tick
+                      (fn [delivery]
+                        (when-not (= tick-id (get-in delivery [:event :tick-id]))
+                          (execute-tree-tick delivery)))
+                      llm/predict
                       (fn [& _]
                         (swap! provider-calls inc)
                         {:outputs {:code code}
@@ -2200,8 +2201,14 @@
                                  :completion_tokens 1
                                  :total_tokens 3}})]
           (is (nil? (::anom/category
+                     (h/run-command ctx (h/make-tick-tree-command sheet-id :tick-id tick-id))))
+              "the parent tick exists before the fixture drives its two ownership epochs")
+          (is (nil? (::anom/category
                      (claim-frontier! ctx sheet-id tick-id node-id 1))))
-          (let [first-result
+          (let [blackboard (:blackboard-entries
+                            (:execution-snapshot
+                             (sheet/value-log-tick-started-event ctx (:tenant-id ctx) tick-id)))
+                first-result
                 (todo/execute-repl-researcher-rlm
                  node blackboard :test
                  (assoc ctx

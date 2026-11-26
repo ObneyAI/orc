@@ -26,7 +26,7 @@
                    :items [:vector [:string {:description "An item"}]]
                    :item [:string {:description "Current item"}]
                    :result [:string {:description "Item result"}]
-                   :results [:vector [:string {:description "Item results"}]]})
+                   :results [:vector {:description "Item results"} [:map {:closed true} [:result :string]]]})
 
 (defn- fq [sym] (str "ai.obney.orc.orc-service.execution-family-test/" sym))
 
@@ -143,8 +143,14 @@
                        (sheet/code "per-item" :fn (fq "per-item") :reads [:item] :writes [:result]))))
           result (sheet/execute ctx parent {:items ["a" "b" "c"]} :timeout-ms 60000)
           family (family-of ctx (:trace-id result))
-          iterations (filterv #(= "per-item" (:node-name %)) family)]
+          iterations (filterv #(= "per-item" (:node-name %)) family)
+          expected-rows [{:result "item:a"} {:result "item:b"} {:result "item:c"}]
+          events (sheet/value-log-read-tick-events ctx (:tenant-id ctx) (:trace-id result))
+          aggregate-writes (filter #(and (= :sheet/execution-value-written (:event/type %))
+                                         (= :results (:key %))) events)]
       (is (= :success (:status result)) (pr-str result))
+      (is (= expected-rows (get-in result [:outputs :results])))
+      (is (= [expected-rows] (mapv :value aggregate-writes)))
       (is (= 3 (count iterations)))
       (is (= 3 (count (distinct (map :exec-context iterations)))) "distinct exec-contexts")
       (is (= #{"item:a" "item:b" "item:c"} (set (map #(get-in % [:outputs :result]) iterations))))
@@ -243,6 +249,8 @@
           iterations (filterv #(= "per-item" (:node-name %)) family)
           ticks (count (distinct (map :tick-id family)))]
       (is (= :success (:status result)) (pr-str (select-keys result [:status :error])))
+      (is (= (mapv (fn [item] {:result (str "item:" item)}) items)
+             (get-in result [:outputs :results])))
       (is (= 200 (count iterations)))
       (is (= (set items) (into #{} (map #(get-in % [:inputs :item])) iterations))
           "every iteration still resolves its own input")

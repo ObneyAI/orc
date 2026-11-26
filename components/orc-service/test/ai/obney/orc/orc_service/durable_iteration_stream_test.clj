@@ -274,8 +274,9 @@
                                  :total_tokens 3}})]
           (let [first-result (sheet/execute ctx sheet-id {} :timeout-ms 15000)
                 tick-id (:trace-id first-result)
-                node (first (filter #(= "researcher" (:name %))
-                                    (sheet/get-nodes-for-sheet ctx sheet-id)))
+                snapshot (:execution-snapshot
+                          (sheet/value-log-tick-started-event ctx (:tenant-id ctx) tick-id))
+                node (get-in snapshot [:nodes-by-id (:root-node-id snapshot)])
                 node-id (:id node)
                 _ (is (h/settle-until!
                        #(= #{:provider :generated-child}
@@ -293,11 +294,7 @@
                 (first (filter #(and (= :generated-child (:kind %))
                                      (= :completed (:status %)))
                                claims))
-                replay-blackboard
-                {:summary {:key :summary
-                           :schema :string
-                           :value nil
-                           :version 0}}]
+                replay-blackboard (:blackboard-entries snapshot)]
             (is (= :success (:status first-result)) (pr-str first-result))
             (is (some? completed-child) (pr-str claims))
             (service-logic/reset-all!)

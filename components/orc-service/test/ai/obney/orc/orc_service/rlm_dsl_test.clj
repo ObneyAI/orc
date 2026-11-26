@@ -51,16 +51,22 @@
         (is (= "google/gemini-2.5-flash" (:model opts)))))))
 
 
-(deftest llm-node-gets-default-retry-config
-  (testing "LLM node without explicit retry gets default config"
-    (let [result (service-logic/rlm-dsl->orc-dsl
-                   [:llm {:instruction "Extract dates"
-                          :reads [:chunk]
-                          :writes [:dates]}])
-          opts (apply hash-map (rest result))]
-      (is (some? (:retry opts)) "LLM node should have :retry config")
-      (is (= 3 (get-in opts [:retry :max-attempts])) "Should have 3 max attempts")
-      (is (vector? (get-in opts [:retry :backoff-ms])) "Should have backoff delays")))
+(deftest emitted-nodes-preserve-authored-retry-policy
+  (testing "an emitted leaf can inherit model backups without an outer node retry"
+    (let [tree (service-logic/rlm-dsl->orc-dsl
+                 [:llm {:instruction "Extract dates" :reads [:chunk] :writes [:dates]}])
+          defaults (service-logic/subcall-defaults
+                    {:rlm {:sub-model "primary"
+                           :sub-fallback-models [{:model "backup"}
+                                                 {:model "retrying-backup"
+                                                  :options {:max-retries 2}}]}})
+          effective (service-logic/inject-subcall-config tree defaults)
+          opts (apply hash-map (rest effective))
+          plan (service-logic/candidate-plan opts :openrouter (:options opts))]
+      (is (not (contains? (apply hash-map (rest tree)) :retry)))
+      (is (not (contains? opts :retry)))
+      (is (= ["primary" "backup" "retrying-backup"] (mapv :model plan)))
+      (is (= [0 0 2] (mapv #(get-in % [:options :max-retries]) plan)))))
 
   (testing "Explicit retry config takes precedence"
     (let [result (service-logic/rlm-dsl->orc-dsl
