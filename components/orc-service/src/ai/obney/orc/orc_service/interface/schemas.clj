@@ -32,6 +32,13 @@
 (def malli-definition
   [:fn {:error/message "expected a Malli schema"} logic/valid-malli-schema?])
 
+(def blackboard-schema-proposal
+  "A declaration command can also receive an incomplete Malli form so its
+   handler can reject it with the offending blackboard key and field path."
+  [:or malli-definition
+   [:and [:or :keyword [:vector logic/durable-value]]
+    [:fn #(pos? (count (logic/violations %)))]]])
+
 (def exported-node
   [:schema {:registry {::exported-node
                        [:map [:id :uuid] [:name :string] [:type node-type]
@@ -878,13 +885,13 @@
    [:map
     [:sheet-id :uuid]
     [:key :keyword]
-    [:schema malli-definition]]
+    [:schema blackboard-schema-proposal]]
 
    :sheet/update-key-schema
    [:map
     [:sheet-id :uuid]
     [:key :keyword]
-    [:schema malli-definition]]
+    [:schema blackboard-schema-proposal]]
 
    :sheet/set-key-value
    [:map

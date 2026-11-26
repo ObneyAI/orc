@@ -125,19 +125,26 @@
               (is (= "inline-ok" (get-in result [:outputs :research-result])))
               (is (= :success (:root-status (orc/get-tick ctx (:trace-id result)))))
               (is (= ["fixture/ordinary" "fixture/prime" "fixture/inline"] (mapv :model bodies)))
-              (doseq [body calls :let [prompt (text-content body) inline? (= "fixture/inline" (:model body))]]
+              (doseq [body calls
+                      :let [prompt (text-content body)
+                            inline? (= "fixture/inline" (:model body))
+                            [shown rest-of-request] (str/split prompt #"\n\nDECLARED CONTRACT \(not supplied evidence\):\n" 2)
+                            [declared remaining] (when rest-of-request (str/split rest-of-request #"\n\n" 2))]]
                 (is (= payload (json-value (value-text prompt mode :payload))))
                 (doseq [meaning ["Supplied record collection." "Records in source order."
                                  "Lifecycle status supplied by the source." "Exact unit count; zero is meaningful."
                                  "Whether this record is enabled." "Source annotation; null means no annotation."]]
-                  (is (str/includes? prompt meaning) (str (:model body) " missing " meaning)))
+                  (is (str/includes? shown meaning) (str (:model body) " missing " meaning)))
                 (is (str/includes? prompt "active"))
                 (is (str/includes? prompt "retired"))
                 (is (= "null" (value-text prompt mode :nullable)))
                 (is (= "" (value-text prompt mode :blank)))
                 (is (= (if inline? "null" "old") (value-text prompt mode :override)))
                 (is (nil? (value-text prompt mode :absent)))
-                (is (not (str/includes? prompt "UNSHOWN-")))
+                (is (not (str/includes? prompt "UNSHOWN-TOP-LEVEL-MEANING")))
+                (is (not (str/includes? shown "UNSHOWN-NESTED-MEANING")))
+                (is (and declared (str/includes? declared "UNSHOWN-NESTED-MEANING")))
+                (is (and remaining (not (str/includes? remaining "UNSHOWN-NESTED-MEANING"))))
                 (is (not (str/includes? prompt "Input: ")))
                 (is (= [image-url] (mapv #(get-in % [:image_url :url])
                                         (filter #(= "image_url" (:type %)) (get-in body [:messages 0 :content])))))
@@ -145,8 +152,8 @@
                 (is (= 0.25 (:temperature body)))
                 (when inline?
                   (is (= {:count 0} (json-value (value-text prompt mode :computed))))
-                  (is (str/includes? prompt "A computed record with an authored contract."))
-                  (is (str/includes? prompt "Computed count in units."))))))
+                  (is (str/includes? shown "A computed record with an authored contract."))
+                  (is (str/includes? shown "Computed count in units."))))))
           (finally
             (.stop server 0) (.shutdownNow pool)
             (doseq [suffix ["" "-shm" "-wal"]] (.delete (java.io.File. (str db suffix))))))))))

@@ -274,17 +274,23 @@
     (h/with-async-test-context [ctx]
       (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-258-trace-refresh"))
             trace-id (random-uuid)
-            node-a {:node-id (random-uuid) :node-type :sequence :status :success}
-            node-b {:node-id (random-uuid) :node-type :leaf :status :success}
-            node-c {:node-id (random-uuid) :node-type :leaf :status :success}
-            node-d {:node-id (random-uuid) :node-type :leaf :status :success}
+            started-at "2026-08-26T12:00:00Z"
+            completed-at "2026-08-26T12:00:01Z"
+            node-trace (fn [node-type path]
+                         {:node-id (random-uuid) :trace-instance-id (random-uuid)
+                          :node-type node-type :node-name (peek path) :path path
+                          :status :success :started-at started-at :completed-at completed-at})
+            node-a (node-trace :sequence ["pipeline"])
+            node-b (node-trace :leaf ["pipeline" "read"])
+            node-c (node-trace :leaf ["pipeline" "transform"])
+            node-d (node-trace :leaf ["pipeline" "write"])
             trace-payload (fn [source-event-count node-traces]
                             {:trace-id trace-id
                              :sheet-id sheet-id
                              :root-trace-id trace-id
                              :child-trace-ids []
-                             :started-at "2026-08-26T12:00:00Z"
-                             :completed-at "2026-08-26T12:00:01Z"
+                             :started-at started-at
+                             :completed-at completed-at
                              :duration-ms 1000
                              :status :success
                              :input-snapshot {}
@@ -302,10 +308,10 @@
                         (trace-payload 4 [node-a node-b node-c node-d])))]
         (is (= ::anom/conflict (::anom/category premature-refresh))
             "a revision cannot become the trace's creation fact")
-        (publish! 3 [node-a node-b node-c])
-        (publish! 2 [node-a node-b])
-        (publish! 3 [node-a node-b])
-        (publish! 4 [node-a node-b node-c node-d])
+        (is (nil? (::anom/category (publish! 3 [node-a node-b node-c]))))
+        (is (= ::anom/conflict (::anom/category (publish! 2 [node-a node-b]))))
+        (is (= ::anom/conflict (::anom/category (publish! 3 [node-a node-b]))))
+        (is (nil? (::anom/category (publish! 4 [node-a node-b node-c node-d]))))
         (let [trace (get-in (h/run-query ctx (h/make-get-trace-query trace-id))
                             [:query/result :trace])
               publications (->> (es/read (:event-store ctx)
@@ -315,9 +321,7 @@
                                           :tags #{[:trace trace-id]}})
                                 (into []))]
           (is (= 4 (:source-event-count trace)))
-          (is (= [node-a node-b node-c node-d]
-                 (mapv #(select-keys % [:node-id :node-type :status])
-                       (:node-traces trace))))
+          (is (= [node-a node-b node-c node-d] (:node-traces trace)))
           (is (= [:sheet/execution-traced :sheet/execution-trace-refreshed]
                  (mapv :event/type publications))
               "creation is singular and a newer assembly is a distinct revision fact")

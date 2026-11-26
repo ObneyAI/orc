@@ -1,6 +1,7 @@
 (ns ai.obney.orc.orc-service.deterministic-lifecycle-e2e-test
   "Deterministic end-to-end coverage for workflow lifecycle and versioning."
   (:require [clojure.test :refer [deftest is testing]]
+            [malli.core :as m]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.test-helpers :as h]
@@ -256,6 +257,17 @@
             {:record [:map [:name :string]]
              :records [:vector [:map [:name :string]]]
              :lookup [:map-of :keyword [:map [:name :string]]]}))))
+  (testing "only recognized incomplete declarations reach the handler for feedback"
+    (let [body {:sheet-id (random-uuid) :key :items}
+          incomplete [:map [:rows [:vector]]]]
+      (doseq [command [:sheet/declare-key :sheet/update-key-schema]]
+        (is (m/validate command (assoc body :schema incomplete)))
+        (doseq [invalid [nil {:rows :string} [:unknown/shape]
+                         [:schema {:registry 42} [:vector]]]]
+          (is (not (m/validate command (assoc body :schema invalid))))))
+      (doseq [event [:sheet/key-declared :sheet/key-schema-updated]]
+        (is (m/validate event (assoc body :schema [:map [:rows [:vector :int]]])))
+        (is (not (m/validate event (assoc body :schema incomplete)))))))
   (testing "direct declaration commands enforce the same recursive policy"
     (h/with-async-test-context [ctx]
       (let [created (h/run-command ctx (h/make-create-sheet-command :name "direct-weak-schema-rejection"))
