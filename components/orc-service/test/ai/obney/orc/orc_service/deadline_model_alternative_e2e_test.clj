@@ -19,8 +19,6 @@
 (defn no-effect-child [_] {:out true})
 
 (deftest c-public-execute-preserves-spent-cap-and-allows-local-tightening
-  ;; These effect-free runs inspect persisted cap arithmetic only. Test B
-  ;; separately proves that an expired provider attempt is refused.
   (let [samples (atom [])
         clock #(let [now (System/currentTimeMillis)] (swap! samples conj now) now)]
     (h/with-async-test-context [ctx {:context {:tenant-id (random-uuid) :execution-now-ms-fn clock}}]
@@ -73,7 +71,6 @@
         (try
           (let [entered (deref child-entered 10000 ::not-entered)]
             (is (integer? entered) "The child reached the existing real-clock capability")
-            ;; This is the intentional scheduling gap, not a model timeout.
             (Thread/sleep 250)
             (deliver release-child true)
             (let [result (deref pending 15000 ::not-completed)

@@ -5,11 +5,12 @@
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.todo-processors :as todo-processors]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
 
 (defn- an-hour-later
@@ -59,8 +60,6 @@
         call-number (count (swap! calls conj item))]
     (when (= 1 call-number)
       (tp/stop leaf-processor))
-    ;; Deliberately overwrite the source key. Recovery must use the immutable
-    ;; source captured by the map parent's original start, not latest state.
     {:item (* 10 item)
      :items :mutated-by-child}))
 
@@ -96,16 +95,10 @@
         (tick-events ctx tick-id)))
 
 (defn- discard-process-local-map-coordinators! []
-  ;; A processor-only restart in this JVM would preserve the defonce atom and
-  ;; fake the process-loss boundary. Resolve the private cache solely to model
-  ;; a fresh process; every behavioral assertion remains on public/durable data.
-  (let [state-var (ns-resolve
-                   'ai.obney.orc.orc-service.core.todo-processors
-                   'map-each-state)]
+  (let [state-var #'service-logic/map-each-state]
     (is (some? state-var) "the restart harness must locate the ephemeral cache")
     (reset! (var-get state-var) {}))
-  (let [seed-var (ns-resolve 'ai.obney.orc.orc-service.core.value-log
-                             'tick-seeds*)]
+  (let [seed-var #'service-logic/tick-seeds*]
     (is (some? seed-var) "the restart harness must locate the tick-seed cache")
     (reset! (var-get seed-var) {})))
 
@@ -216,7 +209,7 @@
                   (split-with #(not= (:event/id parent-start) (:event/id %))
                               events)
                   after-parent (rest from-parent)]
-              (is (nil? (runtime/durable-terminal-result ctx tick-id))
+              (is (nil? (service-commands/durable-terminal-result ctx tick-id))
                   "the interrupted tick is not terminal")
               (is (not (contains? (:inputs parent-start) :items))
                   "ordinary sequence starts do not inline preceding writes")
@@ -276,8 +269,6 @@
                                                         parent-id)
               recovery-calls (atom [])]
           (reset! partial-recovery-state {:calls recovery-calls})
-          ;; Simulate a process dying after two of three parallel starts were
-          ;; handled. The third start is durable but never reaches the worker.
           (tp/stop leaf-processor)
           (let [{:keys [handler-fn topics]} (get @tp/processor-registry*
                                                  :sheet/execute-leaf-node)
@@ -535,14 +526,11 @@
           (let [reopened (h/create-async-test-context
                           {:event-store-conn connection})]
             (reset! reopened-context reopened)
-            ;; Catch-up may consume the durable pending start before this scan;
-            ;; either way, recovery must reconstruct the map and settle the
-            ;; original tick without executing a survivor twice.
             (sheet/resume-in-progress! reopened)
             (is (h/settle-until!
-                 #(some? (runtime/durable-terminal-result reopened tick-id))
+                 #(some? (service-commands/durable-terminal-result reopened tick-id))
                  :timeout-ms 7000))
-            (let [result (runtime/durable-terminal-result reopened tick-id)
+            (let [result (service-commands/durable-terminal-result reopened tick-id)
                   events (tick-events reopened tick-id)
                   parent-completions (filter #(and (= :sheet/node-execution-completed
                                                       (:event/type %))
@@ -602,7 +590,7 @@
             (let [snapshot-taken (promise)
                   release-snapshot (promise)
                   stale-thread (atom nil)
-                  read-events value-log/read-tick-events
+                  read-events service-read-models/read-tick-events
                   wrapper (fn [context tenant-id requested-tick-id]
                             (let [events (read-events context tenant-id
                                                       requested-tick-id)]
@@ -611,7 +599,7 @@
                                     @release-snapshot
                                     events)
                                 events)))]
-              (with-redefs [value-log/read-tick-events wrapper]
+              (with-redefs [service-read-models/read-tick-events wrapper]
                 (let [stale-recovery
                       (future
                         (reset! stale-thread (Thread/currentThread))
@@ -643,7 +631,6 @@
                           "new durable evidence advances the installed coordinator")
                       (is (= true (deref third-entered 2000 ::timeout))
                           "the final item is held after its durable start")
-                      ;; The delayed scan now attempts to install its older view.
                       (deliver release-snapshot true)
                       (deref stale-recovery 2000 ::timeout)
                       (deliver allow-third true)

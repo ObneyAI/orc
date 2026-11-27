@@ -23,7 +23,6 @@
      2. The final sheet is consistent (matches one of the built definitions).
      3. A forced build anomaly THROWS (no silent half-build)."
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.orc-service.core.dsl :as dsl]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.query-processor.interface :as qp]
@@ -33,7 +32,9 @@
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]
             [clojure.java.io :as io]
-            [cognitect.anomalies :as anom])
+            [cognitect.anomalies :as anom]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic])
   (:import [java.io File]))
 
 (defn- delete-dir-recursively [^String path]
@@ -45,9 +46,6 @@
             (delete-dir-recursively (.getPath child))))
         (.delete f)))))
 
-;; ---------------------------------------------------------------------------
-;; Store fixtures (real stores — NO mocks)
-;; ---------------------------------------------------------------------------
 
 (defn- in-memory-ctx []
   (let [dir (str "/tmp/build-atom-mem-" (random-uuid))
@@ -67,8 +65,6 @@
         cache-dir (str "/tmp/build-atom-sqlite-cache-" (random-uuid))
         event-store (es/start {:conn {:type :sqlite
                                       :database-file db-file
-                                      ;; pool-size > 1 so the store is genuinely
-                                      ;; concurrent (PA-1 used pool 1 as a mask).
                                       :maximum-pool-size 4}})
         cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "test"}))]
     {:event-store event-store
@@ -87,9 +83,6 @@
     (doseq [s ["" "-wal" "-shm"]]
       (io/delete-file (str f s) true))))
 
-;; ---------------------------------------------------------------------------
-;; Anomaly tap — captures any command-processor anomaly during the build
-;; ---------------------------------------------------------------------------
 
 (defn- with-anomaly-tap
   "Run `f`, capturing every command-processor anomaly produced anywhere on the
@@ -115,34 +108,26 @@
       (let [result (f)]
         {:result result :anomalies @captured}))))
 
-;; ---------------------------------------------------------------------------
-;; Workflow fixtures — A and B differ in content hash AND in blackboard keys,
-;; so a rebuild genuinely tears down keys/nodes (the racey teardown window).
-;; ---------------------------------------------------------------------------
 
 (defn- wf [instruction extra-key]
-  (dsl/workflow "atomicity-race-sheet"
-    (dsl/blackboard (cond-> {:input :string :output :string}
+  (service-logic/workflow "atomicity-race-sheet"
+    (service-logic/dsl-blackboard (cond-> {:input :string :output :string}
                       extra-key (assoc extra-key :string)))
-    (dsl/sequence "main"
-      (dsl/llm "process"
+    (service-logic/sequence "main"
+      (service-logic/llm "process"
         :model "test/model"
         :instruction instruction
         :reads [:input]
         :writes [:output]))))
 
-;; ---------------------------------------------------------------------------
-;; Core concurrent-rebuild scenario, parametrised over store
-;; ---------------------------------------------------------------------------
 
 (defn- run-concurrent-rebuild!
   "Build def A, then fire N concurrent rebuilds to changed defs simultaneously.
    Returns {:anomalies [...] :exceptions [...] :final-sheet <sheet>
             :final-bb-keys #{...} :sheet-id <uuid>}."
   [ctx n]
-  ;; Seed with def A (single-threaded, must be clean).
-  (dsl/build-workflow! ctx (wf "instruction A" nil))
-  (let [sheet-id (dsl/sheet-id-for-name "atomicity-race-sheet")
+  (service-commands/build-workflow! ctx (wf "instruction A" nil))
+  (let [sheet-id (service-logic/sheet-id-for-name "atomicity-race-sheet")
         latch (promise)
         exceptions (atom [])
         {:keys [anomalies]}
@@ -153,10 +138,7 @@
                           (future
                             @latch
                             (try
-                              ;; Alternate instruction + blackboard so each
-                              ;; thread targets a changed content-hash, forcing
-                              ;; the clear+rebuild teardown path concurrently.
-                              (dsl/build-workflow!
+                              (service-commands/build-workflow!
                                ctx (wf (str "instruction B" (mod i 2))
                                        (when (odd? i) :extra)))
                               (catch Throwable t
@@ -164,7 +146,6 @@
                         (range n))]
               (deliver latch true)
               (run! deref futs))))]
-    ;; Read final state fresh (clear any read-model L1 cache first).
     (rmp/l1-clear!)
     {:anomalies anomalies
      :exceptions @exceptions
@@ -186,8 +167,6 @@
       "final sheet must declare :input (no half-cleared blackboard)")
   (is (contains? final-bb-keys :output)
       "final sheet must declare :output (no half-cleared blackboard)")
-  ;; Every key a node reads/writes must be declared on the blackboard — the
-  ;; invariant the delete/declare anomalies violate under the race.
   (doseq [node final-nodes]
     (doseq [k (concat (:reads node) (:writes node))]
       (is (contains? final-bb-keys k)
@@ -226,9 +205,6 @@
   (testing "a build command that returns an anomaly aborts the build loudly"
     (let [ctx (in-memory-ctx)]
       (try
-        ;; Force a declare-key anomaly mid-build by making one declare-key
-        ;; return a conflict anomaly. The fix must surface this as a thrown
-        ;; exception rather than swallowing it and leaving a half-built sheet.
         (let [orig cp/process-command
               threw? (atom false)]
           (with-redefs [cp/process-command
@@ -238,7 +214,7 @@
                              ::anom/message "Forced declare-key anomaly"}
                             (orig c)))]
             (try
-              (dsl/build-workflow! ctx (wf "instruction X" nil))
+              (service-commands/build-workflow! ctx (wf "instruction X" nil))
               (catch Throwable _ (reset! threw? true))))
           (is @threw?
               "build-workflow! must throw when a build command returns an anomaly"))

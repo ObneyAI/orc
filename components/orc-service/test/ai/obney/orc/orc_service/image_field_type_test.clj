@@ -1,11 +1,8 @@
 (ns ai.obney.orc.orc-service.image-field-type-test
   "Tests for :field-type :image support via Malli schema properties."
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-;; =============================================================================
-;; build-field — :type propagation from Malli properties
-;; =============================================================================
 
 (deftest build-field-image-type-test
   (testing "schema with {:field-type :image} property sets :type :image on field"
@@ -13,7 +10,7 @@
                  :schema [:vector {:field-type :image} :string]
                  :value nil
                  :version 0}
-          field (#'executor/build-field :document-images entry)]
+          field (#'service-logic/build-field :document-images entry)]
       (is (= :image (:type field)))
       (is (= :document-images (:name field)))))
 
@@ -22,7 +19,7 @@
                  :schema :string
                  :value nil
                  :version 0}
-          field (#'executor/build-field :instruction entry)]
+          field (#'service-logic/build-field :instruction entry)]
       (is (nil? (:type field)))
       (is (= :instruction (:name field)))))
 
@@ -31,7 +28,7 @@
                  :schema [:vector :string]
                  :value nil
                  :version 0}
-          field (#'executor/build-field :items entry)]
+          field (#'service-logic/build-field :items entry)]
       (is (nil? (:type field)))))
 
   (testing "future extensibility — :field-type :audio works too"
@@ -39,12 +36,9 @@
                  :schema [:vector {:field-type :audio} :string]
                  :value nil
                  :version 0}
-          field (#'executor/build-field :audio-clip entry)]
+          field (#'service-logic/build-field :audio-clip entry)]
       (is (= :audio (:type field))))))
 
-;; =============================================================================
-;; gather-inputs — skip serialization for image fields
-;; =============================================================================
 
 (deftest gather-inputs-image-serialization-test
   (testing "image-typed values are NOT JSON-serialized"
@@ -54,8 +48,7 @@
                                         :schema [:vector {:field-type :image} :string]
                                         :value images
                                         :version 1}}
-          result (executor/gather-inputs node blackboard)]
-      ;; Should be the raw vector, not a JSON string
+          result (service-logic/gather-inputs node blackboard)]
       (is (vector? (:document-images result)))
       (is (= 2 (count (:document-images result))))
       (is (= "data:image/png;base64,abc123" (first (:document-images result))))))
@@ -67,8 +60,7 @@
                               :schema [:vector :string]
                               :value items
                               :version 1}}
-          result (executor/gather-inputs node blackboard)]
-      ;; Serialization belongs to the shared request builder after schema inspection.
+          result (service-logic/gather-inputs node blackboard)]
       (is (= items (:items result)))))
 
   (testing "plain string values pass through unchanged"
@@ -77,12 +69,9 @@
                                     :schema :string
                                     :value "do something"
                                     :version 1}}
-          result (executor/gather-inputs node blackboard)]
+          result (service-logic/gather-inputs node blackboard)]
       (is (= "do something" (:instruction result))))))
 
-;; =============================================================================
-;; build-module — image type flows into ORC LLM module
-;; =============================================================================
 
 (deftest build-module-image-type-test
   (testing "module input for image-typed blackboard key has :type :image"
@@ -101,10 +90,8 @@
                                :schema :map
                                :value nil
                                :version 0}}
-          module (executor/build-module node blackboard)
+          module (service-logic/build-module node blackboard)
           image-input (first (filter #(= :document-images (:name %)) (:inputs module)))
           text-input (first (filter #(= :instruction (:name %)) (:inputs module)))]
-      ;; Image input has :type :image
       (is (= :image (:type image-input)))
-      ;; Text input has no :type
       (is (nil? (:type text-input))))))

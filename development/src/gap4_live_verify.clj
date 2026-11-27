@@ -28,14 +28,16 @@
             [ai.obney.orc.evaluation.interface.schemas]
             [ai.obney.orc.evaluation.core.judge-runtime]
             [ai.obney.orc.ontology.interface :as ontology]
-            [ai.obney.orc.ontology.core.consolidator]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [com.brunobonacci.mulog :as u]
             [runner]
-            [legal-issue-detection :as task]))
+            [legal-issue-detection :as task]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (defn deterministic-output-length-judge
   "Custom judge: scores by length of host outputs / 500, clamped to 1.0.
@@ -131,9 +133,8 @@
   (println "============================================================")
   (u/start-publisher! {:type :console})
   (runner/start!)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))]
+  (let [ctx (runner/current-context)]
     (try
-      ;; Enable the loop (turns on default judges via Gap-5).
       (cp/process-command
         (assoc ctx :command
                {:command/name :ontology/set-living-description-enabled
@@ -142,23 +143,15 @@
                 :enabled? true}))
       (Thread/sleep 200)
 
-      ;; Build the two custom-judge eval sheets.
       (println "\n--- Building custom-judge eval sheets ---")
       (let [det-sheet-id (build-deterministic-custom-judge! ctx)
             llm-sheet-id (build-llm-custom-judge! ctx)]
         (println "  deterministic eval sheet:" det-sheet-id)
         (println "  llm eval sheet:" llm-sheet-id)
 
-        ;; Run the bench ONCE so the sheet + repl-researcher node exist.
-        ;; Attach the custom judges to that sheet's repl-researcher, then
-        ;; manually emit a :sheet/complete-node-execution event mimicking
-        ;; a re-tick — the bench's sheet-per-run design means a second
-        ;; runner/run! would create a fresh sheet without our attached
-        ;; judges, so we do the re-tick manually with realistic outputs.
         (println "\n--- Running legal-issue-detection once to materialize a repl-researcher node ---")
         (let [run-result (runner/run! task/task)
               _ (Thread/sleep 1500)
-              ;; Find ALL sheets containing a repl-researcher node.
               sheets (orc/get-sheets-all ctx)
               sheets-with-repl (keep (fn [sheet]
                                        (let [sid (:id sheet)
@@ -171,7 +164,6 @@
                                             :node-id (:id repl-node)
                                             :sheet-name (:name sheet)})))
                                      sheets)
-              ;; Take the most recently created — the bench's run.
               most-recent (last sheets-with-repl)]
           (println "  → sheets total:" (count sheets)
                    ", sheets with repl-researcher:" (count sheets-with-repl))
@@ -180,11 +172,7 @@
                             {:sheet-count (count sheets)})))
           (let [recent-sheet-id (:sheet-id most-recent)
                 repl-node-id (:node-id most-recent)
-                ;; Use the same writes the bench produced — capture them
-                ;; from the run-result, since this mirrors what the
-                ;; repl-researcher actually emitted.
                 host-outputs (or (some-> run-result :outputs)
-                                 ;; Fallback: a realistic minimal output
                                  {:issues "Sample legal concerns identified"
                                   :ambiguities "Some vague clauses found"
                                   :missing "Standard protections absent"
@@ -210,7 +198,6 @@
                         :node-type :repl-researcher
                         :status :success
                         :writes host-outputs})))
-            ;; Poll for the score events. Expect 5 defaults + 2 customs = 7 per tick.
             (loop [waited 0]
               (let [n (count (into [] (es/read (:event-store ctx)
                                                 {:types #{:judge/score-emitted}
@@ -220,7 +207,6 @@
                   (>= waited 90000) (println "  ⚠ timeout. count:" n)
                   :else (do (Thread/sleep 2000) (recur (+ waited 2000))))))
 
-            ;; Inspect.
             (let [all-judge-events (into [] (es/read (:event-store ctx)
                                                       {:types #{:judge/score-emitted}
                                                        :tenant-id (:tenant-id ctx)}))
@@ -262,6 +248,6 @@
       (finally
         (runner/stop!)))))
 
-(comment
+#_(do
   (require '[gap4-live-verify :as v])
   (v/verify!))

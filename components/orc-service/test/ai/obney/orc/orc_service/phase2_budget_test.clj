@@ -12,11 +12,11 @@
      2. :parent-timeout-ms arg    → :source :tick
      3. 900_000 ms hardcoded      → :source :hardcoded"
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (deftest node-timeout-takes-precedence
   (testing "node :timeout-ms takes precedence over parent-timeout-ms and hardcoded"
-    (let [result (executor/resolve-phase2-budget
+    (let [result (service-logic/resolve-phase2-budget
                    {:node {:timeout-ms 30000}
                     :parent-timeout-ms 60000
                     :phase1-elapsed-ms 5000})]
@@ -27,7 +27,7 @@
 
 (deftest tick-fallback-when-no-node-timeout
   (testing "uses parent-timeout-ms when node has no :timeout-ms"
-    (let [result (executor/resolve-phase2-budget
+    (let [result (service-logic/resolve-phase2-budget
                    {:node {}
                     :parent-timeout-ms 60000
                     :phase1-elapsed-ms 5000})]
@@ -38,7 +38,7 @@
 
 (deftest hardcoded-fallback-when-no-config-anywhere
   (testing "falls back to 900_000 ms when neither node nor parent has :timeout-ms"
-    (let [result (executor/resolve-phase2-budget
+    (let [result (service-logic/resolve-phase2-budget
                    {:node {}
                     :parent-timeout-ms nil
                     :phase1-elapsed-ms 5000})]
@@ -49,7 +49,7 @@
 
 (deftest exhausted-when-phase1-eats-the-budget
   (testing "phase1 elapsed exceeds total budget → :exhausted? true, :remaining 0"
-    (let [result (executor/resolve-phase2-budget
+    (let [result (service-logic/resolve-phase2-budget
                    {:node {:timeout-ms 5000}
                     :parent-timeout-ms 60000
                     :phase1-elapsed-ms 6000})]
@@ -59,7 +59,7 @@
       (is (true? (:exhausted? result)))))
 
   (testing "phase1 elapsed exactly equals total budget → :exhausted? true"
-    (let [result (executor/resolve-phase2-budget
+    (let [result (service-logic/resolve-phase2-budget
                    {:node {:timeout-ms 5000}
                     :parent-timeout-ms nil
                     :phase1-elapsed-ms 5000})]

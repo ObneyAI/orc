@@ -28,62 +28,47 @@
    regex or phrase match over model-authored prose."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
-            [ai.obney.orc.orc-service.core.iteration-evidence :as iteration-evidence]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (def ^:private build-iteration-history
-  (requiring-resolve 'ai.obney.orc.orc-service.core.executor/build-iteration-history))
+  #'logic/build-iteration-history)
 
 (def ^:private build-rlm-code-generation-module
-  (requiring-resolve 'ai.obney.orc.orc-service.core.executor/build-rlm-code-generation-module))
+  #'logic/build-rlm-code-generation-module)
 
-;; =============================================================================
-;; 1. execute-rlm-code's catch carries :error-data through the exception
-;;    boundary — the sandbox's OWN throw, exercised through its public
-;;    execute-rlm-code entry point (not a hand-built ex-info standing in
-;;    for it).
-;; =============================================================================
 
 (deftest execute-rlm-code-catch-carries-the-ex-data-keyword
   (testing "a checkpointed campaign's already-evaluated :fn closure is rejected
             by emit-tree!-fn, and execute-rlm-code's catch carries the
             sandbox's own ex-data :requirement keyword as :error-data
             alongside the :error message"
-    (let [sandbox (rlm-sandbox/build-rlm-context
+    (let [sandbox (service-processors/build-rlm-context
                    {:provider :openrouter
                     :blackboard {}
                     :inputs {}
                     :durable-source-required? true})
-          ;; Unquoted (fn ...) — SCI evaluates it to a live closure before
-          ;; emit-tree!-fn runs, tripping live-inline-closure?. Mirrors
-          ;; checkpointed_researcher_test's checkpointed-inline-closure-is-
-          ;; rejected-before-tree-append stub code.
           code (str "(emit-tree! [:sequence "
                     "[:code {:reads [:n] :writes [:doubled] "
                     ":fn (fn [{:keys [inputs]}] {:doubled (* 2 (:n inputs))})}] "
                     "[:final {:keys [:doubled]}]])")
-          result (rlm-sandbox/execute-rlm-code sandbox code)]
+          result (logic/execute-rlm-code sandbox code)]
       (is (some? (:error result)) (pr-str result))
       (is (= :quoted-inline-function-source (:requirement (:error-data result)))
           "the ex-data :requirement keyword survives the catch as :error-data")
-      (is (= rlm-sandbox/quoted-inline-function-source-message (:error result))
+      (is (= logic/quoted-inline-function-source-message (:error result))
           "the :error message is the exported constant, byte-identical"))))
 
 (deftest execute-rlm-code-catch-does-not-false-positive-on-an-unrelated-error
   (testing "an ordinary SCI error (SCI's own sci/error ex-data, no
             :requirement key) never carries the closure-rejection keyword —
             proves diagnose-parse-error's ex-data check can't false-positive"
-    (let [sandbox (rlm-sandbox/build-rlm-context
+    (let [sandbox (service-processors/build-rlm-context
                    {:provider :openrouter :blackboard {} :inputs {}})
-          result (rlm-sandbox/execute-rlm-code sandbox "(no-such-fn 1 2)")]
+          result (logic/execute-rlm-code sandbox "(no-such-fn 1 2)")]
       (is (some? (:error result)) (pr-str result))
       (is (not= :quoted-inline-function-source (:requirement (:error-data result)))))))
 
-;; =============================================================================
-;; 2. diagnose-parse-error's reactive hint, surfaced through
-;;    build-iteration-history — the actual next-iteration prompt renderer.
-;; =============================================================================
 
 (def ^:private hint-marker
   "Diagnostic hint" )
@@ -99,7 +84,7 @@
             :quoted-inline-function-source} gets the reactive hint in the
             rendered history, keyed on the ex-data keyword"
     (let [history [{:code "(emit-tree! ...)"
-                    :error rlm-sandbox/quoted-inline-function-source-message
+                    :error logic/quoted-inline-function-source-message
                     :error-data {:requirement :quoted-inline-function-source}
                     :result nil
                     :vars-created []}]
@@ -112,34 +97,27 @@
             hint still fires via a literal substring check against the
             exported constant — never a regex over prose"
     (let [history [{:code "(emit-tree! ...)"
-                    :error rlm-sandbox/quoted-inline-function-source-message
+                    :error logic/quoted-inline-function-source-message
                     :result nil
                     :vars-created []}]
           out (build-iteration-history history)]
       (is (str/includes? out hint-marker))
       (is (str/includes? out hint-fix-marker)))))
 
-;; Orchestrator inspection addition: after a checkpoint resume the history is
-;; rebuilt from durable iteration records, which keep ONLY a bounded
-;; :error-excerpt of the ENHANCED error (no :error-data — the record is an
-;; allowlist). The hint must still fire from that excerpt, composed through the
-;; real enhancer and the real durable bound, with available vars present (the
-;; enhancer appends them after the message).
 (deftest build-iteration-history-surfaces-the-hint-from-a-durable-error-excerpt
-  (let [enhanced (executor/format-error-with-suggestions
-                  rlm-sandbox/quoted-inline-function-source-message
+  (let [enhanced (logic/format-error-with-suggestions
+                  logic/quoted-inline-function-source-message
                   [:task :documents :findings :draft-report])
-        excerpt (iteration-evidence/bound-text
-                 enhanced iteration-evidence/error-excerpt-max-chars)
+        excerpt (logic/bound-text
+                 enhanced logic/error-excerpt-max-chars)
         out (build-iteration-history
-             ;; the immutable iteration-record shape (executor iteration-record allowlist)
              [{:iteration-index 0
                :status :failure
                :code "(emit-tree! ...)"
                :error-class "clojure.lang.ExceptionInfo"
                :error-excerpt excerpt
                :variable-delta {:created-keys [] :updated-keys [] :removed-keys []}}])]
-    (is (str/includes? excerpt rlm-sandbox/quoted-inline-function-source-message)
+    (is (str/includes? excerpt logic/quoted-inline-function-source-message)
         "the whole constant fits inside the durable excerpt bound")
     (is (str/includes? out hint-fix-marker))))
 
@@ -152,9 +130,6 @@
           out (build-iteration-history history)]
       (is (not (str/includes? out hint-fix-marker))))))
 
-;; =============================================================================
-;; 3. Preventive pitfalls bullet — scoped to checkpointed campaigns.
-;; =============================================================================
 
 (def ^:private pitfalls-bullet-marker
   "the exact substring of OUR OWN production pitfalls bullet, asserted

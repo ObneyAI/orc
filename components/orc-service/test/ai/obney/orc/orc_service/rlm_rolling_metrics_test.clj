@@ -21,9 +21,6 @@
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.time.interface :as time]))
 
-;; =============================================================================
-;; Test context helpers (mirrors recursive_rlm_test.clj pattern)
-;; =============================================================================
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -61,9 +58,6 @@
   `(let [~sym (create-context)]
      (try ~@body (finally (stop-context ~sym)))))
 
-;; =============================================================================
-;; RED #5 — :sheet/rlm-tree-execution-completed carries :tree-fingerprint :status :duration-ms
-;; =============================================================================
 
 (deftest tree-execution-completion-command-emits-event-with-new-fields
   (testing "Dispatching :sheet/record-rlm-tree-execution-completion with :tree-fingerprint :status :duration-ms emits an event carrying all three"
@@ -92,9 +86,6 @@
         (is (= 12345 (:duration-ms event))
             "Event carries :duration-ms from the command")))))
 
-;; =============================================================================
-;; RED #6 — :sheet/node-execution-completed carries :node-type
-;; =============================================================================
 
 (deftest node-execution-completion-command-emits-event-with-node-type
   (testing "Dispatching :sheet/complete-node-execution with :node-type emits an event carrying it"
@@ -121,13 +112,6 @@
         (is (= :llm (:node-type completion-event))
             "Event carries :node-type from the command")))))
 
-;; =============================================================================
-;; RED #7 — per-node-type rolling-metrics aggregator
-;; =============================================================================
-;;
-;; Two node-execution-completed events from DIFFERENT sheets but the SAME
-;; :node-type should aggregate into a single per-node-type metric — the
-;; aggregator is cross-sheet by design.
 
 (defn- complete-node! [ctx sheet-id tick-id node-id node-type status duration-ms]
   (cp/process-command
@@ -149,10 +133,8 @@
       (let [sheet-a (random-uuid) sheet-b (random-uuid)
             tick-a (random-uuid) tick-b (random-uuid)
             node-a (random-uuid) node-b (random-uuid)]
-        ;; Two :llm completions in different sheets, both successful
         (complete-node! ctx sheet-a tick-a node-a :llm :success 100)
         (complete-node! ctx sheet-b tick-b node-b :llm :success 150)
-        ;; A :code completion that should NOT count toward :llm aggregation
         (complete-node! ctx sheet-a tick-a (random-uuid) :code :success 50)
         (Thread/sleep 100)
         (let [llm-metrics (orc/get-node-type-metrics ctx :llm)]
@@ -165,14 +147,6 @@
           (is (= 250 (:total-duration llm-metrics))
               ":llm total-duration sums the durations from both sheets"))))))
 
-;; =============================================================================
-;; RED #8 — per-tree-fingerprint rolling-metrics aggregator
-;; =============================================================================
-;;
-;; Two :sheet/rlm-tree-execution-completed events with the SAME
-;; :tree-fingerprint (whether from the same sheet or different sheets)
-;; should aggregate into a single per-tree-fingerprint metric. Events with
-;; a DIFFERENT fingerprint should not contaminate the count.
 
 (defn- complete-tree! [ctx sheet-id tick-id tree-fingerprint status duration-ms]
   (cp/process-command
@@ -194,10 +168,8 @@
       (let [sheet-a (random-uuid) sheet-b (random-uuid)
             fp-shared "fp-shared-shape"
             fp-other  "fp-different-shape"]
-        ;; Two trees with the SAME fingerprint, in different sheets
         (complete-tree! ctx sheet-a (random-uuid) fp-shared :success 1000)
         (complete-tree! ctx sheet-b (random-uuid) fp-shared :failure 1500)
-        ;; A tree with a different fingerprint that should NOT count toward fp-shared
         (complete-tree! ctx sheet-a (random-uuid) fp-other :success 500)
         (Thread/sleep 100)
         (let [shared-metrics (orc/get-tree-fingerprint-metrics ctx fp-shared)]
@@ -210,12 +182,6 @@
           (is (= 2500 (:total-duration shared-metrics))
               "fp-shared total-duration sums all matching events' durations"))))))
 
-;; =============================================================================
-;; RED #9 — legacy per-(sheet, node-id) aggregator unchanged
-;; =============================================================================
-;;
-;; Regression gate. The existing get-node-rolling-metrics API must keep
-;; working for callers that pre-date C-2a-2 — same shape, same semantics.
 
 (deftest legacy-per-sheet-node-id-aggregator-still-works
   (testing "Existing get-node-rolling-metrics returns sheet-scoped metrics independent of the new cross-sheet aggregators"
@@ -223,7 +189,6 @@
       (let [sheet-id (random-uuid)
             tick-id (random-uuid)
             node-id (random-uuid)]
-        ;; Three completions on the same (sheet, node)
         (complete-node! ctx sheet-id tick-id node-id :llm :success 100)
         (complete-node! ctx sheet-id tick-id node-id :llm :success 200)
         (complete-node! ctx sheet-id tick-id node-id :llm :failure 300)

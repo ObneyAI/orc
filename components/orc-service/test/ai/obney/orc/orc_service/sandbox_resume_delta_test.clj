@@ -3,7 +3,6 @@
             [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.researcher-resume-state :as resume]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas :as schemas]
             [ai.obney.orc.orc-service.test-helpers :as h]
@@ -11,7 +10,8 @@
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]
             [ai.obney.grain.time.interface :as time]
-            [malli.core :as m])
+            [malli.core :as m]
+            [ai.obney.orc.orc-service.core.logic :as service-logic])
   (:import (java.nio.charset StandardCharsets)))
 
 (defn- resume-state [revision sandbox-vars]
@@ -52,9 +52,9 @@
                         :classification-context classification-context)
           after (assoc (resume-state 2 {:memo "after"})
                        :classification-context classification-context)
-          full (resume/encode before nil nil 3)
-          delta (resume/encode after full before 3)
-          hydrated (resume/hydrate-latest [full delta])]
+          full (service-logic/encode before nil nil 3)
+          delta (service-logic/encode after full before 3)
+          hydrated (service-logic/hydrate-latest [full delta])]
       (is (schema-declares-key? schemas/researcher-resume-state-v2
                                 :classification-context)
           "the public V2 continuation contract names the carried classifier payload")
@@ -67,7 +67,7 @@
       (is (= classification-context (:classification-context full)))
       (is (= classification-context (:classification-context delta)))
       (is (= after hydrated))
-      (is (= (resume/sandbox-hash (:sandbox-vars after))
+      (is (= (service-logic/sandbox-hash (:sandbox-vars after))
              (:resulting-state-hash delta))
           "classifier context remains outside the sandbox delta hash"))))
 
@@ -197,8 +197,8 @@
   (testing "the public projection never exposes unverifiable sandbox state"
     (let [before (resume-state 1 {:key "before"})
           after (resume-state 2 {:key "after"})
-          full (resume/encode before nil nil 3)
-          delta (resume/encode after full before 3)
+          full (service-logic/encode before nil nil 3)
+          delta (service-logic/encode after full before 3)
           cases [{:label :missing-predecessor
                   :facts [delta]}
                  {:label :predecessor-hash-mismatch
@@ -227,13 +227,13 @@
   (testing "durable facts with absent or forbidden kind-specific fields fail loudly"
     (let [state (resume-state 1 {:key "value"})
           next-state (resume-state 2 {:key "value"})
-          full (resume/encode state nil nil 3)
-          delta (resume/encode next-state full state 3)
+          full (service-logic/encode state nil nil 3)
+          delta (service-logic/encode next-state full state 3)
           cases [{:label :full-missing-snapshot
                   :facts [(-> full
                               (dissoc :sandbox-snapshot)
                               (assoc :resulting-state-hash
-                                     (resume/sandbox-hash nil)))]}
+                                     (service-logic/sandbox-hash nil)))]}
                  {:label :full-with-delta-field
                   :facts [(assoc full :sandbox-puts {})]}
                  {:label :delta-missing-puts
@@ -260,7 +260,7 @@
           (is (thrown-with-msg?
                clojure.lang.ExceptionInfo
                #"researcher sandbox resume fact shape"
-               (resume/hydrate-latest facts))
+               (service-logic/hydrate-latest facts))
               (name label)))))))
 
 (deftest det-e2e-276-legacy-checkpoints-remain-readable-across-the-v3-transition
@@ -392,8 +392,8 @@
                   :sandbox-snapshot-interval 3)))
         (let [delta-facts (mapv :resume-state
                                 (resume-events ctx tick-id node-id))
-              full-facts [(resume/encode-full before)
-                          (resume/encode-full after)]
+              full-facts [(service-logic/encode-full before)
+                          (service-logic/encode-full after)]
               delta-by (canonical-edn-bytes delta-facts)
               full-bytes (canonical-edn-bytes full-facts)]
           (is (= [:full-snapshot :sandbox-delta]
@@ -461,10 +461,10 @@
            (assoc (checkpoint-command sheet-id tick-id node-id state)
                   :sandbox-snapshot-interval 3)))
         (rmp/l1-clear!)
-        (let [hydrate resume/hydrate
+        (let [hydrate service-logic/researcher-resume-state-hydrate
               hydrated-facts (atom 0)
               projected
-              (with-redefs [resume/hydrate
+              (with-redefs [service-logic/researcher-resume-state-hydrate
                             (fn [prior fact]
                               (swap! hydrated-facts inc)
                               (hydrate prior fact))]

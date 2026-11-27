@@ -1,0 +1,822 @@
+(ns ai.obney.orc.ontology.walk-down-classifier-test
+  "Tests for C-2d-2: walk-down classifier + consolidator parent-inference.
+
+   Covers:
+   - :parent-tree-id optionally carried through :ontology/task-classified
+     event + :ontology/assign-task-class command bodies
+   - classify-task :walk-down? false preserves legacy behavior
+   - classify-task :walk-down? true descends via concepts graph + reranker
+     into the deepest child that scores >= auto-classify-threshold
+   - Walk-down terminates when no child fits; current node returned
+   - Walk-down fresh-mint binds :parent-tree-id to the deepest matched
+     ancestor
+   - Hard depth cap at 5 levels
+   - C-2c-2 wedge forwards :parent-tree-id from classify-task result to
+     the dispatched command body
+   - Consolidator infers parent on first consolidation; preserves on
+     subsequent consolidations (sticky)
+   - Orphan logging when consolidator's classify-task is below threshold
+
+   Live verify lives in C-2d-3."
+  (:require [ai.obney.orc.ontology.core.todo-processors :as processors]
+            [ai.obney.orc.ontology.core.read-models :as read-models]
+            [ai.obney.orc.ontology.core.queries :as queries]
+            [ai.obney.orc.ontology.core.logic :as logic]
+            [ai.obney.orc.ontology.core.commands :as commands]
+            [ai.obney.orc.orc-service.core.todo-processors]
+            [clojure.test :refer [deftest testing is]]
+            [malli.core :as m]
+            [ai.obney.orc.ontology.interface :as ontology]
+            [ai.obney.orc.ontology.interface.schemas]
+            [ai.obney.grain.schema-util.interface :as schema-util]
+            [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.grain.event-store-v3.interface.schemas]
+            [ai.obney.grain.query-processor.interface :as qp]
+            [ai.obney.grain.pubsub.interface :as pubsub]
+            [ai.obney.grain.kv-store.interface :as kv]
+            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
+
+
+(defn- create-context []
+  (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
+        event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
+        cache-dir (str "/tmp/c2d2-test-" (random-uuid))
+        cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "test"}))
+        tenant-id (random-uuid)]
+    {:event-store event-store
+     :cache cache
+     :tenant-id tenant-id
+     :event-pubsub ps
+     :command-registry (cp/global-command-registry)
+     :query-registry (qp/global-query-registry)
+     ::cache-dir cache-dir}))
+
+(defn- stop-context [ctx]
+  (when-let [ps (:event-pubsub ctx)] (pubsub/stop ps))
+  (when-let [c (:cache ctx)] (kv/stop c))
+  (when-let [es (:event-store ctx)] (es/stop es))
+  (when-let [dir (::cache-dir ctx)]
+    (let [f (java.io.File. dir)]
+      (when (.exists f)
+        (doseq [c (.listFiles f)] (.delete c))
+        (.delete f)))))
+
+(defmacro with-test-ctx [[sym] & body]
+  `(let [~sym (create-context)]
+     (try ~@body (finally (stop-context ~sym)))))
+
+;; =============================================================================
+;; Helpers for walk-down tests
+;; =============================================================================
+
+(defn- fake-top-1
+  "Build a search-descriptions result vector with a single top candidate
+   matching the given target-id and fitness."
+  [target-id fitness]
+  [{:content "Parent summary"
+    :score fitness
+    :rank 1
+    :document-id (str "tf::" target-id)
+    :document-metadata {:granularity :tree-fingerprint
+                        :target-id target-id
+                        :confidence 1.0
+                        :last-update "2026"}
+    :reasoning "Top-level abstract pattern fit."
+    :fitness-score fitness}])
+
+
+(deftest task-classified-event-accepts-optional-parent-tree-id
+  (testing "Legacy event without :parent-tree-id still validates"
+    (let [event {:source-sheet-id   (random-uuid)
+                 :source-tick-id    (random-uuid)
+                 :source-node-id    (random-uuid)
+                 :assigned-tree-id  (random-uuid)
+                 :confidence        0.87
+                 :top-candidates    [{:document-id "x" :score 0.87}]
+                 :reasoning         "Matches chunked-extraction."
+                 :classified-at     "2026-05-27T12:00:00Z"
+                 :was-fresh-mint?   false}
+          schema (get @schema-util/registry* :ontology/task-classified)]
+      (is (m/validate schema event)
+          "Legacy event without :parent-tree-id remains valid")))
+
+  (testing "Event WITH UUID :parent-tree-id validates"
+    (let [event {:source-sheet-id   (random-uuid)
+                 :source-tick-id    (random-uuid)
+                 :source-node-id    (random-uuid)
+                 :assigned-tree-id  (random-uuid)
+                 :confidence        0.87
+                 :top-candidates    []
+                 :reasoning         "Walked down from parent."
+                 :classified-at     "2026"
+                 :was-fresh-mint?   false
+                 :parent-tree-id    (random-uuid)}
+          schema (get @schema-util/registry* :ontology/task-classified)]
+      (is (m/validate schema event)
+          (str "UUID :parent-tree-id should validate. Explain: "
+               (pr-str (m/explain schema event))))))
+
+  (testing "Event WITH string-fingerprint :parent-tree-id validates"
+    (let [event {:source-sheet-id   (random-uuid)
+                 :source-tick-id    (random-uuid)
+                 :source-node-id    (random-uuid)
+                 :assigned-tree-id  (random-uuid)
+                 :confidence        0.4
+                 :top-candidates    []
+                 :reasoning         "Minted fresh under abstract parent."
+                 :classified-at     "2026"
+                 :was-fresh-mint?   true
+                 :parent-tree-id    "seed:tree:ChunkedExtraction"}
+          schema (get @schema-util/registry* :ontology/task-classified)]
+      (is (m/validate schema event)
+          "String fingerprint :parent-tree-id is also accepted")))
+
+  (testing ":parent-tree-id is declared in the schema (not just an implicit open-map extra)"
+    (let [schema (get @schema-util/registry* :ontology/task-classified)
+          schema-form (m/form schema)]
+      (is (some #{:parent-tree-id} (flatten (vec schema-form)))
+          (str ":parent-tree-id should appear in the schema form. Got: "
+               (pr-str schema-form))))))
+
+(deftest assign-task-class-command-accepts-optional-parent-tree-id
+  (testing "Legacy command without :parent-tree-id still validates"
+    (let [cmd {:source-sheet-id   (random-uuid)
+               :source-tick-id    (random-uuid)
+               :source-node-id    (random-uuid)
+               :assigned-tree-id  (random-uuid)
+               :confidence        0.87
+               :top-candidates    []
+               :reasoning         "x"
+               :was-fresh-mint?   false}
+          schema (get @schema-util/registry* :ontology/assign-task-class)]
+      (is (m/validate schema cmd)
+          "Legacy command without :parent-tree-id remains valid")))
+
+  (testing "Command WITH :parent-tree-id validates"
+    (let [cmd {:source-sheet-id   (random-uuid)
+               :source-tick-id    (random-uuid)
+               :source-node-id    (random-uuid)
+               :assigned-tree-id  (random-uuid)
+               :confidence        0.4
+               :top-candidates    []
+               :reasoning         "Walked down from parent."
+               :was-fresh-mint?   true
+               :parent-tree-id    (random-uuid)}
+          schema (get @schema-util/registry* :ontology/assign-task-class)]
+      (is (m/validate schema cmd)
+          (str "Command with :parent-tree-id should validate. Explain: "
+               (pr-str (m/explain schema cmd))))))
+
+  (testing ":parent-tree-id is declared in the assign-task-class schema"
+    (let [schema (get @schema-util/registry* :ontology/assign-task-class)
+          schema-form (m/form schema)]
+      (is (some #{:parent-tree-id} (flatten (vec schema-form)))
+          (str ":parent-tree-id should appear in the schema form. Got: "
+               (pr-str schema-form))))))
+
+
+(deftest classify-task-walk-down-false-preserves-legacy-shape
+  (testing "Top-1 above threshold with :walk-down? false → match, no parent-tree-id"
+    (let [matched-uuid (random-uuid)
+          fake-results [{:content "Pattern A summary"
+                         :score 0.91
+                         :rank 1
+                         :document-id "tf::a"
+                         :document-metadata {:granularity :tree-fingerprint
+                                             :target-id matched-uuid
+                                             :confidence 1.0
+                                             :last-update "2026"}
+                         :reasoning "Strong fit"
+                         :fitness-score 0.91}]]
+      (with-redefs [ontology/search-descriptions (fn [_ctx _opts] fake-results)]
+        (let [result (ontology/classify-task {}
+                       {:task-signature "extract per-section summaries"
+                        :threshold 0.7
+                        :walk-down? false})]
+          (is (= matched-uuid (:assigned-tree-id result))
+              "Top-1 still selected when walk-down disabled")
+          (is (false? (:was-fresh-mint? result)))
+          (is (nil? (:parent-tree-id result))
+              ":parent-tree-id is nil when walk-down is disabled")))))
+
+  (testing "Top-1 below threshold with :walk-down? false → fresh-mint, no parent-tree-id"
+    (with-redefs [ontology/search-descriptions
+                  (fn [_ctx _opts]
+                    [{:content "weak" :score 0.4 :rank 1
+                      :document-id "tf::w"
+                      :document-metadata {:granularity :tree-fingerprint
+                                          :target-id (random-uuid)}
+                      :fitness-score 0.4}])]
+      (let [result (ontology/classify-task {}
+                     {:task-signature "novel"
+                      :threshold 0.7
+                      :walk-down? false})]
+        (is (true? (:was-fresh-mint? result)))
+        (is (nil? (:parent-tree-id result))
+            "Fresh-mint with walk-down disabled has no parent")))))
+
+
+(deftest classify-task-walks-down-to-child-when-top-1-below-specificity
+  (testing "Walk-down picks the well-fitting child when top-1 is moderate"
+    (let [parent-id (random-uuid)
+          child-id  (random-uuid)
+          fake-narrower (fn [_ctx uri]
+                          (cond
+                            (= uri (str "tree-class:" parent-id)) #{(str "tree-class:" child-id)}
+                            :else #{}))
+          fake-get-desc (fn [_ctx granularity target-id]
+                          (when (and (= granularity :tree-fingerprint)
+                                     (= target-id child-id))
+                            {:summary "Specific child variant of the parent pattern."
+                             :version 1
+                             :consolidated-from-event-count 1
+                             :capabilities []
+                             :strengths []
+                             :weaknesses []
+                             :representative-uses []
+                             :avoid-when []}))
+          fake-rerank (fn [_ctx {:keys [candidates]}]
+                        (mapv (fn [c]
+                                {:document-id (:document-id c)
+                                 :reasoning "Tighter match at the leaf level."
+                                 :fitness-score 0.92})
+                              candidates))]
+      (with-redefs [ontology/search-descriptions       (fn [_ _] (fake-top-1 parent-id 0.85))
+                    ontology/get-narrower-concepts     fake-narrower
+                    ontology/get-description           fake-get-desc
+                    logic/reranker-rerank!                   fake-rerank]
+        (let [result (ontology/classify-task {:domain-family-parent-fn (fn [_ _] nil)}
+                       {:task-signature "extract per-section summaries"
+                        :threshold 0.7
+                        :walk-down? true
+                        :specificity-threshold 0.9})]
+          (is (= child-id (:assigned-tree-id result))
+              ":assigned-tree-id is the CHILD, not the parent")
+          (is (= parent-id (:parent-tree-id result))
+              ":parent-tree-id is the PARENT we walked from")
+          (is (false? (:was-fresh-mint? result))
+              "Walked to an existing leaf — not a fresh mint")
+          (is (= 0.92 (:confidence result))
+              ":confidence reflects the leaf's fitness, not the parent's"))))))
+
+
+(deftest walk-down-with-only-a-family-child-returns-the-shape-itself
+  (testing "top-1 P at fitness 0.85 (below specificity 0.9, above match 0.7);
+            its ONLY child is a domain family -> get-tree-class-children
+            excludes it (non-family-child?), walk-down finds no children to
+            consider, and returns P unchanged (the genuine-leaf case) —
+            never descending into the family"
+    (let [parent-id (random-uuid)
+          family-id  (random-uuid)
+          fake-narrower (fn [_ uri]
+                          (cond
+                            (= uri (str "tree-class:" parent-id)) #{(str "tree-class:" family-id)}
+                            :else #{}))
+          fake-get-desc (fn [_ _ target-id]
+                          (when (= target-id family-id)
+                            {:summary "the family's own pattern"
+                             :version 1 :consolidated-from-event-count 1
+                             :capabilities [] :strengths [] :weaknesses []
+                             :representative-uses [] :avoid-when []}))
+          rerank-called? (atom false)
+          fake-rerank (fn [_ _] (reset! rerank-called? true) [])]
+      (with-redefs [ontology/search-descriptions   (fn [_ _] (fake-top-1 parent-id 0.85))
+                    ontology/get-narrower-concepts fake-narrower
+                    ontology/get-description       fake-get-desc
+                    logic/reranker-rerank!               fake-rerank]
+        (let [result (ontology/classify-task
+                       {:domain-family-parent-fn
+                        (fn [_ id] (when (= id family-id) {:parent-id parent-id :domain-label "some-family"}))}
+                       {:task-signature "x" :threshold 0.7 :walk-down? true :specificity-threshold 0.9})]
+          (is (= parent-id (:assigned-tree-id result))
+              "walk-down returns the shape itself — the family is never descended into")
+          (is (false? (:was-fresh-mint? result)))
+          (is (nil? (:parent-tree-id result))
+              "no walk was committed — children were empty once the family was excluded")
+          (is (false? @rerank-called?)
+              "pick-best-child never even calls the reranker — no children survived the family filter"))))))
+
+(deftest walk-down-never-picks-a-family-child-even-when-it-scores-higher
+  (testing "P has two children: an ordinary shape (fitness 0.6, below the 0.7
+            auto-classify threshold) and a domain family (fitness 0.95, far
+            above it) — the family is excluded from the candidates handed to
+            the reranker, so only the ordinary child is considered, and it
+            does not meet the threshold -> P is returned unchanged, never the
+            family, regardless of the family's higher score"
+    (let [parent-id (random-uuid)
+          shape-child-id (random-uuid)
+          family-id (random-uuid)
+          fake-narrower (fn [_ uri]
+                          (cond
+                            (= uri (str "tree-class:" parent-id))
+                            #{(str "tree-class:" shape-child-id) (str "tree-class:" family-id)}
+                            :else #{}))
+          fake-get-desc (fn [_ _ target-id]
+                          (when (contains? #{shape-child-id family-id} target-id)
+                            {:summary (str "pattern for " target-id)
+                             :version 1 :consolidated-from-event-count 1
+                             :capabilities [] :strengths [] :weaknesses []
+                             :representative-uses [] :avoid-when []}))
+          seen-ids (atom #{})
+          fake-rerank (fn [_ {:keys [candidates]}]
+                        (swap! seen-ids into (map #(-> % :document-metadata :target-id) candidates))
+                        (mapv (fn [c]
+                                (let [tid (-> c :document-metadata :target-id)]
+                                  {:document-id (:document-id c)
+                                   :reasoning "x"
+                                   :fitness-score (if (= tid family-id) 0.95 0.6)}))
+                              candidates))]
+      (with-redefs [ontology/search-descriptions   (fn [_ _] (fake-top-1 parent-id 0.85))
+                    ontology/get-narrower-concepts fake-narrower
+                    ontology/get-description       fake-get-desc
+                    logic/reranker-rerank!               fake-rerank]
+        (let [result (ontology/classify-task
+                       {:domain-family-parent-fn
+                        (fn [_ id] (when (= id family-id) {:parent-id parent-id :domain-label "some-family"}))}
+                       {:task-signature "x" :threshold 0.7 :walk-down? true :specificity-threshold 0.9})]
+          (is (= #{shape-child-id} @seen-ids)
+              "the reranker only ever saw the non-family child — the family never reached it")
+          (is (= parent-id (:assigned-tree-id result))
+              "no child met the threshold (the family's high score never counted); P is returned")
+          (is (false? (:was-fresh-mint? result))))))))
+
+
+(deftest classify-task-returns-current-when-no-child-fits-at-depth-zero
+  (testing "Walk-down looks at children, finds none above threshold, returns current"
+    (let [parent-id (random-uuid)
+          child-id  (random-uuid)
+          fake-narrower (fn [_ uri]
+                          (cond
+                            (= uri (str "tree-class:" parent-id))
+                            #{(str "tree-class:" child-id)}
+                            :else #{}))
+          fake-get-desc (fn [_ _ target-id]
+                          (when (= target-id child-id)
+                            {:summary "Tangentially-related variant."
+                             :version 1
+                             :consolidated-from-event-count 1
+                             :capabilities []
+                             :strengths []
+                             :weaknesses []
+                             :representative-uses []
+                             :avoid-when []}))
+          fake-rerank (fn [_ {:keys [candidates]}]
+                        (mapv (fn [c]
+                                {:document-id (:document-id c)
+                                 :reasoning "Loose, not a real fit."
+                                 :fitness-score 0.5})
+                              candidates))]
+      (with-redefs [ontology/search-descriptions   (fn [_ _] (fake-top-1 parent-id 0.85))
+                    ontology/get-narrower-concepts fake-narrower
+                    ontology/get-description       fake-get-desc
+                    logic/reranker-rerank!               fake-rerank]
+        (let [result (ontology/classify-task {}
+                       {:task-signature "task that lives at parent level only"
+                        :threshold 0.7
+                        :walk-down? true
+                        :specificity-threshold 0.9})]
+          (is (= parent-id (:assigned-tree-id result))
+              ":assigned-tree-id is the PARENT (no child fit; no commit)")
+          (is (false? (:was-fresh-mint? result))
+              "No fresh-mint at depth 0 — we never committed to a walk")
+          (is (nil? (:parent-tree-id result))
+              ":parent-tree-id nil — parent IS the assigned tree, has no grand-parent here")
+          (is (= 0.85 (:confidence result))
+              "Confidence is the parent's fitness, not the rejected child's"))))))
+
+
+(deftest classify-task-fresh-mints-when-walked-and-no-grandchild-fits
+  (testing "Walked down to C1 (depth 1); no grandchild fits → mint fresh under C1"
+    (let [parent-id (random-uuid)
+          c1-id     (random-uuid)
+          c2-id     (random-uuid)
+          fake-narrower (fn [_ uri]
+                          (cond
+                            (= uri (str "tree-class:" parent-id))
+                            #{(str "tree-class:" c1-id)}
+                            (= uri (str "tree-class:" c1-id))
+                            #{(str "tree-class:" c2-id)}
+                            :else #{}))
+          fake-get-desc (fn [_ _ target-id]
+                          (cond
+                            (= target-id c1-id)
+                            {:summary "Mid-level variant under parent."
+                             :version 1 :consolidated-from-event-count 1
+                             :capabilities [] :strengths [] :weaknesses []
+                             :representative-uses [] :avoid-when []}
+
+                            (= target-id c2-id)
+                            {:summary "Grandchild specialization."
+                             :version 1 :consolidated-from-event-count 1
+                             :capabilities [] :strengths [] :weaknesses []
+                             :representative-uses [] :avoid-when []}))
+          fake-rerank (fn [_ {:keys [candidates]}]
+                        (mapv (fn [c]
+                                (let [target-id (-> c :document-metadata :target-id)
+                                      fit (cond
+                                            (= target-id c1-id) 0.92
+                                            (= target-id c2-id) 0.40
+                                            :else 0.0)]
+                                  {:document-id (:document-id c)
+                                   :reasoning (str "depth-aware reasoning for " target-id)
+                                   :fitness-score fit}))
+                              candidates))]
+      (with-redefs [ontology/search-descriptions   (fn [_ _] (fake-top-1 parent-id 0.85))
+                    ontology/get-narrower-concepts fake-narrower
+                    ontology/get-description       fake-get-desc
+                    logic/reranker-rerank!               fake-rerank]
+        (let [result (ontology/classify-task {:domain-family-parent-fn (fn [_ _] nil)}
+                       {:task-signature "novel-but-related task"
+                        :threshold 0.7
+                        :walk-down? true
+                        :specificity-threshold 0.9})]
+          (is (true? (:was-fresh-mint? result))
+              "Fresh-mint because we walked to C1 and couldn't continue")
+          (is (= c1-id (:parent-tree-id result))
+              ":parent-tree-id is C1 — the deepest matched ancestor")
+          (is (not= parent-id (:assigned-tree-id result))
+              "Fresh-mint UUID is not P")
+          (is (not= c1-id (:assigned-tree-id result))
+              "Fresh-mint UUID is not C1")
+          (is (not= c2-id (:assigned-tree-id result))
+              "Fresh-mint UUID is not C2 (the rejected grandchild)")
+          (is (uuid? (:assigned-tree-id result))
+              ":assigned-tree-id is a UUID"))))))
+
+
+(deftest classify-task-respects-walk-down-depth-cap
+  (testing "Walk stops at depth 5 even when more children would fit"
+    (let [ids (vec (repeatedly 7 random-uuid))
+          fake-narrower (fn [_ uri]
+                          (let [parent-target (subs uri (count "tree-class:"))
+                                idx (loop [i 0]
+                                      (cond
+                                        (>= i (count ids)) nil
+                                        (= (str (nth ids i)) parent-target) i
+                                        :else (recur (inc i))))]
+                            (if (and idx (< (inc idx) (count ids)))
+                              #{(str "tree-class:" (nth ids (inc idx)))}
+                              #{})))
+          fake-get-desc (fn [_ _ target-id]
+                          (when (some #(= % target-id) ids)
+                            {:summary (str "Level for " target-id)
+                             :version 1 :consolidated-from-event-count 1
+                             :capabilities [] :strengths [] :weaknesses []
+                             :representative-uses [] :avoid-when []}))
+          fake-rerank (fn [_ {:keys [candidates]}]
+                        (mapv (fn [c]
+                                {:document-id (:document-id c)
+                                 :reasoning "Always fits"
+                                 :fitness-score 0.95})
+                              candidates))]
+      (with-redefs [ontology/search-descriptions   (fn [_ _] (fake-top-1 (first ids) 0.85))
+                    ontology/get-narrower-concepts fake-narrower
+                    ontology/get-description       fake-get-desc
+                    logic/reranker-rerank!               fake-rerank]
+        (let [result (ontology/classify-task {:domain-family-parent-fn (fn [_ _] nil)}
+                       {:task-signature "deep walk"
+                        :threshold 0.7
+                        :walk-down? true
+                        :specificity-threshold 0.9})]
+          (is (= (nth ids 5) (:assigned-tree-id result))
+              "Walk stops at depth 5; returns the node we recursed to at that depth")
+          (is (false? (:was-fresh-mint? result))
+              "Depth cap returns current as-is; not a fresh-mint")
+          (is (= (nth ids 4) (:parent-tree-id result))
+              ":parent-tree-id is the node we walked FROM at depth 4"))))))
+
+
+(deftest classify-task-forwards-optional-model-to-search-descriptions
+  (testing "Caller's :model reaches search-descriptions' opts unchanged"
+    (let [captured (atom nil)]
+      (with-redefs [ontology/search-descriptions
+                    (fn [_ opts] (reset! captured opts) (fake-top-1 (random-uuid) 0.95))]
+        (ontology/classify-task {}
+          {:task-signature "x" :threshold 0.7 :model "anthropic/claude-sonnet-4"}))
+      (is (= "anthropic/claude-sonnet-4" (:model @captured))
+          "search-descriptions receives the caller's explicit :model override")))
+
+  (testing "Omitting :model forwards nil — no breaking change to existing callers"
+    (let [captured (atom nil)]
+      (with-redefs [ontology/search-descriptions
+                    (fn [_ opts] (reset! captured opts) (fake-top-1 (random-uuid) 0.95))]
+        (ontology/classify-task {} {:task-signature "x" :threshold 0.7}))
+      (is (nil? (:model @captured))
+          "No :model key supplied means nil forwarded"))))
+
+(deftest classify-task-walk-down-forwards-model-to-rerank
+  (testing "During walk-down, pick-best-child's rerank! call carries the caller's :model override"
+    (let [parent-id (random-uuid)
+          child-id  (random-uuid)
+          fake-narrower (fn [_ctx uri]
+                          (cond
+                            (= uri (str "tree-class:" parent-id)) #{(str "tree-class:" child-id)}
+                            :else #{}))
+          fake-get-desc (fn [_ctx granularity target-id]
+                          (when (and (= granularity :tree-fingerprint)
+                                     (= target-id child-id))
+                            {:summary "Specific child variant of the parent pattern."
+                             :version 1
+                             :consolidated-from-event-count 1
+                             :capabilities []
+                             :strengths []
+                             :weaknesses []
+                             :representative-uses []
+                             :avoid-when []}))
+          captured-model (atom :unset)
+          fake-rerank (fn [_ctx {:keys [candidates model]}]
+                        (reset! captured-model model)
+                        (mapv (fn [c]
+                                {:document-id (:document-id c)
+                                 :reasoning "Tighter match at the leaf level."
+                                 :fitness-score 0.92})
+                              candidates))]
+      (with-redefs [ontology/search-descriptions   (fn [_ _] (fake-top-1 parent-id 0.85))
+                    ontology/get-narrower-concepts fake-narrower
+                    ontology/get-description       fake-get-desc
+                    logic/reranker-rerank!               fake-rerank]
+        (ontology/classify-task {:domain-family-parent-fn (fn [_ _] nil)}
+          {:task-signature "extract per-section summaries"
+           :threshold 0.7
+           :walk-down? true
+           :specificity-threshold 0.9
+           :model "anthropic/claude-sonnet-4"})
+        (is (= "anthropic/claude-sonnet-4" @captured-model)
+            "pick-best-child's rerank! call inside walk-down carries the override")))))
+
+
+(deftest assign-task-class-defcommand-carries-parent-tree-id
+  (testing "Command with :parent-tree-id → event body has :parent-tree-id"
+    (with-test-ctx [ctx]
+      (let [sheet-id (random-uuid)
+            tick-id (random-uuid)
+            node-id (random-uuid)
+            assigned (random-uuid)
+            parent (random-uuid)
+            cmd {:command/name :ontology/assign-task-class
+                 :command/id (random-uuid)
+                 :command/timestamp (time/now)
+                 :source-sheet-id sheet-id
+                 :source-tick-id tick-id
+                 :source-node-id node-id
+                 :assigned-tree-id assigned
+                 :confidence 0.4
+                 :top-candidates []
+                 :reasoning "walked-down then fresh-minted under parent"
+                 :was-fresh-mint? true
+                 :parent-tree-id parent}]
+        (cp/process-command (assoc ctx :command cmd))
+        (let [events (into [] (es/read (:event-store ctx)
+                                       {:tenant-id (:tenant-id ctx)
+                                        :types #{:ontology/task-classified}}))
+              event (first events)]
+          (is (= 1 (count events)))
+          (is (= parent (:parent-tree-id event))
+              "Event body carries :parent-tree-id from the command")
+          (let [schema (get @schema-util/registry* :ontology/task-classified)]
+            (is (m/validate schema event)
+                "Event with :parent-tree-id still validates"))))))
+
+  (testing "Command without :parent-tree-id → event has no :parent-tree-id field"
+    (with-test-ctx [ctx]
+      (let [sheet-id (random-uuid)
+            tick-id (random-uuid)
+            node-id (random-uuid)
+            assigned (random-uuid)
+            cmd {:command/name :ontology/assign-task-class
+                 :command/id (random-uuid)
+                 :command/timestamp (time/now)
+                 :source-sheet-id sheet-id
+                 :source-tick-id tick-id
+                 :source-node-id node-id
+                 :assigned-tree-id assigned
+                 :confidence 0.9
+                 :top-candidates []
+                 :reasoning "matched"
+                 :was-fresh-mint? false}]
+        (cp/process-command (assoc ctx :command cmd))
+        (let [events (into [] (es/read (:event-store ctx)
+                                       {:tenant-id (:tenant-id ctx)
+                                        :types #{:ontology/task-classified}}))
+              event (first events)]
+          (is (= 1 (count events)))
+          (is (not (contains? event :parent-tree-id))
+              "Legacy command (no parent) → event omits the field entirely"))))))
+
+
+(defn- run-wedge!
+  "Invoke the C-2c-2 wedge with the given node + context. Returns the
+   node (post-wedge)."
+  [node context]
+  (let [wedge #'service-processors/maybe-auto-classify-and-set-context]
+    (wedge node context)))
+
+(deftest wedge-forwards-parent-tree-id-to-assign-task-class-command
+  (testing "When classify-task returns :parent-tree-id, the dispatched command carries it"
+    (with-test-ctx [ctx]
+      (let [sheet-id (random-uuid)
+            tick-id (random-uuid)
+            node-id (random-uuid)
+            assigned (random-uuid)
+            parent (random-uuid)
+            classify-result {:assigned-tree-id assigned
+                             :confidence 0.4
+                             :top-candidates [{:document-id "x" :score 0.4}]
+                             :reasoning "walked"
+                             :was-fresh-mint? true
+                             :parent-tree-id parent}]
+        (with-redefs [ontology/classify-task (fn [_ _] classify-result)]
+          (let [node {:id node-id
+                      :name "test-node"
+                      :instruction "Process the doc."
+                      :reads [:document]
+                      :writes [:summary]
+                      :rlm {:auto-classify? true}}
+                wedge-ctx (assoc ctx
+                            :sheet-id sheet-id
+                            :tick-id tick-id)
+                _ (run-wedge! node wedge-ctx)
+                events (into [] (es/read (:event-store ctx)
+                                         {:tenant-id (:tenant-id ctx)
+                                          :types #{:ontology/task-classified}}))
+                event (first events)]
+            (is (= 1 (count events)))
+            (is (= parent (:parent-tree-id event))
+                "Wedge forwarded :parent-tree-id through to the emitted event")
+            (is (= assigned (:assigned-tree-id event)))
+            (is (true? (:was-fresh-mint? event))))))))
+
+  (testing "When classify-task returns nil :parent-tree-id, the event omits the field"
+    (with-test-ctx [ctx]
+      (let [node-id (random-uuid)
+            classify-result {:assigned-tree-id (random-uuid)
+                             :confidence 0.9
+                             :top-candidates []
+                             :reasoning "matched"
+                             :was-fresh-mint? false
+                             :parent-tree-id nil}]
+        (with-redefs [ontology/classify-task (fn [_ _] classify-result)]
+          (let [node {:id node-id
+                      :name "node"
+                      :instruction "x"
+                      :reads [] :writes []
+                      :rlm {:auto-classify? true}}
+                wedge-ctx (assoc ctx
+                            :sheet-id (random-uuid)
+                            :tick-id (random-uuid))
+                _ (run-wedge! node wedge-ctx)
+                events (into [] (es/read (:event-store ctx)
+                                         {:tenant-id (:tenant-id ctx)
+                                          :types #{:ontology/task-classified}}))
+                event (first events)]
+            (is (= 1 (count events)))
+            (is (not (contains? event :parent-tree-id))
+                "Nil :parent-tree-id from classify-task → event omits the field")))))))
+
+
+
+(deftest hydrate-parent-tree-id-first-time-match
+  (testing "First-time tree-fingerprint consolidation: classify-task → :parent-tree-id assoc'ed"
+    (let [parent-id (random-uuid)
+          target-id "fp:novel"
+          body {:capabilities ["x"] :strengths [] :weaknesses []
+                :representative-uses ["x"] :avoid-when ["x"]
+                :summary "fresh consolidation" :version 1
+                :consolidated-from-event-count 1}
+          classify-calls (atom 0)]
+      (with-redefs [ontology/classify-task
+                    (fn [_ opts]
+                      (swap! classify-calls inc)
+                      (is (false? (:walk-down? opts))
+                          "Helper passes :walk-down? false per Decision 5")
+                      {:assigned-tree-id parent-id
+                       :confidence 0.85
+                       :top-candidates []
+                       :reasoning "matches abstract chunked-extraction"
+                       :was-fresh-mint? false
+                       :parent-tree-id nil})]
+        (let [hydrate #'processors/maybe-hydrate-parent-tree-id
+              result (hydrate {} :tree-fingerprint target-id nil body)]
+          (is (pos? @classify-calls)
+              "classify-task was invoked")
+          (is (= parent-id (:parent-tree-id result))
+              ":parent-tree-id inferred from classify-task's match"))))))
+
+
+(deftest hydrate-parent-tree-id-sticky-on-subsequent-consolidation
+  (testing "Existing :parent-tree-id preserved; classify-task NOT called"
+    (let [existing-parent (random-uuid)
+          target-id "fp:already-known"
+          current {:summary "prior" :version 1
+                   :parent-tree-id existing-parent}
+          body {:capabilities ["x"] :strengths [] :weaknesses []
+                :representative-uses ["x"] :avoid-when ["x"]
+                :summary "v2 summary" :version 2
+                :consolidated-from-event-count 5}
+          classify-calls (atom 0)]
+      (with-redefs [ontology/classify-task
+                    (fn [& _]
+                      (swap! classify-calls inc)
+                      (throw (ex-info "should not be called" {})))]
+        (let [hydrate #'processors/maybe-hydrate-parent-tree-id
+              result (hydrate {} :tree-fingerprint target-id current body)]
+          (is (zero? @classify-calls)
+              "classify-task NOT called (sticky)")
+          (is (= existing-parent (:parent-tree-id result))
+              "Existing parent preserved on the new body"))))))
+
+
+(deftest hydrate-parent-tree-id-orphan-omits-parent-when-classifier-fresh-mints
+  (testing "Classify-task fresh-mints → no :parent-tree-id assoc'ed (orphan case)"
+    (let [target-id "fp:truly-novel"
+          body {:capabilities ["x"] :strengths [] :weaknesses []
+                :representative-uses ["x"] :avoid-when ["x"]
+                :summary "really novel" :version 1
+                :consolidated-from-event-count 1}]
+      (with-redefs [ontology/classify-task
+                    (fn [_ _]
+                      {:assigned-tree-id (random-uuid)
+                       :confidence 0.3
+                       :top-candidates []
+                       :reasoning "below threshold"
+                       :was-fresh-mint? true
+                       :parent-tree-id nil})]
+        (let [hydrate #'processors/maybe-hydrate-parent-tree-id
+              result (hydrate {} :tree-fingerprint target-id nil body)]
+          (is (not (contains? result :parent-tree-id))
+              "No :parent-tree-id when classifier returned fresh-mint")
+          (is (= body result)
+              "Body returned otherwise-unchanged on orphan case"))))))
+
+(deftest hydrate-parent-tree-id-orphan-omits-parent-when-classifier-throws
+  (testing "Classify-task throws → no :parent-tree-id; helper catches and proceeds"
+    (let [target-id "fp:truly-novel-2"
+          body {:capabilities ["x"] :strengths [] :weaknesses []
+                :representative-uses ["x"] :avoid-when ["x"]
+                :summary "another novel" :version 1
+                :consolidated-from-event-count 1}]
+      (with-redefs [ontology/classify-task
+                    (fn [_ _]
+                      (throw (ex-info "downstream blew up" {})))]
+        (let [hydrate #'processors/maybe-hydrate-parent-tree-id
+              result (hydrate {} :tree-fingerprint target-id nil body)]
+          (is (not (contains? result :parent-tree-id))
+              "Inference failure is non-fatal — body returns without parent")
+          (is (= body result)))))))
+
+
+
+(deftest classify-task-preserves-stringified-uuid-identity
+  (testing "Stringified-UUID target-id round-trips back to the same UUID"
+    (let [original-uuid (random-uuid)
+          target-id-as-string (str original-uuid)
+          fake-results [{:content "x" :score 0.95 :rank 1
+                         :document-id (str ":tree-fingerprint:" target-id-as-string)
+                         :document-metadata {:granularity :tree-fingerprint
+                                             :target-id target-id-as-string
+                                             :confidence 1.0
+                                             :last-update "2026"}
+                         :reasoning "high-confidence match"
+                         :fitness-score 0.95}]]
+      (with-redefs [ontology/search-descriptions (fn [_ _] fake-results)]
+        (let [result (ontology/classify-task {}
+                       {:task-signature "x"
+                        :threshold 0.7
+                        :walk-down? false})]
+          (is (= original-uuid (:assigned-tree-id result))
+              ":assigned-tree-id IS the original UUID, not a hash-derived one")))))
+
+  (testing "Non-UUID string fingerprint still derives a stable UUID via nameUUIDFromBytes"
+    (let [fingerprint "seed:tree:NotAUuid"
+          expected-uuid (java.util.UUID/nameUUIDFromBytes
+                          (.getBytes fingerprint "UTF-8"))
+          fake-results [{:content "x" :score 0.95 :rank 1
+                         :document-id "x"
+                         :document-metadata {:granularity :tree-fingerprint
+                                             :target-id fingerprint
+                                             :confidence 1.0}
+                         :fitness-score 0.95}]]
+      (with-redefs [ontology/search-descriptions (fn [_ _] fake-results)]
+        (let [result (ontology/classify-task {}
+                       {:task-signature "x" :threshold 0.7 :walk-down? false})]
+          (is (= expected-uuid (:assigned-tree-id result))
+              "Non-UUID-shaped strings still fall back to stable UUID derivation"))))))
+
+(deftest hydrate-parent-tree-id-passthrough-for-other-target-types
+  (testing "Non-tree-fingerprint target → body unchanged; classify-task not called"
+    (let [body {:capabilities ["x"] :strengths [] :weaknesses []
+                :representative-uses ["x"] :avoid-when ["x"]
+                :summary "node-type body" :version 1
+                :consolidated-from-event-count 1}
+          classify-calls (atom 0)]
+      (with-redefs [ontology/classify-task (fn [& _]
+                                              (swap! classify-calls inc)
+                                              (throw (ex-info "should not be called" {})))]
+        (let [hydrate #'processors/maybe-hydrate-parent-tree-id
+              result (hydrate {} :node-type :llm nil body)]
+          (is (zero? @classify-calls))
+          (is (= body result)
+              "Body returned unchanged for non-tree-fingerprint targets"))))))

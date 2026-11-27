@@ -8,12 +8,14 @@
    nothing unless a start is abandoned."
   {:clj-kondo/config '{:lint-as {ai.obney.orc.orc-service.recovery-scan-quiet-test/with-registered clojure.core/let}}}
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.execution-lease]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.periodic-task.interface :as periodic]
-            [ai.obney.grain.todo-processor-v2.interface :as tp]))
+            [ai.obney.grain.todo-processor-v2.interface :as tp]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (def invocations (atom 0))
 (def gate (atom (promise)))
@@ -47,7 +49,7 @@
   "Stand in for an owner that died: this process's queued-lease renewer stops
    renewing every start it tracks, so only the recorded lease remains."
   []
-  (reset! @#'ai.obney.orc.orc-service.core.execution-lease/queued {})
+  (reset! @#'service-logic/queued {})
   (Thread/sleep 300))
 
 (defn- all-events [ctx]
@@ -58,6 +60,14 @@
 
 (defn- starts [ctx]
   (filterv #(= :sheet/node-execution-started (:event/type %)) (all-events ctx)))
+
+(defn- owner-renewal-transaction? [start [renewal tx]]
+  (and (= :sheet/node-execution-lease-renewed (:event/type renewal))
+       (= (:event/id start) (:start-event-id renewal))
+       (= (select-keys start [:sheet-id :tick-id :node-id :lease-owner])
+          (select-keys renewal [:sheet-id :tick-id :node-id :lease-owner]))
+       (= :grain/tx (:event/type tx))
+       (= #{(:event/id renewal)} (:event-ids tx))))
 
 (defn- handler []
   (:handler-fn (get @periodic/periodic-trigger-registry* :sheet/recover-active-executions)))
@@ -117,11 +127,18 @@
         (let [sheet-id (sheet/build-workflow! ctx (workflow "quiet-queued"))
               run (future (sheet/execute ctx sheet-id {:n 3} :timeout-ms 30000))]
           (is (h/settle-until! #(= 1 (count (starts ctx))) :timeout-ms 10000))
-          (let [before (count (all-events ctx))]
-            (dotimes [_ 20] (beat! ctx))
+          (let [start (first (starts ctx))
+                before (count (all-events ctx))]
+            (service-commands/renew! ctx (assoc (select-keys start [:sheet-id :tick-id :node-id])
+                                                :start-event-id (:event/id start)))
+            (dotimes [_ 20] (is (nil? (beat! ctx))))
             (Thread/sleep 500)
             (is (empty? (scan-triggers ctx)))
-            (is (= before (count (all-events ctx)))))
+            (let [appended (drop before (all-events ctx))]
+              (is (seq appended) "the owner renewed the queued start during this interval")
+              (is (every? #(owner-renewal-transaction? start %)
+                          (partition-all 2 appended))
+                  (pr-str appended))))
           (future-cancel run))))))
 
 (deftest abandoned-start-is-recorded-and-resumed-as-before

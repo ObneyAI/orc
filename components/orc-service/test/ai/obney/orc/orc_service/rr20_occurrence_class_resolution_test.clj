@@ -151,22 +151,13 @@
             tick-2 (random-uuid)
             class-a (random-uuid)
             class-b (random-uuid)]
-        ;; Turn 1: static sheet classified to class-a.
         (classify! ctx static-sheet-id tick-1 class-a)
         (capture-floor! ctx class-a "turn 1 signature")
         (Thread/sleep 150)
-        ;; Turn 2: the SAME static sheet, a DIFFERENT turn (tick-2),
-        ;; classified to a DIFFERENT class (class-b). Under the pre-RR-20
-        ;; sheet-only join, :sheet->class[static-sheet-id] now points at
-        ;; class-b — turn 1's bookend, if it arrived after this, would
-        ;; misattribute onto class-b under that join.
         (classify! ctx static-sheet-id tick-2 class-b)
         (capture-floor! ctx class-b "turn 2 signature")
         (Thread/sleep 150)
-        ;; Turn 1's bookend arrives AFTER the sheet has been reclassified to
-        ;; class-b — the adversarial ordering the sheet-only join gets wrong.
         (emit! ctx static-sheet-id tick-1 tree-a source-a)
-        ;; Turn 2's bookend.
         (emit! ctx static-sheet-id tick-2 tree-b source-b)
         (is (settle-until! #(and (= #{source-a} (recommended-patterns ctx class-a))
                                  (= #{source-b} (recommended-patterns ctx class-b))))

@@ -281,8 +281,6 @@
         tenant-a (random-uuid) tenant-b (random-uuid)
         initial (h/create-async-test-context
                   {:context {:llm-provider provider :fixture-effects effects}})]
-    ;; Replace the pubsub test workers before creating any task. One production
-    ;; tenant poller owns both tenants, sharing this real store and LMDB cache.
     (h/stop-test-processors! initial)
     (let [base (assoc initial :processors {})
           a (assoc base :tenant-id tenant-a) b (assoc base :tenant-id tenant-b)

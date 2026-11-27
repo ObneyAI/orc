@@ -7,10 +7,10 @@
    outside the name."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def ^:private flatten-output-schema
-  #'ai.obney.orc.orc-service.core.executor/flatten-output-schema)
+  #'service-logic/flatten-output-schema)
 
 (def ^:private decision
   [:map
@@ -21,7 +21,7 @@
    [:flagged? {:optional true} :boolean]])
 
 (deftest optional-nested-fields-keep-their-exact-names
-  (let [desc (executor/malli-schema->description decision)]
+  (let [desc (service-logic/malli-schema->description decision)]
     (testing "presence control: every field is described"
       (is (str/includes? desc "kind:"))
       (is (str/includes? desc "coverage"))

@@ -37,14 +37,14 @@
 
    Run:
      clojure -M:dev -m cc16-shadow-rate"
-  (:require [clojure.edn :as edn]
+  (:require
+            [ai.obney.orc.colbert.core.logic :as logic]
+            [clojure.edn :as edn]
             [clojure.string :as str]
             [time-literals.read-write]
-            [ai.obney.orc.colbert.core.encoder :as encoder]
-            [ai.obney.orc.colbert.core.model-store :as model-store]
-            [ai.obney.orc.colbert.core.operations :as operations]
-            [ai.obney.orc.ontology.core.task-classifier :as tc]
-            [ai.obney.orc.ontology.core.domain-penalty :as dp]))
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (def corpus-path
   "The P-E production dump (2,713 events). Override with -Dcc16.corpus."
@@ -56,12 +56,9 @@
    stays rank #1. Firing is not demoting."
   0.0145)
 
-;; -----------------------------------------------------------------------------
-;; Real task signatures — the production shape (task-classifier/build-task-signature)
-;; -----------------------------------------------------------------------------
 
 (defn- sig [instruction & {:keys [reads writes mcp-tools]}]
-  (tc/build-task-signature
+  (ontology-logic/build-task-signature
    {:instruction instruction
     :reads (or reads [:user-message :active-plan :workspace-root])
     :writes (or writes [:assistant-response])
@@ -111,7 +108,7 @@
 
    READ-ONLY use of a private var; consolidator.clj is not modified."
   [body]
-  (@(requiring-resolve 'ai.obney.orc.ontology.core.consolidator/build-parent-inference-signature)
+  (@#'ontology-logic/build-parent-inference-signature
    body))
 
 ;; -----------------------------------------------------------------------------
@@ -142,9 +139,6 @@
        :raw-bodies distinct-bodies
        :candidates (mapv body->candidate distinct-bodies)})))
 
-;; -----------------------------------------------------------------------------
-;; The production seam, with the real encoder injected
-;; -----------------------------------------------------------------------------
 
 (def ^:dynamic *limit*
   "maximum_query_tokens for every rerank call in this run. nil = the shipped
@@ -155,7 +149,7 @@
   nil)
 
 (defn- rerank* [query documents]
-  (operations/rerank {} (cond-> {:query query :documents documents}
+  (logic/rerank {} (cond-> {:query query :documents documents}
                           *limit* (assoc :maximum-query-tokens *limit*))))
 
 (defn- real-resolver [calls]
@@ -169,8 +163,8 @@
   "ONE production penalty pass (penalize-candidates, 4-arity, shipped defaults)
    for one task. Returns the stamped candidates."
   [candidates task calls config]
-  (binding [dp/*colbert-resolver* (real-resolver calls)]
-    (dp/penalize-candidates nil candidates task config)))
+  (binding [ontology-logic/*colbert-resolver* (real-resolver calls)]
+    (ontology-logic/penalize-candidates nil candidates task config)))
 
 ;; -----------------------------------------------------------------------------
 ;; Reporting
@@ -202,15 +196,14 @@
     "ADR 0026  (:good-when alone)     "]])
 
 (defn- distribution [xs]
-  (#'dp/distribution xs))
+  (#'ontology-logic/distribution xs))
 
-;; -----------------------------------------------------------------------------
 
 (defn run-report []
   (let [calls (atom 0)
-        config dp/default-penalty-config
+        config ontology-logic/default-penalty-config
         {:keys [n-events n-bodies candidates raw-bodies]} (load-candidates)
-        enc (encoder/get-encoder (model-store/resolve-model-dir))
+        enc (logic/get-encoder (logic/resolve-model-dir))
         tasks (conj tasks
                     ["consolidator-signature (LONGEST real query)"
                      (consolidator-signature (first raw-bodies))])
@@ -226,11 +219,10 @@
     (println "  DISTINCT candidates          :" (count candidates))
     (println "  real task signatures         :" (count tasks))
     (println "  cells (candidates x tasks)   :" (* (count candidates) (count tasks)))
-    (println "  encoder                      :" (str (model-store/resolve-model-dir)))
+    (println "  encoder                      :" (str (logic/resolve-model-dir)))
     (println "  maximum_query_tokens         :" (or *limit* "(shipped default)"))
     (println "  config                       :" (pr-str (select-keys config [:scorer :margin :penalty-scale :penalty-cap :positive-signal :colbert-norm])))
 
-    ;; ---- Liveness control: rule out a dead harness before reading any rate ----
     (println "\n=== LIVENESS CONTROL (rule out the harness, not just the code) ===")
     (let [probe (rerank* (second (first tasks))
                          ["extract a pure helper from a request handler"
@@ -239,7 +231,7 @@
       (println (format "  refactor query vs [on-topic, sourdough]: %.4f vs %.4f  (differ? %s)"
                        (double (first scores)) (double (second scores))
                        (not= (first scores) (second scores))))
-      (println "  task-1 word-piece tokens:" (count (encoder/encode-ids enc (second (first tasks)))))
+      (println "  task-1 word-piece tokens:" (count (logic/encode-ids enc (second (first tasks)))))
       (when (= (first scores) (second scores))
         (println "  !! DEAD ENCODER — every number below is meaningless")))
 
@@ -254,19 +246,12 @@
                          label (count fired) (count rows)
                          (* 100.0 (/ (count fired) (double (max 1 (count rows)))))
                          demotion-threshold (count demoting)))
-        ;; The DIRECT replication of P-C's headline defect: cos-good == 1.000000
-        ;; in 153 of 154 cells. This is the mechanism check ADR 0027 decision 1
-        ;; demands — can the mechanism EXPRESS the property at all, before any
-        ;; number is fitted to it?
         (println (format "      cos-good pinned at EXACTLY 1.0 : %4d/%4d (%.1f%%)   <- P-C baseline was 153/154 = 99.4%%"
                          (count pinned) (count rows)
                          (* 100.0 (/ (count pinned) (double (max 1 (count rows)))))))
         (println "      contrast " (fmt-dist (distribution (map :contrast rows))))
         (println "      penalty  " (fmt-dist (distribution (map :penalty rows))))))
 
-    ;; A gate that cannot fire at ANY value of its own knob is a mechanism
-    ;; problem, not a calibration one. Reporting the sweep is distribution
-    ;; reporting (ADR 0027 decision 2), NOT calibration — CC-20 owns the value.
     (println "\n  MARGIN SWEEP (distribution reporting, not calibration — CC-20 owns the value):")
     (println (format "    %-34s %10s %10s %10s %10s %10s" "variant" "m=0.010" "m=0.005" "m=0.003" "m=0.001" "m=0.000"))
     (doseq [[_variant a g p label] variants]
@@ -282,7 +267,6 @@
     (println "\n=== WATCH CONDITION 2 — ZERO FALSE POSITIVES ===")
     (println "  (a) THE CANARY: the web-search-on-its-own-domain task (EL-5 case (3)).")
     (let [ws-pass (first (filter #(str/starts-with? (:label %) "web-search") passes))
-          ;; The synthetic EL-5 probe candidate, verbatim from el5_zero_fp_check.
           ws-cand {:document-id "websearch(probe)"
                    :avoid-when ["the web search requires special elevated permissions or authenticated access the agent does not hold"
                                 "the task is purely computational with no external lookup need"]
@@ -344,12 +328,9 @@
           stamped (run-pass with-proxy task calls config)
           apply-variant (fn [p-key]
                           (mapv (fn [c] (assoc c :fitness-variant
-                                               (dp/apply-penalty (get by-summary (:content c))
+                                               (ontology-logic/apply-penalty (get by-summary (:content c))
                                                                  (double (get c p-key)))))
                                 stamped))]
-      ;; SEPARABILITY ORDER on the force-fit task: is the force-fit the TOP
-      ;; contrast, i.e. can the mechanism express the property even where the
-      ;; shipped margin is too high to act on it? (ADR 0027 decision 1.)
       (println "  separability ORDER on the force-fit task (top 6 contrasts per variant):")
       (doseq [[_v a g _p vlabel] variants]
         (let [ranked (->> stamped
@@ -390,8 +371,6 @@
     (println "\n=== LEDGER ===")
     (println "  real ColBERT rerank calls made:" @calls)
 
-    ;; CC-20 consumes the DISTRIBUTION, not this printout: dump every cell so the
-    ;; penalty's form and value can be derived without re-prototyping.
     (let [out (or (System/getProperty "cc16.out")
                   (str "/tmp/cc16-cells-" (or *limit* "shipped") ".edn"))]
       (spit out (pr-str

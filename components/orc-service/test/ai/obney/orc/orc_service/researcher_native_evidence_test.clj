@@ -59,9 +59,6 @@
          [:final {:keys [:result]}]])))
 (defn programs [mode]
   (case mode
-    ;; Construct the legacy marker only after SCI executes: a literal marker
-    ;; in the generated source can be accepted as an already-terminal answer,
-    ;; which would not prove that the native tool/assembly code actually ran.
     :legacy [(str "(let [observed (native/evidence {}) interpretation " (pr-str interpretation) "] "
                   "(str (str \"FINAL\" \"_ANSWER: \") (pr-str {:result {:evidence observed :interpretation interpretation}})))")]
     :terminal [(str "(let [observed (get-input :evidence) interpretation " (pr-str interpretation) "] "

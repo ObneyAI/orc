@@ -28,9 +28,6 @@
 
 (defn- reset-recorders! [] (reset! caller-calls []) (reset! session-calls []))
 
-;; ---------------------------------------------------------------------------
-;; A researcher's declared contracts govern its generated subtree
-;; ---------------------------------------------------------------------------
 
 (defn generated-leaf
   "Code a researcher's generated child runs: calls the tool with arguments that
@@ -67,9 +64,6 @@
           (is (= "caught :invalid-arguments" (get-in result [:outputs :out])))
           (is (empty? @caller-calls) "the tool is never invoked"))))))
 
-;; ---------------------------------------------------------------------------
-;; MCP executors use the node's tool caller, then the session, else fail
-;; ---------------------------------------------------------------------------
 
 (def ^:private echo-tool
   {:name "seamEcho"

@@ -85,16 +85,6 @@
    :rlm {:auto-classify? true
          :recursive? true}})
 
-;; =============================================================================
-;; Substance checks — Discipline #11/#18 boilerplate detection
-;; =============================================================================
-;;
-;; The verify script is NOT production code (per discipline #11) — using
-;; explicit keyword lists here is intentional. We're verifying the MODEL's
-;; output for substance; the model's prompt itself does NOT use hardcoded
-;; phrase matching. This script's heuristics catch the obvious boilerplate
-;; failure modes — generic verbs, placeholder strings — that masquerade as
-;; substance in LLM output.
 
 (def domain-keywords
   "Keywords from the game-balance-playtest task domain. The minted body's
@@ -141,7 +131,6 @@
   [body]
   (let [{:keys [summary capabilities strengths representative-uses]} body
         summary-domain? (contains-any-keyword? summary domain-keywords)
-        ;; representative-uses can be a vector of strings or a vector of maps
         repr-strings (filter string? representative-uses)
         repr-domain? (some #(contains-any-keyword? % domain-keywords) repr-strings)
         cap-substantive-count (count (filter substantive-capability? (or capabilities [])))
@@ -158,10 +147,6 @@
                         repr-domain?)}))
 
 (defn- read-minted-events [ctx]
-  ;; es/read REQUIRES :tenant-id in the scope — without it the call
-  ;; returns a cognitect anomaly (silently, into a sequence). The
-  ;; recursive RLM threads the same tenant-id through build-rlm-context,
-  ;; so the mint events land under (:tenant-id ctx).
   (into [] (es/read (:event-store ctx)
                     {:tenant-id (:tenant-id ctx)
                      :types #{:ontology/behavioral-subtree-minted}})))
@@ -175,7 +160,7 @@
     (throw (ex-info "OPENROUTER_API_KEY must be set" {})))
   (u/start-publisher! {:type :console})
   (runner/start!)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))]
+  (let [ctx (runner/current-context)]
     (try
       (println "\n--- Snapshot mints BEFORE running task")
       (let [prior-mints (read-minted-events ctx)]
@@ -189,7 +174,6 @@
         (println "\n--- Running schedule-optimization task (real OpenRouter, recursive RLM)")
         (let [result (runner/run! task)
               _ (println "  → task complete; status:" (:status result))
-              ;; [DIAG] poll briefly for any async mint event to land
               _ (Thread/sleep 1000)
 
               all-mints-post (read-minted-events ctx)
@@ -205,7 +189,6 @@
                                 all-mints-post)
               _ (println "\n--- Audit: mints emitted during this run:" (count new-mints))
 
-              ;; [DIAG] also surface what classify-behaviors saw
               _ (when (:iteration-reasonings result)
                   (println "\n--- Iteration reasonings (truncated to first 600 chars each):")
                   (doseq [[idx r] (map-indexed vector (:iteration-reasonings result))]
@@ -215,8 +198,6 @@
           (let [assessments
                 (mapv (fn [evt]
                         (let [target-id (:target-id evt)
-                              ;; Direct read-model lookup — proves persistence
-                              ;; without depending on ColBERT indexing.
                               body (ontology/get-description ctx :tree-fingerprint target-id)
                               substance (assess-body-substance body)]
                           {:target-id target-id
@@ -242,9 +223,7 @@
                     (doseq [[k v] (sort (:substance a))]
                       (println "       " k "→" v)))
 
-                ;; Overall PASS criteria
                 agent-minted? (pos? (count new-mints))
-                ;; If we minted, at least ONE mint must be substantive AND in read-model
                 any-substantive? (some (fn [a]
                                          (and (:body-found-in-read-model? a)
                                               (-> a :substance :substantive?)))
@@ -275,6 +254,6 @@
       (finally
         (runner/stop!)))))
 
-(comment
+#_(do
   (require '[c-loop-3-live-verify :as v] :reload)
   (v/verify!))

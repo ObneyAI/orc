@@ -1,14 +1,15 @@
 (ns ai.obney.orc.orc-service.delegate-identity-test
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.todo-processors :as tp]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-(def delegate-child-tick-id #'tp/delegate-child-tick-id)
-(def claim-delegate! #'tp/claim-delegate!)
-(def release-delegate! #'tp/release-delegate!)
+(def delegate-child-tick-id #'service-logic/delegate-child-tick-id)
+(def claim-delegate! #'service-logic/claim-delegate!)
+(def release-delegate! #'service-logic/release-delegate!)
 
 (defn recovered-output [_] {:output "recovered"})
 
@@ -67,7 +68,7 @@
                                   (Thread/sleep 10)
                                   (recur (inc attempt)))))]
         (is (uuid? child-tick-id))
-        (runtime/deregister-completion! child-tick-id)
+        (service-logic/deregister-completion! child-tick-id)
         (deliver @delegate-release true)
         (let [result (deref parent-result 3000 ::timeout)]
           (is (not= ::timeout result) "parent wake does not depend on the lost observer")
@@ -110,7 +111,7 @@
                               (deliver @delegate-release true)
                               (let [terminal
                                     (loop [attempt 0]
-                                      (or (runtime/durable-terminal-result ctx child-tick-id)
+                                      (or (service-commands/durable-terminal-result ctx child-tick-id)
                                           (when (< attempt 200)
                                             (Thread/sleep 10)
                                             (recur (inc attempt)))))]
@@ -187,7 +188,7 @@
             (is (= 100 (:configured-max-ticks trace)))
             (is (= 100 (:consumed-ticks trace)))
             (is (= :success (:terminal-reason trace))))
-          (let [child-result (runtime/durable-terminal-result ctx (:tick-id child-completion))]
+          (let [child-result (service-commands/durable-terminal-result ctx (:tick-id child-completion))]
             (run! deref
                   (repeatedly 100
                               #(future
@@ -245,7 +246,7 @@
                                                 (= child-tick-id (:tick-id %)))
                                           (h/read-all-events ctx)))
             started-at (System/nanoTime)
-            recovered (runtime/execute ctx sheet-id {} :tick-id child-tick-id
+            recovered (service-commands/execute ctx sheet-id {} :tick-id child-tick-id
                                        :return-references? true)
             elapsed-ms (/ (- (System/nanoTime) started-at) 1000000.0)
             started-after (count (filter #(and (= :sheet/tree-tick-started (:event/type %))

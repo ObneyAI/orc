@@ -40,46 +40,6 @@
                   :timeout-ms)
     (:timeout-ms options) (assoc :timeout (:timeout-ms options))))
 
-;; --------------------------------------------------------------------------- ;;
-;; Optional means nullable
-;; --------------------------------------------------------------------------- ;;
-;; A provider that supports function calling renders every declared tool
-;; property, whether or not the caller marked it :optional — there is no way
-;; to ask a provider to omit a property. Measured against openai/gpt-5.6-luna
-;; via OpenRouter: an optional field typed as a plain, non-nullable JSON type
-;; gets FILLER instead ("N/A", "x", an invented date), because the model must
-;; produce *something* structurally valid and nothing tells it that skipping
-;; the value is allowed. Making every optional field (and every optional map
-;; entry nested inside it, at any depth) admit `null` on the wire gives the
-;; model an honest way to say "no value" — and it takes that option instead
-;; of inventing one.
-;;
-;; `nullable-optionals` (wire) and `drop-null-optionals` (decode, just below
-;; `validate-outputs`) are two mirror-image walks over the SAME schema shapes,
-;; and they read their shape table from one place: `descend`. A schema type
-;; `descend` does not recognize is a LEAF to both sides — wire leaves it
-;; exactly as declared, decode never tries to walk a value against it. This
-;; is deliberate: an earlier version had `nullable-optionals` fall through to
-;; a generic catch-all that recursed into every vector-shaped form, while
-;; `drop-null-optionals` only handled `:map`/`:vector`/`:maybe`/`:multi`
-;; explicitly. That meant `:or`, `:and`, `:sequential`, `:set`, `:tuple`, and
-;; `:map-of` got optional entries marked nullable on the wire with no decode
-;; side able to turn a returned null back into absence — the provider was
-;; told null was fine and then validation rejected it anyway, which is worse
-;; than not offering nullability there at all. `descend` is now the one
-;; definition of which shapes are walked, so a shape cannot gain wire
-;; nullability without also gaining decode-side null-absence, or vice versa.
-;;
-;; `:or` and `:and` are deliberately absent from `descend`: choosing which
-;; declared alternative applies from a decoded VALUE (decode) and rewriting
-;; every alternative identically at the SCHEMA level (wire) are different
-;; problems, and solving them independently is exactly the class of mistake
-;; this table exists to prevent. Their entries are offered to the provider,
-;; and validated, exactly as declared today — unchanged from before this fix.
-;;
-;; `wire-output` applies the same rule to a flattened top-level output field:
-;; an :optional field's own declared spec is wrapped in `:maybe` too, unless
-;; it already accepts nil.
 
 (defn- accepts-nil?
   "True when a Malli schema form validates `nil` — either because it already
@@ -191,6 +151,61 @@
   [spec]
   (update spec :outputs #(mapv wire-output %)))
 
+(defn- request-input-contract
+  "Keep the declared shape of unobserved children. Where values were supplied,
+   describe the union alternatives those values can actually represent."
+  [schema observed]
+  (if (or (empty? observed) (not (vector? schema)))
+    schema
+    (let [[kind & tail] schema
+          [props children] (split-schema-props tail)
+          entries (fn [values-for]
+                    (mapv (fn [entry]
+                            (update entry (dec (count entry)) request-input-contract
+                                    (values-for (first entry))))
+                          children))
+          narrowed
+          (case kind
+            :map (entries (fn [k] (map val (keep #(find % k) (filter map? observed)))))
+            (:vector :sequential :list :set)
+            [(request-input-contract (first children) (mapcat seq (filter coll? observed)))]
+            :map-of [(first children)
+                     (request-input-contract (second children) (mapcat vals (filter map? observed)))]
+            :maybe [(request-input-contract (first children) (remove nil? observed))]
+            :tuple (map-indexed (fn [i child]
+                                  (request-input-contract child
+                                    (map #(nth % i) (filter #(< i (count %)) (filter sequential? observed)))))
+                                children)
+            :and (map #(request-input-contract % observed) children)
+            :or (let [applicable (keep (fn [child]
+                                         (let [matches (filter (m/validator child) observed)]
+                                           (when (seq matches)
+                                             (request-input-contract child matches))))
+                                       children)]
+                  (or (seq applicable) children))
+            :multi (let [by-tag (group-by (:dispatch props) observed)
+                         tags (set (map first children))
+                         fallback (mapcat val (remove #(contains? tags (key %)) by-tag))
+                         applicable (keep (fn [entry]
+                                            (let [tag (first entry)
+                                                  values (if (= tag :malli.core/default) fallback (get by-tag tag))]
+                                              (when (seq values)
+                                                (update entry (dec (count entry)) request-input-contract values))))
+                                          children)]
+                     (or (seq applicable) children))
+            children)]
+      (into (cond-> [kind] props (conj props)) narrowed))))
+
+(defn- prepare-request-inputs [fields inputs]
+  (let [{:keys [native-values] :as view} (input-identity/prepare-inputs fields inputs)]
+    (update view :inputs
+            (fn [prepared]
+              (mapv (fn [{:keys [name type] :as field}]
+                      (if (and (not= type :image) (contains? native-values name))
+                        (update field :spec request-input-contract [(get native-values name)])
+                        field))
+                    prepared)))))
+
 (defn- input-value-text
   "Render native text inputs once, after the guide has inspected their values.
    Explicit null stays distinct from an empty string; images bypass this path."
@@ -207,8 +222,6 @@
      (for [{:keys [name]} (:inputs spec)
            :when (not (image-names name))]
        (str (when marker? (str "[[ ## " (clojure.core/name name) " ## ]]\n"))
-            ;; Every request already carries its input field guide; retain the
-            ;; complete value without duplicating its declared meaning.
             (when-not marker? (str (clojure.core/name name) ": "))
             (input-value-text (get inputs name)))))))
 
@@ -219,20 +232,6 @@
   [spec inputs]
   (update spec :inputs (fn [fields] (filterv #(contains? inputs (:name %)) fields))))
 
-;; --------------------------------------------------------------------------- ;;
-;; Opt-in prompt caching
-;; --------------------------------------------------------------------------- ;;
-;; A node can reuse its instruction across calls with different inputs.
-;; With `:prompt-cache? true` the
-;; instruction travels as its own text part, marked `cache_control ephemeral`,
-;; ahead of a second part holding the field guide and inputs, so the stable
-;; prefix (tool definition, then instruction) is reused across calls with
-;; different inputs. The tool definition is marked too, for providers that read
-;; a marker there. Off by default: the request is then byte-identical to before.
-;; Cache support and admission depend on the provider; inspect response usage.
-;;
-;; `:generic-tool-description? true` (function mode) stops the instruction being
-;; sent a second time as the tool's description; the message already carries it.
 
 (def ^:private cache-marker {:type "ephemeral"})
 
@@ -265,9 +264,7 @@
            (request-options options))))
 
 (defn- function-request [spec inputs options]
-  (let [;; Only the inputs this request carries are shown to the model: they are
-        ;; explained by the guide and given as name: value lines. An input the
-        ;; request does not carry is named nowhere.
+  (let [
         shown-spec (update spec :inputs (fn [declared]
                                           (filterv #(contains? inputs (:name %)) declared)))
         instructions (:instructions spec)
@@ -280,8 +277,6 @@
     (merge (cond-> {:messages [{:role :user
                                 :content (message-content spec inputs instructions after prompt options)}]
                     :tools [(function-tool spec options)]}
-             ;; OPT-IN, default OFF. See below — forcing this is not safe for every
-             ;; tool schema, and every workload built on ORC to date has run without it.
              (:force-tool-choice? options)
              (assoc :tool-choice {:type "function"
                                   :function {:name "submit_response"}}))
@@ -325,39 +320,7 @@
                           "auto"))
         (update-in [:extra-body :provider] #(assoc (or % {}) :require_parameters true)))))
 
-;; --------------------------------------------------------------------------- ;;
-;; Why the forced tool call is opt-in
-;; --------------------------------------------------------------------------- ;;
-;; This request previously carried :tool_choice (underscore) while litellm's provider
-;; layer reads (:tool-choice request) (hyphen). Different Clojure keywords, so the key
-;; never matched and tool_choice never reached the wire: the forced submit_response
-;; call has been advisory for the entire life of the library.
-;;
-;; Correcting the key to :tool-choice makes the force real — and that BREAKS real
-;; workloads. Measured against the BRYC recommendation engine on
-;; google/gemini-3-flash-preview via OpenRouter, identical student and code, the only
-;; difference being this key:
-;;
-;;   forced      -> :failure, "LLM output unparseable for keys [:preference-weights]
-;;                   — no raw response text was returned by the provider" (8/8 students,
-;;                   32/40 node executions)
-;;   not forced  -> :success, preference-weights returned correctly
-;;
-;; The trigger is a `[:map-of ...]` output schema, which renders as
-;; `additionalProperties` in the tool schema. Consumers use :map-of deliberately —
-;; ORC's own executor does NOT flatten it, unlike [:map ...] — so "just use an explicit
-;; map" changes their output contract rather than being a free swap.
-;;
-;; Default OFF therefore preserves the only behaviour any consumer has ever run on.
-;; Callers whose tool schemas are free of additionalProperties can opt in per node with
-;; {:force-tool-choice? true}.
 
-;; A map key the contract declares as a string stays a string; keys the contract
-;; leaves to convention are read as keywords. Malli's stock `key-transformer`
-;; keywordizes every key regardless of the declared key type, which made
-;; `[:map ["0" :double]]` unsatisfiable. (The same transformer lives in
-;; orc-service's executor for non-provider leaves; the llm public boundary is
-;; deliberately closed, so it is not exported.)
 (def ^:private declared-string-key-transformer
   (mt/transformer
    {:decoders
@@ -374,10 +337,6 @@
                                     (contains? declared-keys k) k
                                     (and (string? k) (not (contains? string-keys k)))
                                     (keyword k)
-                                    ;; A declared string key may arrive as the same
-                                    ;; un-namespaced keyword (SIO parses provider JSON
-                                    ;; with :key-fn keyword). Namespaced keywords and
-                                    ;; undeclared names never map.
                                     (and (keyword? k) (nil? (namespace k))
                                          (contains? string-keys (name k)))
                                     (name k)
@@ -408,8 +367,6 @@
      declared-string-key-transformer
      (mt/json-transformer))))
 
-(declare prepare-multi-dispatches)
-
 (defn- map-entry-value [value key]
   (when (map? value)
     (cond
@@ -417,14 +374,14 @@
       (and (keyword? key) (contains? value (name key)))
       [(name key) (get value (name key))])))
 
-(defn- prepare-map-children [schema value]
+(defn- prepare-map-children [prepare-child schema value]
   (if-not (map? value)
     value
     (reduce
      (fn [result [key _ child-schema]]
        (if-let [[actual-key child-value] (map-entry-value result key)]
          (assoc result actual-key
-                (prepare-multi-dispatches child-schema child-value))
+                (prepare-child child-schema child-value))
          result))
      value
      (m/children schema))))
@@ -438,16 +395,16 @@
             [branch-value branch-schema]))
         (m/children schema)))
 
-(defn- prepare-multi [schema value]
+(defn- prepare-multi [prepare-child schema value]
   (let [dispatch (:dispatch (m/properties schema))]
     (if (and (keyword? dispatch) (map? value))
       (if-let [[actual-key dispatch-value] (map-entry-value value dispatch)]
         (if-let [[branch-value branch-schema]
                  (matching-multi-branch schema dispatch-value)]
-          (prepare-multi-dispatches branch-schema
-                                    (-> value
-                                        (dissoc actual-key)
-                                        (assoc dispatch branch-value)))
+          (prepare-child branch-schema
+                         (-> value
+                             (dissoc actual-key)
+                             (assoc dispatch branch-value)))
           value)
         value)
       value)))
@@ -460,8 +417,8 @@
   (let [schema (m/schema schema)
         children (m/children schema)]
     (case (m/type schema)
-      :map (prepare-map-children schema value)
-      :multi (prepare-multi schema value)
+      :map (prepare-map-children prepare-multi-dispatches schema value)
+      :multi (prepare-multi prepare-multi-dispatches schema value)
       (:vector :sequential :list :set)
       (if (sequential? value)
         (mapv #(prepare-multi-dispatches (first children) %) value)
@@ -499,8 +456,6 @@
    Canonical JSON keyword spellings become keywords; string enums and numeric
    strings retain their declared semantics."
   [schema value]
-  ;; Strict paired decoders already return canonical domain values. Reapplying
-  ;; JSON coercion can turn typed dictionary enum keys back into strings.
   (if (m/validate schema value)
     value
     (m/decode schema
@@ -543,12 +498,6 @@
         (let [dispatch-key (:dispatch d)
               dispatch-value (when (and (keyword? dispatch-key) (map? value))
                                 (get value dispatch-key))
-              ;; The provider's raw JSON dispatch value is a string (there is
-              ;; no JSON keyword), while a branch tag declared in the schema
-              ;; form is typically a keyword — the same string/keyword
-              ;; equivalence `matching-multi-branch` applies once decoding
-              ;; has run. This walk happens BEFORE decoding, so it must
-              ;; tolerate that mismatch itself to find the right branch.
               branch (some (fn [{:keys [tag schema]}]
                              (when (or (= tag dispatch-value)
                                        (and (keyword? tag)
@@ -602,8 +551,6 @@
           outputs fields))
 
 (defn- validate-outputs [fields outputs]
-  ;; Presence is independent of value nullability. Decode only supplied values;
-  ;; never turn an absent required nullable field into a fabricated explicit nil.
   (reduce
    (fn [decoded {:keys [name spec optional] :as field}]
      (when (and (not optional) (not (contains? decoded name)))
@@ -692,8 +639,6 @@
     (and (contains? data :config-name) (contains? data :available))))
 
 (def ^:private transport-error-types
-  ;; Explicit public allowlist from the pinned client; arbitrary exception data
-  ;; and future client categories do not silently expand the durable contract.
   #{:litellm/invalid-request :litellm/invalid-config
     :litellm/authentication-error :litellm/authorization-error
     :litellm/provider-not-found :litellm/model-not-found
@@ -775,8 +720,6 @@
     compiled))
 
 (defn- compile-paired-output [provider spec]
-    ;; Only ORC-built fields carry this provenance. Direct caller descriptions
-    ;; are authored text and remain untouched. Legacy modes never take this path.
     (try (add-output-group-meanings
           (structured-output/compile-contract
            (update spec :outputs
@@ -864,24 +807,11 @@
                       (if malformed? :tool-call-parsing-failed :schema-validation-failed)
                       evidence error)))))))
 
-;; --------------------------------------------------------------------------- ;;
-;; Decision protocol (native decision models)
-;; --------------------------------------------------------------------------- ;;
-;; A provider registered with :protocol :decision (e.g. typesafe/jev via
-;; OpenRouter's /api/alpha/decisions) is reached through the ordinary `predict`
-;; call. Declared inputs become the assessed state; each declared output
-;; becomes one question (boolean -> noul, enum -> choice). Answers are
-;; validated against the offered question and are NEVER repaired or replaced.
 
 (def ^:private default-decisions-url "https://openrouter.ai/api/alpha/decisions")
 
 (def ^:private decision-tolerance 1e-6)
 
-;; The resolution at which a provider reports probabilities and confidence.
-;; Real OpenRouter Jev responses (captured 2026-10-05) round both to 0.01 while
-;; computing confidence from the unrounded distribution, so the documented
-;; definitions hold only to within that rounding. A provider config may declare
-;; :reported-resolution (0 = exact values).
 (def ^:private default-reported-resolution 0.01)
 
 (defn- registered-config [provider]
@@ -963,7 +893,6 @@
        :instructions instructions
        :criteria {"true" (str "The following holds: " (or description (name (:name output))))
                   "false" (str "The following does not hold: " (or description (name (:name output))))}}
-      ;; Score levels are an ORDERED array; a level's index is its position.
       :band
       {:type "score"
        :instructions instructions
@@ -1030,17 +959,11 @@
                  (+ (* (count probs) (/ resolution 2.0)) decision-tolerance))
           (invalid! qname "distribution does not sum to one" evidence))
         (let [pmax (apply max (map double (vals probs)))]
-          ;; Rounding can tie or invert options closer than one step; any
-          ;; option within one step of the maximum may be the true argmax.
           (when (< (double (get probs choice)) (- pmax resolution decision-tolerance))
             (invalid! qname "selected option is not the most probable option" evidence))))
       (when (some? conf)
         (when-not (finite-prob? conf)
           (invalid! qname "confidence is non-finite or out of range" evidence))
-        ;; Confidence is only checkable against the documented definition
-        ;; (pmax - 1/n) / (1 - 1/n) when a distribution accompanies it. A
-        ;; confidence reported WITHOUT probabilities is accepted as reported
-        ;; and recorded, because there is nothing to check it against.
         (when probs
           (let [n (count probs)
                 pmax (apply max (map double (vals probs)))
@@ -1157,8 +1080,6 @@
       (some? cost) (assoc :cost cost))))
 
 (defn- decision-call-failure [base-evidence ^Throwable e]
-  ;; Preserve only allowlisted native transport data, never raw messages/causes.
-  ;; Bare 429 remains unclassified; an explicit typed category may disambiguate it.
   (let [data (ex-data e)
         raw-status (or (:http-status data) (:status data))
         status (when (and (integer? raw-status) (<= 100 raw-status 599)) raw-status)
@@ -1184,9 +1105,7 @@
               :schema-validation-failed base-evidence)))
     (let [transport (or (:decision-transport (:config config))
                         (default-decision-transport (:config config) options))
-          ;; A per-request model (e.g. a node's model choice) overrides the
-          ;; provider's configured default, as on the conversational path.
-          view (input-identity/prepare-inputs (:inputs spec) inputs)
+          view (prepare-request-inputs (:inputs spec) inputs)
           request (decision-request (or (:model options) (:model config))
                                     (assoc spec :inputs (:inputs view)) (:native-values view) kinds)
           response (try (transport request)
@@ -1227,7 +1146,7 @@
   (let [options (or options {})
         validate? (get options :validate? true)
         inputs (if validate? (sio/validate-inputs (:inputs spec) inputs) inputs)
-        view (input-identity/prepare-inputs (:inputs spec) inputs)
+        view (prepare-request-inputs (:inputs spec) inputs)
         request-spec (assoc spec :inputs (:inputs view))
         mode (selected-output-mode provider options)
         strict? (= :json-schema mode)
@@ -1253,9 +1172,6 @@
         observations (provider-observations provider response)]
     (try
       (let [
-        ;; SIO consumes Clojure's kebab-case response vocabulary. Some provider
-        ;; adapters expose the wire spelling instead; normalize only this known
-        ;; structural key while retaining the original response for evidence.
         parse-response (let [message (-> response :choices first :message)]
                          (if (and (:tool_calls message)
                                   (not (:tool-calls message)))
@@ -1313,12 +1229,6 @@
                  (throw (structured-failure "Tool call arguments could not be decoded"
                                             :tool-call-parsing-failed evidence))
                  parsed-result)
-        ;; A null for an optional field is absence, never a present null —
-        ;; that is normalization of what the provider returned, not
-        ;; validation of it. It runs whether or not :validate? does, so a
-        ;; caller who has never opted into validation is not suddenly handed
-        ;; nulls it never saw before merely because the wire now offers
-        ;; optional fields as nullable.
         normalized (if paired-function? parsed (drop-null-optional-outputs (:outputs spec) parsed))
         outputs (if validate?
                   (try
@@ -1337,9 +1247,6 @@
         (assoc :provider-evidence evidence))
       outputs))
       (catch Exception error
-        ;; A response already exists. Keep its observations even when parsing
-        ;; or contract validation rejects the task output; transport failures
-        ;; above have no response and cannot fabricate this evidence.
         (throw (ex-info (.getMessage error)
                         (assoc (or (ex-data error) {})
                                :provider-observations observations)
@@ -1445,19 +1352,6 @@
         (close! output-ch)))
     output-ch))
 
-(declare predict-chat-stream)
-
-(defn predict-stream-v2
-  "Return a core.async channel of typed ORC events.
-
-  The channel emits :delta and debounced :fields events, then exactly one
-  :final or :error terminal event before closing. A provider registered with
-  :protocol :decision emits only its single terminal event."
-  [provider spec inputs & [options]]
-  (if-let [[decision-provider config options] (decision-route provider (or options {}))]
-    (predict-decision-stream decision-provider config spec inputs options)
-    (predict-chat-stream provider spec inputs options)))
-
 (defn- predict-chat-stream
   [provider spec inputs & [options]]
   (let [options (or options {})
@@ -1468,7 +1362,7 @@
         (throw (structured-failure "Strict JSON streaming is not supported"
                                    :schema-validation-failed {:provider (provider-name provider)})))
       (let [inputs (if validate? (sio/validate-inputs (:inputs spec) inputs) inputs)
-            view (input-identity/prepare-inputs (:inputs spec) inputs)
+            view (prepare-request-inputs (:inputs spec) inputs)
             stream-ch (router/completion
                        provider
                        (assoc (marker-request (assoc spec :inputs (:inputs view)) (:values view) options) :stream true))
@@ -1519,8 +1413,6 @@
                                              (str ": " detail)))
                                       :provider-finish-error evidence))))))
                     parsed (sio/parse-output @accumulated (wire-spec-outputs spec))
-                    ;; See the matching comment in `predict`: dropping a null
-                    ;; optional is normalization, independent of :validate?.
                     normalized (drop-null-optional-outputs (:outputs spec) parsed)
                     outputs (if validate?
                               (validate-outputs (:outputs spec) normalized)
@@ -1538,3 +1430,14 @@
         (async/put! output-ch (error-event error)
                     (fn [_] (close! output-ch)))))
     output-ch))
+
+(defn predict-stream-v2
+  "Return a core.async channel of typed ORC events.
+
+  The channel emits :delta and debounced :fields events, then exactly one
+  :final or :error terminal event before closing. A provider registered with
+  :protocol :decision emits only its single terminal event."
+  [provider spec inputs & [options]]
+  (if-let [[decision-provider config options] (decision-route provider (or options {}))]
+    (predict-decision-stream decision-provider config spec inputs options)
+    (predict-chat-stream provider spec inputs options)))

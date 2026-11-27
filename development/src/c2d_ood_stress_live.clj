@@ -25,12 +25,12 @@
    Both modes share the same persistence layer (per-instruction EDN +
    combined EDN + markdown summary)."
   (:require [ai.obney.orc.ontology.interface :as ontology]
-            [ai.obney.orc.ontology.core.task-classifier :as classifier]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [ai.obney.orc.ontology.test-support.c2d-ood-stress-test :as ood]
-            [runner]))
+            [runner]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]))
 
 (def corpus-dir "development/bench/ood-corpus")
 (def results-root "development/bench/ood-stress-results")
@@ -47,7 +47,7 @@
    from event-store walk for HITL drill-down)."
   [ctx {:keys [slug instruction]}]
   (let [start (System/currentTimeMillis)
-        envelope (classifier/classify-task ctx
+        envelope (ontology-queries/classify-task ctx
                    {:task-signature instruction
                     :threshold 0.6})
         elapsed (- (System/currentTimeMillis) start)
@@ -108,11 +108,10 @@
      (println "  markdown:" (:markdown paths))
      {:dir dir :corpus corpus :results results :metrics metrics :paths paths})))
 
-(comment
-  ;; From REPL with runner started:
+#_(do
   (require '[runner])
   (runner/start!)
   (require '[c2d-ood-stress-live :as live] :reload)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))]
+  (let [ctx (runner/current-context)]
     (live/run-classify-only! ctx))
   (runner/stop!))

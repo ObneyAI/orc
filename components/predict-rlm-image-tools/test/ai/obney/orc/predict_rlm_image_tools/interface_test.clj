@@ -38,9 +38,6 @@
 
 (deftest mime-detected-by-extension
   (testing "extension drives the MIME segment of the data URI"
-    ;; We don't have fixture files for these formats — fake them by copying tiny.png
-    ;; to a temp file with a different extension. The bytes don't have to be valid
-    ;; for the format we claim; the function only inspects the extension for MIME.
     (let [src (io/file fixture-png)
           tmp (java.io.File/createTempFile "imgtools" ".tmp")
           rename (fn [^java.io.File f ^String ext]

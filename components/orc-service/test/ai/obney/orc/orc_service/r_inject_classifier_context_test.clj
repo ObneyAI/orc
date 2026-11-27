@@ -37,9 +37,6 @@
     (is (str/includes? (:instruction result) (:summary body)))
     (is (str/includes? (:instruction result) "version 7"))))
 
-;; =============================================================================
-;; Test data builders — hand-built classifier payloads matching the live shapes
-;; =============================================================================
 
 (defn- mk-structural-candidate
   ([target-id reasoning content fitness]
@@ -74,9 +71,6 @@
                           (random-uuid))
              :r05-classifier payload}})
 
-;; =============================================================================
-;; RED #1 — Happy path: structural-confident + behavioral-top-3
-;; =============================================================================
 
 (deftest happy-path-structural-confident-plus-behavioral-top-3
   (let [structural-target (random-uuid)
@@ -104,7 +98,6 @@
                               :rerank-fallback? false}}
         original-instruction "Document available: :yyj_rfp (large RFP, ~280K chars). Task: Produce structured extractions including :summary, :key-dates, :entities."
         node (mk-node original-instruction payload)
-        ;; Stub get-description to return seed body :summary fields.
         stub-bodies {b1-id {:summary b1-summary :capabilities ["x"] :strengths [] :weaknesses []
                             :representative-uses ["x"] :avoid-when ["x"]
                             :version 1 :consolidated-from-event-count 1}
@@ -127,9 +120,6 @@
     (testing "block contains an honest framing line (examples, not mandates)"
       (is (re-find #"(?i)examples retrieved from the seed corpus" instruction)
           "Explicit 'examples' framing")
-      ;; E2 reframed the block copy from "not mandates" to the explicit
-      ;; four-way menu, but the honest non-mandate framing is preserved
-      ;; ("not a mandate" + "evidence, not gospel"). Assert on the intent.
       (is (re-find #"(?i)not a mandate|not mandates|not gospel" instruction)
           "Explicit non-mandate framing preserved"))
 
@@ -143,12 +133,6 @@
           "Structural :content (seed summary) verbatim"))
 
     (testing "behavioral section appears with 3 candidates and their reasoning verbatim"
-      ;; When a seed-name resolves from the body's :summary (via the
-      ;; derive-seed-name helper — e.g., "Extraction turns raw text..."
-      ;; → "Extraction"), the header reads "Behavioral: <name>"; only
-      ;; the no-seed-name path falls back to "Behavioral suggestion".
-      ;; This test's stub summaries all resolve to a seed name, so we
-      ;; pin the seed-name path.
       (is (re-find #"Behavioral: Extraction" instruction)
           "Behavioral section labels the first candidate by its seed name")
       (is (re-find #"Behavioral: Analysis" instruction)
@@ -174,9 +158,6 @@
         (is (str/includes? (second parts) original-instruction)
             "Original instruction preserved verbatim after divider")))))
 
-;; =============================================================================
-;; RED #2 — Structural fresh-mint branch
-;; =============================================================================
 
 (deftest structural-fresh-mint-branch
   (let [b1-id (random-uuid)
@@ -213,9 +194,6 @@
     (testing "behavioral section still fires (independent axis)"
       (is (re-find #"(?i)Behavioral suggestion" instruction)))))
 
-;; =============================================================================
-;; RED #3 — Behavioral fresh-mint marker at top-1
-;; =============================================================================
 
 (deftest behavioral-fresh-mint-marker-at-top-1
   (let [structural-target (random-uuid)
@@ -246,11 +224,6 @@
           "Explicitly references the minting affordance"))
 
     (testing "no get-description lookup attempted for fresh-mint behavioral marker (avoids needless reads on a not-yet-minted concept)"
-      ;; The load-bearing invariant: we don't try to fetch a body for a
-      ;; behavioral fresh-mint marker because there IS no body yet. We
-      ;; DO fetch tree-class bodies for the structural candidate (always
-      ;; — that's the corpus-injection mechanism). Track per-call args
-      ;; to enforce the actual contract instead of total-call-count.
       (let [behavioral-fetch-attempts (atom 0)]
         (with-redefs [ontology/get-description
                       (fn [_ctx _granularity target-id]
@@ -261,11 +234,6 @@
         (is (zero? @behavioral-fetch-attempts)
             "get-description not called with the fresh-mint behavioral marker's id — there's no body to fetch yet")))
 
-    ;; C-Loop-2 P2 — verbatim prepend phrasing per spec acceptance criterion.
-    ;; The fresh-mint branch must teach the model the body-map shape it
-    ;; should pass + the persistence guarantee (retrievable on subsequent
-    ;; classify-behaviors calls). Without these specifics, the model often
-    ;; emits malformed mint calls or doesn't trust the affordance.
     (testing "C-Loop-2 P2: prepend includes the body-map signature so the model knows what to pass"
       (is (re-find #":capabilities" instruction)
           "Prepend tells the model the body needs :capabilities")
@@ -286,19 +254,10 @@
       (is (re-find #"(?i)retriev.{0,40}classify-behaviors|subsequent.{0,40}classify-behaviors|next.{0,40}classify-behaviors" instruction)
           "Prepend explicitly tells the model the minted behavior will surface on subsequent classify-behaviors calls — that's the load-bearing persistence guarantee"))))
 
-;; =============================================================================
-;; RED #4 — Rerank-fallback caution annotation
-;; =============================================================================
 
 (deftest rerank-fallback-caution
   (let [structural-target (random-uuid)
         b1-id (random-uuid)
-        ;; Both confidences set ABOVE min-display-confidence (0.6) so the
-        ;; candidates surface in the prepend — only then does the per-
-        ;; candidate "reranker fell back" annotation render. Below the
-        ;; floor the candidate is filtered out and the section falls
-        ;; into the "no high-confidence match" branch which doesn't
-        ;; carry the fallback annotation.
         payload {:structural {:assigned-tree-id structural-target
                               :confidence 0.7
                               :was-fresh-mint? false
@@ -338,9 +297,6 @@
       (is (re-find #"(?i)reranker fell back" behavioral-section)
           "Behavioral caution annotation present"))))
 
-;; =============================================================================
-;; RED #5 — No :r05-classifier → identity (legacy/manual-context contract)
-;; =============================================================================
 
 (deftest no-op-when-r05-classifier-absent
   (testing "node with no :context → unchanged"
@@ -358,16 +314,6 @@
       (is (= node result)
           "Identity when :context lacks :r05-classifier (manual-context path preserved)"))))
 
-;; =============================================================================
-;; RED #6 — Behavioral cap at 5: when more than 5 above-floor candidates are
-;;            returned, only the first 5 surface
-;; =============================================================================
-;;
-;; The behavioral-cap was raised from 3 → 5 (aligns with classify-behaviors'
-;; :top-n 5). Test sends 7 above-floor candidates; expects 5 surface, 2 cut.
-;; Stub summaries are deliberately generic ("Generic summary.") so derive-
-;; seed-name returns nil and the header falls back to "Behavioral suggestion"
-;; — that's what the suggestion-count regex counts.
 
 (deftest behavioral-cap-at-5
   (let [structural-target (random-uuid)
@@ -393,8 +339,6 @@
                              (fn [_ _ id] (get stub-bodies id))]
                  (tp/apply-r05-classifier-context node {}))
         instruction (:instruction result)
-        ;; Count "Behavioral suggestion" markers — generic summaries don't
-        ;; resolve to a seed name so all entries get the generic header.
         suggestion-count (count (re-seq #"(?m)^\d+\. Behavioral suggestion" instruction))]
 
     (testing "exactly 5 behavioral suggestions surface (caps at 5 even when 7 returned)"
@@ -414,9 +358,6 @@
           (is (not (str/includes? instruction (str id)))
               (str "Cut candidate " id " NOT surfaced")))))))
 
-;; =============================================================================
-;; RED #7 — Wedge integration: stashes full payload on :context.:r05-classifier
-;; =============================================================================
 
 (deftest wedge-stashes-r05-classifier-payload
   (let [structural-tree-id (random-uuid)
@@ -451,7 +392,6 @@
 
     (with-redefs [ontology/classify-task (constantly structural-result)
                   ontology/classify-behaviors (constantly behavioral-result)
-                  ;; cp/process-command is not under test here; stub to a no-op
                   ai.obney.grain.command-processor-v2.interface/process-command
                   (constantly {:command-result/events []})]
       (let [result-node (tp/maybe-auto-classify-and-set-context node wedge-ctx)
@@ -485,16 +425,6 @@
           (is (= structural-tree-id (get-in result-node [:context :tree-id]))
               ":tree-id preserved at the top level for any non-R-Inject reader"))))))
 
-;; =============================================================================
-;; C-Loop-1 — apply-r05-classifier-context reads tree bodies under :tree-class
-;; =============================================================================
-;;
-;; The Living Description loop: consolidator writes per-tree-class bodies
-;; (the substrate the prepend reads). Bootstrap seeds are also recorded
-;; under :tree-class (via seed-all!), so first-time runs see seed content
-;; via the same read path. The fetch-tree-body call site MUST request
-;; :tree-class scope so the Living Description loop's updates surface
-;; in the next R-Inject run's prepend.
 
 (deftest prepend-fetches-tree-body-under-tree-class-scope
   (testing "C-Loop-1: apply-r05-classifier-context's fetch-tree-body calls get-description with :tree-class granularity"
@@ -520,10 +450,6 @@
       (with-redefs [ontology/get-description
                     (fn [_ctx granularity target-id]
                       (swap! captured-calls conj [granularity target-id])
-                      ;; Return body when asked for :tree-class so the
-                      ;; happy-path rendering proceeds; nil for any other
-                      ;; granularity so the test fails loudly if the
-                      ;; helper falls back to :tree-fingerprint.
                       (when (= granularity :tree-class)
                         tree-class-body))]
         (tp/apply-r05-classifier-context node {}))
@@ -532,18 +458,6 @@
       (is (not-any? (fn [[g _]] (= g :tree-fingerprint)) @captured-calls)
           "fetch-tree-body should NOT call get-description with :tree-fingerprint scope — Option C migrates the read path to :tree-class"))))
 
-;; =============================================================================
-;; T2-Hardening-B — body fetch coerces string-form target-id to UUID
-;;
-;; The classifier's :top-candidates carry :document-metadata.:target-id as a
-;; STRING (ColBERT bridges metadata through JSON, so a UUID seed comes back
-;; as "5a08300e-10e3-305a-80c1-17eafea15ff7"). The descriptions read-model
-;; keys bodies under the literal java.util.UUID. Without coercion at the
-;; fetch site, every prepend silently degrades to summary-only because
-;; format-seed-body receives nil. The fix is a UUID coercion in
-;; fetch-tree-body. These tests pin the behavior across the matrix of
-;; input shapes the classifier actually produces.
-;; =============================================================================
 
 (def ^:private rich-body-with-strengths
   "Body whose render exercises every section format-seed-body emits — most
@@ -569,9 +483,6 @@
 (deftest fetch-tree-body-coerces-string-form-target-id-to-uuid
   (testing "T2-Hardening-B: candidate's :target-id may arrive as a stringified UUID (JSON roundtrip from ColBERT). The body fetch must coerce to UUID so the read-model lookup hits."
     (let [seed-uuid (random-uuid)
-          ;; Classifier payload as the pipeline ACTUALLY receives it — the
-          ;; candidate's :document-metadata.:target-id is the stringified
-          ;; form ColBERT returns through its JSON bridge.
           string-target-id (str seed-uuid)
           payload {:structural {:assigned-tree-id seed-uuid
                                 :confidence 1.0
@@ -586,11 +497,6 @@
                    :behavioral {:behaviors []
                                 :rerank-fallback? false}}
           node (mk-node "Test instruction" payload)
-          ;; The read-model stub mirrors production semantics: bodies are
-          ;; keyed by UUID. A string-form target-id passed directly returns
-          ;; nil; only the UUID-form returns the body. After the coercion
-          ;; fix, the fetch site reaches the body even when classifier
-          ;; surfaces the stringified form.
           result (with-redefs [ontology/get-description
                                (fn [_ctx granularity target-id]
                                  (when (and (= granularity :tree-class)
@@ -655,18 +561,6 @@
       (is (re-find #"Pattern guidance" instruction)
           "Summary-driven 'Pattern guidance' section still renders from the candidate's :content"))))
 
-;; =============================================================================
-;; E2 — Decouple R-Inject: references INFORM, not GATE (ADR 0014, RG-3)
-;;
-;; The defeat condition is ANY branch that suppresses the specialize/mint
-;; invitation when a match is found. Before E2 the FOUND behavioral branch
-;; offered only adopt/adapt (no specialize-a-child, no mint-adjacent), and the
-;; block copy said "Mimic / modify / design from scratch" — so a coding task
-;; matching a shape-broad parent at >= threshold was never invited to deepen
-;; the corpus. These tests pin the always-available adopt/adapt/specialize/mint
-;; menu on BOTH branches, asserting on the rendered string (pure fns, no mocks
-;; beyond the description-body read stub the existing tests already use).
-;; =============================================================================
 
 (def ^:private e2-found-body
   "A rich body for a FOUND (above-threshold) behavioral match — the shape the
@@ -689,10 +583,6 @@
    :consolidated-from-event-count 7})
 
 (deftest e2-found-entry-offers-specialize-and-mint-invitation
-  ;; RED before E2: the FOUND branch rendered adopt/adapt only. This asserts the
-  ;; invitation to specialize a CHILD of the matched behavior (mint-behavior!
-  ;; with :parent <matched id>) and to mint an adjacent behavior is present even
-  ;; when a match cleared threshold.
   (testing "an above-threshold (FOUND) behavioral match still surfaces a specialize/mint invitation"
     (let [b-id (random-uuid)
           payload {:structural {:assigned-tree-id (random-uuid)
@@ -733,8 +623,6 @@
             "Found path invites minting an adjacent behavior when the task is related-but-distinct")))))
 
 (deftest e2-not-found-entry-still-mints
-  ;; The not-found path must NOT regress: it still surfaces the BEHAVIORALLY-
-  ;; NOVEL signal + the mint-behavior! affordance.
   (testing "the not-found (fresh-mint) behavioral branch still invites mint-behavior!"
     (let [b-mint-id (random-uuid)
           payload {:structural {:assigned-tree-id (random-uuid)
@@ -759,9 +647,6 @@
           "Not-found branch still mentions :parent (now can specialize under nearest, not only root)"))))
 
 (deftest e2-both-branches-render-references-block
-  ;; No suppression: BOTH the found and not-found paths render the references
-  ;; block (the "## Suggested patterns from corpus" header + the always-present
-  ;; 4-way adopt/adapt/specialize/mint menu in the block copy).
   (testing "FOUND path renders references block + 4-way menu"
     (let [b-id (random-uuid)
           payload {:structural {:assigned-tree-id (random-uuid)
@@ -805,30 +690,6 @@
       (is (re-find #"(?i)\bspecialize\b" instruction)
           "specialize option present even when nothing cleared threshold"))))
 
-;; =============================================================================
-;; E3 Part 1 — behavioral body fetch reads the :tree-fingerprint scope
-;;
-;; ROOT CAUSE (verified live): a FOUND behavioral entry rendered NO
-;; strengths/weaknesses in the live R-Inject prepend — only the reranker
-;; reasoning. The FOUND branch of format-behavioral-entry called
-;; `fetch-tree-body`, which is hardcoded to read the :tree-class scope (the
-;; structural Living-Description read path, C-Loop-1). But behavioral bodies
-;; are NOT under :tree-class — they are emitted via :ontology/record-tree-
-;; description (seed-baseline-corpus!) and :ontology/mint-behavioral-subtree,
-;; BOTH of which stamp :target-type :tree-fingerprint on the description-
-;; updated event (commands.clj record-tree-description:705 + mint-behavioral-
-;; subtree:1012). So get-description keys the behavioral body under
-;; (:tree-fingerprint, behavior-id). A read against :tree-class MISSES → the
-;; body is nil → format-seed-body returns nil → no strengths section.
-;;
-;; The existing E2/happy-path tests masked this because their get-description
-;; stub IGNORES the granularity argument ((fn [_ _ id] ...)), so the body came
-;; back regardless of which scope was requested. These tests use a
-;; granularity-DISCRIMINATING stub (body only under :tree-fingerprint, nil for
-;; :tree-class) — the production read-model semantics — so they fail RED on the
-;; bug and prove the fix reads the correct scope WITHOUT disturbing the
-;; structural :tree-class path.
-;; =============================================================================
 
 (def ^:private e3-behavioral-body
   "A rich behavioral body as record-tree-description / mint-behavioral-subtree
@@ -852,9 +713,6 @@
    :consolidated-from-event-count 0})
 
 (deftest behavioral-body-fetched-under-tree-fingerprint-scope
-  ;; RED before E3 Part 1: the FOUND branch read :tree-class, where the
-  ;; behavioral body does NOT live, so a granularity-discriminating stub
-  ;; returns nil and no strengths render.
   (testing "a FOUND behavioral entry fetches its body under :tree-fingerprint and renders its strengths"
     (let [b-id (random-uuid)
           captured-calls (atom [])
@@ -873,10 +731,6 @@
           result (with-redefs [ontology/get-description
                                (fn [_ctx granularity target-id]
                                  (swap! captured-calls conj [granularity target-id])
-                                 ;; Production read-model semantics: the
-                                 ;; behavioral body lives ONLY under
-                                 ;; :tree-fingerprint. Reading it under
-                                 ;; :tree-class (the structural path) misses.
                                  (when (and (= granularity :tree-fingerprint)
                                             (= target-id b-id))
                                    e3-behavioral-body))]
@@ -902,11 +756,6 @@
             "The weakness trait text renders")))))
 
 (deftest structural-body-fetch-still-reads-tree-class-scope
-  ;; Guard: the Part-1 fix must NOT disturb the structural read path. A
-  ;; structural candidate's body must still be fetched under :tree-class
-  ;; (C-Loop-1), where the Living-Description consolidator + dual-emitted
-  ;; seeds write it. A discriminating stub (body only under :tree-class)
-  ;; proves the structural path is untouched.
   (testing "a structural candidate's body is still fetched under :tree-class"
     (let [s-id (random-uuid)
           captured-calls (atom [])

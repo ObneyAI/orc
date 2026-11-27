@@ -17,9 +17,10 @@
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
-(def ^:private build-fn #'executor/build-rlm-code-generation-module)
+(def ^:private build-fn #'service-logic/build-rlm-code-generation-module)
 
 (def ^:private coding-tools
   ["fs/read" "fs/write" "apply_patch" "shell/exec" "fs/list"])
@@ -100,13 +101,6 @@
                          "For large DATA processing (documents, collections), use emit-tree!; for workspace/file effects, call your bound tools directly inline:")
           "the scoped replacement keeps emit-tree for large data but routes effects to the bound tools"))))
 
-;; =============================================================================
-;; Cycle 4 — call-site threading: the RUNTIME inputs map handed to llm
-;; carries the :tools value (a declared input with no value would advertise
-;; an empty field). Mirrors CE-2's G2 capture through the REAL
-;; execute-repl-researcher-rlm; llm/predict is redef'd to capture and
-;; abort — no live LLM.
-;; =============================================================================
 
 (defn- capture-rlm-call
   "Drive the REAL execute-repl-researcher-rlm one iteration with
@@ -127,7 +121,7 @@
     (with-redefs [llm/predict (fn [_provider module inputs _opts]
                                    (reset! captured {:module module :inputs inputs})
                                    (throw (ex-info "capture-abort" {})))]
-      (try (executor/execute-repl-researcher-rlm node {} :probe-provider {})
+      (try (service-processors/execute-repl-researcher-rlm node {} :probe-provider {})
            (catch Throwable _ nil)))
     @captured))
 

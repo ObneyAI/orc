@@ -2,11 +2,10 @@
   "Tests for async execution path through todo processors."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.grain.command-processor-v2.interface :as cp]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Test Functions for Code Executor
@@ -29,9 +28,6 @@
     {:doubled (* x 2)
      :squared (* x x)}))
 
-;; =============================================================================
-;; Helper: build sheet and dispatch async execution
-;; =============================================================================
 
 (defn- setup-simple-sheet!
   "Create a sheet with a sequence containing one code leaf node.
@@ -43,10 +39,8 @@
                writes [:output]}}]
   (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name name))
         sheet-id (-> sheet-result :command-result/events first :sheet-id)]
-    ;; Declare blackboard keys
     (doseq [k (concat reads writes)]
       (h/run-and-apply! ctx (h/make-declare-key-command sheet-id k :string)))
-    ;; Create sequence with leaf
     (let [seq-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
           seq-id (-> seq-result :command-result/events first :node-id)
           leaf-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf :parent-id seq-id))
@@ -60,7 +54,7 @@
    Returns {:tick-id ... :promise ...}"
   [ctx sheet-id inputs & {:keys [timeout-ms] :or {timeout-ms 10000}}]
   (let [tick-id (random-uuid)
-        p (runtime/register-completion! tick-id)
+        p (service-logic/register-completion! tick-id)
         cmd-result (cp/process-command
                      (assoc ctx :command
                             {:command/id (random-uuid)
@@ -156,16 +150,13 @@
   (testing "async execution doesn't mutate sheet's stored blackboard"
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id]} (setup-simple-sheet! ctx)]
-        ;; Set initial value on sheet's persistent blackboard
         (h/run-and-apply! ctx (h/make-set-key-value-command sheet-id :input "original"))
 
-        ;; Execute with different input
         (let [{:keys [promise]} (dispatch-async-execute! ctx sheet-id {:input "overridden"})
               result (wait-for-completion promise)]
           (is (= :success (:status result)))
           (is (= "overridden" (get (:outputs result) :output))))
 
-        ;; Verify original blackboard unchanged
         (let [bb (rm/get-blackboard-by-key ctx sheet-id)]
           (is (= "original" (get-in bb [:input :value]))))))))
 
@@ -173,7 +164,6 @@
   (testing "two concurrent async executions of the same sheet are isolated"
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id]} (setup-simple-sheet! ctx)
-            ;; Dispatch two executions with different inputs
             exec1 (dispatch-async-execute! ctx sheet-id {:input "first"})
             exec2 (dispatch-async-execute! ctx sheet-id {:input "second"})
             result1 (wait-for-completion (:promise exec1))
@@ -190,10 +180,6 @@
             {:keys [tick-id promise]} (dispatch-async-execute! ctx sheet-id {:input "test"})
             result (wait-for-completion promise)]
         (is (= :success (:status result)))
-        ;; The tick-scoped blackboard holds METADATA — key, schema, version,
-        ;; size profile, and a :source-event-id for written keys. Values are
-        ;; resolved on demand from the write log; see core.value-log and
-        ;; tick_context_equivalence_test for the round-trip proof.
         (let [tick-bb (rm/get-tick-blackboard ctx tick-id)]
           (is (some? tick-bb) "Tick should have a scoped blackboard")
           (is (contains? tick-bb :input) "the seeded key is present")
@@ -201,8 +187,7 @@
               "the cache must not carry values")
           (is (some? (get-in tick-bb [:input :profile]))
               "a seeded key records the shape of its value")
-          ;; And the value is still recoverable.
-          (is (= "test" (get (value-log/resolve-values
+          (is (= "test" (get (rm/resolve-values
                               (:event-store ctx) (:tenant-id ctx) tick-id
                               tick-bb [:input])
                              :input))))))))

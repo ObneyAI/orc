@@ -4,11 +4,11 @@
             [clojure.test :refer [deftest is testing]]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def ^:private search-arguments
   [:map {:closed true}
@@ -55,7 +55,7 @@
             config-event (some #(when (= :sheet/repl-researcher-config-set
                                          (:event/type %)) %)
                                (events ctx))
-            replayed-node (get (reduce rm/nodes* {} (events ctx)) (:id node))
+            replayed-node (get (reduce service-logic/nodes* {} (events ctx)) (:id node))
             expected-bound
             {"academic-search" {:arguments search-arguments :result search-result}
              "legacy-tool" {:arguments [:map [:query :string]] :result :untyped}}]
@@ -82,7 +82,7 @@
 
 (deftest det-e2e-159-untyped-and-legacy-tools-remain-compatible
   (testing "tools without contracts are explicit and old argument-key declarations still work"
-    (let [build-module #'executor/build-rlm-code-generation-module
+    (let [build-module #'service-logic/build-rlm-code-generation-module
           base {:type :repl-researcher
                 :instruction "Use tools."
                 :writes [:answer]

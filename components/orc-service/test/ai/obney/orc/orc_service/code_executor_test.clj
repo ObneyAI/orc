@@ -3,7 +3,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Test Functions
@@ -34,24 +34,24 @@
 
 (deftest resolve-fn-test
   (testing "resolves fully-qualified symbol to function"
-    (let [result (executor/resolve-fn "ai.obney.orc.orc-service.code-executor-test/simple-fn")]
+    (let [result (service-logic/resolve-fn "ai.obney.orc.orc-service.code-executor-test/simple-fn")]
       (is (contains? result :fn))
       (is (fn? (:fn result)))))
 
   (testing "resolves a function supplied by a consumer namespace"
     (h/install-consumer-code-fixture!)
-    (let [result (executor/resolve-fn "sormo.orc.consumer-code-fixture/deterministic-decision")]
+    (let [result (service-logic/resolve-fn "sormo.orc.consumer-code-fixture/deterministic-decision")]
       (is (contains? result :fn))
       (is (fn? (:fn result)))))
 
   (testing "returns error for non-existent namespace"
-    (let [result (executor/resolve-fn "non.existent.namespace/some-fn")]
+    (let [result (service-logic/resolve-fn "non.existent.namespace/some-fn")]
       (is (contains? result :error))
       (is (re-find #"Failed to resolve" (:error result)))))
 
   (testing "returns error for non-existent function"
     (h/install-consumer-code-fixture!)
-    (let [result (executor/resolve-fn "sormo.orc.consumer-code-fixture/non-existent")]
+    (let [result (service-logic/resolve-fn "sormo.orc.consumer-code-fixture/non-existent")]
       (is (contains? result :error))
       (is (re-find #"Function not found" (:error result))))))
 
@@ -82,7 +82,7 @@
                 :reads [:name]
                 :writes [:output]}
           blackboard {:name {:key :name :value "World" :version 1}}
-          result (executor/execute-code node blackboard {})]
+          result (service-logic/executor-execute-code node blackboard {})]
       (is (= :success (:status result)))
       (is (= "Hello, World" (get-in result [:outputs :output])))
       (is (number? (:duration-ms result))))))
@@ -94,7 +94,7 @@
                 :writes [:sum :product]}
           blackboard {:a {:key :a :value 5 :version 1}
                       :b {:key :b :value 3 :version 1}}
-          result (executor/execute-code node blackboard {})]
+          result (service-logic/executor-execute-code node blackboard {})]
       (is (= :success (:status result)))
       (is (= 8 (get-in result [:outputs :sum])))
       (is (= 15 (get-in result [:outputs :product]))))))
@@ -105,7 +105,7 @@
                 :reads [:x]
                 :writes [:has-store :input-count]}
           blackboard {:x {:key :x :value 42 :version 1}}
-          result (executor/execute-code node blackboard {:event-store :mock-store})]
+          result (service-logic/executor-execute-code node blackboard {:event-store :mock-store})]
       (is (= :success (:status result)))
       (is (= true (get-in result [:outputs :has-store])))
       (is (= 1 (get-in result [:outputs :input-count]))))))
@@ -115,7 +115,7 @@
     (let [node {:fn "ai.obney.orc.orc-service.code-executor-test/throwing-fn"
                 :reads []
                 :writes []}
-          result (executor/execute-code node {} {})]
+          result (service-logic/executor-execute-code node {} {})]
       (is (= :failure (:status result)))
       (is (re-find #"Intentional error" (:error result))))))
 
@@ -124,7 +124,7 @@
     (let [node {:fn "ai.obney.orc.orc-service.code-executor-test/returns-non-map"
                 :reads []
                 :writes []}
-          result (executor/execute-code node {} {})]
+          result (service-logic/executor-execute-code node {} {})]
       (is (= :failure (:status result)))
       (is (re-find #"must return a map" (:error result))))))
 

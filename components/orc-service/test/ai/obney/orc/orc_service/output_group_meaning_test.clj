@@ -4,11 +4,11 @@
             [clojure.string :as str]
             [cheshire.core :as json]
             [hato.client :as http]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as bt]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def left-meaning "Complete left aggregate, including explicit empty and null observations.")
 (def right-meaning "Independent right aggregate; zero is a measured result.")
@@ -103,7 +103,6 @@
 
 
 (defn authored-meanings [schemas]
-  ;; Inventory starts from original declared schemas, including containing maps.
   (set (mapcat (fn [node]
                  (when (map? node)
                    (concat (when-let [d (:description node)] [d])
@@ -133,7 +132,7 @@
 
 (def control-proof (atom {}))
 (deftest group-provenance-does-not-change-legacy-wire-or-validation
-  (let [module (dissoc (executor/build-module {:name "group-control" :reads [] :writes [:result]}
+  (let [module (dissoc (service-logic/build-module {:name "group-control" :reads [] :writes [:result]}
                         {:result {:schema [:map {:closed true :description "Authored aggregate meaning."}
                                            [:answer [:string {:description "Authored answer meaning."}]]]}})
                       :output-mapping)

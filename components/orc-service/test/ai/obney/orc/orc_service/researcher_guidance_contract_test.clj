@@ -7,8 +7,9 @@
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as orc]
-            [ai.obney.orc.orc-service.core.rlm-sandbox :as sandbox]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (def proof (atom []))
 (def packet {:count 0 :confirmed false :record {:id "R1" :annotation nil}})
@@ -132,8 +133,8 @@
 
 (deftest practical-guidance-matches-current-sandbox-capabilities
   (let [vars (atom {:prior 7 :false-value false :null-value nil})
-        ctx (sandbox/build-rlm-context {:blackboard {} :declared-writes [] :sandbox-vars vars})
-        evaluate #(sandbox/execute-rlm-code ctx %)]
+        ctx (service-processors/build-rlm-context {:blackboard {} :declared-writes [] :sandbox-vars vars})
+        evaluate #(service-logic/execute-rlm-code ctx %)]
     (doseq [[code value] [["(clojure.string/join \",\" [\"a\" \"b\"])" "a,b"]
                           ["(clojure.set/intersection #{1 2} #{2 3})" #{2}]
                           ["(let [m {:a 1 :b 2}] #{(get m :a) (get m :b)})" #{1 2}]

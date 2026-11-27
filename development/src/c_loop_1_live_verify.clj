@@ -15,15 +15,6 @@
    well-shaped, substantively-different, principle-shaped body when fed
    real evidence — not just a different body."
   (:require [ai.obney.orc.ontology.interface :as ontology]
-            ;; Load the consolidator namespace so its defprocessor
-            ;; registers into tp/processor-registry* BEFORE runner/start!
-            ;; reads the registry to spin up processors. Without this
-            ;; require, the consolidator never subscribes to
-            ;; :ontology/consolidation-requested and the Living
-            ;; Description loop is silent in live runs (the runner.clj
-            ;; bench harness was authored before C-2a-3b's consolidator
-            ;; landed and never re-included it).
-            [ai.obney.orc.ontology.core.consolidator]
             [ai.obney.orc.orc-service.core.todo-processors :as orc-tp]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -35,7 +26,10 @@
             [clojure.string :as str]
             [ai.obney.orc.ontology.test-support.seed-principles :as principles]
             [runner]
-            [legal-issue-detection :as task]))
+            [legal-issue-detection :as task]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (def report-dir
   "development/bench/c_loop_1_live_verify")
@@ -133,9 +127,6 @@
   (println "    :ontology/tree-description-updated"
            (count-events ctx :ontology/tree-description-updated)))
 
-;; =============================================================================
-;; Diff helpers — structural, not phrase-matching
-;; =============================================================================
 
 (defn principle-key
   "Identity for a principle entry — :trait is the actionable handle.
@@ -367,18 +358,11 @@
   (println "===========================================================")
   (println "  C-Loop-1 LIVE VERIFY — Living Description loop")
   (println "===========================================================")
-  ;; Start a mulog console publisher so consolidator events (which use
-  ;; mulog's silent-by-default u/log) become visible in stdout.
   (def ^:private mulog-stop
     (u/start-publisher! {:type :console}))
   (runner/start!)
-  ;; runner/system-state is `(atom <ctx>)`; resolve the var, deref the
-  ;; var to get the atom, deref the atom to get the ctx map.
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))
+  (let [ctx (runner/current-context)
         bootstrap-snap (snapshot-body ctx tree-class-id "Bootstrap (seed)")
-        ;; Synthetic prepend at bootstrap — the prepend a HYPOTHETICAL
-        ;; next R-Inject run would see at this point (before any
-        ;; consolidation).
         synth-prepend-bootstrap (synthetic-prepend! ctx tree-class-id)
         _ (println "\nBootstrap body captured:")
         _ (println "  version:" (:version bootstrap-snap))
@@ -434,15 +418,5 @@
      :raw-path raw-path
      :diffs diffs}))
 
-(comment
-  ;; Run via REPL (the :test alias puts the relocated ontology test-support
-  ;; seed fixtures on the classpath):
-  ;;   OPENROUTER_API_KEY=... clj -M:dev:test -e \
-  ;;     "(require '[c-loop-1-live-verify :as v]) (v/verify! {})"
-  ;;
-  ;; Tune sample size for cheaper iteration:
-  ;;   (v/verify! {:runs-per-cycle 2})
-  ;;
-  ;; Note: each bench run on legal-issue-detection is ~30-60s + tokens.
-  ;; Full 6-run verify is ~5-10 min wall clock.
+#_(do
   )

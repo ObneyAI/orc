@@ -1,8 +1,7 @@
 (ns ai.obney.orc.orc-service.ordinary-model-plan-resolution-test
   (:require [clojure.test :refer [deftest is]]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.orc.orc-service.core.ordinary-model-plan :as plan]
-            [ai.obney.orc.orc-service.core.model-call-journal :as journal]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def module {:instructions "Assess the supplied source."
              :inputs [{:name :source :spec :string :description "Complete source."}]
@@ -20,7 +19,7 @@
                                  :config {:api-key "SYNTHETIC-NOT-SENT"}})
     (llm/register-provider! chat-json {:provider :openrouter :model "fixture/chat-json" :output-mode :json-schema
                                       :config {:api-key "SYNTHETIC-NOT-SENT"}})
-    (let [result (try (plan/resolve-plan {:provider native :fallback-models [{:provider chat :model "fixture/chat"}
+    (let [result (try (service-logic/resolve-plan {:provider native :fallback-models [{:provider chat :model "fixture/chat"}
                                                                          {:provider chat-json :model "fixture/chat-json"}]}
                                         native module {:max-retries 0 :use-function-calling? true})
                       (catch clojure.lang.ExceptionInfo error {:failure-kind (:failure-kind (ex-data error))}))
@@ -41,14 +40,14 @@
                                     :config {:api-key "SYNTHETIC-NOT-SENT"}})
     (llm/register-provider! backup {:provider :openrouter :model "fixture/backup"
                                    :config {:api-key "SYNTHETIC-NOT-SENT"}})
-    (let [inherited (plan/resolve-plan node primary module opts)
-          explicit (plan/resolve-plan node primary module (assoc opts :output-mode :function-calling))
-          json (plan/resolve-plan node primary module (assoc opts :output-mode :json-schema))
-          forced (plan/resolve-plan node primary module (assoc opts :output-mode :function-calling :force-tool-choice? true))]
+    (let [inherited (service-logic/resolve-plan node primary module opts)
+          explicit (service-logic/resolve-plan node primary module (assoc opts :output-mode :function-calling))
+          json (service-logic/resolve-plan node primary module (assoc opts :output-mode :json-schema))
+          forced (service-logic/resolve-plan node primary module (assoc opts :output-mode :function-calling :force-tool-choice? true))]
       (is (= inherited explicit))
-      (is (= (journal/retained-configuration-id inherited) (journal/retained-configuration-id explicit)))
-      (is (not= (journal/retained-configuration-id inherited) (journal/retained-configuration-id json)))
-      (is (not= (journal/retained-configuration-id inherited) (journal/retained-configuration-id forced)))
+      (is (= (service-logic/retained-configuration-id inherited) (service-logic/retained-configuration-id explicit)))
+      (is (not= (service-logic/retained-configuration-id inherited) (service-logic/retained-configuration-id json)))
+      (is (not= (service-logic/retained-configuration-id inherited) (service-logic/retained-configuration-id forced)))
       (is (= [:json-schema :json-schema] (mapv #(get-in % [:options :output-mode]) (:candidates json))))
       (is (every? #(= "deny" (get-in % [:options :extra-body :provider :data_collection])) (:candidates inherited))))))
 
@@ -60,11 +59,11 @@
                                     :config {:api-key "SYNTHETIC-NOT-SENT"}})
     (llm/register-provider! paired {:provider :openrouter :model "fixture/backup" :output-mode :json-schema
                                    :config {:api-key "SYNTHETIC-NOT-SENT"}})
-    (let [failure (try (plan/resolve-plan node primary module {:max-retries 0}) nil
+    (let [failure (try (service-logic/resolve-plan node primary module {:max-retries 0}) nil
                        (catch clojure.lang.ExceptionInfo error (ex-data error)))
-          legacy (plan/resolve-plan (assoc node :fallback-models [{:model "fixture/backup"}])
+          legacy (service-logic/resolve-plan (assoc node :fallback-models [{:model "fixture/backup"}])
                                     primary module {:max-retries 0})
-          explicit (plan/resolve-plan node primary module {:max-retries 0 :output-mode :function-calling})]
+          explicit (service-logic/resolve-plan node primary module {:max-retries 0 :output-mode :function-calling})]
       (is (= :model-plan-incompatible (:failure-kind failure)))
       (is (= :effective-profile-cannot-be-preserved (:reason failure)))
       (is (= ["legacy-marker-v1" "legacy-marker-v1"] (mapv #(get-in % [:profile :version]) (:candidates legacy))))

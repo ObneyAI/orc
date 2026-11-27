@@ -2,6 +2,7 @@
   "Integration tests for the MCP Sheet Builder interface."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.java.io :as io]
+            [ai.obney.orc.mcp-sheet-builder.core.analyzer :as analyzer]
             [ai.obney.orc.mcp-sheet-builder.interface :as msb]))
 
 ;; ============================================================================
@@ -48,16 +49,11 @@
 
 (deftest analyze-tools-directly-test
   (testing "analyzes tools directly using core analyzer"
-    ;; Test the analyzer component directly, bypassing MCP connection
-    (let [analyzer (requiring-resolve 'ai.obney.orc.mcp-sheet-builder.core.analyzer/analyze-tools)
-          analyzed (analyzer sample-tavily-tools {})]
+    (let [analyzed (analyzer/analyze-tools sample-tavily-tools {})]
       (is (seq analyzed))
       (is (every? :capabilities analyzed))
       (is (every? :category analyzed)))))
 
-;; ============================================================================
-;; Generate Sheet Tests (with mock analysis)
-;; ============================================================================
 
 (def mock-analysis
   {:tools [{:name "tavily_search"
@@ -115,13 +111,10 @@
       (is (contains? validation :errors))
       (is (contains? validation :warnings)))))
 
-;; ============================================================================
-;; End-to-End Workflow Tests (with mock data)
-;; ============================================================================
 
 (deftest full-workflow-mock-test
   (testing "full workflow: analyze -> generate -> validate"
-    (let [;; Skip connection, use mock analysis directly
+    (let [
           sheet (msb/generate-sheet mock-analysis {:pattern :research-compilation})
           validation (msb/validate-sheet sheet)]
       (is (map? sheet))
@@ -135,7 +128,6 @@
 (deftest pattern-auto-selection-test
   (testing "automatically selects highest confidence pattern"
     (let [result (msb/generate-sheet mock-analysis {:pattern :auto})]
-      ;; Should fall back to first pattern when :auto
       (is (map? result)))))
 
 ;; ============================================================================
@@ -148,7 +140,6 @@
                           :relationships []
                           :patterns []}
           result (msb/generate-sheet empty-analysis {:pattern :sequential-pipeline})]
-      ;; Should not crash
       (is (map? result)))))
 
 (deftest validate-empty-sheet
@@ -210,7 +201,6 @@
                            :reads [:query]
                            :writes [:result]}]}})
 
-;; Dynamic var for temp directory in tests
 (def ^:dynamic *test-dir* nil)
 
 (defn temp-dir-fixture
@@ -223,15 +213,11 @@
       (try
         (f)
         (finally
-          ;; Clean up temp files (reverse to delete children before parents)
           (doseq [file (reverse (file-seq dir))]
             (.delete file)))))))
 
 (use-fixtures :each temp-dir-fixture)
 
-;; ============================================================================
-;; export-executors! Tests
-;; ============================================================================
 
 (deftest export-executors-generates-valid-code-test
   (testing "generates valid Clojure namespace with executors"
@@ -239,18 +225,14 @@
       (msb/export-executors! sample-executor-defs filepath
                              :namespace "test-executors")
       (let [content (slurp filepath)]
-        ;; Valid Clojure syntax (can be read)
         (is (read-string (str "(do " content ")"))
             "Generated code should be valid Clojure")
-        ;; Has namespace declaration
         (is (re-find #"\(ns test-executors" content)
             "Should have namespace declaration")
-        ;; Has executor functions
         (is (re-find #"defn call-searchDocs" content)
             "Should have call-searchDocs function")
         (is (re-find #"defn call-getPage" content)
             "Should have call-getPage function")
-        ;; Has registry map
         (is (re-find #"def executors" content)
             "Should have executors registry map")))))
 
@@ -272,14 +254,11 @@
 (deftest export-executors-handles-special-characters-test
   (testing "generates functions for tools with special characters in names"
     (let [filepath (str *test-dir* "/special-executors.clj")
-          ;; Use a name with characters that DO get replaced (dots, @, etc)
           executor-defs [{:tool-name "mcp.server@tool"
                           :input-schema {"type" "object"
                                          "properties" {}}}]]
       (msb/export-executors! executor-defs filepath)
       (let [content (slurp filepath)]
-        ;; Function name should have special chars replaced with dashes
-        ;; sanitize-name replaces non-alphanumeric (except _ and -) with -
         (is (re-find #"defn call-mcp-server-tool" content)
             "Should sanitize special characters in function name")))))
 
@@ -288,8 +267,6 @@
     (let [filepath (str *test-dir* "/deps-test-executors.clj")]
       (msb/export-executors! sample-executor-defs filepath)
       (let [content (slurp filepath)]
-        ;; Executors reach their MCP tool through the shared resolution seam
-        ;; (node caller, else session, else explicit dry run, else failure).
         (is (re-find #"mcp-sheet-builder\.core\.executors" content)
             "Should require the shared tool-invocation namespace")))))
 
@@ -298,19 +275,13 @@
     (let [filepath (str *test-dir* "/sig-test-executors.clj")]
       (msb/export-executors! sample-executor-defs filepath)
       (let [content (slurp filepath)]
-        ;; Takes the standard executor invocation and invokes its tool through
-        ;; the shared seam
         (is (re-find #"\[invocation\]" content)
             "Should have standard executor signature")
         (is (re-find #"executors/invoke-tool invocation" content)
             "Should invoke the tool through the shared seam")
-        ;; Should extract parameters from inputs
         (is (re-find #"get inputs :query" content)
             "Should extract query parameter from inputs")))))
 
-;; ============================================================================
-;; export-portable-sheet! Tests
-;; ============================================================================
 
 (deftest export-portable-sheet-creates-both-files-test
   (testing "creates both executors and workflow files"
@@ -320,7 +291,6 @@
                                   sample-executor-defs
                                   dir
                                   name)
-      ;; Both files exist
       (is (.exists (io/file dir (str name "-executors.clj")))
           "Should create executors file")
       (is (.exists (io/file dir (str name ".clj")))
@@ -356,8 +326,6 @@
   (testing "updates :fn references to point to executors namespace"
     (let [dir *test-dir*
           name "ref-test"
-          ;; Workflow with fn references that contain tool name patterns
-          ;; (this matches how MCP generator creates workflows)
           workflow-with-fn {:workflow-name "ref-test"
                             :blackboard-schema {:query :string}
                             :root-node {:node-type :leaf
@@ -370,10 +338,8 @@
                                   dir
                                   name)
       (let [content (slurp (io/file dir (str name ".clj")))]
-        ;; Should NOT have the dynamic namespace reference
         (is (not (re-find #"mcp\.executors\.dynamic" content))
             "Should not have dynamic namespace reference")
-        ;; Should reference the exported executors namespace
         (is (re-find #"ref-test-executors/call-searchDocs" content)
             "Should reference exported executors namespace")))))
 
@@ -385,11 +351,9 @@
                                   sample-executor-defs
                                   dir
                                   name)
-      ;; Executors file is valid
       (let [exec-content (slurp (io/file dir (str name "-executors.clj")))]
         (is (read-string (str "(do " exec-content ")"))
             "Executors file should be valid Clojure"))
-      ;; Workflow file is valid
       (let [wf-content (slurp (io/file dir (str name ".clj")))]
         (is (read-string (str "(do " wf-content ")"))
             "Workflow file should be valid Clojure")))))
@@ -407,7 +371,6 @@
       (let [content (slurp filepath)]
         (is (re-find #"\(ns" content)
             "Should still have namespace declaration")
-        ;; Empty map may have whitespace/newlines
         (is (re-find #"def executors\s+\{\s*\}" content)
             "Should have empty executors map")))))
 
@@ -426,7 +389,6 @@
   (testing "handles workflow with multiple code nodes"
     (let [dir *test-dir*
           name "complex-test"
-          ;; Workflow with multiple code nodes referencing different tools
           complex-workflow {:workflow-name "complex-test"
                             :blackboard-schema {:query :string
                                                 :intermediate :string
@@ -447,11 +409,9 @@
                                   dir
                                   name)
       (let [content (slurp (io/file dir (str name ".clj")))]
-        ;; All fn references should be updated to use exported namespace
         (is (re-find #"complex-test-executors/call-searchDocs" content)
             "Should update first fn reference")
         (is (re-find #"complex-test-executors/call-getPage" content)
             "Should update second fn reference")
-        ;; Should not have dynamic namespace references
         (is (not (re-find #"mcp\.executors\.dynamic" content))
             "Should not have dynamic namespace references")))))

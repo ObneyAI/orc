@@ -1,10 +1,10 @@
 (ns ai.obney.orc.orc-service.structured-output-normalization-test
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.executor :as executor]
-            [sio.core :as sio]))
+            [sio.core :as sio]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- validate [blackboard result]
-  (executor/validate-leaf-outputs blackboard result true))
+  (service-logic/validate-leaf-outputs blackboard result true))
 
 (deftest json-object-keys-are-normalized-by-the-declared-schema
   (testing "nested model JSON maps satisfy keyword-keyed blackboard schemas"
@@ -66,7 +66,7 @@
                   (map :gpa (get-in result [:outputs :academic-history]))))))
 
   (testing "non-provider executors retain strict JVM type validation"
-    (let [result (executor/validate-leaf-outputs
+    (let [result (service-logic/validate-leaf-outputs
                   {:academic-context {:schema [:map [:gpa :double]]}}
                   {:status :success
                    :outputs {:academic-context {:gpa (long 3)}}}
@@ -78,13 +78,13 @@
 (deftest provider-keyword-enums-use-canonical-json-spellings
   (testing "provider-facing keyword enum choices omit EDN's leading colon"
     (is (= "one of: changed, unchanged"
-           (executor/malli-schema->description
+           (service-logic/malli-schema->description
             [:enum :changed :unchanged])))
     (is (= "one of: decision/changed, decision/unchanged"
-           (executor/malli-schema->description
+           (service-logic/malli-schema->description
             [:enum :decision/changed :decision/unchanged])))
     (is (= "one of: changed, unchanged"
-           (executor/malli-schema->description
+           (service-logic/malli-schema->description
             [:enum "changed" "unchanged"])))
     (is (= "changed"
            (get-in (validate {:outcome
@@ -105,7 +105,7 @@
 
   (testing "schema properties do not change nullable provider field types"
     (let [module
-          (executor/build-module
+          (service-logic/build-module
            {:name "analyze-profile"
             :reads []
             :writes [:academic-context]}
@@ -119,9 +119,6 @@
           tool-definition
           (sio/outputs->tool-definition
            (dissoc module :output-mapping))]
-      ;; Malli renders :maybe as a JSON Schema null union rather than the
-      ;; non-standard `:nullable true` the hand-rolled converter emitted. Same
-      ;; meaning, standards-compliant spelling.
       (is (= {:oneOf [{:type "integer"} {:type "null"}]
               :description "ACT composite score (integer or null)"}
              (get-in tool-definition
@@ -184,7 +181,7 @@
 
   (testing "flattened optional map entries stay out of provider required fields"
     (let [module
-          (executor/build-module
+          (service-logic/build-module
            {:name "choose-action"
             :reads []
             :writes [:result]}
@@ -218,9 +215,6 @@
            [:function :parameters :properties "decision"])]
       (is (nil? (:type tool-schema))
           "a structured union is not advertised as a JSON string")
-      ;; Malli renders [:or ...] as `anyOf`, not `oneOf`. This is the more correct
-      ;; spelling: `oneOf` demands EXACTLY one branch match, so overlapping branches
-      ;; (integer vs number, most obviously) would be rejected by a strict validator.
       (is (= ["object" "object"]
              (mapv :type (:anyOf tool-schema))))
       (is (= {:const "invoke"}

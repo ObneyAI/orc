@@ -22,13 +22,11 @@
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.grain.command-processor-v2.interface :as cp]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.read-model-processor-v2.interface :as rmp]
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-;; =============================================================================
-;; Budgets — ceilings, not targets
-;; =============================================================================
 
 (def ^:private budgets
   "Measured on this fixture BEFORE the change (values cached in L2), by
@@ -100,7 +98,7 @@
 
 (defn- dispatch! [ctx sheet-id inputs]
   (let [tick-id (random-uuid)
-        p (runtime/register-completion! tick-id)
+        p (service-logic/register-completion! tick-id)
         r (cp/process-command
            (assoc ctx :command {:command/id (random-uuid)
                                 :command/timestamp (time/now)
@@ -119,16 +117,19 @@
    the TICK, not the commands that built the sheet."
   [ctx scale]
   (let [sheet-id (setup-fanout! ctx)
+        cache-version (get-in (rmp/global-read-model-registry)
+                              [:sheet/tick-execution-contexts :version])
         _ (h/l2-reset-stats! ctx)
         [result tick-id] (dispatch! ctx sheet-id {:scale scale})]
     (is (= :success (:status result)) (str "run failed: " (:error result)))
     (h/settle-until! #(h/trace-stored? ctx tick-id))
     {:sheet-id sheet-id
      :tick-id tick-id
+     :cache-version cache-version
      :payload-bytes (* scale (count payload-unit))
      :l2-total (h/l2-write-bytes ctx)
      :l2-tick-ctx (h/l2-write-bytes ctx :sheet/tick-execution-contexts)
-     :entry-bytes (h/tick-context-l2-bytes ctx sheet-id tick-id 4)}))
+     :entry-bytes (h/tick-context-l2-bytes ctx sheet-id tick-id cache-version)}))
 
 ;; =============================================================================
 ;; Baseline report
@@ -151,18 +152,12 @@
         (is (pos? l2-total) "L2 accounting must observe writes")
         (is (pos? l2-tick-ctx) "tick-execution-contexts must be attributable")))))
 
-;; =============================================================================
-;; Invariant: the cached entry must not carry blackboard VALUES
-;; =============================================================================
 
 (deftest l2-holds-no-blackboard-values
   (testing "the stored tick-execution-context blackboard is metadata only"
-    ;; Asserted on the DECODED STORED BYTES, not on an accessor's return: an
-    ;; accessor-level check can be satisfied by a resolver that quietly re-adds
-    ;; values, whereas this cannot.
     (h/with-async-test-context [ctx {:count-cache? true}]
-      (let [{:keys [sheet-id tick-id]} (run-fixture! ctx 2)
-            stored (h/tick-context-l2-entry ctx sheet-id tick-id 4)
+      (let [{:keys [sheet-id tick-id cache-version]} (run-fixture! ctx 2)
+            stored (h/tick-context-l2-entry ctx sheet-id tick-id cache-version)
             bb (some-> stored :data (get tick-id) :blackboard)]
         (is (some? stored) "expected a stored tick-execution-contexts entry")
         (is (seq bb) "expected a stored blackboard")
@@ -172,12 +167,9 @@
 
 (deftest l2-entry-does-not-contain-payload
   (testing "the raw stored bytes contain no trace of the payload"
-    ;; The strongest available proof, and the one that makes no assumption
-    ;; about stored shape: search the raw LMDB bytes for the payload marker.
-    ;; It cannot be satisfied by relocating a value to a different key.
     (h/with-async-test-context [ctx {:count-cache? true}]
-      (let [{:keys [sheet-id tick-id]} (run-fixture! ctx 2)
-            raw (h/l2-entry-raw ctx :sheet/tick-execution-contexts 4
+      (let [{:keys [sheet-id tick-id cache-version]} (run-fixture! ctx 2)
+            raw (h/l2-entry-raw ctx :sheet/tick-execution-contexts cache-version
                                 {:tags #{[:tick tick-id]}} sheet-id)]
         (is (some? raw) "expected a stored entry")
         (is (not (h/bytes-contain? raw payload-unit))
@@ -185,22 +177,16 @@
 
 (deftest l2-holds-a-profile-for-every-valued-key
   (testing "trace assembly can work from the cache alone"
-    ;; assemble-execution-trace derives :input-snapshot / :output-snapshot from
-    ;; value SHAPES. Once values leave the cache it must read those shapes from
-    ;; the stored :profile, so every key that has a value needs one.
     (h/with-async-test-context [ctx {:count-cache? true}]
-      (let [{:keys [sheet-id tick-id]} (run-fixture! ctx 2)
-            stored (h/tick-context-l2-entry ctx sheet-id tick-id 4)
+      (let [{:keys [sheet-id tick-id cache-version]} (run-fixture! ctx 2)
+            stored (h/tick-context-l2-entry ctx sheet-id tick-id cache-version)
             bb (some-> stored :data (get tick-id) :blackboard)
-            resolved (rm/get-tick-blackboard ctx tick-id)]
-        (doseq [[k e] bb]
-          (when (some? (:value (get resolved k)))
-            (is (some? (:profile e))
-                (str "key " k " has a value but no cached :profile"))))))))
+            values (rm/final-values ctx (:tenant-id ctx) tick-id)]
+        (is (= #{:scale :doc :out-a :out-b :out-c} (set (keys values))))
+        (doseq [k (keys values)]
+          (is (some? (get-in bb [k :profile]))
+              (str "key " k " has a value but no cached :profile")))))))
 
-;; =============================================================================
-;; Invariant: L2 cost must not scale with payload
-;; =============================================================================
 
 (deftest l2-entry-does-not-scale-with-payload
   (testing "stored entry size is independent of payload size"
@@ -212,6 +198,7 @@
       (println (format "[l2-entry-scaling] %d -> %d bytes = %.2fx (budget %.2fx)"
                        small large ratio (:l2-entry-scaling budgets)))
       (is (pos? small) "expected a stored entry at scale 1")
+      (is (pos? large) "expected a stored entry at scale 10")
       (is (<= ratio (:l2-entry-scaling budgets))
           (str "cached entry grew " (format "%.2f" ratio)
                "x when the payload grew 10x — it is storing the payload")))))

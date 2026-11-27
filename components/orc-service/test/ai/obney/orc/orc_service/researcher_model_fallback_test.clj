@@ -3,15 +3,17 @@
             [cheshire.core :as json]
             [clojure.java.io :as io]
             [ai.obney.grain.event-store-sqlite-v3.interface]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.todo-processors :as processors]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.ordinary-transport-failure-e2e-test :as http]
-            [ai.obney.orc.orc-service.core.model-call-journal]
             [ai.obney.grain.query-processor.interface :as qp]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.queries :as service-queries]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
 (def proof (atom nil))
 (defn server! []
@@ -81,9 +83,6 @@
             _ (reset! first-context ctx)
             sheet (build-researcher! ctx) tick (random-uuid)
             held (promise) starts (atom 0) execute-researcher processors/execute-repl-researcher-node]
-        ;; Suppress dispatch only after the real first quantum has durably completed.
-        ;; No model or effect seam is faked. The continuation start remains durable,
-        ;; representing a stopped worker before it acquired its next quantum.
         (with-redefs [processors/execute-repl-researcher-node
                       (fn [context]
                         (if (= 2 (swap! starts inc))
@@ -100,8 +99,8 @@
         (let [reopened (h/create-async-test-context {:context common :event-store-conn store})
               _ (reset! reopened-context reopened)
               _ (orc/resume-in-progress! (assoc reopened :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))]
-          (is (h/settle-until! #(some? (runtime/durable-terminal-result reopened tick)) :timeout-ms 30000))
-          (let [result (runtime/durable-terminal-result reopened tick)
+          (is (h/settle-until! #(some? (service-commands/durable-terminal-result reopened tick)) :timeout-ms 30000))
+          (let [result (service-commands/durable-terminal-result reopened tick)
                 events (orc/value-log-read-tick-events reopened tenant tick)
                 journal (qp/process-query (assoc reopened :query {:query/name :sheet/model-candidate-history
                                                                   :query/id (random-uuid) :query/timestamp (time/now)

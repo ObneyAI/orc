@@ -75,9 +75,6 @@
     (throw (failure :mcp/connection-closed server-id transport :request
                     "MCP connection is closed"))))
 
-;; ============================================================================
-;; Streamable HTTP MCP Client (MCP 2025-03-26 spec)
-;; ============================================================================
 
 (defn- parse-sse-response
   "Parse an SSE (Server-Sent Events) response body.
@@ -101,11 +98,9 @@
                          "")
         body (:body response)]
     (cond
-      ;; SSE response - parse the event stream
       (str/includes? content-type "text/event-stream")
       (parse-sse-response (if (string? body) body (slurp body)))
 
-      ;; JSON response - body may already be parsed or be a string
       (map? body)
       body
 
@@ -442,19 +437,13 @@
                  (failure :mcp/initialization-failure (or server-id command) :stdio
                           :initialize "MCP stdio initialization failed" e)))))))
 
-;; ============================================================================
-;; Claude MCP Bridge (Uses Claude Code's infrastructure)
-;; ============================================================================
 
 (defrecord ClaudeMCPClient [server-name tools-cache]
   MCPClient
   (list-tools* [_]
-    ;; Tools are pre-loaded from Claude Code's MCP configuration
     @tools-cache)
 
   (call-tool* [_ tool-name args]
-    ;; This will be called via code executor in ORC context
-    ;; The actual call happens through Claude Code's MCP infrastructure
     (throw (ex-info "ClaudeMCPClient.call-tool should be invoked via ORC code executor"
                     {:tool tool-name :args args})))
 
@@ -467,9 +456,6 @@
   [{:keys [server-name tools]}]
   (->ClaudeMCPClient server-name (atom (or tools []))))
 
-;; ============================================================================
-;; Static Tool Definitions (for POC/testing)
-;; ============================================================================
 
 (defrecord StaticMCPClient [name tools call-tool-handler]
   MCPClient
@@ -825,9 +811,6 @@
   [mcp-conn]
   (close* mcp-conn))
 
-;; ============================================================================
-;; MCP Registry (Multi-Server)
-;; ============================================================================
 
 (defn- validate-server-name
   "Validate that a server name is a valid identifier."
@@ -884,7 +867,6 @@
     (fn [tool-name args]
       (u/trace ::registry-call-tool {:tool tool-name}
         (if-let [slash-idx (str/index-of tool-name "/")]
-          ;; Namespaced: route to specific server
           (let [server (subs tool-name 0 slash-idx)
                 bare-name (subs tool-name (inc slash-idx))
                 conn (get connections server)]
@@ -892,7 +874,6 @@
               (call-tool conn bare-name args)
               (throw (ex-info (str "Unknown MCP server: " server)
                               {:server server :tool tool-name}))))
-          ;; Unprefixed: find across all servers
           (let [matches (->> (vals catalog)
                              (filter #(= (:name %) tool-name)))]
             (case (count matches)
@@ -916,24 +897,3 @@
   [registry]
   (doseq [[_ conn] (:connections registry)]
     (close conn)))
-
-(comment
-  ;; Example: Create a static client with Langfuse tools
-  (def conn (connect {:preset :langfuse}))
-  (list-tools conn)
-
-  ;; Example: Create a Streamable HTTP client
-  (def http-conn (connect {:type :streamable-http
-                           :server-id "langfuse"
-                           :url "https://langfuse-mcp.example.com"
-                           :api-key "..."}))
-  (list-tools http-conn)
-
-  ;; Example: Multi-server registry
-  (def registry (create-registry {"langfuse" (connect {:preset :langfuse})
-                                   "exa" (connect {:preset :exa})}))
-  (list-all-tools registry)
-  (def multi-call (registry->call-tool-fn registry))
-  ;; (multi-call "langfuse/searchLangfuseDocs" {:query "tracing"})
-  ;; (multi-call "exa/web_search_exa" {:query "MCP protocol"})
-  )

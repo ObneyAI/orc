@@ -48,7 +48,6 @@
    :alternative-allowed? :boolean})
 
 (defn temporary-transport? [{:keys [type http-status]}]
-  ;; This example's explicit policy. No message parsing and no inference from 429 alone.
   (boolean
    (case type
      :litellm/rate-limit (or (nil? http-status) (= 429 http-status))
@@ -116,7 +115,6 @@
                    :candidate-deadline-ms (get-in frozen [:options :execution-deadline-ms])
                    :root-call-budget (:llm-call-budget root-options)
                    :candidate-call-budget (get-in frozen [:options :llm-call-budget])}]
-    ;; Test-only observation capability; authorization comes from the store above.
     (when-let [captures (:fixture-admissions ctx)]
       (swap! captures conj {:admission admission :ownership ownership}))
     {:alternative-admission admission :alternative-allowed? allowed?}))
@@ -226,7 +224,8 @@
       (llm/register-provider! provider {:provider :openrouter :model "fixture/primary"
                                       :config {:api-base (:url server) :api-key http-fixture/fixture-token :timeout 15000}})
       (let [runs
-            (h/with-async-test-context [ctx {:context {:tenant-id (random-uuid) :llm-provider provider
+            (h/with-async-test-context [ctx {:processor-namespaces #{"sheet"}
+                                             :context {:tenant-id (random-uuid) :llm-provider provider
                                                        :fixture-effects effects :fixture-admissions admissions}}]
               (let [package (build-package! ctx)
                     a (future (execute-task ctx package "TASK-A" 2))
@@ -289,8 +288,6 @@
               child-start (first (filter #(= :sheet/tree-tick-started (:event/type %)) (:events child)))]
           (is (= 2 (count rows)))
           (is (apply = (map :reads rows)))
-          ;; Deadlines live in frozen tick options and the executor's ephemeral
-          ;; attempt state; durable node traces do not project that field.
           (is (and (integer? (:candidate-deadline-ms admission)) (pos? (:candidate-deadline-ms admission))))
           (is (and (integer? (:root-deadline-ms admission)) (pos? (:root-deadline-ms admission))))
           (is (= (:candidate-deadline-ms admission)

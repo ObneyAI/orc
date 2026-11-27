@@ -60,7 +60,9 @@
                                             {:author-kind "customer" :text "I was charged twice"}]}
                                 :timeout-ms 20000)
           {:keys [state questions]} (first @requests)
-          instructions (:instructions (get questions "route"))]
+          instructions (:instructions (get questions "route"))
+          [shown-fields declared-contract]
+          (str/split instructions #"\n\nDECLARED CONTRACT \(not supplied evidence\):\n" 2)]
       (is (= :success (:status result)) (pr-str (select-keys result [:status :error])))
       (is (= 1 (count @requests)))
       (testing "the instruction is followed by the guide for the shown fields, nested ones included"
@@ -69,9 +71,10 @@
                        "The conversation so far, oldest first" "One message"
                        "human means a staff member, never the customer's own words"
                        "What was written"]]
-          (is (str/includes? instructions shown) shown)))
-      (testing "a nested field the request does not carry is not described"
-        (is (not (str/includes? instructions "Where they are based"))))
+          (is (str/includes? shown-fields shown) shown)))
+      (testing "the omitted region belongs only to the declared shape of the supplied account"
+        (is (not (str/includes? shown-fields "Where they are based")))
+        (is (and declared-contract (str/includes? declared-contract "Where they are based"))))
       (testing "the state holds the paired native model view, and no guide"
         (is (= "Q3 revenue from the board report" (:request state)))
         (is (= {"tier" "pro"} (:account state)))

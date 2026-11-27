@@ -17,7 +17,7 @@
    attached → :judge/score-emitted event) requires Gap-5's default
    attachment work to be production-shaped; we'll do that when Gap-5
    lands. For Gap-2's scope, scoring real model outputs is sufficient."
-  (:require [ai.obney.orc.evaluation.core.heuristic-structural :as hs]
+  (:require [ai.obney.orc.evaluation.core.logic :as eval-logic]
             [clojure.edn :as edn]
             [clojure.java.io :as io]))
 
@@ -44,7 +44,7 @@
   (let [data (load-bench-result path)
         tree (or (:generated-tree-raw data)
                  (get-in data [:outputs :generated-tree-raw]))
-        result (when tree (hs/evaluate-tree-structure tree))]
+        result (when tree (eval-logic/evaluate-tree-structure tree))]
     {:path path
      :had-tree? (some? tree)
      :tree-snippet (when tree
@@ -86,6 +86,6 @@
           (println "  score avg:" (/ (reduce + scores) (count scores))))))
     reports))
 
-(comment
+#_(do
   (require '[gap2-live-verify :as v] :reload)
   (v/verify!))

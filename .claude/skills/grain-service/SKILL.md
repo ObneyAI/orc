@@ -250,5 +250,5 @@ orc/widget-service {:local/root "../../components/widget-service"}
 ## Reference Files
 
 - `components/orc-service/` — Core ORC service (comprehensive example)
-- `components/colbert/` — ColBERT service (commands, read models, queries)
-- `components/ontology/` — Ontology service (event sourcing patterns)
+- `components/colbert-service/` — ColBERT service (commands, read models, queries)
+- `components/ontology-service/` — Ontology service (event sourcing patterns)

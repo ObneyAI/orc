@@ -20,9 +20,6 @@
             [traffic-corpus-gen :as tcg]
             [rs7-traffic-sweep :as rs7]))
 
-;; =============================================================================
-;; Test fixture helpers — a throwaway corpus dir under the system temp dir
-;; =============================================================================
 
 (defn- temp-dir! [prefix]
   (.toFile (java.nio.file.Files/createTempDirectory prefix (make-array java.nio.file.attribute.FileAttribute 0))))
@@ -35,10 +32,6 @@
 (defn- write-manifest! [corpus-dir manifest]
   (spit (io/file corpus-dir "manifest.edn") (with-out-str (pp/pprint manifest))))
 
-;; =============================================================================
-;; Three fixture briefs (marked :fixture? true) — used only to exercise
-;; interleave-order's grouping logic, never sent to a real LLM.
-;; =============================================================================
 
 (def fixture-briefs
   [{:brief-id "fx-marathon" :group "marathon-training" :in-domain? false
@@ -55,9 +48,6 @@
     :output-kind "a bulleted risk summary" :instance-space "the contract type"
     :fixture? true}])
 
-;; =============================================================================
-;; traffic-corpus-gen: slug parsing
-;; =============================================================================
 
 (deftest parse-slug-test
   (testing "a well-formed slug parses to index/group/variant"
@@ -69,16 +59,12 @@
     (is (nil? (tcg/parse-slug "not-a-slug")))
     (is (nil? (tcg/parse-slug "07-marathon-v3")))))
 
-;; =============================================================================
-;; traffic-corpus-gen: interleave order
-;; =============================================================================
 
 (deftest interleave-order-test
   (testing "round-robins by VARIANT across groups before advancing variants"
     (let [order (tcg/interleave-order fixture-briefs 2 42)]
       (is (= 6 (count order)))
       (is (= [1 2 3 4 5 6] (mapv :index order)))
-      ;; all three groups appear at variant 1 before ANY appears at variant 2
       (is (= [1 1 1 2 2 2] (mapv :variant order)))
       (is (= #{"marathon-training" "recipe-scaling" "legal-issue-detection"}
              (set (map :group (take 3 order)))))
@@ -92,9 +78,6 @@
       (is (= 9 (count order)))
       (is (= (count pairs) (count (distinct pairs)))))))
 
-;; =============================================================================
-;; traffic-corpus-gen: generate! resumes from disk (FAKE generate-fn seam)
-;; =============================================================================
 
 (deftest generate-resumes-from-disk-test
   (let [corpus-dir (temp-dir! "rs7-genresume")
@@ -110,7 +93,6 @@
         order (tcg/interleave-order fixture-briefs 2 42)
         first-slot (first order)
         first-slug (tcg/slug (:index first-slot) (:group first-slot) (:variant first-slot))]
-    ;; Simulate a crashed earlier run: the FIRST slot's task file exists (no sidecar).
     (write-task! corpus-dir first-slug (str "; brief-id: " (:brief-id first-slot) "\n; group: x\n; variant: 1\n\nfrom disk text"))
     (let [manifest (tcg/generate! (str briefs-path) (str corpus-dir)
                                   {:ctx {:fake true} :n-variants 2 :generate-fn fake-gen})
@@ -136,9 +118,6 @@
           (is (= (mapv #(dissoc % :generator) entries) (mapv #(dissoc % :generator) (:entries m2))))
           (is (= 5 (count (filter #(= "fake" (get-in % [:generator :model])) (:entries m2))))))))))
 
-;; =============================================================================
-;; rs7-traffic-sweep: pass 2 must continue pass 1's tenant (orchestrator inspection)
-;; =============================================================================
 
 (deftest pass-2-refuses-a-tenant-other-than-pass-1s
   (let [results-dir (temp-dir! "rs7-pass2guard")
@@ -157,9 +136,6 @@
         (is (some? e))
         (is (= (:tenant-id ctx) (:ctx-tenant (ex-data e))))))))
 
-;; =============================================================================
-;; traffic-corpus-gen: output shapes and the bracket repair (orchestrator inspection)
-;; =============================================================================
 
 (deftest output-text-accepts-every-provider-shape
   (is (= "Plan my week." (tcg/output-text "[\"Plan my week.\"]")))
@@ -187,9 +163,6 @@
     (testing "idempotent: a second pass unwraps nothing"
       (is (= {:unwrapped 0 :kept 2} (tcg/unwrap-bracketed-bodies! (str corpus-dir)))))))
 
-;; =============================================================================
-;; traffic-corpus-gen: judge-on-brief! (FAKE judge seam)
-;; =============================================================================
 
 (deftest judge-on-brief-writes-verdicts-and-flags
   (let [corpus-dir (temp-dir! "rs7-onbrief")
@@ -223,7 +196,6 @@
                                       {:judge-fn (fn [_] {:reasoning "ok" :verdict "on-brief"})})]
           (is (every? #(= [] (:flags %)) (:entries m2))))))))
 
-;; The baseline arm ran two rejected tasks: the loader must skip them.
 (deftest load-traffic-corpus-skips-rejected-entries
   (let [d (temp-dir! "rs7-rejected")]
     (write-task! d "001-a-v01" "; h\n\nTask one.")
@@ -232,8 +204,6 @@
            (mapv :slug (rs7/load-traffic-corpus (str d) {:entries [{:slug "001-a-v01" :review-status :accepted}
                                                                    {:slug "002-a-v02" :review-status :rejected}]}))))))
 
-;; In-domain seed matches and families shared across groups (the false-merge
-;; measure the first post-fix arm needed and did not have).
 (deftest analyse-reports-seed-matches-and-cross-group-families
   (let [seed (random-uuid) fam (random-uuid) fam2 (random-uuid)
         recs [{:slug "a" :corpus-group "legal" :corpus-in-domain? true :expected-seed-id seed :assigned-tree-id seed :assigned-via :match}
@@ -248,9 +218,6 @@
             :shared {"plans" {"legal" 1 "chess" 1 "lessons" 1}}}
            (:cross-group-families a)))))
 
-;; =============================================================================
-;; rs7-traffic-sweep: resume decision
-;; =============================================================================
 
 (deftest resume-decision-test
   (testing "no prior record — never skip"
@@ -263,9 +230,6 @@
     (is (true? (rs7/resume-decision {:status :error} false)))
     (is (false? (rs7/resume-decision {:status :error} true)))))
 
-;; =============================================================================
-;; rs7-traffic-sweep: resolve-store-opts — RS7-PS :store -> runner/start!
-;; =============================================================================
 
 (deftest resolve-store-opts-test
   (testing "nil / :in-memory store -> the in-memory conn, no tenant-id override"
@@ -298,9 +262,6 @@
       (is (not= prior-tenant tenant-id))
       (is (uuid? tenant-id)))))
 
-;; =============================================================================
-;; rs7-traffic-sweep: maybe-read-run-edn — nil when absent, parses when present
-;; =============================================================================
 
 (deftest maybe-read-run-edn-test
   (testing "no run.edn on disk yet -> nil, not an exception"
@@ -314,9 +275,6 @@
       (is (= {:kind :postgres :database "rs7_smoke" :tenant-id tenant}
              (:store (rs7/maybe-read-run-edn (str dir))))))))
 
-;; =============================================================================
-;; traffic-corpus-gen: flag-near-dups! — FAKE colbert-neighbour capability
-;; =============================================================================
 
 (deftest flag-near-dups-test
   (let [corpus-dir (temp-dir! "rs7-flagdups")
@@ -366,9 +324,6 @@
         (is (contains? (set (get-in by-slug ["004-legal-issue-detection-v01" :flags])) :output-kind-missing))))
     (io/file corpus-dir)))
 
-;; =============================================================================
-;; traffic-corpus-gen: freeze! sha stability
-;; =============================================================================
 
 (deftest freeze-sha-stability-test
   (let [corpus-dir (temp-dir! "rs7-freeze")]
@@ -395,13 +350,10 @@
                                               es)))
             _ (write-manifest! corpus-dir with-reject)
             rejected-sha (:corpus-sha256 (tcg/freeze! corpus-dir))
-            _ (write-manifest! corpus-dir manifest) ;; restore
+            _ (write-manifest! corpus-dir manifest)
             accepted-sha (:corpus-sha256 (tcg/freeze! corpus-dir))]
         (is (not= rejected-sha accepted-sha))))))
 
-;; =============================================================================
-;; rs7-traffic-sweep: analyse — hand-built records, no live system
-;; =============================================================================
 
 (def a-id (random-uuid))
 (def seed-id (random-uuid))
@@ -468,9 +420,6 @@
     (testing "identical pass-2 records are 100% identity-stable"
       (is (= 1.0 (:identity-stability a))))))
 
-;; =============================================================================
-;; rs7-traffic-sweep: compare-runs
-;; =============================================================================
 
 (defn- write-run-edn! [dir m]
   (.mkdirs (io/file dir))

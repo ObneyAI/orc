@@ -6,6 +6,7 @@
        :auto-add false}
  :tag-patterns {:stable "^stable-.*"
                 :release "^v[0-9].*"}
+ :test-configs {:ci-shard {:create-test-runner [orc-test-shard/create]}}
  :projects {"development" {:alias "dev"}
             ;; Each packaging project validates its primary brick. Transitive
             ;; brick suites run in their own project and in the aggregate `orc`
@@ -14,15 +15,14 @@
             ;; from trying to load its cross-component tests on a deliberately
             ;; minimal package classpath.
             "orc-service" {:test {:include ["orc-service"]}}
-            "orc-evaluation" {:test {:include ["evaluation"]}}
-            "orc-gepa" {:test {:include ["gepa"]}}
+            "orc-evaluation" {:test {:include ["evaluation-service"]}}
+            "orc-gepa" {:test {:include ["gepa-service"]}}
             "orc-mcp-sheet-builder" {:test {:include ["mcp-sheet-builder"]}}
-            "orc-ontology" {:test {:include ["ontology"]}}
+            "orc-ontology" {:test {:include ["ontology-service"]}}
             ;; LMDB-NATIVE-HARNESS-CRASH: colbert's brick tests moved OUT of
             ;; the `orc` project and INTO their own `orc-colbert` project.
             ;;
-            ;; `clojure -M:poly test project:orc :all-bricks` (CI's "ORC test
-            ;; suites" job) intermittently aborts the whole test JVM with a
+            ;; Running ColBERT and evaluation together intermittently aborts the test JVM with a
             ;; native SIGSEGV in `lmdbjava-native-library-*.so` (2 of ~40 CI
             ;; runs observed; both self-healed on rerun). The crash always
             ;; lands within seconds of `judge-runtime-test` (evaluation
@@ -37,7 +37,7 @@
             ;;
             ;; Excluding colbert from `orc` and running it under its own
             ;; `orc-colbert` project instead gives it a genuinely separate
-            ;; JVM process in CI (a separate `run:` step — see
+            ;; JVM process in CI (a separate job — see
             ;; .github/workflows/tests.yml), removing the adjacency without
             ;; losing coverage. `orc`'s new :exclude and orc-colbert's new
             ;; :include are mutually exclusive by construction, so colbert's
@@ -45,5 +45,5 @@
             ;; invocation mode (solo `project:X`, or a composite mode that
             ;; touches both projects in one JVM) — never duplicated, and
             ;; never sharing a classloader with `orc`'s suite.
-            "orc" {:test {:exclude ["colbert"]}}
-            "orc-colbert" {:test {:include ["colbert"]}}}}
+            "orc" {:test {:exclude ["colbert-service"]}}
+            "orc-colbert" {:test {:include ["colbert-service"]}}}}

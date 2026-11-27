@@ -23,7 +23,6 @@
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
-            [ai.obney.orc.ontology.core.reranker :as reranker]
             [ai.obney.orc.colbert.interface :as colbert]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -32,12 +31,9 @@
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.grain.time.interface :as gtime]))
+            [ai.obney.grain.time.interface :as gtime]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
-;; =============================================================================
-;; Test context (mirrors el3_wedge_skip_uncertain_test — real in-memory
-;; event store + LMDB cache; nothing store-level is stubbed)
-;; =============================================================================
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -82,14 +78,6 @@
    :reads [] :writes []
    :rlm {:auto-classify? true}})
 
-;; =============================================================================
-;; Rerank-seam stubs. classify-task's retrieval path is
-;;   search-descriptions → latest-ontology-descriptions-index
-;;     → (colbert list-indexes) → (colbert search) → apply-rerank → rerank!
-;; We stub list-indexes (index discovery), search (deterministic ColBERT
-;; candidates), and rerank! (the LLM seam). Everything downstream —
-;; classify-task's branches, the wedge, the command, the store — is REAL.
-;; =============================================================================
 
 (defn- fake-list-indexes [_ctx & _opts]
   [{:index-name "ontology-descriptions"
@@ -127,14 +115,9 @@
   [fallback-value & body]
   `(with-redefs [colbert/list-indexes fake-list-indexes
                  colbert/search (fn [_ctx# _opts#] colbert-candidates)
-                 reranker/rerank! (fn [_ctx# _opts#] ~fallback-value)]
+                 ontology-logic/reranker-rerank! (fn [_ctx# _opts#] ~fallback-value)]
      ~@body))
 
-;; =============================================================================
-;; RED 1 — DeferralIsVisible: a rerank-fallback classification leaves a
-;; DURABLE :ontology/task-classification-deferred event in the STORE.
-;; Fails today: the call site silently drops the :uncertain result.
-;; =============================================================================
 
 (deftest deferral-leaves-durable-event-on-colbert-fallback
   (testing "reranker fell back (:colbert-fallback) → ONE durable :ontology/task-classification-deferred event with the source triplet, fallback source, bounded ranking, reasoning + stamp; NO task-classified event"
@@ -149,17 +132,14 @@
               "EXACTLY ONE durable deferral event lands in the store")
           (is (= 0 (count classified))
               "the deferral did NOT also assign/mint (no task-classified event)")
-          ;; Source occurrence triplet
           (is (= (:sheet-id ctx) (:source-sheet-id event))
               "the deferral carries the source sheet-id")
           (is (= (:tick-id ctx) (:source-tick-id event))
               "the deferral carries the source tick-id")
           (is (= (:id n) (:source-node-id event))
               "the deferral carries the source node-id")
-          ;; Fallback source (closed set)
           (is (= :colbert-fallback (:fallback-source event))
               "the fallback source is read from the candidates' :rerank-source")
-          ;; Bounded ranking snapshot
           (is (vector? (:ranked-candidates event))
               ":ranked-candidates is a vector snapshot")
           (is (= 3 (count (:ranked-candidates event)))
@@ -172,23 +152,14 @@
           (is (= [(str tree-class-id-a) (str tree-fp-id-b) (str tree-class-id-c)]
                  (mapv :target-id (:ranked-candidates event)))
               "snapshot entries carry candidate identity in ranking order")
-          ;; Reasoning + stamp
           (is (string? (:reasoning event)) ":reasoning rides on the event")
           (is (string? (:deferred-at event)) "the event carries a stamp")
-          ;; Queryable by occurrence
           (is (= 1 (count (into [] (es/read (:event-store ctx)
                                             {:tenant-id (:tenant-id ctx)
                                              :types #{:ontology/task-classification-deferred}
                                              :tags #{[:tick (:tick-id ctx)]}}))))
               "the deferral is queryable by its [:tick tick-id] tag"))))))
 
-;; =============================================================================
-;; RED 2 — DecidedRankingIsRecorded: the classified event carries the
-;; PRE-GATE ranking (:ranked-candidates) including a below-gate candidate
-;; that the gated :top-candidates omits (the 150/156 defect reproduced),
-;; plus :assigned-via matching the branch taken.
-;; Fails today: neither field exists on the event.
-;; =============================================================================
 
 (defn- seed-below-gate-class!
   "Give `tree-class-id` a consolidation total of 1 — inside the gate's
@@ -252,7 +223,7 @@
   [fake-rerank & body]
   `(with-redefs [colbert/list-indexes fake-list-indexes
                  colbert/search (fn [_ctx# _opts#] colbert-candidates)
-                 reranker/rerank! (fn [_ctx# _opts#] ~fake-rerank)]
+                 ontology-logic/reranker-rerank! (fn [_ctx# _opts#] ~fake-rerank)]
      ~@body))
 
 (deftest classified-event-records-pre-gate-ranking-and-assigned-via-match
@@ -264,16 +235,13 @@
                             {:document-id "doc-b" :reasoning "weak" :fitness-score 0.4}]
         (tp/maybe-auto-classify-and-set-context (node) ctx))
       (let [events (->> (events-of ctx :ontology/task-classified)
-                        ;; ignore the seed assignment
                         (remove #(= tree-class-id-c (:assigned-tree-id %))))
             event (first events)]
         (is (= 1 (count events)) "exactly one classification event for this tick")
         (is (= tree-class-id-a (:assigned-tree-id event))
             "sanity: top-1 (doc-a) was assigned")
-        ;; :assigned-via — explicit provenance, closed set
         (is (= :match (:assigned-via event))
             ":assigned-via records the branch taken (:match for a confident top-1)")
-        ;; :ranked-candidates — the PRE-GATE ranking the decision ran on
         (is (= [(str tree-class-id-a) (str tree-class-id-c) (str tree-fp-id-b)]
                (mapv :target-id (:ranked-candidates event)))
             ":ranked-candidates is the pre-gate ranking in decision order (reranker order)")
@@ -289,8 +257,6 @@
                     (filter #(not= (str tree-fp-id-b) (:target-id %))
                             (:ranked-candidates event)))
             "each entry carries its granularity/axis")
-        ;; The 150/156 defect, reproduced: the gated surfaced view OMITS the
-        ;; below-gate candidate — and its exact current shape is untouched.
         (is (not-any? #(= (str tree-class-id-c) (-> % :document-metadata :target-id))
                       (:top-candidates event))
             ":top-candidates (the gated view) omits the below-gate candidate")
@@ -315,11 +281,6 @@
         (is (= 3 (count (:ranked-candidates event)))
             "the pre-gate ranking is recorded on the mint path too")))))
 
-;; =============================================================================
-;; RED 3 — payload bound: every :ranked-candidates entry carries NO
-;; :content / :summary (no description text of any kind), and the vector
-;; length is <= the retrieval k (5) even when retrieval yields more.
-;; =============================================================================
 
 (def ^:private allowed-ranked-keys
   "The spec's reduction, exactly: identity, axis, scores, rerank source."
@@ -341,7 +302,7 @@
     (with-test-ctx [ctx]
       (with-redefs [colbert/list-indexes fake-list-indexes
                     colbert/search (fn [_ctx _opts] six-colbert-candidates)
-                    reranker/rerank! (fn [_ctx _opts]
+                    ontology-logic/reranker-rerank! (fn [_ctx _opts]
                                        (vec (for [i (range 6)]
                                               {:document-id (str "doc-" i)
                                                :reasoning (str "fit " i)
@@ -365,7 +326,7 @@
     (with-test-ctx [ctx]
       (with-redefs [colbert/list-indexes fake-list-indexes
                     colbert/search (fn [_ctx _opts] six-colbert-candidates)
-                    reranker/rerank! (fn [_ctx _opts] nil)]
+                    ontology-logic/reranker-rerank! (fn [_ctx _opts] nil)]
         (tp/maybe-auto-classify-and-set-context (node) ctx))
       (let [event (first (events-of ctx :ontology/task-classification-deferred))
             entries (:ranked-candidates event)]
@@ -377,11 +338,6 @@
               (str "deferral entry carries ONLY the reduced keys; extras: "
                    (pr-str (remove allowed-ranked-keys (keys entry))))))))))
 
-;; =============================================================================
-;; RED 4 — the measured-number criterion: N classifications with M
-;; deferrals leave exactly M deferral events + (N - M) classified events
-;; in the store. The deferral RATE is a count, not an inference.
-;; =============================================================================
 
 (deftest deferral-rate-is-a-count-from-the-store
   (testing "5 classifications, 2 deferred → the store holds EXACTLY 2 deferral events and 3 classified events, joinable by tick"

@@ -1,12 +1,13 @@
 (ns ai.obney.orc.orc-service.deterministic-lifecycle-e2e-test
   "Deterministic end-to-end coverage for workflow lifecycle and versioning."
   (:require [clojure.test :refer [deftest is testing]]
+            [malli.core :as m]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.core.dsl :as dsl]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.event-store-v3.interface :as es]
-            [ai.obney.grain.todo-processor-v2.interface :as tp]))
+            [ai.obney.grain.todo-processor-v2.interface :as tp]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn lifecycle-v1 [{:keys [inputs]}]
   {:output (str (:input inputs) "-v1")})
@@ -163,7 +164,7 @@
                      (sheet/build-workflow! ctx invalid)
                      nil
                      (catch Throwable t t))
-            deterministic-id (dsl/sheet-id-for-name name)
+            deterministic-id (service-logic/sheet-id-for-name name)
             stored-sheet (sheet/get-sheet ctx deterministic-id)
             nodes (sheet/get-nodes-for-sheet ctx deterministic-id)
             bb (sheet/get-blackboard-by-key ctx deterministic-id)
@@ -191,7 +192,7 @@
                          :specific [:map [:value :string]]})))
                      nil
                      (catch Throwable t t))
-            deterministic-id (dsl/sheet-id-for-name name)]
+            deterministic-id (service-logic/sheet-id-for-name name)]
         (is (some? thrown) "every occurrence of :any must make the definition invalid")
         (is (= #{:top-level :nested-map :nested-vector}
                (set (:blackboard-keys (ex-data thrown))))
@@ -256,6 +257,17 @@
             {:record [:map [:name :string]]
              :records [:vector [:map [:name :string]]]
              :lookup [:map-of :keyword [:map [:name :string]]]}))))
+  (testing "only recognized incomplete declarations reach the handler for feedback"
+    (let [body {:sheet-id (random-uuid) :key :items}
+          incomplete [:map [:rows [:vector]]]]
+      (doseq [command [:sheet/declare-key :sheet/update-key-schema]]
+        (is (m/validate command (assoc body :schema incomplete)))
+        (doseq [invalid [nil {:rows :string} [:unknown/shape]
+                         [:schema {:registry 42} [:vector]]]]
+          (is (not (m/validate command (assoc body :schema invalid))))))
+      (doseq [event [:sheet/key-declared :sheet/key-schema-updated]]
+        (is (m/validate event (assoc body :schema [:map [:rows [:vector :int]]])))
+        (is (not (m/validate event (assoc body :schema incomplete)))))))
   (testing "direct declaration commands enforce the same recursive policy"
     (h/with-async-test-context [ctx]
       (let [created (h/run-command ctx (h/make-create-sheet-command :name "direct-weak-schema-rejection"))
@@ -405,7 +417,7 @@
             first-id (sheet/build-workflow! ctx definition)
             first-export (sheet/export-sheet ctx first-id)
             dsl-code (sheet/export-to-dsl first-export)
-            regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
+            regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.interface)]
                           (eval (read-string dsl-code)))
             second-id (sheet/build-workflow! ctx regenerated)
             second-export (sheet/export-sheet ctx second-id)
@@ -615,7 +627,7 @@
                                               (keep :fn)
                                               set))
                                        results)
-                    replayed-traces (reduce rm/traces* {} events)]
+                    replayed-traces (reduce service-logic/traces* {} events)]
                 (is (not-any? #{::timeout} results))
                 (is (= [:success :success :success :success] (mapv :status results)))
                 (is (= ["pinned-v1-v1" "draft-before-publish-v2"

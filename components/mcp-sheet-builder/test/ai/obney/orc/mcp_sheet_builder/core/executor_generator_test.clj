@@ -31,7 +31,6 @@
   (testing "Basic name sanitization"
     (is (= "searchLangfuseDocs" (gen/sanitize-name "searchLangfuseDocs")))
     (is (= "tavily-search" (gen/sanitize-name "tavily-search")))
-    ;; Underscores are valid in Clojure identifiers, so they're kept
     (is (= "search_docs" (gen/sanitize-name "search_docs"))))
 
   (testing "Special characters removed"

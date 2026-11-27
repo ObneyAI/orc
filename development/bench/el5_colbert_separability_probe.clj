@@ -53,7 +53,7 @@
 
 (defn -main [& _]
   (runner/start!)
-  (let [ctx (deref (var-get (requiring-resolve 'runner/system-state)))
+  (let [ctx (runner/current-context)
         r (score-task ctx refactor-task rename-avoid rename-good)
         w (score-task ctx websearch-task websearch-avoid websearch-good)]
     (println "\n=== EL-5 COLBERT SEPARABILITY PROBE (late-interaction MaxSim) ===")

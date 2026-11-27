@@ -18,7 +18,7 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -50,9 +50,6 @@
         (doseq [c (.listFiles f)] (.delete c))
         (.delete f)))))
 
-;; =============================================================================
-;; Example #1 — Composition pattern (verbatim from RLM-GUIDE.md)
-;; =============================================================================
 
 (defn- composition-workflow []
   (orc/workflow "research-pipeline"
@@ -83,9 +80,6 @@
         :reads  [:researched-summary]
         :writes [:final-report]))))
 
-;; =============================================================================
-;; Example #2 — Basic usage (verbatim from RLM-GUIDE.md, simplified for test)
-;; =============================================================================
 
 (defn- basic-workflow []
   (orc/workflow "risk-analysis"
@@ -118,7 +112,7 @@
   [example-name workflow inputs expected-writes-keys]
   (let [ctx (create-context)]
     (try
-      (executor/setup-providers!)
+      (service-logic/setup-providers!)
       (let [sheet-id (orc/build-workflow! ctx workflow)
             t0 (System/currentTimeMillis)
             result (orc/execute ctx sheet-id inputs :timeout-ms 180000)
@@ -180,4 +174,4 @@
                  "FAIL")))
     [r1 r2]))
 
-(comment (run!))
+#_(do (run!))

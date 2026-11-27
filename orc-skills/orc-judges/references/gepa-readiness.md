@@ -166,7 +166,7 @@ Checked against the GEPA source in ORC (`core/metrics.clj`, `core/todo_processor
   specific; these checks cover adapter mechanics only.
 
 Inspect `gepa/core/todo_processors.clj` (validation evaluation, reflective dataset
-construction) and `gepa/core/metrics.clj` (response extraction, judge dimensions)
+construction) and `gepa/core/logic.clj` (response extraction, judge dimensions)
 in the consuming revision, and rerun the boundary you depend on. Background judge
 behavior does not establish GEPA behavior.
 

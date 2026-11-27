@@ -125,10 +125,15 @@
     (is (= 0 (get-in proof [:projected :answer :count])))))
 
 (deftest exhausted-finalization-allowance-fails-without-publishing-invalid-nested-output
-  (let [proof (run-finalization! 1)]
+  (let [proof (run-finalization! 1)
+        rejected (filter #(and (= :sheet/execution-value-rejected (:event/type %))
+                               (= :answer (:key %)))
+                         (:events proof))]
     (is (empty? (:errors proof)) (pr-str (:errors proof)))
     (is (= 1 (count (:requests proof))))
     (is (= :failure (get-in proof [:result :status])))
+    (is (str/includes? (get-in proof [:result :error]) "Blackboard schema validation failed for :answer"))
+    (is (= [invalid-answer] (mapv :value rejected)))
     (is (empty? (:canonical-answer-writes proof)))
     (is (not (contains? (:projected proof) :answer)))
     (is (= [:failure] (mapv #(get-in % [:iteration-record :status]) (:iterations proof))))))

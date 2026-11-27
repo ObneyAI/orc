@@ -1,9 +1,10 @@
 (ns ai.obney.orc.orc-service.gepa-partial-budget-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [ai.obney.orc.gepa.core.commands]
+            [ai.obney.orc.gepa.core.read-models :as rm]
+            [clojure.test :refer [deftest is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.gepa.interface :as gepa]
-            [ai.obney.orc.gepa.core.task-ledger :as ledger]
             [ai.obney.orc.grain-test-utils.interface :as tu]
             [ai.obney.grain.todo-processor-v2.interface :as tp]))
 
@@ -60,7 +61,7 @@
           (is (= 1 (count (facts :gepa/task-metric-started))))
           (is (= 1 (count (facts :gepa/task-call-completed))))
           (is (empty? (facts :gepa/candidate-evaluated)))
-          (is (= 1 (:total-metric-calls summary) (:spent (ledger/get-accounting running opt))))))
+          (is (= 1 (:total-metric-calls summary) (:spent (rm/get-accounting running opt))))))
       (finally (h/stop-async-context @owned)))))
 
 (deftest partial-successor-preserves-the-fully-evaluated-winner
@@ -101,5 +102,5 @@
               (is (= 3 (:total-metric-calls view))))
             (is (= 3 (get-in (gepa/get-progress running opt) [:query/result :metric-calls :used])))
             (is (= {:spent 3 :reserved 0 :budget 3 :available 0}
-                   (ledger/get-accounting running opt))))))
+                   (rm/get-accounting running opt))))))
       (finally (h/stop-async-context @owned)))))

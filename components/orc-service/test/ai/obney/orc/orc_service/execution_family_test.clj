@@ -8,9 +8,10 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.event-store-v3.interface :as es]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.llm.interface :as llm]
-            [litellm.router :as router]))
+            [litellm.router :as router]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
 (defn one [{:keys [inputs]}] {:mid (str "one:" (:request inputs))})
 (defn two [{:keys [inputs]}] {:answer (str "two:" (:mid inputs))})
@@ -25,7 +26,7 @@
                    :items [:vector [:string {:description "An item"}]]
                    :item [:string {:description "Current item"}]
                    :result [:string {:description "Item result"}]
-                   :results [:vector [:string {:description "Item results"}]]})
+                   :results [:vector {:description "Item results"} [:map {:closed true} [:result :string]]]})
 
 (defn- fq [sym] (str "ai.obney.orc.orc-service.execution-family-test/" sym))
 
@@ -44,14 +45,14 @@
     (into []
           (mapcat
            (fn [{:keys [tick-id event-id node-name] :as entry}]
-             (let [events (value-log/read-tick-events ctx tenant tick-id)
+             (let [events (service-read-models/read-tick-events ctx tenant tick-id)
                    completed (some #(when (and (= :sheet/node-execution-completed (:event/type %))
                                                (= event-id (:event/id %)))
                                       %)
                                    events)
-                   expect {:inputs (value-log/resolve-reads ctx tenant tick-id completed)
-                           :outputs (value-log/resolve-writes ctx tenant tick-id completed)
-                           :rejected-outputs (not-empty (value-log/rejected-writes-for events completed))}
+                   expect {:inputs (service-read-models/resolve-reads ctx tenant tick-id completed)
+                           :outputs (service-read-models/resolve-writes ctx tenant tick-id completed)
+                           :rejected-outputs (not-empty (service-logic/rejected-writes-for events completed))}
                    actual {:inputs (:inputs entry)
                            :outputs (:outputs entry)
                            :rejected-outputs (:rejected-outputs entry)}]
@@ -142,8 +143,14 @@
                        (sheet/code "per-item" :fn (fq "per-item") :reads [:item] :writes [:result]))))
           result (sheet/execute ctx parent {:items ["a" "b" "c"]} :timeout-ms 60000)
           family (family-of ctx (:trace-id result))
-          iterations (filterv #(= "per-item" (:node-name %)) family)]
+          iterations (filterv #(= "per-item" (:node-name %)) family)
+          expected-rows [{:result "item:a"} {:result "item:b"} {:result "item:c"}]
+          events (sheet/value-log-read-tick-events ctx (:tenant-id ctx) (:trace-id result))
+          aggregate-writes (filter #(and (= :sheet/execution-value-written (:event/type %))
+                                         (= :results (:key %))) events)]
       (is (= :success (:status result)) (pr-str result))
+      (is (= expected-rows (get-in result [:outputs :results])))
+      (is (= [expected-rows] (mapv :value aggregate-writes)))
       (is (= 3 (count iterations)))
       (is (= 3 (count (distinct (map :exec-context iterations)))) "distinct exec-contexts")
       (is (= #{"item:a" "item:b" "item:c"} (set (map #(get-in % [:outputs :result]) iterations))))
@@ -242,6 +249,8 @@
           iterations (filterv #(= "per-item" (:node-name %)) family)
           ticks (count (distinct (map :tick-id family)))]
       (is (= :success (:status result)) (pr-str (select-keys result [:status :error])))
+      (is (= (mapv (fn [item] {:result (str "item:" item)}) items)
+             (get-in result [:outputs :results])))
       (is (= 200 (count iterations)))
       (is (= (set items) (into #{} (map #(get-in % [:inputs :item])) iterations))
           "every iteration still resolves its own input")

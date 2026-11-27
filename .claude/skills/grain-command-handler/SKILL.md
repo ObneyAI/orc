@@ -109,5 +109,5 @@ Prevents races by checking state hasn't changed between read and write:
 ## Reference Files
 
 - `components/orc-service/src/ai/obney/orc/orc_service/core/commands.clj` -- ORC sheet commands
-- `components/colbert/src/ai/obney/orc/colbert/core/commands.clj` -- ColBERT commands
-- `components/ontology/src/ai/obney/orc/ontology/core/commands.clj` -- Ontology commands
+- `components/colbert-service/src/ai/obney/orc/colbert/core/commands.clj` -- ColBERT commands
+- `components/ontology-service/src/ai/obney/orc/ontology/core/commands.clj` -- Ontology commands

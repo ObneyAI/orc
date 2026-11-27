@@ -52,7 +52,8 @@
      :browser-tools [\"open\" \"snapshot\" \"click\" \"fill\" \"press\"]
      :max-iterations 5)
    ```"
-  (:require [ai.obney.orc.agent-browser.core :as core]))
+  (:require [ai.obney.orc.integrations.interface :as integrations]
+            [ai.obney.orc.agent-browser.core :as core]))
 
 ;; ============================================================================
 ;; Navigation
@@ -80,9 +81,6 @@
   []
   (core/reload))
 
-;; ============================================================================
-;; Accessibility Snapshot (The Key Feature)
-;; ============================================================================
 
 (defn snapshot
   "Get accessibility tree snapshot with element refs.
@@ -243,9 +241,6 @@
   [placeholder]
   (core/find-by-placeholder placeholder))
 
-;; ============================================================================
-;; Mouse Operations (Bot Detection Bypass)
-;; ============================================================================
 
 (defn mouse-down
   "Press mouse button without releasing.
@@ -423,9 +418,6 @@
   ([selector] (core/click-and-wait selector))
   ([selector wait-ms] (core/click-and-wait selector wait-ms)))
 
-;; ============================================================================
-;; Session Information (For Blackboard Persistence)
-;; ============================================================================
 
 (defn get-session-info
   "Get info about the current browser session.
@@ -457,18 +449,12 @@
    ;; => {:session-name \"default\" :headed? true :url nil}"
   ([] (ensure-browser-session {}))
   ([opts]
-   ;; Set headed mode if specified
    (when (contains? opts :headed)
      (core/set-headed-mode! (:headed opts)))
-   ;; Navigate to URL if specified
    (when-let [url (:url opts)]
      (core/open url))
-   ;; Return session info
    (get-session-info)))
 
-;; ============================================================================
-;; Headed Mode (Bot Detection Bypass)
-;; ============================================================================
 
 (def ^:dynamic *browser-config*
   "Browser configuration for controlling browser behavior.
@@ -578,9 +564,6 @@
   []
   (core/close-browser {:all true}))
 
-;; ============================================================================
-;; SCI Sandbox Tools (For ORC Integration)
-;; ============================================================================
 
 (def browser-tools
   "Tool definitions for SCI sandbox integration.
@@ -604,7 +587,6 @@
    "find-by-role" find-by-role
    "find-by-text" find-by-text
    "find-by-label" find-by-label
-   ;; Mouse operations for bot detection bypass
    "mouse-down" mouse-down
    "mouse-up" mouse-up
    "mouse-move" mouse-move
@@ -614,7 +596,6 @@
    "hover" hover
    "drag" drag
    "get-box" get-box
-   ;; Session management for blackboard persistence
    "get-session-info" get-session-info
    "ensure-browser-session" ensure-browser-session
    "list-sessions" list-sessions
@@ -632,3 +613,5 @@
      (assoc acc (symbol name) fn))
    {}
    browser-tools))
+
+(integrations/register-capabilities! :agent-browser {:browser-tools #'browser-tools})

@@ -5,8 +5,8 @@ Restructure `docs/GEPA-GUIDE.md` to lead with GEPA's independence from ontology/
 ## Read first
 
 1. `docs/GEPA-GUIDE.md` — full file
-2. `components/gepa/deps.edn` — zero ontology dep (the evidence to cite)
-3. `components/gepa/src/ai/obney/orc/gepa/core/metrics.clj` — the feedback→mutation chain
+2. `components/gepa-service/deps.edn` — zero ontology dep (the evidence to cite)
+3. `components/gepa-service/src/ai/obney/orc/gepa/core/logic.clj` — the feedback→mutation chain
 4. `docs/GETTING-STARTED.md` Phase 4 — what was covered there
 5. `docs/prd/orc-documentation-overhaul.md`
 
@@ -36,7 +36,7 @@ Yes — run `gepa/optimize!` with a small trainset and `make-judge-metric`. Capt
 
 ## Live QA the orchestrator runs
 
-Read `components/gepa/deps.edn` — confirm zero `ontology` reference. Run a minimal `optimize!` cycle with `make-judge-metric`. Confirm output shape matches doc. Confirm `components/gepa/core/metrics.clj` imports only `evaluation.core.judges` (not ontology).
+Read `components/gepa-service/deps.edn` — confirm zero `ontology` reference. Run a minimal `optimize!` cycle with `make-judge-metric`. Confirm output shape matches doc. Confirm `components/gepa-service/core/metrics.clj` imports only `evaluation.core.judges` (not ontology).
 
 ## Blocked by
 

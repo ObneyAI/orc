@@ -25,12 +25,7 @@
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
-            ;; Loading interface.schemas registers the malli command schemas
-            ;; (:sheet/create-sheet, :sheet/tick-tree, etc.) that the Phase-2
-            ;; tree executor dispatches. Without this, Phase 2 silently aborts
-            ;; before any tree events fire (see recursive_rlm_test's note).
             [ai.obney.orc.orc-service.interface.schemas]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.todo-processors]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -38,11 +33,10 @@
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as lmdb-store]
-            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]))
+            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
-;; =============================================================================
-;; Test context (mirrors recursive_rlm_test / rlm-tree-executor-test pattern)
-;; =============================================================================
 
 (defn- create-test-context-with-provider []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -96,7 +90,6 @@
                 {:tenant-id (:tenant-id ctx) :types #{event-type}})
        (into [])))
 
-;; The live killer's shape: store! + emit-tree! + final! in ONE code block.
 (def ^:private both-in-one-iteration-code
   "(do (store! :note \"stored-before-tree\")
        (emit-tree!
@@ -107,17 +100,6 @@
            [:final {:keys [:summary]}]])
        (final! {:summary \"premature final\"}))")
 
-;; =============================================================================
-;; Cycle 1 — recursive mode: the guard fires. One iteration produces BOTH a
-;; final-output and a pending :generated-tree -> the loop must NOT terminate
-;; with that final, the tree must NOT execute, the next iteration's history
-;; must carry the guard's ITERATION ERROR text, and a subsequent final!-alone
-;; iteration terminates normally.
-;;
-;; RED before the guard: the dispatch's final-output branch is checked first,
-;; so the premature final! is accepted after ONE iteration and the tree is
-;; silently discarded (the live killer).
-;; =============================================================================
 
 (def ^:private guard-error-text
   "You called (final! ...) in the same iteration as (emit-tree! ...). The tree executes AFTER your code returns, so its outputs were not available to your final!. Neither was applied: the tree was not executed and the final! was discarded. Either call (emit-tree! ...) alone this iteration and inspect :tree-results next iteration, or call (final! ...) alone.")
@@ -134,10 +116,8 @@
                           (let [n (swap! outer-call-count inc)]
                             (swap! history-snapshots conj (or (:history inputs) ""))
                             (if (= 1 n)
-                              ;; Iter 1: the live killer — both in one block.
                               {:outputs {:code both-in-one-iteration-code}
                                :usage {:prompt_tokens 50 :completion_tokens 25 :total_tokens 75}}
-                              ;; Iter 2: final! ALONE — must terminate the loop.
                               {:outputs {:code "(final! {:summary \"clean final after guard\"})"}
                                :usage {:prompt_tokens 60 :completion_tokens 30 :total_tokens 90}}))
                           (do (swap! phase2-call-count inc)
@@ -147,15 +127,12 @@
                       :instruction "Guard test"
                       :reads [:document]
                       :writes [:summary]
-                      ;; This direct executor test isolates recursive dispatch
-                      ;; guarding and supplies no durable frontier/effect seam.
                       :rlm {:recursive? true :checkpointed? false}
                       :max-iterations 4}
                 blackboard {:document {:key :document :schema :string
                                        :value "doc text" :version 1}}
-                result (executor/execute-repl-researcher-rlm
+                result (service-processors/execute-repl-researcher-rlm
                          node blackboard :openrouter ctx)]
-            ;; The loop did NOT terminate with iteration 1's premature final!.
             (is (= 2 @outer-call-count)
                 "TWO Phase-1 iterations: the guard recurs instead of accepting the premature final!")
             (is (= :success (:status result))
@@ -163,37 +140,25 @@
                      (:status result) " error " (:error result)))
             (is (= "clean final after guard" (get-in result [:outputs :summary]))
                 "the returned final is iteration 2's — the premature final! was discarded")
-            ;; The tree was NOT executed — no Phase-2 sub-LLM calls, and read
-            ;; BACK from grain: no child tick, no Phase-2 bookend.
             (is (zero? @phase2-call-count)
                 "the guarded tree was NOT executed (no Phase-2 sub-LLM calls)")
             (is (empty? (events-of-type ctx :sheet/tree-tick-started))
                 "no child tree tick in the event store — the guarded tree never ran")
             (is (empty? (events-of-type ctx :sheet/rlm-tree-execution-completed))
                 "no rlm-tree-execution-completed bookend in the event store")
-            ;; The NEXT iteration's history/prompt carries the guard error.
             (is (str/includes? (nth @history-snapshots 1) guard-error-text)
                 "iteration 2's history input carries the guard's ITERATION ERROR text verbatim")
-            ;; The result's iteration history records the guard error on the
-            ;; offending iteration (read back from the loop's own record).
             (is (some #(and (string? (:error %))
                             (str/includes? (:error %) guard-error-text))
                       (:iterations result))
                 "the offending iteration's history entry carries the guard error")))))))
 
-;; =============================================================================
-;; Prompt line (CHANGE 1, forward guidance) — the recursive-mode prompt
-;; section warns that emit-tree! does not return tree outputs in the same
-;; iteration. Asserted through the REAL builder (no string copies), like the
-;; ce6b advertisement tests. Terminal-mode prompts must NOT carry it (it
-;; lives in the recursive-mode section CE-6b's region already gates).
-;; =============================================================================
 
 (def ^:private prompt-guard-line
   "emit-tree! does NOT return tree outputs in the same iteration — never call final! in the same code block as emit-tree!.")
 
 (deftest recursive-prompt-warns-about-same-iteration-final
-  (let [build-fn #'executor/build-rlm-code-generation-module
+  (let [build-fn #'service-logic/build-rlm-code-generation-module
         base-node {:type :repl-researcher
                    :writes [:answer]
                    :instruction "Do the task."}]
@@ -208,13 +173,6 @@
         (is (not (str/includes? instructions prompt-guard-line))
             "non-recursive prompts are unchanged")))))
 
-;; =============================================================================
-;; Cycle 3 (PIN, captured BEFORE the change) — terminal (non-recursive) mode
-;; with BOTH final! and emit-tree! in one iteration keeps today's behavior:
-;; the dispatch's final-output branch wins, the tree is not executed, and the
-;; loop terminates on the first iteration. The CE-6c guard is scoped to
-;; recursive mode ONLY and must not touch this.
-;; =============================================================================
 
 (deftest cycle3-terminal-mode-both-present-final-wins-unchanged
   (testing "non-recursive mode: final! + emit-tree! in one iteration -> final! wins, tree not executed (today's dispatch, pinned)"
@@ -238,7 +196,7 @@
                       :max-iterations 3}
                 blackboard {:document {:key :document :schema :string
                                        :value "doc text" :version 1}}
-                result (executor/execute-repl-researcher-rlm
+                result (service-processors/execute-repl-researcher-rlm
                          node blackboard :openrouter ctx)]
             (is (= :success (:status result))
                 (str "terminal mode still terminates on the final!; got "
@@ -249,8 +207,6 @@
                 "terminal mode: exactly ONE Phase-1 iteration — final! accepted immediately")
             (is (zero? @phase2-call-count)
                 "terminal mode: the emitted tree is NOT executed (no Phase-2 sub-LLM calls) — today's dispatch order, unchanged")
-            ;; Read back from grain: no child tree tick was started, no
-            ;; Phase-2 bookend recorded.
             (is (empty? (events-of-type ctx :sheet/tree-tick-started))
                 "terminal mode: no child tree tick in the event store")
             (is (empty? (events-of-type ctx :sheet/rlm-tree-execution-completed))
@@ -263,16 +219,6 @@
                    (:generated-tree-raw result))
                 "terminal mode: the designed-but-unexecuted tree still surfaces on the result (today's final! branch behavior)")))))))
 
-;; =============================================================================
-;; Cycle 4 (CHANGE 2) — runtime.clj execute PARITY: the NON-stream entry's
-;; root :sheet/tick-tree cond-> must carry :tool-context off the context,
-;; exactly as CE-5b FIX A did for execute-stream. Mirrors ce5b's root-tick
-;; assertion but through sheet/execute (runtime/execute).
-;;
-;; RED before the parity line: the root tree-tick-started event stores nil
-;; :tool-context, so any non-stream consumer with mutate tools hits the ADR
-;; 0018 fail-closed gate.
-;; =============================================================================
 
 (defn- setup-repl-researcher-sheet!
   "Real sheet: (sequence (repl-researcher)). Reads :question, writes
@@ -295,8 +241,6 @@
                               :rlm {:recursive? false}))
       {:sheet-id sheet-id :node-id node-id})))
 
-;; Phase-2 :code leaf records the :marker of the :tool-context its OWN
-;; execution context carried (nil if the threading dropped it).
 (def ^:private emit-tree-recording-marker
   "(emit-tree!
      [:sequence
@@ -330,16 +274,12 @@
           (is (= :success (:status result))
               (str "the non-stream turn should succeed; got " (:status result)
                    " error " (:error result)))
-          ;; Root-tick assertion (mirrors ce5b cycle 2 (a), through execute):
-          ;; FIX-A-parity stored :tool-context on the ROOT tick's event.
           (let [tick-starts (events-of-type* ctx :sheet/tree-tick-started)
                 root-start  (first (filter #(= root-tick-id (:tick-id %)) tick-starts))]
             (is (some? root-start)
                 "a tree-tick-started event exists for the supplied root tick-id")
             (is (= tool-context (:tool-context root-start))
                 "the ROOT tree-tick-started carries the context's :tool-context (parity with execute-stream)"))
-          ;; And it threads onward: the Phase-2 leaf wrote the marker it saw,
-          ;; read BACK from :sheet/execution-value-written.
           (let [markers (->> (events-of-type* ctx :sheet/execution-value-written)
                              (filter #(= :seen-marker (:key %)))
                              (map :value)

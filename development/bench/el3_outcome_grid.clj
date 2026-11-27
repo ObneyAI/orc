@@ -30,16 +30,14 @@
 (defn -main [& _]
   (println "=== EL-3 OUTCOME GRID (deterministic) ===")
   (let [threshold 0.7
-        ;; (top-score, fallback?) -> expected
-        grid [;; --- reranker SUCCEEDED (fallback? false) ---
+        grid [
               {:top-score 0.95 :rerank-fallback? false :expect :matched}
-              {:top-score 0.70 :rerank-fallback? false :expect :matched}  ; boundary: == threshold
+              {:top-score 0.70 :rerank-fallback? false :expect :matched}
               {:top-score 0.699 :rerank-fallback? false :expect :novel}
               {:top-score 0.30 :rerank-fallback? false :expect :novel}
-              {:top-score 0.0  :rerank-fallback? false :expect :novel}    ; confident no-match (empty corpus)
-              ;; --- reranker FELL BACK (fallback? true) — fitness nil -> 0.0 ---
-              {:top-score 0.0  :rerank-fallback? true  :expect :uncertain} ; THE conflation case
-              {:top-score 0.95 :rerank-fallback? true  :expect :uncertain} ; even a "high" raw colbert score: still uncertain
+              {:top-score 0.0  :rerank-fallback? false :expect :novel}
+              {:top-score 0.0  :rerank-fallback? true  :expect :uncertain}
+              {:top-score 0.95 :rerank-fallback? true  :expect :uncertain}
               {:top-score 0.50 :rerank-fallback? true  :expect :uncertain}]
         results (for [{:keys [top-score rerank-fallback? expect]} grid]
                   (let [got (derive-outcome {:top-score top-score

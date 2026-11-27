@@ -7,9 +7,9 @@
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as bt]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.todo-processors :as processors]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]))
 
 (def contract
   [:map {:closed true :description "Complete measured result, preserving explicit empty values."}
@@ -101,9 +101,9 @@
                 (reset! current-context fresh)
                 (bt/resume-in-progress! (assoc fresh :orc/clock-fn (constantly clock))))))
           (let [ctx @current-context]
-            (when-not (h/settle-until! #(some? (runtime/durable-terminal-result ctx tick)) :timeout-ms 30000)
+            (when-not (h/settle-until! #(some? (service-commands/durable-terminal-result ctx tick)) :timeout-ms 30000)
               (throw (ex-info "Researcher did not finish" {})))
-            (let [result (runtime/durable-terminal-result ctx tick)
+            (let [result (service-commands/durable-terminal-result ctx tick)
                   events (h/read-all-events ctx)
                   family (bt/get-execution-family ctx tick)
                   writes (mapv #(bt/value-log-resolve-writes ctx tenant (:tick-id %) %)

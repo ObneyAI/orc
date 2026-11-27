@@ -1,6 +1,7 @@
 (ns ai.obney.orc.orc-service.bounded-campaign-operations-test
   "Propagated RR-9 contracts for bounded and drainable researcher campaigns."
-  (:require [clojure.java.io :as io]
+  (:require [ai.obney.orc.orc-service.core.commands :as commands]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -13,16 +14,15 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.todo-processors :as todo]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas :as schemas]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
-            [malli.core :as m]))
+            [malli.core :as m]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- an-hour-later
   "The recovering worker's view an hour after the crashed owner last renewed:
@@ -125,8 +125,7 @@
                                 [convergence convergence
                                  (assoc assignment :was-fresh-mint? true)]))))
     (let [handler
-          (requiring-resolve
-           'ai.obney.orc.orc-service.core.commands/sheet-commit-researcher-classification)
+          #'commands/sheet-commit-researcher-classification
           invalid-command
           (assoc base :effects
                  [(dissoc assignment :researcher-ownership-epoch)])
@@ -439,7 +438,7 @@
                         (h/read-tick-events ctx tick-id))
               "releasing stale work cannot append a late node completion")
           (is (empty? (filter #(= tick-id (:tick-id %))
-                              (runtime/resume-in-progress! ctx)))
+                              (sheet/resume-in-progress! ctx)))
               "explicit recovery does not resume a cancelled campaign")
           (finally
             (deliver release-provider true)))))))))
@@ -558,9 +557,6 @@
                   @release-classification
                   (catch InterruptedException interrupted
                     (deliver classification-interrupted true)
-                    ;; Simulate local/transport work that does not cooperate
-                    ;; with interruption.  The campaign deadline must still
-                    ;; fence its later classification side effect.
                     @release-classification))
                 (deliver classification-finished true)
                 {:assigned-tree-id (random-uuid)
@@ -679,9 +675,7 @@
             sheet-id (sheet/build-workflow! ctx definition)
             researcher-id (:id (first (sheet/get-nodes-for-sheet ctx sheet-id)))
             capture-var
-            (ns-resolve
-             'ai.obney.orc.orc-service.core.todo-processors
-             'capture-classification-signature!)
+            #'todo/capture-classification-signature!
             capture! @capture-var
             blocking-capture!
             (fn [capture-ctx class-id signature]
@@ -690,8 +684,6 @@
                 @release-capture
                 (catch InterruptedException interrupted
                   (deliver capture-interrupted true)
-                  ;; Model a local durable preparation step that cannot abort
-                  ;; merely because its supervising future was interrupted.
                   @release-capture))
               (capture! capture-ctx class-id signature))]
         (with-redefs-fn
@@ -1181,7 +1173,7 @@
                      (rm/get-researcher-resume-state
                       ctx sheet-id tick-id node-id)))
               "the recovery seam is specifically before the first checkpoint")
-          (let [recovery-results (runtime/resume-in-progress! (an-hour-later ctx))
+          (let [recovery-results (sheet/resume-in-progress! (an-hour-later ctx))
                 classification-events
                 (into []
                       (es/read (:event-store ctx)
@@ -1244,8 +1236,6 @@
             [llm/predict
              (fn [_provider _module _inputs options]
                (reset! provider-options options)
-               ;; The host tool must see the budget remaining at its own
-               ;; dispatch, not the provider's earlier snapshot.
                (reset! campaign-clock 2200)
                {:outputs
                 {:code
@@ -1420,7 +1410,7 @@
                   campaign (sheet/get-researcher-campaign
                             ctx tick-id researcher-id)
                   replayed-campaign
-                  (get-in (reduce rm/researcher-campaigns* {} tick-events)
+                  (get-in (reduce service-logic/researcher-campaigns* {} tick-events)
                           [tick-id :campaigns researcher-id])]
               (is (= :success (:status result)) (pr-str result))
               (is (= 4 @provider-calls))
@@ -1942,7 +1932,7 @@
             [llm/predict
              (fn [& _]
                {:outputs {:code "(final! {:summary \"done\"})"}})
-             executor/validate-leaf-outputs
+             service-logic/validate-leaf-outputs
              (fn [& _]
                (throw (ex-info "post-executor validation failed" {})))]
             (let [result (sheet/execute ctx sheet-id {}
@@ -2312,9 +2302,6 @@
                       (sheet/get-researcher-campaign
                        ctx tick-id researcher-id))))))
 
-          ;; Close processors, pubsub, projection cache, and the SQLite store.
-          ;; The next context is a real read-back boundary, not an in-process
-          ;; reducer replay.
           (h/stop-async-context ctx)
           (reset! first-context nil)
           (let [reopened (h/create-async-test-context
@@ -2404,7 +2391,7 @@
         (finally
           (when-let [running @execution]
             (sheet/cancel! ctx tick-id)
-            (execution-budget/cancel-active-work! tick-id)
+            (service-logic/cancel-active-work! tick-id)
             (when (= ::execution-not-settled
                      (deref running 5000 ::execution-not-settled))
               (throw
@@ -2564,8 +2551,6 @@
                           ::stale-completion-not-entered))
                 "the old owner is paused after provider return but before its durable completion")
 
-            ;; Prevent the original leaf subscription from consuming the
-            ;; recovery event; a fresh processor represents the new owner.
             (tp/stop old-leaf-processor)
             (reset! owner? false)
             (deliver release-old-monitor true)
@@ -2648,7 +2633,7 @@
           (deliver release-stale-completion true)
           (when (and @execution (not (realized? @execution)))
             (sheet/cancel! ctx tick-id))
-          (execution-budget/cancel-active-work! tick-id)
+          (service-logic/cancel-active-work! tick-id)
           (when-let [running @execution]
             (when (= ::execution-not-settled
                      (deref running 5000 ::execution-not-settled))

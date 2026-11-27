@@ -5,8 +5,8 @@
             [hato.client :as http]
             [hato.middleware :as middleware]
             [ai.obney.grain.command-processor-v2.interface :as cp]
-            [ai.obney.orc.orc-service.core.executor :as executor]
-            [ai.obney.orc.orc-service.test-helpers :as h])
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors])
   (:import [java.io InputStream ByteArrayInputStream]))
 
 (def ^:dynamic *execution* nil)
@@ -27,14 +27,10 @@
        (io/make-parents file)
        (spit file safe)
        (catch java.io.IOException _
-         ;; Diagnostics must not replace the model result or strand an async
-         ;; callback when the CI artifact filesystem is unavailable.
          (binding [*out* *err*]
            (println "Living-description evidence write failed; artifact incomplete.")))))))
 
 (defn- observe-response [directory id secrets response]
-  ;; Hato's JSON coercion consumes this stream next. Replay the identical bytes
-  ;; through that original coercion; do not parse or reconstruct the JSON here.
   (if (instance? InputStream (:body response))
     (let [bytes (with-open [body ^InputStream (:body response)] (.readAllBytes body))]
       (write! directory (str id "-response")
@@ -101,7 +97,7 @@
          failures (atom [])
          ticks (atom #{})
          command cp/process-command
-         execute-ai executor/execute-ai]
+         execute-ai service-processors/execute-ai]
      (when (.exists (io/file directory))
        (throw (ex-info "Living-description evidence directory already exists" {})))
      (capture-http (str directory "/http")
@@ -126,7 +122,7 @@
                            all (swap! failures conj entry)]
                        (write! directory (str "command-failure-" (count all)) entry))
                      (throw error))))))
-           executor/execute-ai
+           service-processors/execute-ai
            (fn [node blackboard provider & args]
              (let [options (:options (apply hash-map args))]
                (binding [*execution* (when (contains? @ticks (:tick-id options))

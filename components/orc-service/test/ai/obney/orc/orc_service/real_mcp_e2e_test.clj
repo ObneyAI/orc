@@ -74,7 +74,6 @@
                   exec-def (gen/build-executor-definition tool)
                   _ (runtime/load-executor! (:tool-id exec-def) (:tool-name exec-def)
                                             (:source-code exec-def) (:namespace-requires exec-def))
-                  ;; The execution's MCP session — no node caller on this run.
                   session-ctx (assoc (dissoc ctx :call-tool-fn) :mcp-session conn)
                   result (sheet/execute session-ctx
                                         (sheet/build-workflow!

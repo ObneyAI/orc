@@ -11,10 +11,10 @@
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.kv-store.interface :as kv]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Deterministic executors
@@ -76,7 +76,7 @@
 (defn- run!
   [ctx sheet-id inputs]
   (let [tick-id (random-uuid)
-        p (runtime/register-completion! tick-id)
+        p (service-logic/register-completion! tick-id)
         res (cp/process-command
              (assoc ctx :command {:command/id (random-uuid)
                                   :command/timestamp (time/now)
@@ -99,6 +99,14 @@
    (h/run-query ctx {:query/name :sheet/node-trace-detail
                      :trace-id trace-id
                      :trace-instance-id trace-instance-id})))
+
+(deftest historical-completions-retain-keys-without-inventing-profiles
+  (let [keys-recorded {:read-keys [:question] :write-keys [:answer]
+                       :missing-write-keys [:extra] :rejected-write-keys [:invalid]}]
+    (is (= keys-recorded
+           (service-logic/trace-value-metadata (assoc keys-recorded :write-profile nil))))
+    (is (= (assoc keys-recorded :output-profile {})
+           (service-logic/trace-value-metadata (assoc keys-recorded :write-profile {}))))))
 
 (deftest trace-storage-uses-the-context-background-supervisor
   (testing "trace work is owned by the execution context instead of an orphan future"
@@ -163,9 +171,6 @@
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id seq-id upcase exclaim]} (setup-pipeline! ctx)
             [result trace-id] (run! ctx sheet-id {:phrase "hello"})
-            ;; Creation can precede the terminal ephemeral routing summary.
-            ;; Require the expected evidence revision before taking the snapshot;
-            ;; every identity, timing and status assertion below remains intact.
             _ (is (h/settle-until!
                     #(= #{seq-id upcase exclaim}
                         (set (map :node-id
@@ -226,8 +231,6 @@
 
 (deftest trace-keeps-map-each-iterations-distinct
   (testing "one child node-id executing N times yields N node-trace entries"
-    ;; Keying only by node-id would collapse every iteration into whichever
-    ;; completion was seen last — trace-execution-key exists to prevent that.
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id child]} (setup-map-each! ctx)
             [result trace-id] (run! ctx sheet-id {:items [1 2 3]})
@@ -247,9 +250,6 @@
                (set (map #(-> (node-detail ctx trace-id (:trace-instance-id %)) :outputs)
                          child-entries))))))))
 
-;; =============================================================================
-;; Values, through the supported query
-;; =============================================================================
 
 (deftest node-trace-detail-returns-node-io
   (testing "node-trace-detail resolves a node's inputs and outputs"
@@ -286,9 +286,6 @@
       (let [{:keys [sheet-id]} (setup-pipeline! ctx)
             [_ trace-id] (run! ctx sheet-id {:phrase "hello"})
             trace (rm/get-trace ctx trace-id)]
-        ;; Asserted as key COVERAGE, not as inlined values: which keys the
-        ;; tick touched is the durable fact, and it is what a dashboard or
-        ;; judge needs to decide what to drill into.
         (is (contains? (set (keys (:output-snapshot trace))) :loud)
             "the final written key is covered by the output snapshot")
         (is (contains? (set (keys (:input-snapshot trace))) :phrase)

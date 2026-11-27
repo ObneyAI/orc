@@ -48,10 +48,6 @@
                      :tags #{[:sheet sheet-id]}})))
 
 (defn- execution-metrics [ctx result elapsed-ns expected-node-count]
-  ;; Trace creation and later evidence-bearing revisions are asynchronous.
-  ;; Settle on the logical evidence this scenario requires, not merely on the
-  ;; first publication fact, so both runs are measured after the complete
-  ;; eight-node traversal has reached the canonical trace.
   (is (h/settle-until!
        #(= expected-node-count
            (count (get-in (h/run-query ctx (h/make-get-trace-query (:trace-id result)))

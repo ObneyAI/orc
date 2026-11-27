@@ -11,9 +11,6 @@
   (:require [ai.obney.orc.llm.interface :as llm]
             [clojure.string :as str]))
 
-;; ============================================================================
-;; Intent Analysis Module (for ORC LLM predict)
-;; ============================================================================
 
 (def intent-analysis-module
   "ORC LLM module for intent analysis.
@@ -53,7 +50,6 @@
               (str "- " name
                    (when description (str ": " description))
                    (when (seq capabilities)
-                     ;; Use clojure.core/name to avoid shadowing by destructured 'name'
                      (str " [" (str/join ", " (map clojure.core/name capabilities)) "]")))))
        (str/join "\n")))
 
@@ -99,15 +95,11 @@
                             :or {provider :openrouter
                                  model "google/gemini-2.5-flash"}}]
    (let [tools-str (format-tools-for-prompt tools)
-         ;; Input values
          inputs {:user-description user-description
                  :available-tools tools-str}
-         ;; Options
          options {:with-metadata? true :validate? false :model model}
-         ;; Call ORC LLM predict: (predict provider module inputs options)
          result (llm/predict provider intent-analysis-module inputs options)
          outputs (:outputs result)]
-     ;; With proper schemas, outputs are already correctly typed (vectors, strings, etc.)
      {:primary-goal (:primary-goal outputs)
       :secondary-goals (or (:secondary-goals outputs) [])
       :needed-actions (or (:needed-actions outputs) [])
@@ -137,7 +129,6 @@
   (let [{:keys [needed-actions domain keywords]} intent
         {:keys [name description capabilities]} tool
 
-        ;; Score based on capability match
         tool-actions (set (keep capability-to-action capabilities))
         needed-actions-set (set needed-actions)
         action-overlap (count (clojure.set/intersection tool-actions needed-actions-set))
@@ -145,24 +136,20 @@
                        0.5
                        (/ (double action-overlap) (count needed-actions-set)))
 
-        ;; Score based on keyword match in name/description
         tool-text (str/lower-case (str name " " (or description "")))
         keyword-matches (count (filter #(str/includes? tool-text (str/lower-case %)) keywords))
         keyword-score (if (empty? keywords)
                         0.5
                         (min 1.0 (/ (double keyword-matches) (max 1 (/ (count keywords) 2)))))
 
-        ;; Score based on domain match
         domain-score (if (and domain (str/includes? tool-text (str/lower-case domain)))
                        1.0
                        0.3)
 
-        ;; Combined score (weighted)
         combined-score (+ (* 0.4 action-score)
                           (* 0.4 keyword-score)
                           (* 0.2 domain-score))
 
-        ;; Build reasoning
         reasons (cond-> []
                   (pos? action-overlap)
                   (conj (str "matches actions: " (str/join ", " (clojure.set/intersection tool-actions needed-actions-set))))
@@ -188,9 +175,6 @@
        (map #(merge % (score-tool-relevance % intent)))
        (sort-by :relevance >)))
 
-;; ============================================================================
-;; Quick Intent Inference (No LLM)
-;; ============================================================================
 
 (defn infer-intent-from-keywords
   "Quick intent inference from user description without LLM call.
@@ -200,7 +184,6 @@
   [user-description]
   (let [desc-lower (str/lower-case user-description)
 
-        ;; Detect actions from keywords
         actions (cond-> []
                   (or (str/includes? desc-lower "search")
                       (str/includes? desc-lower "find")
@@ -237,7 +220,6 @@
                   (str/includes? desc-lower "delete")
                   (conj "delete"))
 
-        ;; Extract potential keywords (simple word extraction)
         words (->> (str/split user-description #"\s+")
                    (map #(str/replace % #"[^\w]" ""))
                    (filter #(> (count %) 3))
@@ -255,26 +237,3 @@
 ;; ============================================================================
 ;; REPL / Testing
 ;; ============================================================================
-
-(comment
-  ;; Example usage
-  (def sample-tools
-    [{:name "searchLangfuseDocs"
-      :description "Search Langfuse documentation"
-      :capabilities #{:search}}
-     {:name "getLangfuseDocsPage"
-      :description "Get a specific documentation page"
-      :capabilities #{:retrieval}}
-     {:name "getLangfuseOverview"
-      :description "Get high-level overview"
-      :capabilities #{:retrieval}}])
-
-  ;; Quick inference (no LLM)
-  (infer-intent-from-keywords "I want to find information about Langfuse pricing")
-
-  ;; Full LLM-based analysis
-  (analyze-intent "I want to understand Langfuse pricing and compare plans" sample-tools)
-
-  ;; Score tools against intent
-  (let [intent (infer-intent-from-keywords "search for pricing information")]
-    (rank-tools-by-relevance sample-tools intent)))

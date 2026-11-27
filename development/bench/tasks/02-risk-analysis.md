@@ -1,6 +1,6 @@
 # Task 02 — Risk & Obligation Analysis (Analytical reasoning on 280K)
 
-**Run file:** `generalization-results/risk-analysis_2026-05-19_131031.edn`
+**Archived run file:** `generalization-results/risk-analysis_2026-05-19_131031.edn`. [Restore the capture](../README.md#archived-may-2026-benchmark-captures).
 **Source:** `development/bench/risk_analysis.clj` (ns `risk-analysis`, var `task`)
 
 ## What the task is

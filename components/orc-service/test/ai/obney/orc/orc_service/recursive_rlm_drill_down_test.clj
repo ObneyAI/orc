@@ -3,12 +3,9 @@
    functions in `core/rlm-drill-down`, plus integration tests proving the
    SCI sandbox wires them only when :rlm {:recursive? true}."
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
-            [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
-;; =============================================================================
-;; Fixture helpers — build event vectors that mirror the real shapes
-;; =============================================================================
 
 (defn- mk-tick-started [tick-id ts]
   {:event/type :sheet/tree-tick-started
@@ -63,9 +60,6 @@
    :total-usage total-usage
    :task-fingerprint nil})
 
-;; =============================================================================
-;; tree-detail-from-events — :success case
-;; =============================================================================
 
 (deftest tree-detail-for-success-has-basic-shape
   (testing "Successful tree: detail includes tick-id, status, outputs, tree-raw, and per-node entries"
@@ -88,7 +82,7 @@
                                {:event-type :sheet/node-execution-completed}
                                {:event-type :sheet/tree-tick-completed}]
                               {:total-tokens 50})]
-          detail (drill/tree-detail-from-events events tree-raw)]
+          detail (service-logic/tree-detail-from-events events tree-raw)]
       (is (some? detail) "Returns a map (not nil)")
       (is (= tick-id (:tick-id detail)))
       (is (= :success (:status detail)))
@@ -129,10 +123,9 @@
                                      :partial {:results [{} {}]})
                   (mk-bookend tick-id (java.time.Instant/parse "2026-05-20T11:00:01Z")
                               [] {:total-tokens 600})]
-          detail (drill/tree-detail-from-events events tree-raw)]
+          detail (service-logic/tree-detail-from-events events tree-raw)]
       (is (= :partial (:status detail)))
       (is (= 4 (count (:nodes detail))) "3 leaves + 1 map-each parent = 4 node entries")
-      ;; Find the map-each node entry by node-id
       (let [map-entry (first (filter #(= map-id (:node-id %)) (:nodes detail)))]
         (is (some? map-entry))
         (is (= :partial (:status map-entry)))
@@ -149,7 +142,7 @@
           leaf-id (random-uuid)
           events [(mk-node-completed tick-id leaf-id :success)
                   (mk-tick-completed tick-id (java.time.Instant/now) :success {})]]
-      (is (= [] (drill/tree-failures-from-events events))
+      (is (= [] (service-logic/tree-failures-from-events events))
           "No failures → empty vector (not nil) so consumers can use seq/count uniformly"))))
 
 (deftest tree-failures-extracts-direct-leaf-failures
@@ -163,7 +156,7 @@
                   (mk-rlm-tree-node-completed tick-id leaf-fail
                                               :input-profile {:chunk {:type :length :length 8000}})
                   (mk-tick-completed tick-id (java.time.Instant/now) :failure {})]
-          failures (drill/tree-failures-from-events events)]
+          failures (service-logic/tree-failures-from-events events)]
       (is (= 1 (count failures)) "Exactly one failure entry")
       (let [f (first failures)]
         (is (= leaf-fail (:node-id f)))
@@ -186,7 +179,7 @@
           events [(mk-node-completed tick-id map-id :partial
                                      :partial-summary partial-sum)
                   (mk-tick-completed tick-id (java.time.Instant/now) :partial {})]
-          failures (drill/tree-failures-from-events events)]
+          failures (service-logic/tree-failures-from-events events)]
       (is (= 2 (count failures)) "Two failures from the :partial-summary")
       (let [f7 (first (filter #(= 7 (:index %)) failures))
             f17 (first (filter #(= 17 (:index %)) failures))]
@@ -216,7 +209,7 @@
                        :timestamp "2026-05-20T12:00:01.300Z"}]
           events [(mk-tick-completed tick-id (java.time.Instant/now) :success {})
                   (mk-bookend tick-id (java.time.Instant/now) trajectory {:total-tokens 75})]
-          result (drill/tree-trajectory-from-events events)]
+          result (service-logic/tree-trajectory-from-events events)]
       (is (vector? result))
       (is (= 4 (count result)))
       (is (= (first trajectory) (first result))
@@ -226,7 +219,7 @@
   (testing "No bookend event → returns nil (caller can decide to fallback)"
     (let [tick-id #uuid "00000000-0000-0000-0000-000000000c02"
           events [(mk-tick-completed tick-id (java.time.Instant/now) :success {})]]
-      (is (nil? (drill/tree-trajectory-from-events events))))))
+      (is (nil? (service-logic/tree-trajectory-from-events events))))))
 
 ;; =============================================================================
 ;; node-output-from-events
@@ -239,14 +232,14 @@
           leaf-b (random-uuid)
           events [(mk-node-completed tick-id leaf-a :success :writes {:summary "A's answer"})
                   (mk-node-completed tick-id leaf-b :success :writes {:summary "B's answer"})]]
-      (is (= {:summary "A's answer"} (drill/node-output-from-events events leaf-a)))
-      (is (= {:summary "B's answer"} (drill/node-output-from-events events leaf-b))))))
+      (is (= {:summary "A's answer"} (service-logic/node-output-from-events events leaf-a)))
+      (is (= {:summary "B's answer"} (service-logic/node-output-from-events events leaf-b))))))
 
 (deftest node-output-returns-nil-for-unknown-node
   (testing "Unknown node-id → nil (not exception)"
     (let [tick-id #uuid "00000000-0000-0000-0000-000000000d02"
           events [(mk-node-completed tick-id (random-uuid) :success)]]
-      (is (nil? (drill/node-output-from-events events (random-uuid)))))))
+      (is (nil? (service-logic/node-output-from-events events (random-uuid)))))))
 
 (deftest node-output-surfaces-raw-response-for-parse-failures
   (testing "A parse-failure completion carrying :raw-response returns the
@@ -261,12 +254,11 @@
                              :error "LLM output unparseable for keys [:report]"))
                   (mk-node-completed tick-id ok-leaf :success
                                      :writes {:summary "fine"})]
-          result (drill/node-output-from-events events failed-leaf)]
+          result (service-logic/node-output-from-events events failed-leaf)]
       (is (= raw (:raw-response result)) "full verbatim raw response, untruncated")
       (is (= {:report nil} (:writes result)))
       (is (= "LLM output unparseable for keys [:report]" (:error result)))
-      ;; success-node shape is unchanged
-      (is (= {:summary "fine"} (drill/node-output-from-events events ok-leaf))))))
+      (is (= {:summary "fine"} (service-logic/node-output-from-events events ok-leaf))))))
 
 ;; =============================================================================
 ;; node-input-profile-from-events
@@ -280,33 +272,25 @@
           events [(mk-node-completed tick-id leaf-id :success)
                   (mk-rlm-tree-node-completed tick-id leaf-id
                                               :input-profile profile)]]
-      (is (= profile (drill/node-input-profile-from-events events leaf-id))))))
+      (is (= profile (service-logic/node-input-profile-from-events events leaf-id))))))
 
 (deftest node-input-profile-returns-nil-when-absent
   (testing "Node without an :sheet/rlm-tree-node-completed event → nil"
     (let [tick-id #uuid "00000000-0000-0000-0000-000000000e02"
           leaf-id (random-uuid)
-          ;; Only :sheet/node-execution-completed, no RLM event
           events [(mk-node-completed tick-id leaf-id :success)]]
-      (is (nil? (drill/node-input-profile-from-events events leaf-id))))))
+      (is (nil? (service-logic/node-input-profile-from-events events leaf-id))))))
 
-;; =============================================================================
-;; Integration: SCI sandbox wiring — primitives are gated on :recursive?
-;; =============================================================================
-;;
-;; These tests stay focused on the BINDING-LEVEL contract: the 5 drill-down
-;; primitives are exposed ONLY when :recursive? true. Full event-store wiring
-;; with a live recursion is exercised in recursive_rlm_test.clj.
 
 (defn- eval-in-sandbox
   "Build an RLM context (no real provider needed — these tests only call
    drill-down primitives, never `llm`) and evaluate `code-string` inside it."
   [opts code-string]
-  (let [ctx (rlm-sandbox/build-rlm-context (merge {:provider :openrouter
+  (let [ctx (service-processors/build-rlm-context (merge {:provider :openrouter
                                                    :blackboard {}
                                                    :declared-writes [:summary]}
                                                   opts))]
-    (rlm-sandbox/execute-rlm-code ctx code-string)))
+    (service-logic/execute-rlm-code ctx code-string)))
 
 (deftest drill-down-primitives-not-bound-in-non-recursive-mode
   (testing "Calling (tree-detail) without :recursive? true raises unresolved symbol"
@@ -328,8 +312,6 @@
 
 (deftest drill-down-primitives-resolve-but-return-nil-with-empty-history
   (testing "In :recursive? mode with no :tree-results, primitives return nil (not error)"
-    ;; Note: tree-failures requires a tree-result entry to look up; with none,
-    ;; the closure short-circuits via (when-let [entry ...]) and returns nil.
     (doseq [prim ["(tree-detail)"
                   "(tree-trajectory)"
                   "(tree-failures)"

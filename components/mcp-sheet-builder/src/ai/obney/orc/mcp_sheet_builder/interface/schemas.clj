@@ -57,25 +57,25 @@
 (def capability-tag
   "Schema for a capability tag."
   [:enum
-   :retrieval    ;; Fetches/reads data
-   :search       ;; Searches for information
-   :create       ;; Creates new entities
-   :update       ;; Modifies existing entities
-   :delete       ;; Removes entities
-   :transform    ;; Transforms data
-   :validate     ;; Validates data
-   :generate     ;; Generates content (LLM-based)
-   :aggregate    ;; Aggregates multiple items
-   :route])      ;; Routes/dispatches to other tools
+   :retrieval
+   :search
+   :create
+   :update
+   :delete
+   :transform
+   :validate
+   :generate
+   :aggregate
+   :route])
 
 (def semantic-category
   "Schema for semantic category."
   [:enum
-   :data-access     ;; Reads from data sources
-   :data-mutation   ;; Writes to data sources
-   :transformation  ;; Pure data transformation
-   :side-effect     ;; External side effects
-   :aggregation])   ;; Combines multiple inputs
+   :data-access
+   :data-mutation
+   :transformation
+   :side-effect
+   :aggregation])
 
 ;; ============================================================================
 ;; Analysis Schemas

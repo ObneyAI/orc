@@ -14,24 +14,20 @@
             [clojure.core.async :as async]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.core.streaming :as streaming]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
-            [ai.obney.orc.llm.interface :as llm]))
+            [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-;; =============================================================================
-;; Fixtures + helpers
-;; =============================================================================
 
 (use-fixtures :each
   (fn [f]
-    (streaming/reset-all!)
-    (try (f) (finally (streaming/reset-all!)))))
+    (service-logic/reset-all!)
+    (try (f) (finally (service-logic/reset-all!)))))
 
-(defn- subscriptions* [] @@#'streaming/subscriptions)
-(defn- lineage* [] @@#'streaming/lineage)
+(defn- subscriptions* [] @@#'service-logic/subscriptions)
+(defn- lineage* [] @@#'service-logic/streaming-lineage)
 
 (defn identity-fn [{:keys [inputs]}]
   {:output (get inputs :input)})
@@ -93,7 +89,7 @@
 (defn- dispatch-tick!
   "Subscribe-first dispatch: register completion + tick-tree with a fixed tick-id."
   [ctx sheet-id inputs tick-id & {:keys [timeout-ms] :or {timeout-ms 10000}}]
-  (let [p (runtime/register-completion! tick-id)
+  (let [p (service-logic/register-completion! tick-id)
         cmd-result (cp/process-command
                     (assoc ctx :command
                            {:command/id (random-uuid)
@@ -120,17 +116,13 @@
             result (deref p 10000 ::timeout)
             envelopes (drain! events-ch)]
         (is (= :success (:status result)))
-        ;; first and last
         (is (= :tick-started (:orc.stream/type (first envelopes))))
         (is (= :stream-closed (:orc.stream/type (last envelopes))))
         (is (= :completed (:reason (last envelopes))))
         (is (= :tick-completed (:orc.stream/type (last (butlast envelopes)))))
-        ;; monotonic seq
         (is (= (map :seq envelopes) (range 1 (inc (count envelopes)))))
-        ;; envelope basics
         (is (every? #(= tick-id (:root-tick-id %)) envelopes))
         (is (every? #(some? (:ts %)) envelopes))
-        ;; leaf lifecycle present, with incremental result payload
         (let [leaf-id (first leaf-ids)
               started (filter #(and (= :node-started (:orc.stream/type %))
                                     (= leaf-id (:node-id %)))
@@ -142,12 +134,9 @@
           (is (= 1 (count completed)))
           (is (= :success (:status (first completed))))
           (is (= "hello" (get-in (first completed) [:writes :output])))
-          ;; node-started precedes node-completed for the same node
           (is (< (:seq (first started)) (:seq (first completed)))))
-        ;; tick-completed carries outputs
         (let [tc (first (filter #(= :tick-completed (:orc.stream/type %)) envelopes))]
           (is (= :success (:status tc))))
-        ;; subscription cleaned up after close
         (is (empty? (subscriptions*)))))))
 
 ;; =============================================================================
@@ -186,7 +175,6 @@
             (is (= 3 (count child-completions)))
             (is (every? #(= map-id (get-in % [:map-each :parent])) child-completions))
             (is (= #{0 1 2} (set (map #(get-in % [:map-each :index]) child-completions))))
-            ;; progress events observed
             (is (some #(and (= :progress (:orc.stream/type %))
                             (= :map-each (:kind %)))
                       envelopes))))))))
@@ -226,12 +214,10 @@
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id leaf-ids]} (setup-code-sheet! ctx :n 10)
             tick-id (random-uuid)
-            ;; tiny buffer + zero consumption = guaranteed overflow
             subscription (sheet/subscribe-execution ctx tick-id :buffer 1)
             p (dispatch-tick! ctx sheet-id {:input "x"} tick-id)
             result (deref p 15000 ::timeout)]
         (is (= :success (:status result)) "engine completes despite stalled consumer")
-        ;; every durable node completion reached the event store
         (let [completed (->> (es/read (:event-store ctx)
                                       {:tenant-id (:tenant-id ctx)
                                        :types #{:sheet/node-execution-completed}
@@ -239,14 +225,8 @@
                              (into [])
                              (filter #(contains? (set leaf-ids) (:node-id %))))]
           (is (= 10 (count completed))))
-        ;; Result delivery and stream routing are independent consumers of the
-        ;; terminal event. Freeze the producer before reading: otherwise drain!
-        ;; frees buffer slots while the router is still publishing and measures
-        ;; both buffered and newly-arriving envelopes rather than the sliding
-        ;; buffer's retained contents.
         (is (h/settle-until! #(empty? (subscriptions*)) :timeout-ms 5000)
             "terminal routing closes the stalled subscription")
-        ;; the stalled channel still yields the newest event (sliding semantics)
         (let [leftovers (drain! (:events-ch subscription) :timeout-ms 2000)]
           (is (<= (count leftovers) 2) "sliding buffer kept only the newest")
           (is (= :stream-closed (:orc.stream/type (last leftovers)))
@@ -264,17 +244,14 @@
                                 ctx :fn-sym "ai.obney.orc.orc-service.streaming-test/slow-fn")
             {:keys [tick-id events-ch result]} (sheet/execute-stream ctx sheet-id {:input "x"}
                                                                      :timeout-ms 20000)
-            ;; wait until the leaf is actually running
             [started pre] (take-until events-ch #(= :node-started (:orc.stream/type %)))]
         (is (some? started) (str "expected a :node-started envelope, got " (mapv :orc.stream/type pre)))
         (let [cancel-result (sheet/cancel! ctx tick-id)]
           (is (= [tick-id] (:cancelled cancel-result))))
-        ;; blocking caller unblocks promptly (well before the 20s timeout)
         (let [r (deref result 5000 ::timeout)]
           (is (not= ::timeout r))
           (is (true? (:cancelled? r)))
           (is (= :failure (:status r))))
-        ;; stream ends with :tick-cancelled then :stream-closed {:reason :cancelled}
         (let [rest-envelopes (drain! events-ch :timeout-ms 5000)
               types (mapv :orc.stream/type rest-envelopes)]
           (is (some #{:tick-cancelled} types))
@@ -295,9 +272,8 @@
 (deftest delegate-lineage-test
   (testing "delegate child tick events cascade into the parent subscription"
     (h/with-async-test-context [ctx]
-      (let [;; child sheet: one identity leaf
+      (let [
             {child-sheet-id :sheet-id child-leaf-ids :leaf-ids} (setup-code-sheet! ctx)
-            ;; parent sheet: delegate node targeting the child sheet
             parent-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Streaming Delegate Parent"))
             parent-sheet-id (-> parent-result :command-result/events first :sheet-id)]
         (doseq [k [:input :output]]
@@ -315,11 +291,9 @@
                 envelopes (drain! events-ch)]
             (is (= :success (:status result)))
             (is (= "via-delegate" (get-in result [:outputs :output])))
-            ;; lineage envelope observed
             (let [linked (first (filter #(= :child-tick-linked (:orc.stream/type %)) envelopes))]
               (is (some? linked))
               (is (= tick-id (:parent-tick-id linked)))
-              ;; the child tick's own leaf events arrived on the parent stream
               (let [child-tick (:child-tick-id linked)
                     child-completions (filter #(and (= :node-completed (:orc.stream/type %))
                                                     (= child-tick (:tick-id %))
@@ -330,16 +304,13 @@
                        (get-in (first child-completions) [:writes :output])))))
             (is (empty? (subscriptions*)))))))))
 
-;; =============================================================================
-;; Ephemeral emit! path (RLM-style events without an LLM)
-;; =============================================================================
 
 (deftest ephemeral-emit-test
   (testing "emit! events reach covering subscriptions with hub-assigned seq/ts"
     (h/with-async-test-context [ctx]
       (let [tick-id (random-uuid)
             {:keys [events-ch close!]} (sheet/subscribe-execution ctx tick-id)]
-        (streaming/emit! tick-id {:orc.stream/type :rlm-iteration-started
+        (service-logic/emit! tick-id {:orc.stream/type :rlm-iteration-started
                                   :iteration 1
                                   :max-iterations 10})
         (let [[env _] (take-until events-ch #(= :rlm-iteration-started (:orc.stream/type %))
@@ -360,8 +331,8 @@
       (let [root-tick (random-uuid)
             child-tick (random-uuid)
             {:keys [events-ch close!]} (sheet/subscribe-execution ctx root-tick)]
-        (streaming/link-child! root-tick child-tick)
-        (streaming/emit! child-tick {:orc.stream/type :rlm-code-generated
+        (service-logic/link-child! root-tick child-tick)
+        (service-logic/emit! child-tick {:orc.stream/type :rlm-code-generated
                                      :iteration 1
                                      :code "(+ 1 1)"})
         (let [[env collected] (take-until events-ch #(= :rlm-code-generated (:orc.stream/type %))
@@ -369,15 +340,11 @@
           (is (some? env))
           (is (= child-tick (:tick-id env)))
           (is (= root-tick (:root-tick-id env)))
-          ;; the lineage link itself was announced
           (is (some #(= :child-tick-linked (:orc.stream/type %)) collected)))
         (close!)
         (drain! events-ch :timeout-ms 2000)
         (is (empty? (subscriptions*)))))))
 
-;; =============================================================================
-;; Stage 2: LLM token streaming (stubbed predict-stream-v2)
-;; =============================================================================
 
 (defn- setup-ai-sheet!
   "Sheet with one :ai leaf reading :input writing :answer."
@@ -437,20 +404,16 @@
                                              (= leaf-id (:node-id %)))
                                        envelopes))]
           (is (= :success (:status result)))
-          ;; raw deltas in order
           (is (= ["stream" "ed answer"] (mapv :text raw)))
-          ;; progressive field snapshots, growing, ending with :final? true
           (is (= ["stream" "streamed answer" "streamed answer"]
                  (mapv #(get-in % [:fields :answer]) fields)))
           (is (true? (:final? (last fields))))
-          ;; all delta events are node-scoped and arrive after :node-started
           (let [started-seq (:seq (first (filter #(and (= :node-started (:orc.stream/type %))
                                                        (= leaf-id (:node-id %)))
                                                  envelopes)))]
             (is (every? #(= leaf-id (:node-id %)) (concat raw fields)))
             (is (every? #(> (:seq %) started-seq) (concat raw fields)))
             (is (every? #(< (:seq %) (:seq completed)) (concat raw fields))))
-          ;; the durable completion is unaffected: full writes + usage
           (is (= "streamed answer" (get-in completed [:writes :answer])))
           (is (= stub-usage (:usage completed)))
           (is (= "streamed answer" (get-in result [:outputs :answer])))))))
@@ -464,7 +427,7 @@
                                              :model "stub-model"})]
           (let [{:keys [sheet-id]} (setup-ai-sheet! ctx)
                 tick-id (random-uuid)
-                {:keys [events-ch]} (sheet/subscribe-execution ctx tick-id) ;; no :llm-deltas?
+                {:keys [events-ch]} (sheet/subscribe-execution ctx tick-id)
                 p (dispatch-tick! ctx sheet-id {:input "q"} tick-id)
                 result (deref p 10000 ::timeout)
                 envelopes (drain! events-ch)]
@@ -485,7 +448,6 @@
                                    (into [])
                                    (filter #(= leaf-id (:node-id %)))
                                    first))
-            ;; streamed run
             streamed-tick (random-uuid)
             _ (with-stub-predict-stream-v2
                 (let [{:keys [events-ch]} (sheet/subscribe-execution ctx streamed-tick
@@ -493,7 +455,6 @@
                       p (dispatch-tick! ctx sheet-id {:input "q"} streamed-tick)]
                   (is (= :success (:status (deref p 10000 ::timeout))))
                   (drain! events-ch)))
-            ;; blocking run, same payload via redefined predict
             blocking-tick (random-uuid)
             _ (with-redefs [ai.obney.orc.llm.interface/predict (fn [& _]
                                                   {:outputs {:answer "streamed answer"}
@@ -521,16 +482,13 @@
         (close!)
         (drain! events-ch :timeout-ms 2000)
         (is (empty? (subscriptions*)))
-        ;; the race: a delegate/RLM spawn links a child after the root closed
-        (streaming/link-child! root child)
+        (service-logic/link-child! root child)
         (is (empty? (subscriptions*)) "no zombie entry recreated")
-        ;; registry scans keep working for unrelated and related ticks
-        (is (false? (streaming/wanted? child)))
-        (is (nil? (streaming/delta-config child)))
-        ;; and a fresh subscription on a new tick still functions
+        (is (false? (service-logic/wanted? child)))
+        (is (nil? (service-logic/delta-config child)))
         (let [tick (random-uuid)
               {events-ch2 :events-ch close2! :close!} (sheet/subscribe-execution ctx tick)]
-          (streaming/emit! tick {:orc.stream/type :rlm-iteration-started :iteration 1})
+          (service-logic/emit! tick {:orc.stream/type :rlm-iteration-started :iteration 1})
           (let [[env _] (take-until events-ch2 #(= :rlm-iteration-started (:orc.stream/type %))
                                     :timeout-ms 2000)]
             (is (some? env)))
@@ -553,11 +511,9 @@
           (is (= :success (:status result)))
           (is (seq (filter delta? opted-envs)) "opted subscription receives deltas")
           (is (empty? (filter delta? plain-envs)) "plain subscription receives none")
-          ;; both still see the full lifecycle
           (doseq [envs [opted-envs plain-envs]]
             (is (some #(= :node-completed (:orc.stream/type %)) envs))
             (is (= :stream-closed (:orc.stream/type (last envs)))))
-          ;; seq stays gapless per subscription even with filtering
           (is (= (map :seq plain-envs) (range 1 (inc (count plain-envs)))))
           (is (empty? (subscriptions*))))))))
 

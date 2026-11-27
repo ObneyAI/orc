@@ -6,14 +6,12 @@
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.todo-processors :as tp]
             [ai.obney.grain.command-processor-v2.interface :as cp]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-;; =============================================================================
-;; Test executor: increments a counter on each tick
-;; =============================================================================
 
 (def tick-counter (atom 0))
 (def downstream-counter (atom 0))
@@ -128,7 +126,7 @@
                               :outputs)
                          delegate-traces))))
         (doseq [child-id child-ids]
-          (let [child-result (runtime/durable-terminal-result ctx child-id)]
+          (let [child-result (service-commands/durable-terminal-result ctx child-id)]
             (tp/complete-delegate-parent! ctx child-id child-result)
             (tp/complete-delegate-parent! ctx child-id child-result)))
         (let [deliveries (filter #(and (= :sheet/node-execution-completed
@@ -159,11 +157,8 @@
                    (sheet/condition "keep-going"
                      :check {:key :counter :op :equals :value "__never__" :on-fail :running})))
             sheet-id (sheet/build-workflow! ctx wf)
-            ;; Execute with a short timeout — the tree will re-tick until max iterations
-            _ (alter-var-root #'tp/*max-tick-iterations* (constantly 5))
+            _ (alter-var-root #'service-logic/*max-tick-iterations* (constantly 5))
             result (sheet/execute ctx sheet-id {} :timeout-ms 10000)]
-        ;; The tree should have ticked 5 times (max iterations)
-        ;; and the final status should be :failure (max iterations exhausted)
         (is (= 5 @tick-counter)
             "Tree should re-tick exactly max-tick-iterations times")
         (is (= :failure (:status result))
@@ -176,9 +171,6 @@
       (let [wf (sheet/workflow "retick-terminate-test"
                  (sheet/blackboard
                    {:counter [:string {:description "tick count"}]})
-                 ;; Increment, then check: if counter != "3" → :running (re-tick).
-                 ;; When counter = "3" → condition fails normally → but we need success...
-                 ;; Use a fallback: keep-going (not at 3 yet) vs done (at 3)
                  (sheet/fallback "agent"
                    (sheet/sequence "keep-going"
                      (sheet/condition "not-at-3"
@@ -193,12 +185,8 @@
                      (sheet/condition "at-3"
                        :check {:key :counter :op :equals :value "3"}))))
             sheet-id (sheet/build-workflow! ctx wf)
-            _ (alter-var-root #'tp/*max-tick-iterations* (constantly 10))
+            _ (alter-var-root #'service-logic/*max-tick-iterations* (constantly 10))
             result (sheet/execute ctx sheet-id {:counter "0"} :timeout-ms 10000)]
-        ;; Tick 1: not-at-3 passes ("0"!="3"), increment → "1", re-tick → :running
-        ;; Tick 2: not-at-3 passes ("1"!="3"), increment → "2", re-tick → :running
-        ;; Tick 3: not-at-3 passes ("2"!="3"), increment → "3", re-tick → :running
-        ;; Tick 4: not-at-3 fails ("3"=="3") → fallback tries done → at-3 passes → :success
         (is (= 3 @tick-counter)
             "Increment should run 3 times")
         (is (= :success (:status result))
@@ -215,7 +203,6 @@
                    {:counter [:string {:description "tick count"}]
                     :result [:string {:description "output"}]})
                  (sheet/fallback "agent"
-                   ;; Skill 1: runs for first 2 ticks (counter < 3)
                    (sheet/sequence "keep-ticking"
                      (sheet/condition "not-done?"
                        :check {:key :counter :op :not-equals :value "3"})
@@ -223,10 +210,8 @@
                        :fn "ai.obney.orc.orc-service.running-retick-test/increment-counter"
                        :reads []
                        :writes [:counter])
-                     ;; Always return :running to re-tick
                      (sheet/condition "re-tick"
                        :check {:key :counter :op :equals :value "__never__" :on-fail :running}))
-                   ;; Skill 2: runs when counter = "3" (not-done? fails, fallback tries this)
                    (sheet/sequence "done"
                      (sheet/condition "is-done?"
                        :check {:key :counter :op :equals :value "3"})
@@ -235,14 +220,8 @@
                        :reads []
                        :writes [:counter]))))
             sheet-id (sheet/build-workflow! ctx wf)
-            _ (alter-var-root #'tp/*max-tick-iterations* (constantly 10))
+            _ (alter-var-root #'service-logic/*max-tick-iterations* (constantly 10))
             result (sheet/execute ctx sheet-id {:counter "0"} :timeout-ms 10000)]
-        ;; Ticks 1-2: keep-ticking increments counter (1, 2), re-tick fires
-        ;; Tick 3: not-done? fails (counter="3"?... wait, counter is "2" after 2 increments,
-        ;;         then on tick 3 not-done? checks counter != "3" → "2" != "3" → true,
-        ;;         so keep-ticking runs again, counter becomes "3", re-tick fires
-        ;; Tick 4: not-done? checks "3" != "3" → false → sequence fails → fallback tries done
-        ;;         is-done? checks "3" = "3" → true → finish runs → success
         (is (= :success (:status result))
             "Fallback should eventually succeed via the done skill")
         (is (>= @tick-counter 4)
@@ -252,8 +231,7 @@
   (testing ":max-ticks option on execute overrides the global dynamic var"
     (h/with-async-test-context [ctx]
       (reset! tick-counter 0)
-      ;; Set a high global value to prove the per-execute option wins
-      (alter-var-root #'tp/*max-tick-iterations* (constantly 50))
+      (alter-var-root #'service-logic/*max-tick-iterations* (constantly 50))
       (let [wf (sheet/workflow "per-execute-cap-test"
                  (sheet/blackboard
                    {:counter [:string {:description "tick count"}]})

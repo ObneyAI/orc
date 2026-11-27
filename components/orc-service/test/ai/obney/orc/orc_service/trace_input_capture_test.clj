@@ -15,9 +15,10 @@
    from 0.0/\"empty context — hallucination\" to 0.7 once its real reads
    (:session :turns :user-message …) reached the judge."
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.todo-processors :as tp]))
+            [ai.obney.orc.orc-service.core.todo-processors :as tp]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-(def ^:private extract-read-inputs #'tp/extract-read-inputs)
+(def ^:private extract-read-inputs #'service-logic/extract-read-inputs)
 
 (deftest extract-read-inputs-restricts-to-declared-reads
   (testing "only declared :reads keys are captured; others ignored"

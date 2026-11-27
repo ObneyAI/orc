@@ -1,5 +1,6 @@
 {:paths []
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+        orc/integrations {:local/root "../../components/integrations"}
 
         ;; Pin schema-util at the same Grain SHA as every other project so the
 
@@ -23,8 +24,8 @@
         ;; :llm instructions; it has zero dependency on the ontology/self-
         ;; improving loop. (The evaluation gate stays lazily resolved.)
         orc/llm         {:local/root "../../components/llm"}
-        orc/gepa        {:local/root "../../components/gepa"}
-        orc/evaluation  {:local/root "../../components/evaluation"}
+        orc/gepa-service        {:local/root "../../components/gepa-service"}
+        orc/evaluation-service  {:local/root "../../components/evaluation-service"}
         orc/orc-service {:local/root "../../components/orc-service"}
         orc/file-store  {:local/root "../../components/file-store"}
         orc/langfuse    {:local/root "../../components/langfuse"}}

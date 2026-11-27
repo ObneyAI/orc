@@ -12,8 +12,6 @@
 
    See docs/issues/predict-rlm/PR05-comparison-runner-with-capture.md."
   (:require [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.query-processor.interface :as qp]
@@ -27,7 +25,8 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [clojure.edn :as edn]
-            [clojure.pprint :as pprint]))
+            [clojure.pprint :as pprint]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Configuration
@@ -35,9 +34,6 @@
 
 (def config
   {:model "google/gemini-3-flash-preview"
-   ;; 20 minutes default. predict-rlm's larger benchmarks (document_analysis,
-   ;; contract_comparison) take 4-6 minutes on their infrastructure; OpenRouter
-   ;; latency + our smaller per-page parallelism need more headroom.
    :timeout-ms 1200000
    :documents-dir "development/bench/documents"
    :results-dir "development/bench/predict_rlm_comparison/results"})
@@ -75,10 +71,6 @@
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
         event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
         cache-dir (str "/tmp/orc-bench-" (random-uuid))
-        ;; Default LMDB map size is 10MB. Image-heavy benchmarks
-        ;; (e.g. document_redaction with 6 page-renders × ~150KB each
-        ;; plus per-tick state projection) blow past that. Bump to 512MB
-        ;; for headroom on multi-page visual tasks.
         cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir
                                                :db-name "bench"
                                                :map-size (* 512 1024 1024)}))
@@ -137,14 +129,7 @@
   (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command
                                             :name (str "Task: " (:name task))))
         sheet-id (-> sheet-result :command-result/events first :sheet-id)
-        ;; Per-input schemas allow tasks to declare image-typed keys
-        ;; (e.g. [:string {:field-type :image}]) so llm routes them as
-        ;; multimodal content blocks to the LLM call.
         input-schemas (or (:input-schemas task) {})
-        ;; Per-write schemas let tasks declare non-string output keys
-        ;; (numbers, vectors, maps). Falls back to :string for any write
-        ;; key not listed — backward compatible with single-string-output
-        ;; tasks like image_analysis.
         output-schemas (or (:output-schemas task) {})]
     (doseq [[doc-key _] documents]
       (h/run-and-apply! ctx (h/make-declare-key-command
@@ -159,9 +144,6 @@
           node-result (h/run-and-apply! ctx (h/make-create-node-command
                                              sheet-id :repl-researcher :parent-id seq-id))
           node-id (-> node-result :command-result/events first :node-id)
-          ;; Resolve effective main + sub model: per-task override wins,
-          ;; else fall back to config default. :sub-model is optional —
-          ;; when nil, all Phase-2 :llm calls inherit the main :model.
           effective-model (or (:model task) (:model config))
           effective-sub-model (or (:sub-model task) (:sub-model config))
           rlm-config (cond-> {:debug? true}
@@ -169,10 +151,6 @@
                        (assoc :available-code-nodes (:available-code-nodes task))
                        effective-sub-model
                        (assoc :sub-model effective-sub-model)
-                       ;; Task-level :recursive? override — when set, the
-                       ;; researcher emits a tree, gets the output back, and
-                       ;; can emit follow-up trees / call (final! ...) to
-                       ;; terminate. Default (nil/false) is terminal mode.
                        (:recursive? task)
                        (assoc :recursive? true))]
       (h/run-and-apply! ctx (h/make-set-repl-researcher-config-command
@@ -188,7 +166,7 @@
 
 (defn- execute-task! [ctx sheet-id documents timeout-ms]
   (let [tick-id (random-uuid)
-        p (runtime/register-completion! tick-id)
+        p (service-logic/register-completion! tick-id)
         start-time (System/currentTimeMillis)
         _ (cp/process-command
             (assoc ctx :command
@@ -275,15 +253,11 @@
   [ctx start-instant]
   (let [events (into [] (es/read (:event-store ctx)
                                  {:tenant-id (:tenant-id ctx)
-                                  ;; Completions carry only :write-keys now;
-                                  ;; the values come from the canonical write
-                                  ;; log. See docs/EVENT-STORE-PATTERNS.md.
                                   :types #{:sheet/node-execution-completed
                                            :sheet/execution-value-written}}))]
     (->> events
          (filter #(= :sheet/node-execution-completed (:event/type %)))
          (filter (fn [ev]
-                   ;; Compare java.time.OffsetDateTime instances
                    (let [ts (:event/timestamp ev)]
                      (or (nil? start-instant)
                          (.isAfter ^java.time.OffsetDateTime ts start-instant)
@@ -296,8 +270,8 @@
                           :status (:status ev)
                           :timestamp (:event/timestamp ev)}
                    (:inputs ev) (assoc :inputs (:inputs ev))
-                   (seq (value-log/writes-for events ev))
-                   (assoc :writes (value-log/writes-for events ev))
+                   (seq (service-logic/writes-for events ev))
+                   (assoc :writes (service-logic/writes-for events ev))
                    (:usage ev) (assoc :usage (:usage ev))
                    (:duration-ms ev) (assoc :duration-ms (:duration-ms ev))))))))
 
@@ -330,9 +304,6 @@
                      :model (:model config)
                      :config {:api-base "https://openrouter.ai/api/v1"
                               :api-key api-key}}]
-    ;; Node :model values ride through llm into the litellm router as
-    ;; per-request overrides, so only the base provider registration is
-    ;; needed (no synthetic per-model providers).
     (litellm-router/register! :openrouter base-config))
   (reset! system-state (create-context))
   (println "\n" (apply str (repeat 60 "=")) "\n")
@@ -383,11 +354,7 @@
       (println "  Pattern:" (:pattern task))
       (println "\n" (apply str (repeat 70 "=")) "\n")
       (println "Loading documents...")
-      (let [;; A task can ship its own :input-loader (0-arg fn returning
-            ;; {key value}) to provide non-text inputs (image data URIs,
-            ;; pre-rendered PDF pages, etc.). Otherwise default to text
-            ;; files under documents-dir per the existing 5-benchmark
-            ;; runner's convention.
+      (let [
             documents (if-let [f (:input-loader task)]
                         (f)
                         (load-task-documents task))
@@ -457,15 +424,12 @@
    parses with a permissive tagged-literal reader so unknown tags
    (mulog/flake, etc.) don't break the read."
   [results-dir]
-  (let [;; Permissive reader: accept any unknown tag and stash it as a
-        ;; tagged-literal so reading doesn't blow up on mulog/flake etc.
+  (let [
         reader-opts {:default (fn [tag value] (tagged-literal tag value))}
         dir (io/file results-dir)
         files (when (.exists dir)
                 (->> (.listFiles dir)
                      (filter #(.endsWith (.getName %) ".edn"))
-                     ;; Skip the .trace.edn files — they're mulog dumps,
-                     ;; not result records, and would dominate the summary.
                      (remove #(.endsWith (.getName %) ".trace.edn"))))
         results (map #(edn/read-string reader-opts (slurp %)) files)
         by-task (group-by :task results)

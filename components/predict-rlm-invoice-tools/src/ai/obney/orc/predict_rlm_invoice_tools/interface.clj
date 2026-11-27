@@ -43,7 +43,6 @@
               (and vendor-name (seq vendor-name)) vendor-name
               (and invoice-number (seq invoice-number)) invoice-number
               :else (str "Invoice " (inc idx)))
-        ;; Replace Excel-invalid chars and truncate to 31 chars
         cleaned (-> raw
                     (clojure.string/replace #"[\\/?*\[\]:]" "-")
                     (subs 0 (min 31 (count raw))))]
@@ -89,13 +88,10 @@
         _ (when-not output-path
             (throw (ex-info "build-invoice-workbook requires :output-path"
                             {:inputs (keys inputs)})))
-        ;; Build the Summary sheet first
         wb (ss/create-workbook "Summary" (build-summary-sheet-data invoices))
-        ;; Add one sheet per invoice
         used-names (atom #{"Summary"})]
     (doseq [[idx invoice] (map-indexed vector invoices)]
       (let [base-name (sheet-name-for invoice idx)
-            ;; Disambiguate duplicates by appending a suffix
             unique-name (loop [n 1
                                candidate base-name]
                           (if (contains? @used-names candidate)
@@ -109,13 +105,9 @@
         (let [sheet (.createSheet wb unique-name)
               rows (build-invoice-sheet-data invoice)]
           (ss/add-rows! sheet rows))))
-    ;; Save
     (ss/save-workbook! output-path wb)
     {:workbook-path (.getAbsolutePath (io/file output-path))}))
 
-;; =============================================================================
-;; Available code nodes catalog (for :available-code-nodes plumbing)
-;; =============================================================================
 
 (def available-code-nodes
   "Catalog of pre-built `:code` fns in this brick, formatted for inclusion in

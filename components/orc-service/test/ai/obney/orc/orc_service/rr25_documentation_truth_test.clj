@@ -28,22 +28,43 @@
                              (str/includes? (.getPath %) "/src/"))))
           (->> (.listFiles (io/file repo-root "docs"))
                (filter #(and (.isFile %) (str/ends-with? (.getName %) ".md")
-                             ;; the test-obligation ledger quotes the false phrasings it
-                             ;; forbids; it records obligations, not the mechanism
                              (not= "DETERMINISTIC-E2E-TEST-CHECKLIST.md" (.getName %)))))))
+
+(defn- documentation-lines [file]
+  (let [source (slurp file)]
+    (str/split-lines
+     (if (str/ends-with? (.getName file) ".clj")
+       (str/replace source
+                    #"(?s)\\(?:[a-zA-Z][a-zA-Z0-9]*|.)|\"(?:\\.|[^\"\\]++)*+\"|;[^\n]*|[^\\\";\n]+"
+                    (fn [token]
+                      (if (or (str/starts-with? token "\"")
+                              (str/starts-with? token ";"))
+                        token
+                        (str/replace token #"[^\n]+" " "))))
+       source))))
 
 (defn- hits [pattern]
   (for [f (live-files)
-        [i line] (map-indexed vector (str/split-lines (slurp f)))
+        [i line] (map-indexed vector (documentation-lines f))
         :when (re-find pattern line)]
     (str (.getPath f) ":" (inc i) ": " (str/trim line))))
+
+(defn- definition-source [path name]
+  (let [prefix (str "(defn " name)
+        private-prefix (str "(defn- " name)]
+    (or (some #(when (or (= prefix (first (str/split-lines %)))
+                         (= private-prefix (first (str/split-lines %))))
+                 %)
+              (str/split (slurp (io/file repo-root path)) #"(?m)(?=^\(def)"))
+        (throw (ex-info "Documentation target is missing" {:path path :definition name})))))
 
 (deftest the-idempotency-key-is-never-described-as-provider-deduplication
   (testing "no live comment or doc says a provider deduplicates on our idempotency key"
     (let [h (hits #"(?i)(provider|vendor|openai|anthropic|openrouter)[^\n]{0,80}(dedup|idempotency[- ]key)|(dedup|idempotency[- ]key)[^\n]{0,80}(by|at|on) the (provider|vendor)")]
       (is (empty? h) (str/join "\n" h))))
   (testing "the key's real purpose is stated where it is used, with ADR 0004 referenced"
-    (let [executor (slurp (io/file repo-root "components/orc-service/src/ai/obney/orc/orc_service/core/executor.clj"))]
+    (let [executor (definition-source "components/orc-service/src/ai/obney/orc/orc_service/core/todo_processors.clj"
+                                      "execute-repl-researcher-rlm")]
       (is (re-find #"(?i)ADR 0004" executor) "the provider-call sites reference ADR 0004")
       (is (re-find #"(?i)(recognis|recogniz)e[sd]? an already[- ]dispatched|already[- ]dispatched call" executor)
           "the executor states the key recognises an already-dispatched call on resume"))))
@@ -60,14 +81,16 @@
   (testing "code comments and docs say the event fires once per campaign carrying the last tree"
     (let [h (hits #"(?i)(emit|emits|emitted|fires?)[^\n]{0,40}tree-generated[^\n]{0,40}(when (a |the )?tree is generated|per (emit|tree|phase[- ]?1)|(for )?each (intermediate |emit|tree))|tree-generated[^\n]{0,60}(per emit|per tree|each emit|every emit|per phase[- ]?1)|per-phase-1-iteration[^\n]{0,40}tree")]
       (is (empty? h) (str/join "\n" h)))
-    (let [tp (slurp (io/file repo-root "components/orc-service/src/ai/obney/orc/orc_service/core/todo_processors.clj"))]
+    (let [tp (definition-source "components/orc-service/src/ai/obney/orc/orc_service/core/todo_processors.clj"
+                                "execute-repl-researcher-node")]
       (is (re-find #"(?i)tree-generated[^\n]{0,120}once per campaign|once per campaign[^\n]{0,120}tree-generated" tp)))))
 
 (deftest arc-drift-is-corrected-in-live-code-comments
   (testing "the tree-class counter is described as ticking on verdict occurrences, not classifications"
     (let [h (hits #"(?i)ticked on every :ontology/task-classified|bumps? [^\n]{0,40}on :ontology/task-classified|counted (at|on) classification")]
       (is (empty? h) (str/join "\n" h)))
-    (let [tc (slurp (io/file repo-root "components/ontology/src/ai/obney/orc/ontology/core/task_classifier.clj"))]
+    (let [tc (definition-source "components/ontology-service/src/ai/obney/orc/ontology/core/queries.clj"
+                                "gate-candidates")]
       (is (re-find #"tree-class-occurrence-recorded" tc) "the classifier docstring names the verdict occurrence as the counter's source")))
   (testing "docs describe coherence over winning shapes, report-only, and patterns offered whole with bindings"
     (let [sil (slurp (io/file repo-root "docs/SELF-IMPROVING-LOOP.md"))

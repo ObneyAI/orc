@@ -5,9 +5,9 @@
             [malli.core :as m]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.file-store.interface.protocol :as file-store]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.interface.schemas :as schemas]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]))
 
 (def ^:private root-tick-id
   #uuid "00000000-0000-0000-0000-00000000e2e0")
@@ -117,7 +117,7 @@
                         :orc/file-store store}}]
         (let [{:keys [parent-sheet child-sheet map-child] :as workflow}
               (build-workflow! ctx)
-              result (runtime/execute ctx parent-sheet {:items [1 2 3]}
+              result (service-commands/execute ctx parent-sheet {:items [1 2 3]}
                                       :tick-id root-tick-id
                                       :timeout-ms 20000)]
           (is (= :success (:status result)))
@@ -193,11 +193,11 @@
                 (let [operation-ctx (assoc ctx :orc/correlation-id correlation-id)
                       parent-id (stable-uuid [correlation-id suffix :parent])
                       standalone-id (stable-uuid [correlation-id suffix :standalone])
-                      parent-result (runtime/execute operation-ctx parent-sheet
+                      parent-result (service-commands/execute operation-ctx parent-sheet
                                                      {:items [1 2 3]}
                                                      :tick-id parent-id
                                                      :timeout-ms 20000)
-                      standalone-result (runtime/execute operation-ctx child-sheet
+                      standalone-result (service-commands/execute operation-ctx child-sheet
                                                          {:results [8 10]
                                                           :left "A"
                                                           :right "B"}

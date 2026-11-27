@@ -3,10 +3,10 @@
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.file-store.interface.protocol :as file-store]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.llm.interface :as llm]
-            [litellm.router :as router]))
+            [litellm.router :as router]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
 (def ^:private structured-schema
   [:map
@@ -467,7 +467,7 @@
           (is (every? #(and (:value-reference %) (not (contains? % :value))) writes))
           (is (= (count writes) (count @objects)))
           (doseq [write writes]
-            (is (some? (value-log/resolve-source
+            (is (some? (service-read-models/resolve-source
                         ctx (:tenant-id ctx)
                         {:tick-id (:tick-id write) :event-id (:event/id write)})))))))))
 
@@ -486,7 +486,7 @@
           (is (string? file-id))
           (swap! objects assoc file-id (byte-array [1 2 3]))
           (let [error (try
-                        (value-log/resolve-source
+                        (service-read-models/resolve-source
                          ctx (:tenant-id ctx)
                          {:tick-id (:tick-id output-write) :event-id (:event/id output-write)})
                         nil
@@ -566,7 +566,6 @@
                                     {:in-vector vector-value
                                      :in-nested nested-value
                                      :in-map-of map-of-value
-                                     ;; Deliberately omit :in-optional.
                                      :in-nullable nil
                                      :in-large large-value})
               family (get-in (h/run-query ctx {:query/name :sheet/get-trace-family
@@ -619,7 +618,7 @@
             (is (= 10 (count output-events)))
             (is (= 10 (count (set file-ids))))
             (is (= (set inputs)
-                   (set (map #(value-log/resolve-source
+                   (set (map #(service-read-models/resolve-source
                                ctx (:tenant-id ctx)
                                {:tick-id (:tick-id %) :event-id (:event/id %)})
                              output-events))))))))))

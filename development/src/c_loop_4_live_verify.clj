@@ -36,15 +36,17 @@
        emits smaller tree, or terminates with honest acknowledgment)
 
    No mocks. Uses OPENROUTER_API_KEY env var."
-  (:require [ai.obney.orc.orc-service.interface.schemas]
+  (:require
+            [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.llm.interface :as llm]
             [litellm.router :as litellm-router]
             [clojure.string :as str]
-            [com.brunobonacci.mulog :as u]))
+            [com.brunobonacci.mulog :as u]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
-;; Pull the private build-fn via requiring-resolve (same pattern the unit tests use).
 (def build-rlm-code-generation-module
-  (requiring-resolve 'ai.obney.orc.orc-service.core.executor/build-rlm-code-generation-module))
+  #'service-logic/build-rlm-code-generation-module)
 
 (defn- contrived-tree-results-entry
   "Simulate the post-iter-1 state of the risk-analysis broken-aggregator
@@ -112,12 +114,9 @@
     (litellm-router/register! :openrouter base-config)
     (litellm-router/register! (keyword (str "openrouter/" model)) base-config))
 
-  (let [;; Construct iter-2 sandbox state — :tree-results has the contrived
-        ;; broken-aggregator entry with :nil-writes [:obligations :penalties].
+  (let [
         contrived-entry (contrived-tree-results-entry)
         sandbox-vars-map {:tree-results [contrived-entry]
-                          ;; The surviving raw extractions the model COULD use
-                          ;; to recover — proves "data still in sandbox" framing.
                           :all_extractions [{:chunk 1 :items [{:type :obligation :text "Party A shall pay..."}]}
                                             {:chunk 2 :items [{:type :penalty :text "$10K per breach"}]}]
                           :risk-matrix "5-row table covering operational + financial risks"
@@ -144,11 +143,6 @@
         _ (println "  Instructions contain ':nil-writes' sentinel:"
                    (boolean (re-find #":nil-writes" (:instructions module))))
 
-        ;; Render the prompt input that would be sent to the LLM.
-        ;; The history-rendering happens by serializing :tree-results into
-        ;; the :history input (or via inputs-preview). For this verify, surface
-        ;; :tree-results into the history input field directly so the model
-        ;; sees it verbatim.
         history-text (str "Iteration 1 :tree-results entry (full data the model can read via (get-var :tree-results)):\n\n"
                           (pr-str contrived-entry)
                           "\n\nKey observations about iter-1:\n"
@@ -162,10 +156,6 @@
                 :history history-text}
 
         provider :openrouter
-        ;; :model is a per-request override routed through the :openrouter
-        ;; provider — it must be the bare OpenRouter model id (no
-        ;; "openrouter/" prefix). The prefixed form was silently ignored
-        ;; by the old router; the fixed router would send it verbatim.
         llm-options {:model "google/gemini-3-flash-preview"
                         :max-tokens 4096
                         :temperature 0.2}
@@ -199,6 +189,6 @@
      :reasoning (:reasoning response)
      :code (:code response)}))
 
-(comment
+#_(do
   (require '[c-loop-4-live-verify :as v] :reload)
   (v/verify!))

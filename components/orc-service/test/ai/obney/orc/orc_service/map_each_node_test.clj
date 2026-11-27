@@ -4,7 +4,8 @@
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.core.todo-processors :as tp]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Test Functions
@@ -74,14 +75,14 @@
                        :inputs {::tp/map-each-index 1
                                 ::tp/map-each-parent parent-id}
                        :writes {:current-item {:id 2 :processed true}}}
-          completions (into {} (map (juxt tp/trace-execution-key identity))
+          completions (into {} (map (juxt service-logic/trace-execution-key identity))
                             [completed-0 completed-1])]
-      (is (not= (tp/trace-execution-key started-0)
-                (tp/trace-execution-key started-1)))
+      (is (not= (service-logic/trace-execution-key started-0)
+                (service-logic/trace-execution-key started-1)))
       (is (= {:current-item {:id 1 :processed true}}
-             (:writes (get completions (tp/trace-execution-key started-0)))))
+             (:writes (get completions (service-logic/trace-execution-key started-0)))))
       (is (= {:current-item {:id 2 :processed true}}
-             (:writes (get completions (tp/trace-execution-key started-1))))))))
+             (:writes (get completions (service-logic/trace-execution-key started-1))))))))
 
 (deftest map-each-basic-test
   (testing "processes each item in the list"
@@ -89,19 +90,16 @@
       (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Map Each Basic"))
             sheet-id (-> sheet-result :command-result/events first :sheet-id)]
 
-        ;; Declare blackboard
         (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector item-schema]))
         (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item item-schema))
         (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector item-schema]))
 
-        ;; Create map-each node
         (let [map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
               map-id (-> map-result :command-result/events first :node-id)]
 
           (h/run-and-apply! ctx (h/make-set-map-each-config-command sheet-id map-id
                                   :items :current-item :results))
 
-          ;; Create child that doubles value
           (let [leaf-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf :parent-id map-id))
                 leaf-id (-> leaf-result :command-result/events first :node-id)]
 
@@ -109,7 +107,6 @@
                                     :fn "ai.obney.orc.orc-service.map-each-node-test/double-value"))
             (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-id [:current-item] [:current-item]))
 
-            ;; Execute
             (let [result (sheet/execute ctx sheet-id {:items [{:id 1 :value 5}
                                                                {:id 2 :value 10}
                                                                {:id 3 :value 15}]})]
@@ -162,7 +159,6 @@
         (let [map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
               map-id (-> map-result :command-result/events first :node-id)]
 
-          ;; Set max-concurrency to 2
           (h/run-and-apply! ctx (h/make-set-map-each-config-command sheet-id map-id
                                   :items :current-item :results :max-concurrency 2))
 
@@ -173,11 +169,9 @@
                                     :fn "ai.obney.orc.orc-service.map-each-node-test/tracked-process"))
             (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-id [:current-item] [:current-item]))
 
-            ;; Execute with 6 items
             (let [result (sheet/execute ctx sheet-id {:items (mapv #(hash-map :id %) (range 6))})]
               (is (= :success (:status result)))
               (is (= 6 (count (get-in result [:outputs :results]))))
-              ;; Max concurrent should not exceed 2
               (is (<= (:max @concurrency-tracker) 2)))))))))
 
 (deftest map-each-with-parallel-child-test
@@ -191,14 +185,12 @@
         (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :score :int))
         (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector item-schema]))
 
-        ;; Create map-each
         (let [map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
               map-id (-> map-result :command-result/events first :node-id)]
 
           (h/run-and-apply! ctx (h/make-set-map-each-config-command sheet-id map-id
                                   :items :current-item :results))
 
-          ;; Create child leaf that writes to separate key
           (let [leaf-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf :parent-id map-id))
                 leaf-id (-> leaf-result :command-result/events first :node-id)]
 
@@ -206,21 +198,16 @@
                                     :fn "ai.obney.orc.orc-service.map-each-node-test/add-score"))
             (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-id [:current-item] [:score]))
 
-            ;; Execute
             (let [result (sheet/execute ctx sheet-id {:items [{:id 1 :name "A"}
                                                                {:id 2 :name "B"}
                                                                {:id 3 :name "C"}]})]
               (is (= :success (:status result)))
               (let [results (get-in result [:outputs :results])]
                 (is (= 3 (count results)))
-                ;; Each item should have the score merged in
                 (is (= 10 (:score (first results))))
                 (is (= 20 (:score (second results))))
                 (is (= 30 (:score (nth results 2))))))))))))
 
-;; =============================================================================
-;; D-008: Partial results
-;; =============================================================================
 
 (deftest map-each-partial-failure-test
   (testing "when some children fail, map-each emits :partial with summary; output is successes-only"
@@ -245,7 +232,6 @@
                                     :fn "ai.obney.orc.orc-service.map-each-node-test/fail-on-id-2"))
             (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-id [:current-item] [:current-item]))
 
-            ;; 5 items: ids 1, 2, 3, 4, 5. id=2 fails, so 4 succeed and 1 fails at index 1.
             (let [result (sheet/execute ctx sheet-id {:items [{:id 1} {:id 2} {:id 3} {:id 4} {:id 5}]})
                   tick-id (:trace-id result)
                   events (when tick-id
@@ -260,7 +246,6 @@
                   "Should find a node-execution-completed event for the map-each node")
               (is (= :partial (:status map-each-completion))
                   "Map-each status should be :partial when some children fail")
-              ;; partial-summary populated
               (let [summary (:partial-summary map-each-completion)]
                 (is (some? summary) ":partial-summary should be present")
                 (is (= 5 (:total summary)))
@@ -269,7 +254,6 @@
                 (is (= [1] (:failure-indices summary)) "id=2 is at index 1")
                 (is (some? (get-in summary [:failure-reasons 1]))
                     "failure-reasons should contain an entry for index 1"))
-              ;; Output blackboard key contains 4 items (successes only, no failure markers)
               (let [output-results (get-in result [:outputs :results])]
                 (is (= 4 (count output-results))
                     "Output should contain only the 4 successful items (no failure markers inline)")
@@ -287,9 +271,6 @@
       (throw (ex-info "Intentional BOOM failure" {:item item}))
       {:current-item item})))
 
-;; =============================================================================
-;; Slice O: :preserve-failures? opt-in (aligned vs successes-only :into)
-;; =============================================================================
 
 (defn- run-preserve-failures-sheet
   "Build [:map-each (fail-on-boom) :into :results] over `items`, optionally with
@@ -366,8 +347,6 @@
 
 (deftest map-each-preserve-failures-leaves-status-and-summary-unchanged
   (testing "the flag changes only :into; sheet status stays :partial and :partial-summary is unchanged"
-    ;; Separate contexts: each full sheet/execute drives the async pipeline; one
-    ;; per context keeps the two runs from sharing a tick worker pool.
     (let [{ps :summary p-status :status}
           (h/with-async-test-context [ctx]
             (let [{preserve-result :result preserve-map :map-id}
@@ -423,7 +402,6 @@
         (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector item-schema]))
         (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :count :int))
 
-        ;; Build: [:sequence [:map-each (fail-on-id-2) :into :results] [:leaf count-results]]
         (let [seq-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
               seq-id (-> seq-result :command-result/events first :node-id)
               map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each :parent-id seq-id))
@@ -441,7 +419,6 @@
                                         :fn "ai.obney.orc.orc-service.map-each-node-test/count-results"))
               _ (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id after-id [:results] [:count]))
 
-              ;; 3 items: ids 1, 2, 3. id=2 fails → map-each is :partial with 2 succeeded.
               result (sheet/execute ctx sheet-id {:items [{:id 1} {:id 2} {:id 3}]})
               tick-id (:trace-id result)
               events (when tick-id

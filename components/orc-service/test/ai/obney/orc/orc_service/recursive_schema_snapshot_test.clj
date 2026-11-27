@@ -86,9 +86,6 @@
       (is (= [:map [:id :int] [:label :string]] form)
           "the global reference is inlined, not left as a dangling keyword"))))
 
-;; ---------------------------------------------------------------------------
-;; The snapshot must accept and reject exactly what the original schema does.
-;; ---------------------------------------------------------------------------
 
 (defn- snapshot-agrees?
   "Build a one-key workflow over `schema`, read the persisted form back, and

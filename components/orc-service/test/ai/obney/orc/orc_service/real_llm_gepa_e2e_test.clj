@@ -68,9 +68,6 @@
 
 (defn restart-processors
   [ctx]
-  ;; Evaluation processors are checkpoint pollers, while execution processors
-  ;; are pubsub systems. Restart through the fixture's matching lifecycle so
-  ;; polling handles never reach Integrant halt! and replay keeps its checkpoints.
   (h/stop-test-processors! ctx)
   (rmp/l1-clear!)
   (let [base (dissoc ctx :processors)]

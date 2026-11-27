@@ -28,7 +28,6 @@
   (let [ran (atom [])
         handler (fn [{:keys [event]}]
                   (let [n (:n event)]
-                    ;; The first event is slow to decide; the second is instant.
                     (when (= 1 n) (Thread/sleep 300))
                     {:result/effect (fn [] (swap! ran conj n))
                      :result/checkpoint :after}))]

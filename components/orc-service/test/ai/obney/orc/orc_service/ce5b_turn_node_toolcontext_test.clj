@@ -28,26 +28,17 @@
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
-            [ai.obney.orc.orc-service.core.streaming :as streaming]
-            ;; Loading interface.schemas registers the malli command schemas
-            ;; (:sheet/create-sheet, :sheet/tick-tree, ...) that the Phase-2
-            ;; tree executor dispatches. Without this, Phase 2 silently aborts
-            ;; before any tree events fire (see recursive_rlm_test's note).
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.core.todo-processors]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
-;; execute-stream self-subscribes to the streaming hub; reset between tests so
-;; no subscription/lineage leaks across cases (mirrors streaming_test).
 (use-fixtures :each
   (fn [f]
-    (streaming/reset-all!)
-    (try (f) (finally (streaming/reset-all!)))))
+    (service-logic/reset-all!)
+    (try (f) (finally (service-logic/reset-all!)))))
 
-;; =============================================================================
-;; Harness: a real root sheet whose root is a repl-researcher node.
-;; =============================================================================
 
 (defn- setup-repl-researcher-sheet!
   "Build a real sheet: (sequence (repl-researcher)). The researcher reads
@@ -70,9 +61,6 @@
                               :rlm {:recursive? false}))
       {:sheet-id sheet-id :node-id node-id})))
 
-;; The mock Phase-1 code-gen: emit a Phase-2 tree whose :code leaf records the
-;; :marker of the :tool-context its OWN execution context carried, writing it to
-;; :seen-marker. If :tool-context never reaches the leaf, (:marker nil) -> nil.
 (def ^:private emit-tree-recording-marker
   "(emit-tree!
      [:sequence
@@ -110,9 +98,6 @@
             (when (some? v) (recur)))))))
   (when close! (close!)))
 
-;; =============================================================================
-;; Cycle 1 — Turn -> node -> leaf delivery (the core)
-;; =============================================================================
 
 (deftest cycle1-turn-tool-context-reaches-phase2-leaf
   (testing "a real turn's :tool-context (on the execute-stream context) reaches the emitted :code leaf, read back from the event store"
@@ -121,9 +106,6 @@
         (let [marker       (str "CE5B-TURN-MARKER-" (random-uuid))
               tool-context {:marker marker :workspace "/ws"}
               {:keys [sheet-id]} (setup-repl-researcher-sheet! ctx)
-              ;; DROP A lives in execute-stream: :tool-context is placed ONLY on
-              ;; the execute-stream context arg (never as an explicit command
-              ;; field), so FIX A must copy it onto the root tick command.
               stream       (sheet/execute-stream (assoc ctx :tool-context tool-context)
                                                  sheet-id {:question "go"}
                                                  :timeout-ms 30000)
@@ -132,28 +114,12 @@
           (is (not= ::timeout result) "the turn should complete within the timeout")
           (is (= :success (:status result))
               (str "turn should succeed; got " (:status result) " error " (:error result)))
-          ;; READ BACK from grain: the leaf wrote the marker it saw on its
-          ;; :tool-context. RED before FIX A+B (leaf sees nil -> no marker).
           (let [markers (set (value-written-markers ctx))]
             (is (contains? markers marker)
                 (str "the Phase-2 :code leaf should have written the turn's "
                      ":tool-context marker (read back from :sheet/execution-value-written); "
                      "saw markers: " (pr-str markers)))))))))
 
-;; =============================================================================
-;; Cycle 2 — PROVE the tick lines up (no assumption)
-;;
-;; The repl-researcher (FIX B) must read :tool-context from the SAME tick FIX A
-;; stored it to. Prove it from the event store, not by assumption:
-;;   (a) the ROOT :sheet/tree-tick-started event (tick-id == the execute-stream
-;;       root tick) carries the turn's :tool-context — FIX A stored it there.
-;;   (b) the repl-researcher's :sheet/node-execution-started event fires in that
-;;       SAME root tick — so FIX B's (rm/get-tick-execution-context tick-id) reads
-;;       the tick where (a) stored it.
-;;   (c) a distinct CHILD :sheet/tree-tick-started (the Phase-2 execute-tree tick)
-;;       also carries the same :tool-context — proving it threaded onward to the
-;;       tick the leaf reads from.
-;; =============================================================================
 
 (defn- events-of-type [ctx event-type]
   (->> (es/read (:event-store ctx)
@@ -182,34 +148,17 @@
                 child-starts (filter #(and (not= root-tick-id (:tick-id %))
                                            (= tool-context (:tool-context %)))
                                      tick-starts)]
-            ;; (a) FIX A stored it on the ROOT tick
             (is (some? root-start) "a tree-tick-started event exists for the execute-stream root tick")
             (is (= tool-context (:tool-context root-start))
                 "the ROOT tick-tree-started carries the turn's :tool-context (FIX A)")
-            ;; (b) the repl-researcher ran in that SAME root tick
             (is (some? rr-start) "the repl-researcher node emitted a node-execution-started event")
             (is (= root-tick-id (:tick-id rr-start))
                 (str "the repl-researcher's node-execution-started is in the ROOT tick "
                      "(so FIX B's rm/get-tick-execution-context reads the SAME tick FIX A stored to); "
                      "root=" root-tick-id " rr-tick=" (:tick-id rr-start)))
-            ;; (c) it threaded onward to a distinct Phase-2 child tick
             (is (seq child-starts)
                 "a distinct CHILD tick-tree-started also carries the same :tool-context (threaded onward to the leaf's tick)")))))))
 
-;; =============================================================================
-;; CJ-5b — the repl-researcher's terminal completion carries :tool-context in
-;; :writes, so a downstream per-event judge (e.g. the coding-outcome judge) can
-;; recover the turn-id and ground on the turn's captured effect.
-;;
-;; Root cause: on a :success terminal the completion :writes carried only the
-;; node's declared writes (+ RLM internals) — NOT the :tool-context — so
-;; build-trace-data delivered no turn-id to the judge and it grounded empty
-;; ("no file changes") even though the turn landed edits keyed on that turn-id.
-;; (A :blocked completion happened to dump the full blackboard incl
-;; :tool-context, which is why the bug hid behind the intermittent block path.)
-;; FIX B: the RLM completion now assoc's the tick's :tool-context onto :writes
-;; whenever it is present.
-;; =============================================================================
 
 (deftest cj5b-repl-researcher-terminal-carries-tool-context-in-writes
   (testing "the repl-researcher :success completion event carries :tool-context in :writes (so a judge can recover the turn-id)"
@@ -231,35 +180,24 @@
                                            completions))]
             (is (some? rr-complete)
                 "the repl-researcher emitted a :success node-execution-completed event")
-            ;; Asserted through value-log, which is how build-trace-data
-            ;; resolves a node's outputs — i.e. the path the judge actually
-            ;; takes. The completion event names its write keys; the values
-            ;; live in the tick's :sheet/execution-value-written events (see
-            ;; docs/EVENT-STORE-PATTERNS.md). What FIX B guarantees is that
-            ;; the judge RECEIVES :tool-context, not where the bytes sit, so
-            ;; this asserts the contract rather than the storage layout.
             (is (contains? (set (:write-keys rr-complete)) :tool-context)
                 (str "the terminal completion declares :tool-context among its "
                      "writes (FIX B); got write-keys: "
                      (pr-str (:write-keys rr-complete))))
-            (let [tick-events (value-log/read-tick-events
+            (let [tick-events (service-read-models/read-tick-events
                                (:event-store ctx) (:tenant-id ctx) (:tick-id rr-complete))
-                  resolved (value-log/writes-for tick-events rr-complete)]
+                  resolved (service-logic/writes-for tick-events rr-complete)]
               (is (= tool-context (:tool-context resolved))
                   (str "the turn's :tool-context resolves back for the judge, "
                        "so build-trace-data delivers the turn-id; got keys: "
                        (pr-str (keys resolved)))))))))))
 
-;; =============================================================================
-;; Cycle 3 — absent :tool-context obeys the nil-output contract
-;; =============================================================================
 
 (deftest cycle3-absent-tool-context-is-backward-compatible
   (testing "a turn without tool context stores none and fails its declared non-nil marker write"
     (h/with-async-test-context [ctx]
       (with-redefs [llm/predict mock-predict-emitting-recorder]
         (let [{:keys [sheet-id]} (setup-repl-researcher-sheet! ctx)
-              ;; No :tool-context on the execute-stream context.
               stream       (sheet/execute-stream ctx sheet-id {:question "go"} :timeout-ms 30000)
               root-tick-id (:tick-id stream)
               result       (deref (:result stream) 30000 ::timeout)]

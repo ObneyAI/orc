@@ -82,8 +82,6 @@
 (deftest authored-finite-model-options-survive-primary-and-backup-dispatch
   (let [server (fixture-server) proofs (atom []) provider :finite-options-fixture]
     (try
-      ;; No provider output-mode default: each explicit mode below must come
-      ;; from the authored node rather than an inherited profile hiding loss.
       (llm/register-provider! provider {:provider :openrouter :model "fixture/default"
                                         :config {:api-base (:url server) :api-key http/fixture-token :timeout 10000}})
       (h/with-async-test-context [ctx {:context {:tenant-id (random-uuid) :llm-provider provider}}]

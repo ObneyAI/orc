@@ -27,17 +27,12 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.core.block :as block]
-            [ai.obney.orc.orc-service.core.executor :as executor]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
-;; =============================================================================
-;; Test instruments — stub leaf fns (the block is the instrument; propagation
-;; is the SUT). Referenced by fully-qualified symbol string so execute-code's
-;; resolve-fn path exercises the REAL leaf execution.
-;; =============================================================================
 
 (def ^:private stub-payload
   "Opaque payload — orc must round-trip it verbatim and never interpret it."
@@ -50,7 +45,7 @@
   "A :code leaf that raises the orc block signal (stands in for a gated tool
    call that needs permission)."
   [_ctx]
-  (block/block! stub-payload))
+  (service-logic/block! stub-payload))
 
 (defn plain-exception-leaf-fn
   "A :code leaf that throws an ordinary Exception (backward-compat: -> :failure)."
@@ -87,7 +82,7 @@
    proof exercises the real completion promise."
   [ctx sheet-id inputs timeout-ms]
   (let [tick-id (random-uuid)
-        p (runtime/register-completion! tick-id)]
+        p (service-logic/register-completion! tick-id)]
     (cp/process-command
       (assoc ctx :command
              {:command/id (random-uuid)
@@ -103,52 +98,26 @@
   (->> (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx) :types #{event-type}})
        (into [])))
 
-;; =============================================================================
-;; Cycle 1 — END-TO-END: a real emitted tree whose :code leaf calls
-;; (block! stub-payload) ⇒ the tick COMPLETES with :status :blocked + the
-;; opaque payload, the parent (deref p ...) RETURNS PROMPTLY (well under the
-;; budget — the WS-1 timing fix), and :blocked + payload reach the caller's
-;; result. Read the completion event / tick-tick-completed / delivered result
-;; BACK from grain.
-;;
-;; RED on 1a8cfca1: block! throws an AssertionError; neither execute-code nor
-;; execute-leaf-node catches it (both catch Exception only); the future dies,
-;; the leaf completion is never dispatched, the tick promise is never
-;; delivered, and (deref p ...) hangs until the budget. Here the deref falls
-;; back to ::timeout after `budget-ms`, so RED manifests as a NON-:blocked
-;; result that took ~budget-ms (with the default 900_000 budget it would hang
-;; the full 15 minutes — the ~17-min turn).
-;; =============================================================================
 
 (deftest cycle1-leaf-block-completes-tick-blocked-and-deref-returns-fast
   (testing "a :code leaf that raises the block signal ⇒ tick completes :blocked + opaque payload, deref returns promptly, payload reaches the result"
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id leaf-id]} (setup-code-leaf-sheet!
                                          ctx "ai.obney.orc.orc-service.ws2a-block-propagation-test/blocking-leaf-fn")
-            ;; Bounded budget so the RED witness (a hang to the budget) is
-            ;; observable in CI rather than the full 900_000 ms default. The
-            ;; GREEN timing proof below is absolute (<< budget), so it holds
-            ;; regardless of this bound.
             budget-ms 12000
             {:keys [promise]} (dispatch-tick! ctx sheet-id {} budget-ms)
             t0 (System/currentTimeMillis)
             result (deref promise (+ budget-ms 3000) ::timeout)
             elapsed (- (System/currentTimeMillis) t0)]
-        ;; (a) The deref RETURNED (not our fallback) — the tick's completion
-        ;; promise was actually delivered.
         (is (not= ::timeout result)
             "the completion promise was delivered — the tick completed instead of hanging")
-        ;; (b) It returned PROMPTLY — the WS-1 hang fix. Absolute wall-time
-        ;; well under the budget (and astronomically under the 900_000 default).
         (is (< elapsed 5000)
             (str "deref returned promptly (WS-1 timing fix); elapsed=" elapsed
                  "ms vs budget " budget-ms "ms"))
-        ;; (c) The delivered result carries :status :blocked + the OPAQUE payload.
         (is (= :blocked (:status result))
             (str "the tick result is :blocked; got " (:status result)))
         (is (= stub-payload (:block-payload result))
             "the opaque payload round-trips to the tick result verbatim")
-        ;; (d) Read BACK from grain: the LEAF completed :blocked with the payload.
         (let [leaf-completions (->> (events-of ctx :sheet/node-execution-completed)
                                     (filter #(= leaf-id (:node-id %))))]
           (is (= 1 (count leaf-completions))
@@ -157,21 +126,10 @@
               "the leaf node-execution-completed event carries :status :blocked")
           (is (= stub-payload (:block-payload (first leaf-completions)))
               "the leaf completion event carries the opaque payload"))
-        ;; (e) Read BACK: the tree tick completed with root-status :blocked.
         (let [tick-completions (events-of ctx :sheet/tree-tick-completed)]
           (is (some #(= :blocked (:root-status %)) tick-completions)
               "a tree-tick-completed event carries :root-status :blocked"))))))
 
-;; =============================================================================
-;; Cycle 2 — Backward-compat (non-vacuous: the typed-vs-untyped split is the
-;; point). Through the public execute-leaf interface, the :code leaf path is a
-;; THREE-way split:
-;;   - the block signal    -> {:status :blocked} + opaque payload
-;;   - an ordinary Exception -> {:status :failure} (today's behavior, unchanged)
-;;   - a non-blocking Error  -> RE-THROWN (NOT silently blocked, NOT :failure) —
-;;                              exactly as before the change (no new swallowing).
-;; Plus an end-to-end tick proving an Exception leaf still completes :failure.
-;; =============================================================================
 
 (def ^:private base "ai.obney.orc.orc-service.ws2a-block-propagation-test/")
 
@@ -180,23 +138,20 @@
 
 (deftest cycle2-execute-leaf-three-way-split
   (testing "the block signal is caught and typed :blocked with the opaque payload"
-    (let [result (executor/execute-leaf (code-node "blocking-leaf-fn") {} nil)]
+    (let [result (service-processors/execute-leaf (code-node "blocking-leaf-fn") {} nil)]
       (is (= :blocked (:status result)) "blocking condition -> :blocked (not :failure)")
       (is (= stub-payload (:block-payload result)) "the opaque payload is captured on the result")))
 
   (testing "an ordinary Exception is UNCHANGED -> :status :failure, never :blocked"
-    (let [result (executor/execute-leaf (code-node "plain-exception-leaf-fn") {} nil)]
+    (let [result (service-processors/execute-leaf (code-node "plain-exception-leaf-fn") {} nil)]
       (is (= :failure (:status result)) "ordinary Exception -> :failure (backward-compat)")
       (is (not= :blocked (:status result)) "an ordinary Exception is NOT treated as a block")
       (is (nil? (:block-payload result)) "no block payload on an ordinary failure")
       (is (= "ordinary leaf failure" (:error result)) "the failure message is preserved")))
 
   (testing "a NON-blocking Error is re-thrown (no new swallowing) — NOT turned into :blocked or :failure"
-    ;; Proves the blocking check is SPECIFIC: a generic AssertionError (an Error,
-    ;; not the block signal) is not over-caught. It escapes execute-code exactly
-    ;; as it did before WS-2a.
     (is (thrown? AssertionError
-                 (executor/execute-leaf (code-node "non-blocking-error-leaf-fn") {} nil))
+                 (service-processors/execute-leaf (code-node "non-blocking-error-leaf-fn") {} nil))
         "a non-blocking Error propagates out of execute-leaf, unchanged")))
 
 (deftest cycle2-end-to-end-ordinary-exception-completes-failure-not-blocked
@@ -216,19 +171,6 @@
           (is (= :failure (:status (first leaf-completions))) "leaf completion is :failure")
           (is (nil? (:block-payload (first leaf-completions))) "no block payload on the leaf failure event"))))))
 
-;; =============================================================================
-;; Cycle 3 — RLM / Phase-2 END-TO-END (the headline scenario): a repl-researcher
-;; emits a tree whose FIRST :code leaf raises the block signal. The block must
-;; propagate through the child Phase-2 tick -> execute-tree's result -> the RLM
-;; loop -> the repl-researcher node completion -> the ROOT tick -> the outer
-;; execute result, carrying the OPAQUE payload. And no SUBSEQUENT tree leaf runs
-;; (budget not wasted). Recursive mode (the default) — a block must SHORT-CIRCUIT
-;; the loop, not summarize-and-recur.
-;;
-;; RED before the RLM short-circuit + node payload propagation: recursive mode
-;; summarizes the :blocked tree result and recurs to max-iterations -> the outer
-;; status is :failure (not :blocked) and the payload is lost.
-;; =============================================================================
 
 (defn after-block-leaf-fn
   "A SECOND :code leaf placed AFTER the blocking leaf. Must NEVER run — a block
@@ -256,8 +198,6 @@
                               "Do the task." [:question] [:seen-marker] []
                               :max-iterations 3
                               :rlm {:recursive? true}
-                              ;; Bound the Phase-2 child budget so any hang-path
-                              ;; regression surfaces bounded (GREEN returns fast).
                               :timeout-ms 12000))
       {:sheet-id sheet-id :node-id node-id})))
 
@@ -276,23 +216,16 @@
                                     :timeout-ms 30000
                                     :tick-id root-tick-id)
               elapsed (- (System/currentTimeMillis) t0)]
-          ;; (a) The outer turn result is :blocked + the OPAQUE payload — the
-          ;; block reached execute's result through the whole RLM stack.
           (is (= :blocked (:status result))
               (str "outer execute result is :blocked; got " (:status result)
                    " error " (:error result)))
           (is (= stub-payload (:block-payload result))
               "the opaque payload round-tripped to the outer execute result")
-          ;; (b) No hang through the RLM path (recursive loop short-circuited).
           (is (< elapsed 10000) (str "returned promptly through the RLM stack; elapsed=" elapsed "ms"))
-          ;; (c) Read BACK: the CHILD Phase-2 tick completed :blocked (a
-          ;; tree-tick-completed with a tick-id OTHER than the root tick).
           (let [child-blocked (->> (events-of ctx :sheet/tree-tick-completed)
                                    (filter #(and (not= root-tick-id (:tick-id %))
                                                  (= :blocked (:root-status %)))))]
             (is (seq child-blocked) "the Phase-2 child tick completed with :root-status :blocked"))
-          ;; (d) No SUBSEQUENT tree leaf ran: the after-block leaf never wrote
-          ;; its sentinel (budget not wasted).
           (let [after-writes (->> (events-of ctx :sheet/execution-value-written)
                                   (filter #(= :after-block (:key %)))
                                   (map :value))]
@@ -300,36 +233,26 @@
                 (str "no tree leaf ran after the block; unexpected :after-block writes: "
                      (pr-str after-writes)))))))))
 
-;; =============================================================================
-;; Cycle 4 — Phase-1 carrier UNCHANGED. The block signal is an AssertionError
-;; SUBCLASS on purpose: orc-sessions' EXISTING Phase-1 turn-level
-;; `catch AssertionError` (workflow.clj:1899) must keep catching it after WS-2c
-;; switches its permission-pending to (block! ...). This pins the engine-side
-;; contract that adopting the signal does NOT regress the Phase-1 pending path.
-;; (orc-sessions adoption itself is WS-2c — out of scope here; this asserts the
-;; carrier property the engine guarantees.)
-;; =============================================================================
 
 (deftest cycle4-block-carrier-is-assertionerror-subclass-phase1-catch-preserved
   (testing "a Phase-1-style `catch AssertionError` still catches the block signal"
-    (let [caught (try (block/block! stub-payload)
+    (let [caught (try (service-logic/block! stub-payload)
                       (catch AssertionError e e))]
       (is (instance? AssertionError caught)
           "the carrier IS an AssertionError — a plain `catch AssertionError` catches it")
-      ;; It does double duty: still recognizable as the block signal, payload intact.
-      (is (block/blocking-condition? caught) "the caught throwable is still the block signal")
-      (is (= stub-payload (block/block-payload caught)) "the opaque payload is still accessible")))
+      (is (service-logic/blocking-condition? caught) "the caught throwable is still the block signal")
+      (is (= stub-payload (service-logic/block-payload caught)) "the opaque payload is still accessible")))
 
   (testing "the carrier is NOT an Exception — this is WHY the leaf path must catch Throwable, and why Phase-1 uses catch AssertionError"
-    (let [caught (try (block/block! stub-payload) (catch Throwable t t))]
+    (let [caught (try (service-logic/block! stub-payload) (catch Throwable t t))]
       (is (not (instance? Exception caught))
           "an ordinary `catch Exception` would MISS it (the WS-1 root cause)")
       (is (instance? Error caught) "it is an Error (AssertionError extends Error)")))
 
   (testing "specificity: an ordinary AssertionError is NOT the block signal"
-    (is (not (block/blocking-condition? (AssertionError. "plain")))
+    (is (not (service-logic/blocking-condition? (AssertionError. "plain")))
         "a generic AssertionError is not mistaken for the block signal")
-    (is (nil? (block/block-payload (AssertionError. "plain")))
+    (is (nil? (service-logic/block-payload (AssertionError. "plain")))
         "no payload on a non-signal AssertionError"))
 
   (testing "the interface re-export exposes the same primitive (WS-2c's surface)"

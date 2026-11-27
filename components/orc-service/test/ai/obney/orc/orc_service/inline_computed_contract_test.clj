@@ -3,12 +3,12 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
             [malli.core :as m]
-            [ai.obney.orc.orc-service.core.blackboard-schema :as schemas]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as orc]
-            [ai.obney.orc.orc-service.core.rlm-sandbox :as sandbox]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.inline-input-contract-test :as fixture]))
+            [ai.obney.orc.orc-service.inline-input-contract-test :as fixture]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (def proof (atom []))
 
@@ -16,10 +16,10 @@
   (doseq [value [nil "" false (byte 1) (short 1) (int 1) (long 1) 1N (biginteger 1)
                 (float 1.25) 1.25 1.25M :named/value (random-uuid)
                 (java.util.Date. 0) (java.time.Instant/ofEpochMilli 0)]]
-    (let [schema (schemas/infer-specific-schema value [:computed])]
+    (let [schema (service-logic/infer-specific-schema value [:computed])]
       (is (m/validate schema value) (str (class value) " must satisfy " schema))))
   (doseq [value [1/3 Double/NaN Double/POSITIVE_INFINITY Float/NaN]]
-    (let [error (try (schemas/infer-specific-schema value [:computed :amount]) nil
+    (let [error (try (service-logic/infer-specific-schema value [:computed :amount]) nil
                      (catch clojure.lang.ExceptionInfo e e))]
       (is (= :unrepresentable-value (:reason (ex-data error))))
       (is (= [:computed :amount] (:path (ex-data error)))))))
@@ -90,7 +90,7 @@
         (testing (name label)
           (let [n (count @requests)
                 error (try
-                        (sandbox/execute-llm-primitive "computed"
+                        (service-processors/execute-llm-primitive "computed"
                           {:instruction "Return controlled result." :reads [:computed] :writes writes
                            :options {:use-function-calling? false :max-retries 0}}
                           {:provider :computed-contract-diagnostic :sandbox-vars values

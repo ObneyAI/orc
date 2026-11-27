@@ -4,7 +4,7 @@
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.profile :as profile])
+            [ai.obney.orc.orc-service.core.logic :as logic])
   (:import [java.nio.file Files]))
 
 (def proofs (atom []))
@@ -21,9 +21,6 @@
 (defn new-source [_] {:result "a longer forwarded value"})
 
 (deftest forwarded-profile-uses-only-the-declared-references
-  ;; Deliberately stage earlier writes of the same node/context through public
-  ;; commands. This guards command metadata; it does not assert that a normal
-  ;; workflow repeats a terminal completion or changes historical rehydration.
   (h/with-test-context [ctx]
     (let [definition
           (sheet/workflow (str "declared-forwarded-profile-" (random-uuid))
@@ -59,7 +56,7 @@
           completion (last (filter #(= :sheet/node-execution-completed (:event/type %)) after))]
       (is (some? source-event))
       (is (= [:result] (:write-keys completion)))
-      (is (= {:result (profile/profile-value (:result (new-source nil)))} (:write-profile completion)))
+      (is (= {:result (logic/profile-value (:result (new-source nil)))} (:write-profile completion)))
       (is (= {:result source} (:write-sources completion)))
       (is (not (contains? completion :writes)))
       (is (= (count (filter #(= :sheet/execution-value-written (:event/type %)) before))
@@ -73,12 +70,13 @@
     (sheet/blackboard {:items [:vector :int] :item [:or :int :string]
                        :results [:vector [:or :int :string]]})
     (sheet/sequence "outer"
-      (sheet/sequence "forwarder"
-        (apply sheet/map-each "aggregate" :from :items :as :item :into :results :parallel 2
-          (when function-name
-            [(sheet/code "item" :fn (str "ai.obney.orc.orc-service.aggregate-trace-test/" function-name)
-               :reads [:item] :writes [:item]
-               :retry {:max-attempts 1 :backoff-ms []})]))))))
+      (sheet/fallback "fallback"
+        (sheet/sequence "forwarder"
+          (apply sheet/map-each "aggregate" :from :items :as :item :into :results :parallel 2
+            (when function-name
+              [(sheet/code "item" :fn (str "ai.obney.orc.orc-service.aggregate-trace-test/" function-name)
+                 :reads [:item] :writes [:item]
+                 :retry {:max-attempts 1 :backoff-ms []})])))))))
 
 (deftest aggregate-and-forwarder-profiles-match-canonical-values
   (doseq [[label function-name items expected expected-status]
@@ -108,12 +106,12 @@
                 aggregate (first (filter #(= "aggregate" (:node-name %)) (:node-traces trace)))
                 aggregate-writes (filter #(and (= :sheet/execution-value-written (:event/type %))
                                                (= :results (:key %))) events)
-                profile {:results (profile/profile-value expected)}]
+                profile {:results (logic/profile-value expected)}]
             (is (some? aggregate))
             (is (= 1 (count aggregate-writes)) "aggregate payload has exactly one canonical home")
             (is (= (:node-id aggregate) (:node-id (first aggregate-writes))))
             (is (= expected (:value (first aggregate-writes))))
-            (doseq [name ["aggregate" "forwarder" "outer"]
+            (doseq [name ["aggregate" "forwarder" "fallback" "outer"]
                     :let [node (first (filter #(= name (:node-name %)) (:node-traces trace)))
                           completion (first (filter #(= (:node-id node) (:node-id %)) completions))
                           detail (:query/result
@@ -128,7 +126,7 @@
               (is (= profile (:output-profile node)) name)
               (is (= {:results expected} (:outputs detail)) name)
               (is (not (contains? completion :writes)) "lifecycle metadata never duplicates the aggregate value"))
-            (is (= profile (profile/profile-values {:results expected})))
+            (is (= profile (logic/profile-values {:results expected})))
             (doseq [completion completions
                     :let [node (get nodes (:node-id completion))]
                     :when (and (= "item" (:node-name node)) (= :success (:status completion)))

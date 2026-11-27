@@ -11,14 +11,14 @@
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
             [ai.obney.orc.ontology.core.todo-processors]
-            [ai.obney.orc.ontology.core.consolidator]
-            [ai.obney.orc.ontology.core.harvest :as harvest]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
             [ai.obney.orc.colbert.interface]
             [ai.obney.orc.colbert.interface.schemas]
-            [ai.obney.orc.colbert.core.operations :as colbert-ops]
+            [ai.obney.orc.colbert.core.logic :as colbert-ops]
             [ai.obney.orc.evaluation.interface.schemas]
             [ai.obney.orc.evaluation.core.commands]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (defn- command! [ctx command-name body]
   (cp/process-command
@@ -416,9 +416,6 @@
 
 (deftest det-e2e-089-reindex-threshold
   (testing "crossing the configured description threshold rebuilds exactly once and resets state"
-    ;; Reindex latches are process-global and keyed by tenant. A unique tenant
-    ;; prevents high-volume seed tests in the same JVM from owning this test's
-    ;; steady-state latch while their asynchronous rebuild drains.
     (h/with-async-test-context [ctx {:context {:tenant-id (random-uuid)}}]
       (inject-index-created! ctx)
       (is (h/settle-until! #(true? (:index-built? (ontology/get-reindex-state ctx)))))
@@ -492,14 +489,14 @@
                             (get (ontology/get-tree-class-judge-averages ctx class-id)
                                  "quality")))
                1.0e-9))
-        (harvest/maybe-harvest! ctx class-id)
+        (ontology-processors/maybe-harvest! ctx class-id)
         (is (h/settle-until!
              #(= 1 (count (filter (fn [event]
                                     (= class-id (:harvested-from-tree-class event)))
                                   (events-of-type ctx
                                                   :ontology/behavioral-subtree-minted))))))
-        (harvest/maybe-harvest! ctx class-id)
-        (harvest/maybe-harvest! ctx class-id)
+        (ontology-processors/maybe-harvest! ctx class-id)
+        (ontology-processors/maybe-harvest! ctx class-id)
         (Thread/sleep 200)
         (is (= 1 (count (filter #(= class-id (:harvested-from-tree-class %))
                                 (events-of-type ctx

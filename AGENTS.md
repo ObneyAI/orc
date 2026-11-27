@@ -78,6 +78,9 @@ domain; document and justify exclusions in the ledger.
 
 ## Verification
 
+Install the staged pre-commit checks with `./scripts/install-hooks.sh`. See
+[Pre-commit lints](README.md#pre-commit-lints) for the full-index rules and base review procedure.
+
 Use the smallest relevant test command while iterating, then broaden verification
 in proportion to the change:
 
@@ -117,6 +120,9 @@ their UUIDv7 IDs and timestamps atomically during append. Callers must not suppl
 `:event/id` or `:event/timestamp`. Every direct v3 event-store read or append
 must include `:tenant-id`. Commands and queries exposed through adapters are deny-by-default
 and therefore require an explicit `:authorized?` predicate.
+
+Name each brick that owns Grain declarations with the `-service` suffix. Its
+public interface namespace can retain its established name.
 
 Use public component interfaces across Polylith boundaries. Production code is
 under `components/{component}/src/ai/obney/orc/`; tests live in the corresponding

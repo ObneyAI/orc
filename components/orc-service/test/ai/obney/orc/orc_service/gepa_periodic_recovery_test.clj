@@ -1,9 +1,10 @@
 (ns ai.obney.orc.orc-service.gepa-periodic-recovery-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [ai.obney.orc.gepa.core.commands :as commands]
+            [ai.obney.orc.gepa.core.read-models :as rm]
+            [clojure.test :refer [deftest is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.gepa.interface :as gepa]
-            [ai.obney.orc.gepa.core.task-ledger :as ledger]
             [ai.obney.orc.grain-test-utils.interface :as tu]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.periodic-task.interface :as periodic]
@@ -54,21 +55,18 @@
                           (keys @tp/processor-registry*))
             running (assoc ctx :processors (h/start-test-processors ctx without))]
         (reset! owned running)
-        (is (= :opened (:status (ledger/open-boundary! running
+        (is (= :opened (:status (commands/open-boundary! running
                                   {:optimization-id opt :boundary-id boundary-id
                                    :boundary {:kind :candidate :candidate-id candidate} :tasks [task]}))))
-        (is (= :owned (:status (ledger/claim! running owner))))
-        (is (= :dispatched (:status (ledger/dispatch! running
+        (is (= :owned (:status (commands/claim! running owner))))
+        (is (= :dispatched (:status (commands/dispatch! running
                                       (assoc owner :attempt-id (random-uuid) :attempt-kind :evaluation)))))
-        ;; Actual workflow completes; the old process did not record its result
-        ;; in GEPA or invoke a metric. No mock tree or fabricated result is used.
         (is (= :success (:status (sheet/execute running sheet-id input
                                                 :tick-id trace-id :timeout-ms 30000))))
-        ;; The same discovery path must leave an unexpired owner alone.
         (is (= [] (gepa/recover-in-progress! running)))
         (is (empty? (filter #(= :gepa/optimization-recovery-requested (:event/type %))
                             (h/read-all-events running))))
-        (is (= (:owner-id owner) (:owner-id (ledger/get-task running opt call-id))))
+        (is (= (:owner-id owner) (:owner-id (rm/get-task running opt call-id))))
         (swap! clock #(.plusSeconds % 91))
         (let [triggers (periodic/start-periodic-triggers!
                          {:append-fn #(es/append (:event-store running) %)
@@ -78,7 +76,7 @@
                   #(some (fn [e] (= :gepa/candidate-evaluated (:event/type e)))
                          (h/read-all-events running)) :timeout-ms 10000))
             (let [events (h/read-all-events running)
-                  completed (ledger/get-task running opt call-id)]
+                  completed (rm/get-task running opt call-id)]
               (is (some #(= :gepa/recovery-scan-triggered (:event/type %)) events))
               (is (= 1 (count (filter #(= :sheet/tree-tick-started (:event/type %)) events))))
               (is (= 1 (count (filter #(= :gepa/task-metric-started (:event/type %)) events))))
@@ -86,6 +84,6 @@
               (is (= trace-id (:trace-id completed)))
               (is (= {:question "q" :expected "fixed" :answer "fixed"}
                      (get-in completed [:result :output])))
-              (is (= 1 (:spent (ledger/get-accounting running opt)))))
+              (is (= 1 (:spent (rm/get-accounting running opt)))))
             (finally (periodic/stop-periodic-triggers! triggers)))))
       (finally (h/stop-async-context @owned)))))

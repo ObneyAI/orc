@@ -11,16 +11,9 @@
    Each step times itself with explicit println so we see exactly where
    the hang manifests instead of waiting for a 10-min timeout."
   (:require [ai.obney.orc.orc-service.interface :as orc]
-            [ai.obney.orc.orc-service.core.dsl :as dsl]
-            [ai.obney.orc.orc-service.core.executor]
             [ai.obney.orc.orc-service.core.commands]
             [ai.obney.orc.orc-service.core.read-models]
             [ai.obney.orc.orc-service.core.todo-processors]
-            ;; NOTE: DELIBERATELY NOT loading the consolidator namespace.
-            ;; If bench runs back-to-back NOW succeed (where they timed
-            ;; out before), the consolidator's processor subscriptions
-            ;; are the back-pressure source on the shared pubsub.
-            ;; [ai.obney.orc.ontology.core.consolidator]
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -34,7 +27,9 @@
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.time.interface :as time]
             [runner]
-            [legal-issue-detection]))
+            [legal-issue-detection]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (defn- ts [] (str (java.time.Instant/now)))
 
@@ -162,9 +157,6 @@
                   (= state Thread$State/TIMED_WAITING))
           (let [trace (.getStackTrace info)
                 top-10 (take 10 trace)
-                ;; Skip threads whose top frames are all in idle pool wait
-                ;; states (LockSupport.park called via ThreadPool$Worker.run
-                ;; with no application frames in stack).
                 interesting? (some (fn [f]
                                      (let [cn (.getClassName f)
                                            fn-name (.getFileName f)]
@@ -190,9 +182,7 @@
   (println "\n" (apply str (repeat 60 "=")) "\n")
   (println " STEP 5 — instrumented bench Run #2 (poll event-store)")
   (println (apply str (repeat 60 "=")) "\n")
-  (let [task-ns (requiring-resolve 'legal-issue-detection/task)
-        runner-run! (requiring-resolve 'runner/run!)
-        task (-> @task-ns (assoc :rlm {:auto-classify? false :debug? false}))
+  (let [task (-> legal-issue-detection/task (assoc :rlm {:auto-classify? false :debug? false}))
         relevant-types [:sheet/tick-tree
                         :sheet/tree-tick-started
                         :sheet/node-execution-started
@@ -208,13 +198,10 @@
                                                              :tenant-id (:tenant-id ctx)})))]
                             (println (str "  " t " = " n)))))]
     (println (str "[" (ts) "] Step 5 — pre-warm: running bench Run #1..."))
-    (let [r1 (runner-run! task)]
+    (let [r1 (runner/run! task)]
       (println (str "[" (ts) "] Step 5 — Run #1 status: " (:status r1))))
     (count-by-type "after Run #1")
 
-    ;; Directly probe what cp/process-command returns post-Run-1 by issuing
-    ;; the SAME first command setup-task-sheet! issues. If it returns an
-    ;; anomaly, we'll see it printed. If it hangs, we'll see it never return.
     (println (str "\n[" (ts) "] Step 5 — probing direct cp/process-command :sheet/create-sheet after Run #1..."))
     (let [probe-result (try (h/run-and-apply! ctx (h/make-create-sheet-command :name "PROBE-after-run-1"))
                             (catch Throwable t {:probe-error (.getMessage t)
@@ -252,7 +239,7 @@
           run2-start (System/currentTimeMillis)
           run2-fut (future
                      (try
-                       (let [r (runner-run! task)]
+                       (let [r (runner/run! task)]
                          (reset! run2-result r)
                          (println (str "[" (ts) "] Run #2 RETURNED with status: " (:status r))))
                        (catch Throwable t
@@ -274,14 +261,12 @@
   (println "\n" (apply str (repeat 60 "=")) "\n")
   (println " STEP 4 — bench runner/run! WITHOUT auto-classify (rlm {:auto-classify? false})")
   (println (apply str (repeat 60 "=")) "\n")
-  (let [task-ns (requiring-resolve 'legal-issue-detection/task)
-        runner-run! (requiring-resolve 'runner/run!)
-        task-no-classify (-> @task-ns
+  (let [task-no-classify (-> legal-issue-detection/task
                              (assoc :rlm {:auto-classify? false :debug? true}))
         run-once (fn [label]
                    (println (str "[" (ts) "] " label ": dispatching runner/run! (auto-classify OFF)..."))
                    (let [start (System/currentTimeMillis)
-                         result (try (runner-run! task-no-classify)
+                         result (try (runner/run! task-no-classify)
                                      (catch Throwable t {:status :error
                                                           :error (.getMessage t)
                                                           :class (.getName (class t))}))
@@ -307,12 +292,10 @@
   (println "\n" (apply str (repeat 60 "=")) "\n")
   (println " STEP 3 — bench runner/run! back-to-back (the failing flow)")
   (println (apply str (repeat 60 "=")) "\n")
-  (let [task-ns (requiring-resolve 'legal-issue-detection/task)
-        runner-run! (requiring-resolve 'runner/run!)
-        run-once (fn [label]
+  (let [run-once (fn [label]
                    (println (str "[" (ts) "] " label ": dispatching runner/run!..."))
                    (let [start (System/currentTimeMillis)
-                         result (try (runner-run! @task-ns)
+                         result (try (runner/run! legal-issue-detection/task)
                                      (catch Throwable t {:status :error
                                                           :error (.getMessage t)
                                                           :class (.getName (class t))}))
@@ -335,16 +318,10 @@
   (println "\n###################################")
   (println "# LLM HANG DIAGNOSTIC — start: " (ts))
   (println "###################################\n")
-  ;; Surface mulog events so cp/process-command anomalies become visible.
   (defonce ^:private mulog-publisher
     (u/start-publisher! {:type :console}))
-  ;; Use the bench's start! so step 3's runner/run! has a proper context
-  ;; (seeded corpus + built ColBERT index). start! also registers the
-  ;; openrouter client.
-  (let [runner-start! (requiring-resolve 'runner/start!)
-        runner-stop!  (requiring-resolve 'runner/stop!)]
-    (runner-start!)
-    (let [ctx (deref @(requiring-resolve 'runner/system-state))]
+  (runner/start!)
+  (let [ctx (runner/current-context)]
     (try
       (let [step-1 (step-1-direct-llm-calls ctx)
             step-2 (step-2-minimal-orc-llm-workflows ctx)
@@ -372,8 +349,8 @@
                         (when (:error r) (str " [ERROR: " (:error r) "]")))))
         {:step-1 step-1 :step-2 step-2 :step-3 step-3 :step-4 step-4})
       (finally
-        (runner-stop!))))))
+        (runner/stop!)))))
 
-(comment
+#_(do
   (require '[diagnose-llm-hang :as d] :reload)
   (d/diagnose!))

@@ -69,9 +69,6 @@
      :url (str "http://127.0.0.1:" (.getPort (.getAddress server)))}))
 
 (deftest warm-mixed-family-denies-sixth-continuation-provider-call
-  ;; FamilyAdmissionCountsOrdinaryAndCampaignCalls: warm portion only.
-  ;; audit/extract/decision + prime + inline spend five; continuation prime is denied.
-  ;; Replies preserve the authored rich graph and contracts; no predictor replacement.
   (let [directory (.toFile (java.nio.file.Files/createTempDirectory
                             "orc-mixed-budget-" (make-array java.nio.file.attribute.FileAttribute 0)))
         pack (first f/packs) run-id (str "conversation-ops-inline-" (random-uuid))

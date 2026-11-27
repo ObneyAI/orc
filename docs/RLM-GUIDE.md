@@ -1063,8 +1063,8 @@ Per the Grain methodology — every event is monitorable.
 | `:rlm/researcher-iterations` | Explicit non-checkpointed compatibility only; emitted once at terminal when the researcher ran at least one iteration | `:execution-id`, `:iterations`, `:iteration-count`, `:emitted-at` |
 | `:sheet/tick-cancelled` | When Phase 2 budget cancellation fires mid-flight | `:sheet-id`, `:tick-id` |
 
-These are the **durable** event bodies. Resolve values from them with
-`ai.obney.orc.orc-service.core.value-log` (`writes-for`, `latest-values`) — see
+Resolve values from these durable events with `value-log-writes-for` or
+`value-log-latest-values` in `ai.obney.orc.orc-service.interface`. See
 [Event Store Patterns](EVENT-STORE-PATTERNS.md#single-write-discipline-values-live-in-exactly-one-event-type).
 External references are transparently rehydrated; see [Value Storage](VALUE-STORAGE.md).
 Live subscriptions project `:rlm/researcher-iteration-recorded` as the

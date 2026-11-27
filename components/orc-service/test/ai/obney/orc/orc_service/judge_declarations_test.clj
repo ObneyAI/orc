@@ -4,9 +4,10 @@
    Driven through the public commands and the judges read model."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.dsl :as dsl]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (def bands {1 "Poor: unsupported" 2 "Fair: partly supported" 3 "Good: fully supported"})
 
@@ -130,8 +131,6 @@
       (declare! ctx sheet-id "j" v1)
       (h/run-command ctx (h/make-revise-judge-command sheet-id "j" v2))
       (let [live (rm/get-judge ctx sheet-id "j")
-            ;; Fresh L1 + fresh LMDB cache over the SAME event store: the
-            ;; projection must be rebuilt purely from the stored events.
             fresh (h/create-test-context)]
         (try
           (let [rebuilt (rm/get-judge (assoc fresh :event-store (:event-store ctx)) sheet-id "j")]
@@ -141,16 +140,13 @@
             (is (= live rebuilt)))
           (finally (h/stop-context fresh)))))))
 
-;; =============================================================================
-;; DSL: sheet/judges carries the new fields; rebuilds revise instead of failing
-;; =============================================================================
 
 (defn- workflow-with-judge [judge-config & {:keys [instruction] :or {instruction "Process"}}]
-  (dsl/workflow "s6a-dsl-judges"
-    (dsl/blackboard {:input :string :output :string})
-    (dsl/judges {:grounding-judge judge-config})
-    (dsl/sequence "main"
-      (dsl/llm "process" :model "test/model" :instruction instruction
+  (service-logic/workflow "s6a-dsl-judges"
+    (service-logic/dsl-blackboard {:input :string :output :string})
+    (service-logic/dsl-judges {:grounding-judge judge-config})
+    (service-logic/sequence "main"
+      (service-logic/llm "process" :model "test/model" :instruction instruction
         :reads [:input] :writes [:output] :judges ["grounding-judge"]))))
 
 (defn- count-events [ctx]
@@ -160,7 +156,7 @@
   (h/with-test-context [ctx]
     (let [config {:type :grounding :rubric (rubric) :purposes #{:monitoring}
                   :model "google/gemini-3-flash-preview" :timeout-ms 9000}
-          sheet-id (dsl/build-workflow! ctx (workflow-with-judge config))
+          sheet-id (service-commands/build-workflow! ctx (workflow-with-judge config))
           judge (rm/get-judge ctx sheet-id "grounding-judge")]
       (is (= (rubric) (:rubric judge)))
       (is (= #{:monitoring} (:purposes judge)))
@@ -172,8 +168,8 @@
   (h/with-test-context [ctx]
     (let [v1 {:type :grounding :rubric (rubric)}
           v2 {:type :grounding :rubric (assoc (rubric) :criterion "Edited criterion")}
-          sheet-id (dsl/build-workflow! ctx (workflow-with-judge v1))
-          _ (dsl/build-workflow! ctx (workflow-with-judge v2))
+          sheet-id (service-commands/build-workflow! ctx (workflow-with-judge v1))
+          _ (service-commands/build-workflow! ctx (workflow-with-judge v2))
           judge (rm/get-judge ctx sheet-id "grounding-judge")]
       (is (= 2 (:revision-number judge)))
       (is (= "Edited criterion" (get-in judge [:rubric :criterion])))
@@ -182,28 +178,28 @@
 (deftest rebuild-changing-only-the-tree-keeps-the-judge-revision
   (h/with-test-context [ctx]
     (let [v1 {:type :grounding :rubric (rubric)}
-          sheet-id (dsl/build-workflow! ctx (workflow-with-judge v1))
-          _ (dsl/build-workflow! ctx (workflow-with-judge v1 :instruction "A different instruction"))]
+          sheet-id (service-commands/build-workflow! ctx (workflow-with-judge v1))
+          _ (service-commands/build-workflow! ctx (workflow-with-judge v1 :instruction "A different instruction"))]
       (is (= 1 (:revision-number (rm/get-judge ctx sheet-id "grounding-judge")))
           "an unchanged judge is not a new revision"))))
 
 (deftest rebuild-unchanged-with-judges-is-a-noop
   (h/with-test-context [ctx]
     (let [wf (workflow-with-judge {:type :grounding :rubric (rubric)})
-          _ (dsl/build-workflow! ctx wf)
+          _ (service-commands/build-workflow! ctx wf)
           before (count-events ctx)]
-      (dsl/build-workflow! ctx wf)
+      (service-commands/build-workflow! ctx wf)
       (is (= before (count-events ctx))))))
 
 (deftest judges-survive-export-dsl-and-import-round-trips
   (h/with-test-context [ctx]
     (let [config {:type :grounding :rubric (rubric) :purposes #{:monitoring}
                   :model "google/gemini-3-flash-preview" :timeout-ms 9000}
-          source-id (dsl/build-workflow! ctx (workflow-with-judge config))
-          exported (dsl/export-sheet ctx source-id)
-          regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
-                        (eval (read-string (dsl/export-to-dsl exported))))
-          imported-id (dsl/import-sheet ctx (assoc-in exported [:sheet :name] "s6a-imported"))]
+          source-id (service-commands/build-workflow! ctx (workflow-with-judge config))
+          exported (service-commands/export-sheet ctx source-id)
+          regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.interface)]
+                        (eval (read-string (service-logic/export-to-dsl exported))))
+          imported-id (service-commands/import-sheet ctx (assoc-in exported [:sheet :name] "s6a-imported"))]
       (is (= config (get-in exported [:judges-schema :grounding-judge])))
       (is (= config (get-in regenerated [:judges-schema :grounding-judge])))
       (is (= config (:judge-config (peek (:revisions (rm/get-judge ctx imported-id "grounding-judge")))))))))
@@ -225,11 +221,11 @@
 (deftest assess-failures-survives-the-dsl-and-export-round-trips
   (h/with-test-context [ctx]
     (let [config {:type :grounding :criteria "c" :assess-failures? true}
-          source-id (dsl/build-workflow! ctx (workflow-with-judge config))
-          exported (dsl/export-sheet ctx source-id)
-          regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
-                        (eval (read-string (dsl/export-to-dsl exported))))
-          imported-id (dsl/import-sheet ctx (assoc-in exported [:sheet :name] "s14-imported"))]
+          source-id (service-commands/build-workflow! ctx (workflow-with-judge config))
+          exported (service-commands/export-sheet ctx source-id)
+          regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.interface)]
+                        (eval (read-string (service-logic/export-to-dsl exported))))
+          imported-id (service-commands/import-sheet ctx (assoc-in exported [:sheet :name] "s14-imported"))]
       (is (true? (:assess-failures? (rm/get-judge ctx source-id "grounding-judge"))))
       (is (= config (get-in exported [:judges-schema :grounding-judge])))
       (is (= config (get-in regenerated [:judges-schema :grounding-judge])))

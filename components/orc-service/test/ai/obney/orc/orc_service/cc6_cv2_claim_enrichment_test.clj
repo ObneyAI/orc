@@ -23,13 +23,12 @@
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.core.commands]
             [ai.obney.orc.orc-service.core.read-models]
-            [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
+            [ai.obney.orc.orc-service.core.logic :as logic]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
             [ai.obney.orc.ontology.core.todo-processors]
-            [ai.obney.orc.ontology.core.harvest :as harvest]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.query-processor.interface :as qp]
@@ -37,10 +36,9 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]))
 
-;; Harness hygiene only: a threshold-fired autonomous consolidation must never
-;; reach a real provider. CV-2's enrichment itself uses NO LLM.
 (defn- stub-predict-fixture [f]
   (with-redefs [llm/predict
                 (fn [_provider _module _inputs _options]
@@ -143,7 +141,7 @@
            (cond-> {:command/name :sheet/record-rlm-tree-execution-completion
                     :command/id (random-uuid)
                     :command/timestamp (time/now)
-                    :sheet-id (random-uuid)   ;; ephemeral Phase-2 sheet
+                    :sheet-id (random-uuid)
                     :tick-id (random-uuid)
                     :trajectory []
                     :total-usage {:total-tokens 0}}
@@ -151,7 +149,7 @@
              source-tick-id  (assoc :source-tick-id source-tick-id)
              tree            (assoc :generated-tree tree
                                      :generated-tree-source (pr-str tree)
-                                     :tree-fingerprint (rlm-fingerprint/fingerprint tree))
+                                     :tree-fingerprint (logic/fingerprint tree))
              status          (assoc :status status)))))
 
 (defn- pattern-claims
@@ -172,10 +170,6 @@
        (filterv #(and (= :tree-class (:target-type %))
                       (= class-id (:target-id %))))))
 
-;; ===========================================================================
-;; CYCLE 4 — the emitted DSL lands as a CLAIM, and reaches the assembled body
-;; and harvest exactly as before.
-;; ===========================================================================
 
 (deftest emitted-dsl-lands-as-a-strength-claim
   (testing "after an emit the class gains a :strength claim whose
@@ -205,7 +199,7 @@
                  (:recommended-pattern (first (body-pattern-strengths ctx class-id))))
               "with :recommended-pattern = the emitted DSL")
           (is (= (pr-str emitted-tree)
-                 (:recommended-pattern (harvest/harvest-body body 12)))
+                 (:recommended-pattern (ontology-queries/harvest-body body 12)))
               "harvest still ships the real worked pattern")
           (is (some? (some #(clojure.string/includes? % signature)
                            (:representative-uses body)))
@@ -214,10 +208,6 @@
         (is (empty? (tree-class-body-writes ctx class-id))
             "no whole-body :tree-class write on either path")))))
 
-;; ===========================================================================
-;; CYCLE 5 — an identical re-emit REINFORCES, it does not duplicate.
-;; This is the 14-of-145 ratchet turning into a counter.
-;; ===========================================================================
 
 (deftest an-identical-re-emit-reinforces-the-existing-claim
   (testing "re-emitting the SAME DSL leaves exactly one worked-pattern claim and
@@ -242,23 +232,6 @@
             (is (< (:support before) (:support (first after)))
                 "the re-emit REINFORCED it: the mechanical entry is a counter now")))))))
 
-;; ===========================================================================
-;; CYCLE 6 — RENAMED under RR-20 (was `a-revised-emit-edits-the-same-claim`).
-;;
-;; RR-20 CHANGED THE MECHANISM HERE, DELIBERATELY, so this test changed with
-;; it. Before RR-20, claim identity was ONE FIXED LITERAL per class, so a
-;; "revised emit" — literally any DIFFERENT tree, successful or not — could
-;; only ever EDIT that one slot in place: a genuinely different (and possibly
-;; WORSE, or FAILED) shape silently replacing whatever the class had proven
-;; before. That is exactly the defect `WorkedPatternsAreProvenNotMerelyRecent`
-;; names: "a later attempt does not overwrite an earlier proven one merely by
-;; being later." RR-20 keys claim identity PER SHAPE (`:tree-fingerprint`), so
-;; two successful-but-different trees are two DISTINCT shapes and therefore
-;; two claims that never touch each other — `a-class-that-succeeds-with-two-
-;; shapes-keeps-both` in `rr20_worked_pattern_outcome_shape_test` is the
-;; behavioural proof. `:edit` still exists, but now only within ONE shape's
-;; identity (see `shape-delta`'s docstring for the rare case that reaches it).
-;; ===========================================================================
 
 (deftest a-revised-emit-with-a-different-shape-adds-a-second-claim-not-an-edit
   (testing "emitting a DIFFERENT (successful) tree adds a SECOND worked-pattern
@@ -289,10 +262,6 @@
             (is (some #(= (pr-str revised-tree) (:recommendation %)) after)
                 "the second, different shape is recorded as its OWN claim")))))))
 
-;; ===========================================================================
-;; CYCLE 7 — the legacy-body hazard. A target that still holds only a
-;; pre-claim body is NOT a place for a mechanical claim to land.
-;; ===========================================================================
 
 (deftest enrichment-refuses-to-collapse-a-legacy-bodied-class
   (testing "a class whose knowledge is still a legacy whole-body description and
@@ -305,7 +274,6 @@
             source-tick-id (random-uuid)
             class-id (random-uuid)]
         (classify! ctx source-sheet-id source-tick-id class-id)
-        ;; A seeded / pre-claim class: whole body, no claims.
         (cp/process-command
           (assoc ctx :command
                  {:command/name :ontology/record-tree-class-description

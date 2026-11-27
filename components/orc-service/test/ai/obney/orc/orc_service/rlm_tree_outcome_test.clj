@@ -8,9 +8,10 @@
    ((get-var :tree-results)). These tests pin the push channel:
    render-tree-outcome, the history rendering, and the surviving-vars
    collection that lets recovery trees resume instead of recompute."
-  (:require [ai.obney.orc.orc-service.core.executor :as executor]
+  (:require
             [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]))
+            [clojure.test :refer [deftest is testing]]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; render-tree-outcome
@@ -26,12 +27,11 @@
                                       :key-dates "nil"
                                       :key-entities {:count 21 :sample-3 ["{...}"]}}
                    :nil-writes [:report :key-dates]}
-          rendered (executor/render-tree-outcome summary)]
+          rendered (service-logic/render-tree-outcome summary)]
       (is (str/includes? rendered "status: :success"))
       (is (str/includes? rendered "NIL/EMPTY WRITES: :report, :key-dates"))
       (is (str/includes? rendered "legacy summary combines missing and present empty values"))
       (is (not (str/includes? rendered "did NOT land")))
-      ;; Present output keys remain visible even if their preview is null.
       (is (str/includes? rendered ":key-entities"))
       (let [merged-section (first (str/split rendered #"NIL/EMPTY"))]
         (is (str/includes? merged-section ":report"))))))
@@ -47,7 +47,7 @@
                    :failed-leaves [{:node-id #uuid "00000000-0000-0000-0000-00000000aaaa"
                                     :status :failure
                                     :error "LLM output unparseable for keys [:report] — ... preview: # Briefing Report ..."}]}
-          rendered (executor/render-tree-outcome summary)]
+          rendered (service-logic/render-tree-outcome summary)]
       (is (str/includes? rendered "status: :failure"))
       (is (str/includes? rendered "Failed leaves:"))
       (is (str/includes? rendered "00000000-0000-0000-0000-00000000aaaa"))
@@ -61,7 +61,7 @@
                    :outputs-keys [:answer]
                    :outputs-previews {:answer "A: 110\nB: 14"}
                    :nil-writes []}
-          rendered (executor/render-tree-outcome summary)]
+          rendered (service-logic/render-tree-outcome summary)]
       (is (str/includes? rendered "status: :success"))
       (is (str/includes? rendered ":answer"))
       (is (not (str/includes? rendered "NIL/EMPTY")))
@@ -75,7 +75,7 @@
                    :outputs-previews {}
                    :nil-writes [:report :key-dates :key-entities]
                    :surviving-vars [:all-facts :batches]}
-          rendered (executor/render-tree-outcome summary)]
+          rendered (service-logic/render-tree-outcome summary)]
       (is (str/includes? rendered "Surviving intermediate vars"))
       (is (str/includes? rendered ":all-facts"))
       (is (str/includes? rendered "do NOT recompute")))))
@@ -91,10 +91,10 @@
   (testing "intermediate writes are collected; declared writes, inputs, and reserved keys excluded"
     (let [events [(write-event :batches ["b1" "b2"])
                   (write-event :all-facts "facts...")
-                  (write-event :report nil)          ; declared write — excluded
-                  (write-event :document-page-texts ["p1"]) ; researcher input — excluded
+                  (write-event :report nil)
+                  (write-event :document-page-texts ["p1"])
                   {:event/type :sheet/node-execution-completed :status :success}]
-          surviving (executor/surviving-vars-from-events
+          surviving (service-logic/surviving-vars-from-events
                       events
                       [:report :key-dates :key-entities :document-page-texts
                        :tree-results :generated-tree :generated-tree-raw
@@ -105,11 +105,8 @@
   (testing "the same key written twice keeps the later value"
     (let [events [(write-event :draft "v1")
                   (write-event :draft "v2")]]
-      (is (= {:draft "v2"} (executor/surviving-vars-from-events events []))))))
+      (is (= {:draft "v2"} (service-logic/surviving-vars-from-events events []))))))
 
-;; =============================================================================
-;; build-iteration-history renders :tree-outcome in place of Result
-;; =============================================================================
 
 (deftest history-renders-tree-outcome-over-result
   (testing "a history entry with :tree-outcome shows the outcome, not the compiled tree"
@@ -119,7 +116,7 @@
                     :error nil
                     :vars-created [:key-entities]
                     :tree-outcome "Tree executed — status: :success | nodes: 15/15 succeeded\nNIL/EMPTY WRITES: :report, :key-dates — these declared writes did NOT land"}]
-          rendered (#'executor/build-iteration-history history)]
+          rendered (#'service-logic/build-iteration-history history)]
       (is (str/includes? rendered "NIL/EMPTY WRITES: :report, :key-dates"))
       (is (not (str/includes? rendered "sheet/sequence"))
           "the useless compiled-tree string is not shown")
@@ -131,5 +128,5 @@
                     :stdout ""
                     :error nil
                     :vars-created []}]
-          rendered (#'executor/build-iteration-history history)]
+          rendered (#'service-logic/build-iteration-history history)]
       (is (str/includes? rendered "Result: \"42\"")))))

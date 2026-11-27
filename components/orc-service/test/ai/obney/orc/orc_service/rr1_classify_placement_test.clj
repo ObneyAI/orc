@@ -33,9 +33,6 @@
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.time.interface :as time]))
 
-;; =============================================================================
-;; Real-grain context (todo processors started — the real async pipeline)
-;; =============================================================================
 
 (defn- create-context [excluded-processors]
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -73,9 +70,6 @@
   `(let [~sym (create-context ~(or excluded-processors #{}))]
      (try ~@body (finally (stop-context ~sym)))))
 
-;; =============================================================================
-;; Fixtures: a real repl-researcher sheet with :auto-classify? true
-;; =============================================================================
 
 (defn- setup-auto-classify-sheet! [ctx]
   (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "RR1 Placement"))
@@ -132,9 +126,6 @@
 (def ^:private fast-behavioral
   {:behaviors [] :rerank-fallback? false :outcome :matched})
 
-;; =============================================================================
-;; RED #6 — a slow classify does NOT hold the dispatch thread
-;; =============================================================================
 
 (def ^:private induced-classify-delay-ms
   "How long the injected classify stall lasts. Must be comfortably longer
@@ -149,21 +140,14 @@
 
 (deftest slow-classify-does-not-block-the-dispatch-thread
   (testing "execute-repl-researcher-node returns to its caller (the todo-processor dispatch thread) immediately even when classify is slow — the wedge runs inside the future"
-    ;; Keep start-tree-tick live so the event under test comes from the real
-    ;; pipeline, but leave its generic node consumer unsubscribed. This gives
-    ;; the timing probe a fresh, never-classified campaign occurrence.
     (with-test-ctx [ctx #{:sheet/execute-leaf-node}]
       (let [{:keys [sheet-id node-id]} (setup-auto-classify-sheet! ctx)
             classify-ran (promise)]
-        ;; Phase 1 — drive the real tree-start pipeline only. The resulting
-        ;; node start has not already consumed RR-18's one classification.
         (dispatch-tick! ctx sheet-id)
         (let [started (await-started-event ctx node-id 10000)]
             (is (some? started)
                 "Sanity: the real pipeline emitted a :sheet/node-execution-started event for the repl-researcher node")
             (Thread/sleep 500)
-            ;; Phase 2 — re-drive the handler with a SLOW classify and time
-            ;; how long the CALLER is held.
             (with-redefs [ontology/classify-task (fn [_ _]
                                                    (Thread/sleep induced-classify-delay-ms)
                                                    (deliver classify-ran true)
@@ -178,9 +162,6 @@
                 (is (deref classify-ran (+ induced-classify-delay-ms 10000) false)
                     "the slow classify still RAN (inside the future) — the work moved, it was not skipped"))))))))
 
-;; =============================================================================
-;; RED #7 — R-Inject surfaces a caution for a :timeout-fallback candidate
-;; =============================================================================
 
 (defn- render-prepend
   "Run the real R-Inject helper and return the resulting instruction."

@@ -33,6 +33,12 @@ value DataSchema {
 
 value BlackboardValue {
     value: Any
+
+    @invariant DurableValue
+        -- A persisted value consists of built-in serializable scalars or finite
+        -- maps, sets, vectors and lists whose keys and members are durable.
+        -- A live object, function, record, lazy computation, or a collection
+        -- containing one cannot become draft or execution blackboard state.
 }
 
 value NodeConfiguration {
@@ -1715,7 +1721,9 @@ rule NodeFails {
         -- schema before validation. JSON numeric representations that have the
         -- same schema meaning are canonicalized, while strings are not treated
         -- as numbers. Rejected values remain inspection evidence and never
-        -- become execution values or blackboard state.
+        -- become execution values or blackboard state. When the attempted value
+        -- contains a non-durable object, inspection returns the reason and its
+        -- type in place of that value, without retaining the object.
 }
 
 -- A recovered map-each node does not rebuild its pending set from process
@@ -2539,7 +2547,7 @@ surface WorkflowExecutionAccess {
         -- blackboard values or another execution's values.
 
     @guarantee OpaqueBlockingPayload
-        -- ORC propagates a leaf's blocking payload without interpreting it.
+        -- ORC propagates a leaf's durable blocking payload without interpreting it.
 
     @guarantee ConfigurableCanonicalValuePlacement
         -- A deployment selects one canonical value placement policy without

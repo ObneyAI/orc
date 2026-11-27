@@ -23,11 +23,9 @@
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
             [ai.obney.orc.orc-service.core.todo-processors :as tp]
-            [ai.obney.orc.ontology.interface :as ontology]))
+            [ai.obney.orc.ontology.interface :as ontology]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
-;; =============================================================================
-;; Test data builders — mirrors r_inject_classifier_context_test's shapes
-;; =============================================================================
 
 (defn- mk-structural-candidate
   [target-id reasoning content fitness]
@@ -60,11 +58,6 @@
       (recur (+ idx (count needle)) (inc n))
       n)))
 
-;; =============================================================================
-;; Cycle 1 — a newborn domain child (no consolidated body) renders the
-;; parent's full entry, then the child-assignment line, NOT the fresh-mint
-;; "no high-confidence match" branch.
-;; =============================================================================
 
 (deftest domain-mint-newborn-child-renders-parent-then-child-line
   (testing "RS-4 cycle 1: a domain-mint whose child has NO consolidated body
@@ -75,12 +68,6 @@
           child-id (random-uuid)
           domain-label "marathon-training-plan"
           parent-reasoning "Top-1 because the task shares the training-plan shape."
-          ;; The candidate's :content is what retrieval returned for this seed
-          ;; — in practice the same text as the corpus body's own :summary
-          ;; (the render quotes CANDIDATE :content as "Pattern guidance", never
-          ;; the fetched body's :summary directly — matches r_inject_
-          ;; classifier_context_test's structural-content/mk-structural-
-          ;; candidate convention).
           parent-summary "TrainingPlan sequences weekly mileage blocks toward a taper."
           child-summary "Marathon training plan child — no evidence consolidated yet."
           payload {:structural {:assigned-tree-id child-id
@@ -142,12 +129,6 @@
           (is (< parent-idx child-idx)
               "parent entry renders before the child-assignment line"))))))
 
-;; =============================================================================
-;; Cycle 2 — the four-move menu's SPECIALIZE bullet is a function of the
-;; payload: :domain present -> points at the runtime's assignment instead of
-;; inviting a structural mint the runtime already made; :domain absent ->
-;; byte-identical to the pre-RS-4 structural-mint invitation.
-;; =============================================================================
 
 (def ^:private original-specialize-bullet
   "The pre-RS-4 SPECIALIZE bullet, verbatim, as it exists in production
@@ -244,10 +225,6 @@
       (is (= instruction instruction-stripped)
           "the render is stable: never-had-:domain == had-it-then-dissoc'd"))))
 
-;; =============================================================================
-;; Cycle 3 — a domain child WITH a consolidated body renders as the primary
-;; entry; the parent drops to one shape-context line (no second full entry).
-;; =============================================================================
 
 (deftest domain-child-consolidated-renders-as-primary-entry
   (testing "RS-4 cycle 3: once the child's body is consolidated
@@ -259,8 +236,6 @@
           child-id (random-uuid)
           domain-label "ketogenic-meal-plan"
           top-reasoning "Top-1 because the task shares the meal-plan shape."
-          ;; Two sentences: the shape-context line carries the summary WHOLE
-          ;; (never parsed for a sentence break).
           parent-summary "MealPlan sequences daily macro targets with a shopping list. It ships weekly."
           child-summary "Ketogenic meal plan pins net-carb targets under 20g/day."
           payload {:structural {:assigned-tree-id child-id
@@ -311,31 +286,16 @@
       (testing "the injection record names the CHILD it rendered, at the child's body version (CC-13)"
         (let [recorded (with-redefs [ontology/get-description
                                      (fn [_ _ id] (get stub-bodies id))]
-                         (#'tp/injected-candidates {} payload))]
+                         (#'service-logic/injected-candidates {} payload))]
           (is (= [{:axis :structural :candidate-id (str child-id) :version 2 :score 0.88}]
                  recorded)))))))
 
-;; =============================================================================
-;; Cycle 4 — the wedge seam: maybe-auto-classify-and-set-context stamps the
-;; :domain facts on :context.:r05-classifier.:structural.:domain (mirrors
-;; r_inject_classifier_context_test's wedge-stashes-r05-classifier-payload).
-;; =============================================================================
 
 (deftest wedge-stashes-domain-facts-on-a-domain-outcome
   (testing "RS-4 cycle 4a: a :mint-domain-child classify-task result stamps
             the four-key :domain map onto the payload, key by key."
     (let [parent-id (random-uuid)
           child-id (random-uuid)
-          ;; :was-fresh-mint? false here (even though a REAL assign-domain-
-          ;; child mint always pairs :mint-domain-child with true): this test
-          ;; stubs classify-task directly, bypassing assign-domain-child, and
-          ;; only exercises the :domain payload-stamping seam — mirroring
-          ;; wedge-stashes-r05-classifier-payload's hermetic ctx (no
-          ;; :cache/:event-store), so it must not also trip the CV-1
-          ;; convergence-capture side effect (domain-mint? AND
-          ;; :was-fresh-mint?), which needs a real read-model cache. RS-3's
-          ;; rs3_domain_child_durable_test exercises the real mint +
-          ;; was-fresh-mint?/true combination through the live wedge.
           structural-result {:assigned-tree-id child-id
                               :confidence 0.9
                               :was-fresh-mint? false
@@ -399,16 +359,6 @@
           (is (not (contains? structural :domain))
               ":domain key is absent, not nil-valued"))))))
 
-;; =============================================================================
-;; RS-7 Slice 0 characterisation — a plain :match whose ASSIGNED id happens
-;; to already BE a domain child (a newborn reached again) still carries no
-;; :domain key: maybe-assign-domain-child never ran here (classify-task is
-;; stubbed wholesale, as production dispatches it), so the render has no
-;; child line to show today even though the assigned target is itself a
-;; domain child. Pinned so Slice 1 (a domain child is a leaf on the domain
-;; axis) can flip this by name once the runtime produces a real :domain
-;; payload for this case.
-;; =============================================================================
 
 (deftest wedge-omits-domain-on-a-plain-match-whose-target-is-a-domain-child
   (testing "RS-7 characterisation: a stubbed :match classify-task result
@@ -441,14 +391,6 @@
           (is (not (contains? structural :domain))
               ":domain key is absent — no child line renders for this case today"))))))
 
-;; =============================================================================
-;; CV-B (C7) — the family's own body renders BENEATH the child line whenever
-;; it has substance, while the parent stays the primary entry until
-;; consolidated-from-event-count >= 1 (D5). Usefulness report 06: "the second
-;; recipe occurrence read the child line but was never shown what the child
-;; had learned" — the family's strengths were recorded (CV-2 enrichment) but
-;; invisible before consolidation.
-;; =============================================================================
 
 (defn- mk-behavioral-entry
   "A minimal non-fresh-mint behavioral entry — enough to make format-
@@ -550,7 +492,7 @@
       (testing "the injection candidates contain the child id at its own body version (CC-13)"
         (let [recorded (with-redefs [ontology/get-description
                                      (fn [_ _ id] (get stub-bodies id))]
-                         (#'tp/injected-candidates {} payload))
+                         (#'service-logic/injected-candidates {} payload))
               child-row (some #(when (= (str child-id) (:candidate-id %)) %) recorded)]
           (is (some? child-row) (pr-str recorded))
           (is (= 2 (:version child-row)))
@@ -606,7 +548,7 @@
       (testing "the injection candidates carry ONLY the parent — no family row"
         (let [recorded (with-redefs [ontology/get-description
                                      (fn [_ _ id] (get stub-bodies id))]
-                         (#'tp/injected-candidates {} payload))]
+                         (#'service-logic/injected-candidates {} payload))]
           (is (= [(str parent-id)] (map :candidate-id recorded))))))))
 
 (deftest reached-family-renders-once-and-is-recorded-once
@@ -652,7 +594,7 @@
           (with-redefs [ontology/get-description
                         (fn [_ctx _granularity target-id] (get stub-bodies target-id))]
             [(:instruction (tp/apply-r05-classifier-context node {}))
-             (#'tp/injected-candidates {} payload)])
+             (#'service-logic/injected-candidates {} payload)])
           structural-ids (->> recorded (filter #(= :structural (:axis %))) (map :candidate-id))]
       (is (= 1 (count (filter #{(str child-id)} structural-ids)))
           (str "family recorded exactly once: " (pr-str recorded)))
@@ -727,7 +669,7 @@
       (testing "the injection record still names exactly the child at its body version"
         (let [recorded (with-redefs [ontology/get-description
                                      (fn [_ _ id] (get stub-bodies id))]
-                         (#'tp/injected-candidates {} payload))]
+                         (#'service-logic/injected-candidates {} payload))]
           (is (= [{:axis :structural :candidate-id (str child-id) :version 2 :score 0.88}]
                  recorded)))))))
 
@@ -750,7 +692,7 @@
           [instruction recorded]
           (with-redefs [ontology/get-description (fn [_ _ id] (get bodies id))]
             [(:instruction (tp/apply-r05-classifier-context (mk-node "Task: x" payload) {}))
-             (#'tp/injected-candidates {} payload)])]
+             (#'service-logic/injected-candidates {} payload)])]
       (is (str/includes? instruction "top 2 from corpus retrieval"))
       (is (= [(str shape-id) (str other-id)]
              (mapv :candidate-id (filter #(= :structural (:axis %)) recorded)))))))

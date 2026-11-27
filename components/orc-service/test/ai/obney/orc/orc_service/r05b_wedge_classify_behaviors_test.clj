@@ -55,15 +55,10 @@
                           :types #{:ontology/task-classified}}))
        first))
 
-;; =============================================================================
-;; RED #9 — wedge calls BOTH classify-task and classify-behaviors,
-;;            forwards behavioral-subtrees through to the event body
-;; =============================================================================
 
 (deftest wedge-calls-classify-behaviors-and-forwards-result
   (with-test-ctx [ctx]
     (let [assigned-tree-id (random-uuid)
-          ;; Structural stub — single match, no walk-down, no rerank fallback.
           structural-result {:assigned-tree-id assigned-tree-id
                              :confidence 0.85
                              :top-candidates []
@@ -71,7 +66,6 @@
                              :was-fresh-mint? false
                              :rerank-fallback? false
                              :parent-tree-id nil}
-          ;; Behavioral stub — 2 behaviors above threshold.
           behaviors [{:behavior-id (random-uuid) :confidence 0.92
                       :was-fresh-mint? false :reasoning "analysis dominates"
                       :rerank-source :reranker}
@@ -118,10 +112,6 @@
           (is (= behaviors (:behavioral-subtrees event))
               "Behavioral classification forwarded all the way to the event body"))))))
 
-;; =============================================================================
-;; RED #10 — wedge omits :behavioral-subtrees when behavioral result is empty
-;;            (defensive — preserves legacy event shape on opt-out paths)
-;; =============================================================================
 
 (deftest wedge-omits-behavioral-subtrees-when-behaviors-empty
   (with-test-ctx [ctx]
@@ -133,8 +123,6 @@
                              :was-fresh-mint? false
                              :rerank-fallback? false
                              :parent-tree-id nil}
-          ;; Behavioral result missing :behaviors entirely — defensive
-          ;; fallback path when classify-behaviors hasn't run or fails.
           empty-behavioral {:behaviors nil :rerank-fallback? false}
           node {:id (random-uuid)
                 :name "test-node"

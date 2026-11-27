@@ -62,8 +62,6 @@
         (is (map? (:provider-observations result)))))))
 
 (deftest paired-function-distinguishes-empty-response-from-missing-forced-call
-  ;; StructuredFailureClassification through the real OpenRouter adapter. A
-  ;; protocol failure must retain safe returned evidence without another call.
   (let [spec {:instructions "Return the supplied identity."
               :inputs [{:name :source :spec :string}]
               :outputs [{:name :identity :spec :string}]}

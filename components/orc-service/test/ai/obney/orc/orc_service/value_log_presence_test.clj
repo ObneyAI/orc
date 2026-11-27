@@ -3,8 +3,8 @@
    structured-contract-e2e-test. No model or resolver is mocked here."
   (:require [clojure.test :refer [deftest is]]
             [ai.obney.grain.event-store-v3.interface :as es]
-            [ai.obney.orc.orc-service.core.value-log :as values]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.read-models :as service-read-models]))
 
 (defn- event [type sheet tick body]
   (es/->event {:type type :tags #{[:sheet sheet] [:tick tick]}
@@ -59,29 +59,27 @@
                                        :exec-context execution :value-id (random-uuid)})]})]
       (is (nil? (:cognitect.anomalies/category appended)))
       (is (= {:direct nil :flag false :transitive nil}
-             (values/resolve-writes ctx tenant tick {:node-id node :inputs {}})))
-      (is (= {:seed nil} (values/tick-seeds ctx tenant tick)))
+             (service-read-models/resolve-writes ctx tenant tick {:node-id node :inputs {}})))
+      (is (= {:seed nil} (service-read-models/tick-seeds ctx tenant tick)))
       (is (= {:direct nil :transitive nil :seed nil}
-             (values/resolve-values ctx tenant tick metadata nil)))
+             (service-read-models/resolve-values ctx tenant tick metadata nil)))
       (is (= {:direct nil :transitive nil :seed nil}
-             (values/resolve-reads ctx tenant tick
+             (service-read-models/resolve-reads ctx tenant tick
                {:read-keys [:direct :transitive :seed :missing :foreign :cyclic :never]
                 :read-sources {:direct source :transitive transitive :missing missing
                                :foreign foreign :cyclic cyclic}})))
       (is (= {:item nil :seed nil}
-             (values/resolve-reads ctx tenant tick
+             (service-read-models/resolve-reads ctx tenant tick
                {:inputs execution :read-keys [:item :seed :never]})))
       (is (= {:seed nil :direct nil :flag false :transitive nil :item nil}
-             (values/final-values ctx tenant tick)))
-      (let [hydrated (values/hydrate-blackboard ctx tenant tick metadata)]
+             (service-read-models/final-values ctx tenant tick)))
+      (let [hydrated (service-read-models/hydrate-blackboard ctx tenant tick metadata)]
         (doseq [k [:direct :transitive :seed]]
           (is (contains? (get hydrated k) :value))
           (is (nil? (get-in hydrated [k :value]))))
         (doseq [k [:missing :foreign :cyclic]]
           (is (not (contains? (get hydrated k) :value)))))
-      ;; The public scalar convenience function remains backward compatible.
-      (is (nil? (values/resolve-source ctx tenant source)))
+      (is (nil? (service-read-models/resolve-source ctx tenant source)))
       (doseq [bad [missing foreign cyclic]]
-        (is (nil? (values/resolve-source ctx tenant bad))))
-      ;; Canonical source lookup is tenant scoped and cannot invent foreign nil.
-      (is (= {} (values/resolve-writes ctx (random-uuid) tick {:node-id node :inputs {}}))))))
+        (is (nil? (service-read-models/resolve-source ctx tenant bad))))
+      (is (= {} (service-read-models/resolve-writes ctx (random-uuid) tick {:node-id node :inputs {}}))))))

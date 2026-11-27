@@ -3,7 +3,7 @@
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.trace-time :as trace-time]
+            [ai.obney.orc.orc-service.core.logic :as logic]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-sqlite-v3.interface]))
@@ -41,9 +41,9 @@
             append-result (es/append store {:tenant-id tenant-id :events events})
             stored (into [] (es/read store {:tenant-id tenant-id
                                             :tags #{[:sheet sheet-id]}}))
-            replayed (vals (reduce rm/traces* {} stored))
+            replayed (vals (reduce logic/traces* {} stored))
             ordered (sort (fn [a b]
-                            (trace-time/compare-timestamps (:started-at b)
+                            (logic/compare-timestamps (:started-at b)
                                                            (:started-at a)))
                           replayed)]
         (is (nil? (:cognitect.anomalies/category append-result)))

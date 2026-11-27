@@ -11,9 +11,8 @@
 
    Run: clojure -M:dev -m el5-1-batch-proto  (no env needed — fully stubbed)"
   (:require [clojure.string :as str]
-            [ai.obney.orc.ontology.core.domain-penalty :as dp]))
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
-;; Three real-shaped candidates with overlapping + distinct guards.
 (def candidates
   [{:document-id "A"
     :avoid-when ["extract or refactor, not a pure rename"]
@@ -24,16 +23,12 @@
     :content "build/extract/refactor code structure into a helper"
     :strengths [{:good-when "extract a pure helper from a handler"}]}
    {:document-id "C"
-    ;; C SHARES "a pure rename across files" with A's good guard -> distinct dedupes.
     :avoid-when ["extract or refactor, not a pure rename"]
     :content "rename a local variable"
     :strengths [{:good-when "a pure rename across files"}]}])
 
 (def task "refactor: extract a pure helper from the request handler")
 
-;; A deterministic fake "ColBERT" score for any (content) string against the task:
-;; longer literal token overlap -> higher score. Pure, content-only (mirrors the
-;; SAFETY property: MaxSim per-doc is independent of the other docs in the call).
 (defn fake-score [content]
   (let [t-tokens (set (str/split (str/lower-case task) #"\W+"))
         c-tokens (str/split (str/lower-case content) #"\W+")]
@@ -41,35 +36,31 @@
 
 (defn norm-fn [score] (min 1.0 (max 0.0 (/ (double score) 40.0))))
 
-;; --- The per-candidate (N-call) reference: today's colbert-rerank-scores ---
 (defn per-candidate-rerank-fn [calls]
   (fn [{:keys [documents]}]
     (swap! calls inc)
     (mapv (fn [c] {:content c :score (fake-score c)}) documents)))
 
-;; --- The batch rerank-fn (one call, all distinct docs) ---
 (defn batch-rerank-fn [calls]
   (fn [{:keys [documents]}]
     (swap! calls inc)
     (mapv (fn [c] {:content c :score (fake-score c)}) documents)))
 
 (defn -main [& _]
-  ;; N-call reference cosines
   (let [n-calls (atom 0)
         rf (per-candidate-rerank-fn n-calls)
         per-cand (into {}
                        (map (fn [c]
                               [(:document-id c)
-                               (dp/colbert-rerank-scores rf norm-fn
-                                                         (dp/avoid-strings c)
-                                                         (dp/legacy-positive-strings c)
+                               (ontology-logic/colbert-rerank-scores rf norm-fn
+                                                         (ontology-logic/avoid-strings c)
+                                                         (ontology-logic/legacy-positive-strings c)
                                                          task)]))
                        candidates)
-        ;; Batch: gather distinct guards across ALL candidates, ONE call, shared map.
         b-calls (atom 0)
         brf (batch-rerank-fn b-calls)
-        all-strings (distinct (mapcat (fn [c] (concat (dp/avoid-strings c)
-                                                      (dp/legacy-positive-strings c)))
+        all-strings (distinct (mapcat (fn [c] (concat (ontology-logic/avoid-strings c)
+                                                      (ontology-logic/legacy-positive-strings c)))
                                       candidates))
         all-strings (remove (fn [s] (or (nil? s) (str/blank? s))) all-strings)
         res (brf {:query task :documents (vec all-strings)})
@@ -80,8 +71,8 @@
         batch-cand (into {}
                          (map (fn [c]
                                 [(:document-id c)
-                                 {:cos-avoid (max-from-map (dp/avoid-strings c))
-                                  :cos-good  (max-from-map (dp/legacy-positive-strings c))}]))
+                                 {:cos-avoid (max-from-map (ontology-logic/avoid-strings c))
+                                  :cos-good  (max-from-map (ontology-logic/legacy-positive-strings c))}]))
                          candidates)]
     (println "=== EL-5.1 BATCH PROTO ===")
     (println "candidates:" (count candidates))

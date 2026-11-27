@@ -14,13 +14,11 @@
      clj -M:dev -e \"(require '[prototype-grounding-calibration :as p]) (p/run!)\"
 
    Or score a single ad-hoc trace from a REPL with (p/judge trace)."
-  (:require [ai.obney.orc.evaluation.core.judges :as judges]
+  (:require [ai.obney.orc.evaluation.interface :as evaluation]
+            [ai.obney.orc.evaluation.core.judges :as judges]
             [clojure.string :as str]
             [litellm.router :as litellm-router]))
 
-;; ---------------------------------------------------------------------------
-;; Provider registration (real OpenRouter; key from env)
-;; ---------------------------------------------------------------------------
 
 (defn register-openrouter! []
   (let [k (System/getenv "OPENROUTER_API_KEY")]
@@ -32,20 +30,12 @@
                                :config {:api-base "https://openrouter.ai/api/v1"
                                         :api-key k}})))
 
-;; ---------------------------------------------------------------------------
-;; Real source: a slice of the real employment agreement bench doc
-;; ---------------------------------------------------------------------------
 
 (def doc-path "development/bench/documents/employment_agreement.txt")
 
 (defn source-context []
   {:document (slurp doc-path)})
 
-;; ---------------------------------------------------------------------------
-;; Candidate traces spanning the band range (responses crafted by hand from
-;; the REAL doc facts, so we KNOW the expected band; the LLM judge is what we
-;; are calibrating).
-;; ---------------------------------------------------------------------------
 
 (defn traces []
   (let [src (source-context)
@@ -91,7 +81,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn judge [trace]
-  (judges/grounding-judge {:inputs {:trace-data trace}}))
+  (evaluation/grounding-judge {:inputs {:trace-data trace}}))
 
 (defn run! []
   (register-openrouter!)

@@ -73,16 +73,10 @@
       (let [{:keys [test pass]} (run!)]
         (println (str "Verified " test " live tests with " pass " passing assertions.")))
       (catch Throwable error
-        ;; GitHub's public API exposes annotations even when raw job logs require
-        ;; authentication. Preserve the failing namespace and result counts in
-        ;; the check itself so CI failures remain diagnosable from either view.
         (println (str "::error title=Live LLM test failure::"
                       (workflow-command-value
                        {:message (.getMessage error)
                         :data (ex-data error)})))
         (throw error)))
     (finally
-      ;; Futures and async processors use Clojure's agent pools. A successful
-      ;; command-line test run must release them so CI cannot hang after its
-      ;; final assertion waiting for non-daemon executor threads.
       (shutdown-agents))))

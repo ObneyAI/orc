@@ -20,14 +20,14 @@
         (instruction + reads + writes + tools), so the 156 events share it.
 
    Reports percentiles, not just the max. Prints its N."
-  (:require [clojure.edn :as edn]
+  (:require [ai.obney.orc.colbert.core.logic :as logic]
+            [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.java.io :as io]
             [time-literals.read-write]
-            [ai.obney.orc.colbert.core.encoder :as encoder]
-            [ai.obney.orc.colbert.core.model-store :as model-store]
-            [ai.obney.orc.ontology.core.consolidator]
-            [ai.obney.orc.ontology.core.task-classifier :as tc]))
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (def corpus-path
   "The P-E production dump (2,713 events, 2026-07-30 -> 2026-08-03). Override
@@ -93,17 +93,16 @@
 
 (defn -main [& _]
   (time-literals.read-write/print-time-literals-clj!)
-  (let [enc (encoder/get-encoder (model-store/resolve-model-dir))
+  (let [enc (logic/get-encoder (logic/resolve-model-dir))
         query-maxlen (get-in enc [:consts :query-maxlen])
         budget (- query-maxlen 3)
-        tok (fn [s] (count (encoder/encode-ids enc s)))
+        tok (fn [s] (count (logic/encode-ids enc s)))
         evs (edn/read-string {:readers time-literals.read-write/tags}
                              (slurp corpus-path))
         _ (println "CORPUS EVENTS:" (count evs))
         _ (println "ENCODER query_maxlen:" query-maxlen "=> word-piece budget:" budget)
 
-        ;; ---- Population A: consolidator inference signatures ----------------
-        build-parent-sig @#'ai.obney.orc.ontology.core.consolidator/build-parent-inference-signature
+        build-parent-sig @#'ontology-logic/build-parent-inference-signature
         desc-types #{:ontology/tree-description-updated
                      :ontology/node-instance-description-updated
                      :ontology/node-type-description-updated}
@@ -112,7 +111,6 @@
         a-queries (mapv build-parent-sig bodies)
         a-counts (mapv tok a-queries)
 
-        ;; ---- Population B: classifier task signatures ------------------------
         implement-instruction (read-def-value orc-sessions-src 'implementation-mode-instruction)
         implementation-tools (read-def-value orc-sessions-src 'implementation-tools)
         implement-node {:instruction implement-instruction
@@ -120,7 +118,7 @@
                                 :user-message :tool-context]
                         :writes [:assistant-response]
                         :mcp-tools implementation-tools}
-        b-sig (tc/build-task-signature implement-node)
+        b-sig (ontology-logic/build-task-signature implement-node)
         b-count (tok b-sig)
         n-classified (count (filter #(= :ontology/task-classified (:event/type %)) evs))]
 

@@ -69,9 +69,6 @@
    :reads [] :writes []
    :rlm {:auto-classify? true}})
 
-;; =============================================================================
-;; RED — structural :uncertain → wedge SKIPS assign-task-class entirely
-;; =============================================================================
 
 (deftest wedge-skips-assign-when-structural-outcome-uncertain
   (testing "structural :outcome :uncertain → NO :ontology/assign-task-class command, NO task-classified event"
@@ -88,11 +85,8 @@
                       ontology/classify-behaviors (fn [_ _] behavioral)]
           (let [result-node (tp/maybe-auto-classify-and-set-context (node) ctx)
                 events (task-classified-events ctx)]
-            ;; DEFEAT CONDITION (read the store back): an :uncertain outcome
-            ;; must NOT mint/assign a class.
             (is (= 0 (count events))
                 "DEFEAT CONDITION: :uncertain dispatched an assign-task-class command (minted/assigned)")
-            ;; But the node :context is STILL set so the R-Inject caution surfaces.
             (is (some? (:context result-node))
                 ":context is still set under :uncertain so the caution surfaces")
             (is (true? (get-in result-node [:context :r05-classifier :structural :rerank-fallback?]))
@@ -121,9 +115,6 @@
             (is (true? (get-in result-node [:context :r05-classifier :behavioral :rerank-fallback?]))
                 "the behavioral rerank-fallback? caution is carried on :context")))))))
 
-;; =============================================================================
-;; GREEN-GUARD — :matched / :novel still dispatch (no over-skip regression)
-;; =============================================================================
 
 (deftest wedge-still-dispatches-when-matched
   (testing ":outcome :matched → assign-task-class dispatched as today"

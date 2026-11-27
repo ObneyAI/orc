@@ -41,9 +41,6 @@
                         tools)]
     (merge input-schemas output-schemas)))
 
-;; ============================================================================
-;; Relationship-Aware Helpers (Phase 1)
-;; ============================================================================
 
 (defn- build-adjacency-map
   "Build an adjacency map from sequential relationships.
@@ -65,7 +62,6 @@
        (if (tool-names to)
          (update acc to (fnil inc 0))
          acc))
-     ;; Initialize all tools with 0 in-degree
      (zipmap tool-names (repeat 0))
      sequential-rels)))
 
@@ -80,13 +76,10 @@
                                       (tool-names (:to %)))
                                 relationships)]
     (if (empty? sequential-rels)
-      ;; No sequential relationships - return original order
       tools
       (let [adj-map (build-adjacency-map sequential-rels)
             in-degree (build-in-degree-map tools relationships)
-            ;; Start with nodes that have no incoming edges
             initial-queue (filter #(zero? (get in-degree % 0)) (map :name tools))
-            ;; Kahn's algorithm
             sorted-names (loop [queue (vec initial-queue)
                                 degrees in-degree
                                 result []]
@@ -102,9 +95,7 @@
                                                    (filter #(zero? (get new-degrees %))
                                                            neighbors))]
                                (recur new-queue new-degrees (conj result node)))))
-            ;; Map sorted names back to tools
             tool-by-name (zipmap (map :name tools) tools)]
-        ;; Return sorted tools, including any not in the sort (no relationships)
         (let [sorted (keep tool-by-name sorted-names)
               unsorted-names (set/difference (set (map :name tools))
                                              (set sorted-names))
@@ -122,10 +113,8 @@
                                     (tool-names (:to %)))
                               relationships)]
     (if (empty? parallel-rels)
-      ;; No parallel relationships - all tools are parallel (original behavior)
       {:parallel tools
        :sequential []}
-      ;; Find tools connected by parallel relationships
       (let [parallel-names (reduce
                             (fn [acc {:keys [from to]}]
                               (-> acc (conj from) (conj to)))
@@ -241,12 +230,10 @@
   "Generate a generator-critic workflow.
    Uses refinement relationships to pair generators with validators."
   [tools relationships]
-  (let [;; Try to find pairs via refinement relationships first
+  (let [
         refinement-pairs (find-refinement-pairs tools relationships)
-        ;; Fall back to capability matching if no relationships
         generators (filter #(contains? (:capabilities %) :generate) tools)
         validators (filter #(contains? (:capabilities %) :validate) tools)
-        ;; Use relationship-based pair if available
         {:keys [generator validator]} (if (seq refinement-pairs)
                                          (first refinement-pairs)
                                          {:generator (first generators)
@@ -283,7 +270,6 @@
     :parallel-fan-out (generate-parallel-fan-out tools relationships)
     :research-compilation (generate-research-compilation tools relationships)
     :generator-critic (generate-generator-critic tools relationships)
-    ;; Default to sequential
     (generate-sequential-pipeline tools relationships)))
 
 (defn generate-workflow-name
@@ -331,9 +317,6 @@
   [workflow]
   (with-out-str (pprint/pprint workflow)))
 
-;; ============================================================================
-;; Data Structure Generation (for direct build-workflow!)
-;; ============================================================================
 
 (defn generate-code-node-data
   "Generate a code node as a data structure (not quoted form)."
@@ -356,7 +339,7 @@
   ([node-name instruction input-keys output-keys]
    (generate-llm-node-data node-name instruction input-keys output-keys nil))
   ([node-name instruction input-keys output-keys intent]
-   (let [;; Build intent-specific instruction if intent is provided
+   (let [
          enriched-instruction
          (if (and intent (map? intent))
            (let [primary (:primary-goal intent)
@@ -397,7 +380,7 @@
   "Generate a sequential pipeline workflow as data structure.
    Uses topological sort based on :sequential relationships."
   [tools relationships]
-  (let [;; Sort tools by data flow relationships
+  (let [
         sorted-tools (topological-sort-by-relationships tools relationships)
         code-nodes (for [tool sorted-tools]
                      (let [input-keys (keys (get-in tool [:input-schema "properties"]))
@@ -417,14 +400,11 @@
    (generate-parallel-fan-out-data tools relationships nil))
   ([tools relationships intent]
    (let [{:keys [parallel sequential]} (group-parallel-tools tools relationships)
-         ;; Tools with :generate capability are synthesizers
          synthesizers (filter #(contains? (:capabilities %) :generate) sequential)
-         ;; Generate parallel nodes for tools that can run together
          parallel-nodes (for [tool parallel]
                           (let [input-keys (keys (get-in tool [:input-schema "properties"]))
                                 output-key (str (:name tool) "-result")]
                             (generate-code-node-data (:name tool) input-keys output-key)))
-         ;; If no parallel relationships detected, use all tools as parallel
          final-parallel-nodes (if (empty? parallel-nodes)
                                 (for [tool tools]
                                   (let [input-keys (keys (get-in tool [:input-schema "properties"]))
@@ -438,7 +418,6 @@
       :children [{:node-type :parallel
                   :name "fan-out"
                   :children (vec final-parallel-nodes)}
-                 ;; Use a dedicated synthesizer tool if available, otherwise LLM
                  (if-let [synth (first synthesizers)]
                    (generate-code-node-data (:name synth)
                                             result-keys
@@ -460,14 +439,12 @@
   ([tools relationships intent]
    (let [searchers (filter #(some (:capabilities %) #{:search :retrieval}) tools)
          generators (filter #(contains? (:capabilities %) :generate) tools)
-         ;; Sort searchers by sequential relationships if present
          sorted-searchers (topological-sort-by-relationships searchers relationships)
          search-nodes (for [tool sorted-searchers]
                         (let [input-keys (keys (get-in tool [:input-schema "properties"]))
                               output-key (str (:name tool) "-result")]
                           (generate-code-node-data (:name tool) input-keys output-key)))
          result-keys (mapv #(keyword (str (:name %) "-result")) sorted-searchers)
-         ;; Use generator tool if available and has relationship to searchers
          generator-with-rel (first
                              (filter (fn [gen]
                                        (some #(and (= :sequential (:type %))
@@ -479,7 +456,6 @@
       :children [{:node-type :parallel
                   :name "gather"
                   :children (vec search-nodes)}
-                 ;; Use related generator tool or fall back to LLM
                  (if generator-with-rel
                    (generate-code-node-data (:name generator-with-rel)
                                             result-keys
@@ -498,14 +474,11 @@
    (generate-repl-researcher-workflow-data tools relationships nil))
   ([tools _relationships intent]
    (let [tool-names (mapv :name tools)
-         ;; Gather all input keys from all tools for the blackboard
          all-input-keys (set (mapcat #(keys (get-in % [:input-schema "properties"])) tools))
-         ;; Build base instruction
          base-instruction (str "You have access to these MCP tools: " (str/join ", " tool-names)
                                ". Use them to research and answer the question. "
                                "Call tools with (tool-name {:arg \"value\"}). "
                                "When done, output FINAL_ANSWER: <your answer>")
-         ;; Enrich with intent if provided
          instruction (if (and intent (map? intent))
                        (let [primary (:primary-goal intent)
                              secondary (:secondary-goals intent)
@@ -540,7 +513,6 @@
      :parallel-fan-out (generate-parallel-fan-out-data tools relationships intent)
      :research-compilation (generate-research-compilation-data tools relationships intent)
      :repl-researcher (generate-repl-researcher-workflow-data tools relationships intent)
-     ;; Default to sequential
      (generate-sequential-pipeline-data tools relationships))))
 
 (defn generate-workflow-data
@@ -587,21 +559,3 @@
      :pattern pattern-key
      :intent intent
      :tools (mapv :name tools)}))
-
-(comment
-  ;; Example generation
-  (def tools
-    [{:name "searchDocs"
-      :capabilities #{:search}
-      :input-schema {"properties" {"query" {"type" "string"}}}}
-     {:name "getPage"
-      :capabilities #{:retrieval}
-      :input-schema {"properties" {"path" {"type" "string"}}}}
-     {:name "summarize"
-      :capabilities #{:generate :transform}}])
-
-  (generate-sheet
-   {:tools tools
-    :relationships []
-    :patterns [{:pattern :research-compilation}]}
-   {:pattern :research-compilation}))

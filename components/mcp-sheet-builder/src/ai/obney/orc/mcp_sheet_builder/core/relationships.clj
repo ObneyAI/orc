@@ -40,7 +40,6 @@
         transform-tools (filter #(contains? (:capabilities %) :transform) tools)
         generate-tools (filter #(contains? (:capabilities %) :generate) tools)]
     (concat
-     ;; Retrieval → Transform
      (for [r retrieval-tools
            t transform-tools]
        {:type :sequential
@@ -48,7 +47,6 @@
         :to (:name t)
         :confidence 0.7
         :reason "Retrieval feeds transformation"})
-     ;; Transform → Generate
      (for [t transform-tools
            g generate-tools]
        {:type :sequential
@@ -56,7 +54,6 @@
         :to (:name g)
         :confidence 0.6
         :reason "Transformed data for generation"})
-     ;; Retrieval → Generate (direct)
      (for [r retrieval-tools
            g generate-tools]
        {:type :sequential
@@ -105,7 +102,6 @@
         update-tools (filter #(contains? (:capabilities %) :update) tools)
         delete-tools (filter #(contains? (:capabilities %) :delete) tools)]
     (concat
-     ;; Create + Read pairs
      (for [c create-tools
            r read-tools]
        {:type :complementary
@@ -113,7 +109,6 @@
         :to (:name r)
         :confidence 0.8
         :reason "Create-Read pair"})
-     ;; Read + Update pairs
      (for [r read-tools
            u update-tools]
        {:type :complementary
@@ -121,7 +116,6 @@
         :to (:name u)
         :confidence 0.7
         :reason "Read-Update pair"})
-     ;; Read + Delete pairs
      (for [r read-tools
            d delete-tools]
        {:type :complementary
@@ -185,14 +179,3 @@
          (update-in [to :incoming] (fnil conj []) rel)))
    {}
    relationships))
-
-(comment
-  ;; Example usage
-  (def tools
-    [{:name "searchDocs" :capabilities #{:search} :idempotent? true
-      :input-schema {"properties" {"query" {}}}}
-     {:name "getPage" :capabilities #{:retrieval} :idempotent? true
-      :input-schema {"properties" {"path" {}}}}
-     {:name "summarize" :capabilities #{:generate :transform} :idempotent? true}])
-
-  (detect-relationships tools))

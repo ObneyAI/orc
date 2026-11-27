@@ -126,9 +126,6 @@
                   (println "      -" (:judge-name j) "type:" (get-in j [:judge-config :type])))
 
               tick-id (random-uuid)
-              ;; Realistic tree the model might generate — :sequence
-              ;; with :map-each + :final = excellent shape per the
-              ;; heuristic.
               tree-dsl [:sequence
                         [:chunk-document {:from :doc :into :chunks}]
                         [:map-each {:from :chunks :as :chunk :into :results}
@@ -151,7 +148,6 @@
                           :writes {:generated-tree-raw tree-dsl
                                    :entities ["Acme Corp" "John Doe" "2026-01-01"]}
                           :duration-ms 12345}))
-              ;; Real LLM calls: poll up to 90s for all 5 judges to emit
               _ (loop [waited 0]
                   (let [n (count (into [] (es/read (:event-store ctx)
                                                     {:types #{:judge/score-emitted}
@@ -180,6 +176,6 @@
         (finally
           (stop-context ctx))))))
 
-(comment
+#_(do
   (require '[gap5-live-verify :as v])
   (v/verify!))

@@ -1,5 +1,6 @@
 {:paths []
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+        orc/integrations {:local/root "../../components/integrations"}
 
         ;; Keep the ontology-only project on the same recovered Grain graph as
         ;; the aggregate ORC projects while those upstream changes are pending.
@@ -18,7 +19,7 @@
         ;; ColBERT (Layer 5) is resolved lazily — add the orc-colbert package
         ;; to light up the third retrieval signal.
         orc/llm         {:local/root "../../components/llm"}
-        orc/ontology    {:local/root "../../components/ontology"}
+        orc/ontology-service    {:local/root "../../components/ontology-service"}
         orc/orc-service {:local/root "../../components/orc-service"}
         orc/file-store  {:local/root "../../components/file-store"}
         orc/langfuse    {:local/root "../../components/langfuse"}}

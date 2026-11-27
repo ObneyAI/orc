@@ -2,7 +2,6 @@
   "Generated from the RR-11 ProviderCallReservation obligations."
   (:require [clojure.java.io :as io]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.orc.orc-service.core.provider-call-reservations :as reservations]
             [ai.obney.orc.orc-service.core.todo-processors :as todo]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
@@ -12,7 +11,8 @@
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.grain.periodic-task.interface :as periodic]
             [ai.obney.grain.time.interface :as time]
-            [clojure.test :refer [deftest is testing]]))
+            [clojure.test :refer [deftest is testing]]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 (defn- an-hour-later-clock
   "Context map whose lease clock reads an hour after the crashed owner's last renewal."
@@ -20,8 +20,7 @@
   (assoc m :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))
 
 (defn- budget-cache-atom []
-  (var-get (ns-resolve 'ai.obney.orc.orc-service.core.todo-processors
-                       'tick-llm-counts)))
+  (var-get #'service-logic/tick-llm-counts))
 
 (deftest provider-invocation-identities-are-scoped-to-the-durable-budget-root
   (testing "root-local CAS streams cannot produce the same global reservation identity"
@@ -29,10 +28,10 @@
           ownership-epoch 1
           provider-attempt-ordinal 0]
       (is (not=
-           (reservations/invocation-identity
+           (service-logic/invocation-identity
             (random-uuid) logical-action-identity ownership-epoch
             provider-attempt-ordinal)
-           (reservations/invocation-identity
+           (service-logic/invocation-identity
             (random-uuid) logical-action-identity ownership-epoch
             provider-attempt-ordinal))))))
 
@@ -84,11 +83,11 @@
         existing {:event/type :sheet/provider-call-reserved
                   :invocation-identity "invocation-existing"}
         accepts? (fn [request events]
-                   ((:predicate-fn (reservations/reservation-cas request))
+                   ((:predicate-fn (service-logic/reservation-cas request))
                     events))]
     (is (= :incomplete-history
            (:decision
-            (reservations/reservation-decision
+            (service-logic/reservation-decision
              candidate
              [(update root :options dissoc :llm-budget-accounting-version)
               node-start frontier iteration-claim existing])))
@@ -99,14 +98,14 @@
     (is (true? (accepts? candidate [root node-start frontier iteration-claim existing])))
     (is (= {:decision :duplicate :current 1}
            (select-keys
-            (reservations/reservation-decision
+            (service-logic/reservation-decision
              (assoc candidate :invocation-identity "invocation-existing")
              [root node-start frontier iteration-claim existing])
             [:decision :current]))
         "a duplicate conflict retains an authoritative cache count")
     (is (= {:decision :rejected :current 1}
            (select-keys
-            (reservations/reservation-decision
+            (service-logic/reservation-decision
              (assoc candidate :ownership-epoch 1)
              [root node-start frontier iteration-claim existing])
             [:decision :current]))
@@ -195,7 +194,7 @@
               (is (= (str (:logical-action-identity provider-claim) "/candidate/0")
                      (:logical-action-identity reservation))
                   "the physical reservation scopes the effect action to candidate zero")
-              (is (= (reservations/invocation-identity
+              (is (= (service-logic/invocation-identity
                       (:trace-id result)
                       (str (:logical-action-identity provider-claim) "/candidate/0")
                       (:ownership-epoch provider-claim)
@@ -427,10 +426,8 @@
             (is (true? (:cancelled? result)) (pr-str result))))))))
 
 (defn- race-next-reservation! [ctx first-reservation]
-  ;; Exercise the native command admission contract. These deliveries do not
-  ;; impersonate HTTP dispatches; the actual original provider is held separately.
   (let [ordinal (inc (:provider-attempt-ordinal first-reservation))
-        invocation (reservations/invocation-identity
+        invocation (service-logic/invocation-identity
                     (:budget-tick-id first-reservation)
                     (:logical-action-identity first-reservation)
                     (:ownership-epoch first-reservation)
@@ -757,14 +754,6 @@
                 (deliver first-provider-entered true)
                 (deref release-crashed-provider 5000 nil)
                 (throw (ex-info "simulated process crash after reservation" {})))]
-          ;; The crash stub is installed on THIS thread and removed on this
-          ;; thread, only after the crashed run's future has returned. A
-          ;; `with-redefs` inside the future restored the root binding from
-          ;; the future's thread whenever it finished — which on a slow runner
-          ;; was AFTER the second `with-redefs` below had captured the stub as
-          ;; the value to restore, leaving the crash stub as the permanent root
-          ;; binding of `llm/predict` for every later namespace in the JVM
-          ;; (CI: 26 failures in deterministic-value-storage-e2e-test).
           (with-redefs [llm/predict crashed-provider]
             (let [original-run (future
                                  (sheet/execute ctx sheet-id {}
@@ -777,12 +766,8 @@
                                ctx sheet-id tick-id))))
               (h/stop-async-context ctx)
               (reset! first-context nil)
-              (todo/clear-llm-count! tick-id)
+              (service-logic/clear-llm-count! tick-id)
               (deliver release-crashed-provider true)
-              ;; The run's own outcome is irrelevant here (its context was
-              ;; stopped underneath it, so it may return a result or throw a
-              ;; closed-pool exception); what matters is that it has RETURNED
-              ;; before the stub is removed.
               (is (not= ::still-running
                         (try (deref original-run 20000 ::still-running)
                              (catch java.util.concurrent.ExecutionException e
@@ -1046,21 +1031,24 @@
             (swap! cache assoc root-tick-id (val original-entry))
             (swap! cache dissoc root-tick-id)))))))
 
-(deftest durable-cache-hydration-read-failure-fails-closed
-  (testing "a reservation remains spent but its provider is not dispatched when hydration cannot read"
-    (let [provider-entries (atom 0)]
+(deftest reservation-conflict-read-failure-fails-closed
+  (testing "an unreadable conflict cannot authorize a second call or prove exhaustion"
+    (let [provider-entries (atom 0)
+          failed-reads (atom [])
+          root-tick-id (random-uuid)]
       (h/with-async-test-context
         [ctx {:context {:llm-provider :test
                         :provider-call-reservation-read-fn
-                        (fn [_]
+                        (fn [query]
+                          (swap! failed-reads conj query)
                           (throw (ex-info "injected durable read failure" {})))}}]
         (let [workflow
-              (sheet/workflow "rr11-cache-read-failure"
+              (sheet/workflow "rr11-conflict-read-failure"
                 (sheet/blackboard {:summary :string})
                 (sheet/repl-researcher "researcher"
-                  :instruction "must stop before provider"
+                  :instruction "use the remaining budget"
                   :writes [:summary]
-                  :max-iterations 1
+                  :max-iterations 2
                   :rlm {:checkpointed? true
                         :timeouts {:provider-ms 1000
                                    :iteration-ms 3000
@@ -1068,86 +1056,85 @@
               sheet-id (sheet/build-workflow! ctx workflow)]
           (with-redefs [llm/predict
                         (fn [& _]
-                          (swap! provider-entries inc)
-                          {:outputs {:code "(final! {:summary \"unsafe\"})"}})]
-            (let [result (sheet/execute ctx sheet-id {}
-                                        :timeout-ms 10000
-                                        :llm-call-budget 2)
-                  ledger (sheet/get-provider-call-reservations
-                          ctx sheet-id (:trace-id result))]
-              (is (not= :success (:status result)) (pr-str result))
-              (is (zero? @provider-entries))
-              (is (= 1 (count ledger))
-                  "the append won before the read failed, so the slot stays spent"))))))))
+                          (if (= 1 (swap! provider-entries inc))
+                            {:outputs {:code "(store! :evidence 1)"}}
+                            {:outputs {:code "(final! {:summary \"unsafe\"})"}}))]
+            (let [result (sheet/execute ctx sheet-id {} :tick-id root-tick-id
+                                        :timeout-ms 10000 :llm-call-budget 1)
+                  ledger (sheet/get-provider-call-reservations ctx sheet-id root-tick-id)]
+              (is (= :failure (:status result)) (pr-str result))
+              (is (re-find #"injected durable read failure" (str (:error result))) (pr-str result))
+              (is (= [#{[:llm-budget-root root-tick-id]}] (mapv :tags @failed-reads)))
+              (is (= 1 @provider-entries) "only the first admitted call dispatched")
+              (is (= 1 (count ledger)) "the first reservation remains spent")
+              (is (not-any? #(= :sheet/tick-cancelled (:event/type %))
+                            (h/read-tick-events ctx root-tick-id))
+                  "failed conflict classification cannot publish an exhaustion cancellation"))))))))
 
-(deftest concurrent-successful-hydration-cannot-overwrite-a-newer-cache-count
-  (testing "a delayed count-N hydration cannot replace a concurrent count-N+1 update"
-    (let [real-read (atom nil)
-          hydration-reads (atom 0)
-          release-slow-read (promise)
-          child-provider-entries (atom 0)
-          cache-at-slow-provider (atom nil)]
-      (h/with-async-test-context
-        [ctx {:context
-              {:llm-provider :test
-               :provider-call-reservation-read-fn
-               (fn [query]
-                 (let [rows (into [] (@real-read query))
-                       read-number (swap! hydration-reads inc)]
-                   (when (= 2 read-number)
-                     (deref release-slow-read 5000 nil))
-                   rows))}}]
-        (reset! real-read #(es/read (:event-store ctx) %))
-        (let [tree '[:sequence
-                     [:parallel
-                      [:llm {:instruction "left" :writes [:left]
-                             :output-schemas {:left :string}}]
-                      [:llm {:instruction "right" :writes [:right]
-                             :output-schemas {:right :string}}]]
-                     [:final {:keys [:left :right]}]]
-              code (str "(emit-tree! (quote " (pr-str tree) "))")
-              workflow
-              (sheet/workflow "rr11-cache-concurrent-hydration"
-                (sheet/blackboard {:left :string :right :string})
-                (sheet/repl-researcher "researcher"
-                  :instruction "emit parallel calls"
-                  :writes [:left :right]
-                  :max-iterations 1
-                  :rlm {:checkpointed? true
-                        :recursive? false
-                        :timeouts {:provider-ms 3000
-                                   :iteration-ms 8000
-                                   :campaign-ms 15000}}))
-              sheet-id (sheet/build-workflow! ctx workflow)]
-          (with-redefs [llm/predict
-                        (fn [_provider module _inputs _options]
-                          (let [output-names (set (map :name (:outputs module)))
-                                output-name (cond
-                                              (contains? output-names :code) :code
-                                              (contains? output-names :left) :left
-                                              (contains? output-names :right) :right)]
-                            (if (= :code output-name)
-                              (do
-                                ;; Force both children down the cold path.
-                                (reset! (budget-cache-atom) {})
-                                {:outputs {:code code}})
-                              (let [entry (swap! child-provider-entries inc)]
-                                (when (= 1 entry)
-                                  (deliver release-slow-read true))
-                                (when (= 2 entry)
-                                  (reset! cache-at-slow-provider
-                                          (-> @(budget-cache-atom) vals first)))
-                                {:outputs {output-name (name output-name)}}))))]
-            (let [result (sheet/execute ctx sheet-id {}
-                                        :timeout-ms 15000
-                                        :llm-call-budget 3)
-                  ledger (sheet/get-provider-call-reservations
-                          ctx sheet-id (:trace-id result))]
-              (is (= :success (:status result)) (pr-str result))
-              (is (= 2 @child-provider-entries))
-              (is (= 3 (count ledger)))
-              (is (= (count ledger) @cache-at-slow-provider)
-                  "the delayed hydration may not overwrite the newer count"))))))))
+(deftest delayed-budget-snapshot-cannot-rewind-concurrent-reservations
+  (testing "a stale local count cannot replace the newer durable family ledger"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [tree '[:sequence
+                   [:parallel
+                    [:llm {:instruction "left" :writes [:left]
+                           :output-schemas {:left :string}}]
+                    [:llm {:instruction "right" :writes [:right]
+                           :output-schemas {:right :string}}]]
+                   [:final {:keys [:left :right]}]]
+            code (str "(emit-tree! (quote " (pr-str tree) "))")
+            workflow
+            (sheet/workflow "rr11-concurrent-ledger-snapshots"
+              (sheet/blackboard {:left :string :right :string})
+              (sheet/repl-researcher "researcher"
+                :instruction "emit parallel calls"
+                :writes [:left :right]
+                :max-iterations 1
+                :rlm {:checkpointed? true
+                      :recursive? false
+                      :timeouts {:provider-ms 3000
+                                 :iteration-ms 8000
+                                 :campaign-ms 15000}}))
+            sheet-id (sheet/build-workflow! ctx workflow)
+            root-tick-id (random-uuid)
+            child-reservations (atom 0)
+            child-provider-entries (atom 0)
+            first-snapshot (promise)
+            second-snapshot (promise)
+            ledger #(sheet/get-provider-call-reservations ctx sheet-id root-tick-id)
+            real-process-command cp/process-command]
+        (with-redefs [cp/process-command
+                      (fn [{:keys [command] :as command-context}]
+                        (when (and (= :sheet/reserve-provider-call (:command/name command))
+                                   (not= root-tick-id (:tick-id command))
+                                   (= 2 (swap! child-reservations inc)))
+                          (when-not (deref first-snapshot 5000 nil)
+                            (throw (ex-info "First provider did not observe its reservation" {}))))
+                        (real-process-command command-context))
+                      llm/predict
+                      (fn [_provider module _inputs _options]
+                        (let [outputs (set (map :name (:outputs module)))]
+                          (if (contains? outputs :code)
+                            {:outputs {:code code}}
+                            (let [output-key (if (contains? outputs :left) :left :right)
+                                  snapshot (ledger)]
+                              (if (= 1 (swap! child-provider-entries inc))
+                                (do
+                                  (deliver first-snapshot snapshot)
+                                  (when-not (deref second-snapshot 5000 nil)
+                                    (throw (ex-info "Second provider did not observe its reservation" {})))
+                                  (swap! (budget-cache-atom) assoc root-tick-id (count snapshot)))
+                                (deliver second-snapshot snapshot))
+                              {:outputs {output-key (name output-key)}}))))]
+          (let [result (sheet/execute ctx sheet-id {} :tick-id root-tick-id
+                                      :timeout-ms 15000 :llm-call-budget 3)
+                final-rows (ledger)
+                earlier (deref first-snapshot 0 [])
+                later (deref second-snapshot 0 [])]
+            (is (= :success (:status result)) (pr-str result))
+            (is (= 2 @child-provider-entries))
+            (is (= [2 3 3] (mapv count [earlier later final-rows])))
+            (is (every? (set later) earlier) "the third reservation preserves both earlier rows")
+            (is (= later final-rows) "the delayed cache write leaves all durable rows intact")))))))
 
 (deftest checkpointed-generated-child-without-a-budget-keeps-legacy-tick-tags
   (testing "campaign identity crosses Phase 2 without inventing an RR11 budget root"

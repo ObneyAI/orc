@@ -18,12 +18,10 @@
    BUDGETS below are ceilings, not targets."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.todo-processors :as tp-core]
-            [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
-            [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
             [ai.obney.grain.command-processor-v2.interface :as cp]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Budgets
@@ -99,9 +97,6 @@
                                                         (if (= k :scale) :int :string))))
     (let [seq-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
           seq-id (-> seq-result :command-result/events first :node-id)
-          ;; Explicit :index — without it children execute in reverse
-          ;; creation order, which would run the consumers before the
-          ;; producer and leave :doc nil.
           add-leaf! (fn [idx fn-sym reads writes]
                       (let [r (h/run-and-apply! ctx (h/make-create-node-command
                                                      sheet-id :leaf :parent-id seq-id
@@ -145,7 +140,7 @@
   "Run a tick to completion and return [result tick-id]."
   [ctx sheet-id inputs & {:keys [timeout-ms] :or {timeout-ms 20000}}]
   (let [tick-id (random-uuid)
-        p (runtime/register-completion! tick-id)
+        p (service-logic/register-completion! tick-id)
         cmd-result (cp/process-command
                     (assoc ctx :command
                            {:command/id (random-uuid)
@@ -177,9 +172,6 @@
   [events needle]
   (count (filter #(clojure.string/includes? (pr-str %) needle) events)))
 
-;; =============================================================================
-;; Baseline report — prints the whole-run accounting
-;; =============================================================================
 
 (deftest storage-baseline-report
   (testing "whole-run byte accounting is measurable and non-trivial"
@@ -199,9 +191,6 @@
           (is (pos? (:total-bytes report)))
           (is (pos? (:event-count report))))))))
 
-;; =============================================================================
-;; Invariant: amplification
-;; =============================================================================
 
 (deftest amplification-within-budget
   (testing "the log does not store each value an unbounded number of times"
@@ -220,16 +209,8 @@
                    ". Per-type breakdown:\n"
                    (h/format-byte-report report))))))))
 
-;; =============================================================================
-;; Invariant: lifecycle events must not scale with payload
-;; =============================================================================
 
 (deftest node-execution-started-does-not-scale-with-payload
-  ;; The sharpest invariant in this file. node-execution-started must carry
-  ;; execution context and genuine overrides ONLY — never resolved reads.
-  ;; A leaf resolves its own reads from the tick blackboard at execution
-  ;; time (grain read models are read-your-own-write), so inlining them here
-  ;; stored one extra copy of every value per reader.
   (testing "node-execution-started size is independent of payload size"
     (h/with-async-test-context [ctx-small]
       (let [{:keys [sheet-id]} (setup-fanout-sheet! ctx-small)
@@ -253,17 +234,9 @@
                          "x for a 10x payload; it should be independent of "
                          "payload size once resolved reads are dropped"))))))))))
 
-;; =============================================================================
-;; Invariant: capturing a node's reads must not re-inline their values
-;; =============================================================================
 
 (deftest completion-events-carry-read-shape-not-read-values
   (testing "a leaf's reads reach the trace as keys + profile, never as values"
-    ;; A leaf's reads ARE captured on the completion command (without it,
-    ;; grounding judges score against {}), but complete-node-execution reduces
-    ;; them to :read-keys + :input-profile before they reach the event. This
-    ;; asserts the reduction actually happens — the failure mode it guards is
-    ;; re-inlining large read values and quietly undoing the storage win.
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id]} (setup-fanout-sheet! ctx)
             [result _] (dispatch! ctx sheet-id {:scale 4})]
@@ -276,26 +249,18 @@
           (doseq [c readers]
             (is (seq (:input-profile c))
                 (str "read keys without a profile on node " (:node-id c)))
-            ;; :inputs may carry namespaced execution-context keys only.
             (let [simple (filter #(and (keyword? %) (nil? (namespace %)))
                                  (keys (:inputs c)))]
               (is (empty? simple)
                   (str "completion event re-inlined read VALUES under " (vec simple)
                        " — reads must reach the event as :read-keys + :input-profile"))))
-          ;; And the whole-run budget still holds with reads captured.
           (let [dup (h/payload-duplication-report (h/read-all-events ctx))]
             (is (<= (:ratio dup) (:duplication-ratio budgets))
                 (str "capturing reads reintroduced duplication: " dup))))))))
 
-;; =============================================================================
-;; Invariant: no value is stored twice
-;; =============================================================================
 
 (deftest no-duplicate-payload-bytes
   (testing "every large value is stored exactly once across the whole log"
-    ;; The strongest form of the copy-count discipline. :sheet/execution-
-    ;; value-written is the canonical record of a write; every other event
-    ;; references values by key and resolves them through core/value-log.
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id]} (setup-fanout-sheet! ctx)
             [result _] (dispatch! ctx sheet-id {:scale 3})]
@@ -310,15 +275,6 @@
 
 (deftest map-each-duplication-is-aggregation-only
   (testing "map-each duplication is the collected vector, and nothing more"
-    ;; map-each is the one shape where duplication is INHERENT rather than
-    ;; incidental: each iteration's result is stored under the shared item
-    ;; key, and again inside the vector the map-each collects into :results.
-    ;; Both are genuine blackboard values, so neither can be dropped — the
-    ;; aggregate IS the node's output.
-    ;;
-    ;; That puts a floor of ~0.5 on the duplication ratio here. This test
-    ;; pins the floor so that any duplication ABOVE it — which would be
-    ;; incidental, and removable — shows up as a failure.
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id]} (setup-map-each-sheet! ctx)
             [result _] (dispatch! ctx sheet-id {:items (vec (range 8))})]
@@ -337,9 +293,6 @@
           (is (<= (:ratio dup) (:map-each-duplication budgets))
               (str "duplication beyond the aggregation floor: " dup)))))))
 
-;; =============================================================================
-;; Invariant: copy count of a single payload
-;; =============================================================================
 
 (deftest payload-copy-count
   (testing "a produced value is embedded in a bounded number of events"
@@ -349,8 +302,6 @@
         (is (= :success (:status result)))
         (settle!)
         (let [events (h/read-all-events ctx)
-              ;; A distinctive slice of the payload: long enough to be
-              ;; unique, short enough to survive any truncation.
               needle (subs payload-unit 0 200)
               n (occurrences-of events needle)]
           (println (format "[copy-count] payload appears in %d events (budget %d)"
@@ -360,25 +311,16 @@
                    ":sheet/execution-value-written and everything else should "
                    "reference it")))))))
 
-;; =============================================================================
-;; Nested-tick round trip (RLM Phase 2 shape, mock provider)
-;; =============================================================================
 
 (deftest nested-tick-seed-round-trip
   (testing "a document seeded into a child tick and never touched is not
             re-stored on the way out"
-    ;; This is the RLM Phase 2 shape. execute-tree seeds the child tick with
-    ;; (merge blackboard sandbox-vars) — the whole parent working set — and
-    ;; tree-tick-completed currently dumps the whole child blackboard back
-    ;; out. A document that is never read and never written therefore gets
-    ;; stored on the way in, on the way out, and twice more inside the
-    ;; trace's input/output snapshots.
-    (binding [tp-core/*default-llm-provider* nil]
+    (binding [service-logic/*default-llm-provider* nil]
       (h/with-async-test-context [ctx]
-        (let [tree (rlm-dsl/rlm-dsl->orc-dsl [:sequence [:final {:keys [:summary]}]])
+        (let [tree (service-logic/rlm-dsl->orc-dsl [:sequence [:final {:keys [:summary]}]])
               big (apply str (repeat 20 payload-unit))
               doc-bytes (count (.getBytes ^String big "UTF-8"))
-              result (tree-executor/execute-tree
+              result (tp-core/execute-tree
                       tree ctx
                       {:blackboard {:source-document big}
                        :sandbox-vars {:summary "short summary"}

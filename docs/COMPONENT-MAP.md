@@ -1,188 +1,81 @@
 # ORC Component Map
 
-> **Which ORC components do I need?**
->
-> ORC is a layered opt-in library. Most consumers only need the core execution engine
-> (`orc-service`). Add components as capabilities require. This document maps each
-> capability to its components, flags heavy dependencies (DJL model loading), and calls
-> out known issues you will hit before the code does.
-
----
+Use `projects/orc-service` for workflow execution. The other packages add judges, optimization, ontology, retrieval, or MCP sheet generation. Package identifiers appear under `projects/`. Physical brick names such as `evaluation-service` appear under `components/` and in Polylith test selectors. Consumers continue to require public namespaces such as `ai.obney.orc.evaluation.interface`. [Installation and package coordinates](PACKAGES.md)
 
 ## Opt-in layer table
 
-| Layer | Capability | Component(s) needed | DJL required | Evidence |
-|-------|-----------|---------------------|:------------:|---------|
-| 0 | **Core execution** — behavior tree DSL, workflow execution, restart recovery, event-sourced state, bounded durable-event export | `orc-service` | No | `components/orc-service/deps.edn`: an LLM-call layer, structured logging, core.async, and a safe Clojure interpreter — no DJL, no model loading |
-| 0a | **External canonical values** — move all raw execution values out of events | `file-store` plus `file-store-local` or `file-store-s3` | No | `orc-service` depends only on the storage protocol; the umbrella package includes both backends |
-| 1 | **LLM judges** — grounding, reasoning, completeness, instruction-following | `evaluation` | No | `evaluation/deps.edn`: JSON handling, the LLM-call layer, and orc-service — **no ontology**. The Living-Description gate in `judge_runtime.clj` is resolved lazily (`requiring-resolve`), so judges run with zero ontology and zero DJL. Verified: `projects/orc-evaluation` resolves with none of those on the classpath. |
-| 2 | **Observability destination** — Langfuse trace forwarding; `orc-service` owns the bounded failure-isolated exporter lifecycle | `langfuse` | No | `components/langfuse/deps.edn`: empty deps map — no external deps at all; `orc-service/core/telemetry_exporter.clj` owns queueing, acknowledgement, retry/drop statistics, and bounded stop |
-| 3 | **Prompt optimization** — GEPA Pareto-frontier instruction evolution | `gepa` + `evaluation` | No | `components/gepa/deps.edn`: deps are mulog, orc/evaluation — no ontology dep, no DJL |
-| 4 | **DJL embeddings** — dense vector embeddings, semantic concept search | `ontology` | **Yes** | `components/ontology/deps.edn`: deps are ai.djl/api, ai.djl.pytorch/pytorch-engine; `embedding.clj:53` calls `(Criteria/builder)` from DJL directly — pure JVM model loading |
-| 5 | **ColBERT retrieval** — pure-JVM late-interaction scoring (exact MaxSim over a versioned index artifact) | `colbert` | **Yes** | `components/colbert/deps.edn`: ai.djl/api + huggingface tokenizers + onnxruntime engine (0.31.1) run the `answerai-colbert-small-v1` encoder checkpoint natively — no Python process (ADR 0002) |
-| 6 | **Event-sourced concept graph and evolutionary builder** — supported manual lifecycle plus CSV/JSON/SQL/text and deterministic N-Triples ingestion | `ontology` + ORC sheets for model-backed extraction | No | `ontology/interface.clj`: lifecycle/mutation API; `ontology/interface/evolutionary.clj`: `build-from-sources` + `evolve`; ColBERT indexing is optional |
-| 7 | **Self-improving loop** — auto-classify executions, pattern evolution, behavior minting | `orc-service` + `evaluation` + `ontology` + `colbert` | **Yes** (via ontology + colbert) | `judge_runtime.clj:559`: `(ontology/get-living-description-enabled? ctx)` is the single boolean gate that controls the entire loop; disabled by default |
-| 8 | **MCP Sheet Builder** — dynamic workflow generation from MCP tool schemas | `mcp-sheet-builder` | No | `components/mcp-sheet-builder/deps.edn`: deps are clj-http, cheshire, sci — no ontology dep, no DJL |
-
----
+| Layer | Capability | Physical bricks | Model dependencies |
+|---|---|---|---|
+| 0 | Behavior-tree DSL, workflow execution, restart recovery, event-sourced state and bounded durable-event export | `orc-service` | Engine includes the SIO-backed `llm` adapter. No DJL. |
+| 0a | Store canonical execution values outside events | `file-store` plus `file-store-local` or `file-store-s3` | None. The umbrella includes both backends. |
+| 1 | LLM judges for grounding, reasoning, completeness and instruction-following | `evaluation-service` | Judges run with the engine and a configured model provider. Explicitly attached judges also work when ontology is absent. |
+| 2 | Forward traces to Langfuse | `langfuse` | None. The engine owns bounded queuing, retries, acknowledgements and shutdown. The adapter uses clj-http and data.json. |
+| 3 | GEPA Pareto-frontier instruction optimization | `gepa-service`, `evaluation-service` | Uses the LLM adapter and judges. No DJL. |
+| 4 | Dense embeddings and semantic concept search | `ontology-service` | DJL PyTorch and Hugging Face tokenizers. |
+| 5 | ColBERT late-interaction retrieval and reranking | `colbert-service` | DJL OnnxRuntime and Hugging Face tokenizers run the `answerai-colbert-small-v1` checkpoint on the JVM. |
+| 6 | Event-sourced concept graph, manual graph lifecycle and evolutionary ingestion from CSV, JSON, SQL, text or N-Triples | `ontology-service` | The ontology package includes DJL. Manual graph operations and deterministic N-Triples ingestion can run without loading an embedding model. |
+| 7 | Self-improving loop, including execution classification, pattern evolution and behavior minting | `orc-service`, `evaluation-service`, `ontology-service` and `colbert-service` for the full retrieval stack | Ontology and ColBERT supply the model-backed retrieval signals. [Self-improving loop](SELF-IMPROVING-LOOP.md) |
+| 8 | Generate behavior trees from MCP tool schemas | `mcp-sheet-builder` | Uses the engine and LLM adapter. No DJL. |
 
 ## Pull in only what you need
 
-ORC is published as standalone packages from a single Polylith repo — pull in
-only the package your layer needs, instead of the full umbrella. Full details
-and deps.edn snippets: **[PACKAGES.md](PACKAGES.md)**.
+| Package root | Included capabilities |
+|---|---|
+| `projects/orc-service` | Engine, LLM adapter, Langfuse adapter, the file-store protocol and integration registry |
+| `projects/orc-evaluation` | Engine and judges |
+| `projects/orc-gepa` | Engine, judges and GEPA optimization |
+| `projects/orc-ontology` | Engine, concept graph, embeddings and evolutionary builder |
+| `projects/orc-colbert` | ColBERT and the integration registry. This package runs independently and can add a third retrieval signal to ontology. |
+| `projects/orc-mcp-sheet-builder` | Engine and MCP sheet generation |
+| `projects/orc` | All of the standalone packages above, including local and S3 file-store backends |
 
-| Package | Layers | DJL? |
-|---------|--------|:----:|
-| `projects/orc-service` | 0 (engine) | No |
-| `projects/orc-evaluation` | 0–2 (+ judges) | No |
-| `projects/orc-gepa` | 0–3 (+ optimization) | No |
-| `projects/orc-ontology` | 0, 4, 6 (+ memory) | Yes |
-| `projects/orc-colbert` | 5 (retrieval upgrade) | Yes (OnnxRuntime) |
-| `projects/orc-mcp-sheet-builder` | 8 | No |
-| `projects/orc` (umbrella) | all (full self-improving loop) | Yes |
-
-Example — judges with zero DJL and zero model loading:
+For example, to add judges to an application, pin the evaluation package in its `deps.edn`.
 
 ```clojure
-;; in your project's deps.edn — lib name matches the package
 obneyai/orc-evaluation {:git/url "https://github.com/ObneyAI/orc.git"
                         :git/sha "<sha>"
                         :deps/root "projects/orc-evaluation"}
 ```
 
-Every non-leaf package bundles the engine (`orc-service` + its `langfuse`
-tracing layer) transitively — you never pull the engine separately unless you
-want *only* behavior-tree execution (`projects/orc-service`). The
-self-improving loop is not a separate package: it is the capability you get when
-`ontology` + `colbert` + `evaluation` run together on the engine (the umbrella,
-or those packages combined).
-
----
-
 ## Component dependency graph
 
-Each component's `deps.edn` declares its real hard dependencies (self-describing,
-verified by `clojure -Spath` on each package). Lazy edges resolved via
-`requiring-resolve`/`find-ns` are NOT hard deps — they degrade gracefully when
-the target component is absent.
+The table lists the direct, runtime ORC dependencies of the package bricks. The package manifests also supply Grain. Test aliases can bring in additional bricks for integration tests. [Package manifests](../projects)
 
-### Leaf components (no hard ORC-component deps)
+| Brick | Direct ORC dependencies |
+|---|---|
+| `integrations`, `llm`, `langfuse`, `file-store` | None. The LLM and Langfuse adapters declare their external libraries in their own manifests. |
+| `file-store-local`, `file-store-s3` | `file-store`. The S3 adapter also declares the Cognitect AWS API, endpoints and S3 libraries. |
+| `orc-service` | `file-store`, `integrations`, `langfuse`, `llm` |
+| `evaluation-service` | `integrations`, `llm`, `orc-service` |
+| `gepa-service` | `evaluation-service`, `integrations`, `llm`, `orc-service` |
+| `ontology-service` | `integrations`, `orc-service` |
+| `colbert-service` | `integrations` |
+| `mcp-sheet-builder` | `llm`, `orc-service` |
 
-```
-langfuse          deps: (none — empty deps map)
-file-store        deps: (none — storage protocol and dispatch)
-file-store-local  deps: file-store
-file-store-s3     deps: file-store + Cognitect AWS API
-colbert           deps: mulog, data.json, DJL (api + tokenizers + onnxruntime, in-JVM)
-                  (its ontology reference is lazy — fn-body require, not a hard dep)
-```
+### Optional integrations
 
-### Hard-dependency edges (declared in deps.edn)
+The integration registry loads a known provider interface on first use if it is on the classpath. That interface publishes named Vars. For example, the engine can obtain ontology classification and description operations, while ontology can obtain ColBERT indexing, search, batch search, reranking and normalization operations. A separately installed `agent-browser` brick can register browser tools for the researcher sandbox. The registry also lets providers bind historical qualified function names to implementations so persisted sheets can replay across internal code moves. [Integration registry](../components/integrations/src/ai/obney/orc/integrations/interface.clj)
 
-```
-orc-service        →  langfuse + file-store         (destination adapter + storage protocol; exporter lifecycle is core)
-mcp-sheet-builder  →  orc-service → langfuse
-evaluation         →  orc-service → langfuse         (+ lazy ontology gate)
-gepa               →  evaluation → orc-service
-ontology           →  orc-service → langfuse         (+ lazy colbert)  [+ DJL, in-JVM]
-```
+Evaluation’s default-judge gate checks for the registered `:ontology/living-description-enabled` read model and projects its value for the caller. The evaluation processor can load the ontology provider when present. Applications using only explicitly attached judges can install the standalone evaluation package. [Evaluation processors](../components/evaluation-service/src/ai/obney/orc/evaluation/core/todo_processors.clj)
 
-The graph is acyclic. The two lazy edges (`evaluation → ontology` gate,
-`ontology → colbert` retrieval) are deliberately lazy so judges, GEPA, and the
-ontology each build without dragging in heavier layers.
+Both retrieval encoders run on the JVM. Ontology uses DJL PyTorch for dense embeddings. ColBERT uses DJL OnnxRuntime for token-level MaxSim scoring. The first use of ColBERT resolves the model from its local cache or downloads it. Set `-Dcolbert.model.path` to use a pre-provisioned checkpoint. [ColBERT public interface](../components/colbert-service/src/ai/obney/orc/colbert/interface.clj)
 
-### Full umbrella project
+## Implementation notes
 
-```
-projects/orc  →  orc-service
-                 file-store-local
-                 file-store-s3
-                 evaluation   → orc-service
-                 gepa         → evaluation
-                 ontology
-                 colbert      [+ DJL OnnxRuntime, in-JVM]
-                 mcp-sheet-builder
-                 langfuse
-```
+### Ontology scope in hybrid retrieval
 
-### When is Python required?
-
-Never. Every component runs entirely on the JVM. The `ontology` component uses DJL to
-load embedding models locally over the PyTorch engine, and the `colbert` component runs
-its encoder checkpoint on DJL OnnxRuntime (ADR 0002) — both are JVM-managed; no Python
-process is spawned. The only external touch is each model's one-time download into a
-local cache on first use.
-
----
-
-## Known issues
-
-### BFS scoping — fixed in feature branch, not yet on main
-
-**Source (main):** `components/ontology/src/ai/obney/orc/ontology/core/retrieval.clj:116`
-
-On the current `main` branch, `expand-concept-neighborhood` has no `:ontology-id`
-parameter and walks all concepts regardless of ontology boundary. Embedding + ColBERT
-searches are correctly scoped, but BFS is not.
-
-**Fix landed:** `feature/ontology-architecture` (branch at `/Users/darylroberts/Desktop/Code/orc`)
-has the S02 fix fully implemented. `expand-concept-neighborhood` now accepts
-`:ontology-id`/`:ontology-ids` and builds a scoped concept graph accordingly.
-Back-compat preserved: callers without `:ontology-id` behave identically to before.
-
-```clojure
-;; Feature branch signature (S02 fix):
-(defn expand-concept-neighborhood
-  [seed-uris & {:keys [max-depth decay graph ctx ontology-id ontology-ids ...]}]
-  ...)
-```
-
-**Status on main:** Use `hybrid-search` with explicit `:signals #{:embedding :colbert}` if
-you need reliable ontology-scoped results today. The BFS signal will cross ontology
-boundaries until the feature branch merges.
-
----
+The embedding signal receives `:ontology-id` and `:ontology-ids`. The graph signal expands seed URIs over the default static graph, and the ColBERT signal searches the selected index. For retrieval confined to one ontology by ID, use `semantic-search-concepts` or select only the embedding signal and pass the ID. If adding ColBERT, select an index built for the same scope. [Ontology retrieval](ONTOLOGY.md#known-issues)
 
 ### Judge rubrics are data
 
-**Source:** `components/evaluation/src/ai/obney/orc/evaluation/core/judge_behaviours.clj`
+Each judge grades against a rubric value that defines the criterion, reviewer stance, score bands and feedback requirement. Built-in judges supply defaults. Set `:rubric` when declaring a judge, or use `:sheet/revise-judge` to create a new judge revision. [Evaluation component](EVALUATION-COMPONENT.md)
 
-Every judge, built-in or custom, is a workflow that grades against a **rubric** value on its
-blackboard: a criterion, a reviewer stance, a description for every band, and whether feedback
-is required. A built-in judge declared without a rubric uses its default; declare `:rubric` on
-the judge to change its bands, and `:sheet/revise-judge` to change them later. Revising a rubric
-creates a new judge revision and never changes a workflow. See `docs/EVALUATION-COMPONENT.md`.
+### Tree fingerprints group structural variants
 
----
-
-### `tree-fingerprint` is structural — instruction variants collapse
-
-**Source:** `components/orc-service/src/ai/obney/orc/orc_service/core/rlm_fingerprint.clj:30-50`
-
-The fingerprint hash normalizes the tree before hashing, replacing every `:instruction`
-string with the canonical placeholder `:fingerprint/instruction` and every `:fn` body with
-`:fingerprint/fn`:
-
-```clojure
-(def instruction-placeholder
-  "Instructions are content; the fingerprint is keyed on structure."
-  :fingerprint/instruction)
-```
-
-As a result, two `:repl-researcher` nodes that share the same tree shape but carry
-completely different `:instruction` content hash to the **same fingerprint**. Consequences:
-
-- LLM instruction A/B experiments within one tree shape collapse into a single fingerprint
-  bucket in rolling-metrics aggregation.
-- Domain-specific specialist emergence — grouping trees by *what they do*, not just *how
-  they're shaped* — requires a separate `:tree-class` axis that is **not yet auto-assigned**.
-
----
+Fingerprinting replaces instruction strings and function bodies with stable placeholders before hashing the tree. Instruction variants with the same structure therefore share a rolling-metrics bucket. The ontology `:tree-class` axis carries instruction-aware classifications. [Fingerprint implementation](../components/orc-service/src/ai/obney/orc/orc_service/core/logic.clj)
 
 ## Further reading
 
-- [`PACKAGES.md`](PACKAGES.md) — the standalone packages and their deps.edn snippets (pull in only what you need)
-- [`GETTING-STARTED.md`](GETTING-STARTED.md) — installation, first workflow, common patterns
-- [`JUDGE-ARCHITECTURE.md`](JUDGE-ARCHITECTURE.md) — judge types, custom judges, scale design, composite scoring
-- [`ORC-PRINCIPLES.md`](ORC-PRINCIPLES.md) — durable framework-level principles: node palette, `:delegate` composition, events-first discipline, fitness gate as objective
+- [Getting started](GETTING-STARTED.md) covers installation and a first workflow.
+- [Judge architecture](JUDGE-ARCHITECTURE.md) describes judge types, custom judges and composite scoring.
+- [ORC principles](ORC-PRINCIPLES.md) describes event sourcing and workflow composition.

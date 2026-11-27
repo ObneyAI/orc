@@ -6,719 +6,118 @@
    - Multimethod projections for sheets, nodes, blackboard, and ticks
    - defreadmodel registrations for L1/L2 caching
    - Helper functions for common queries (via rmp/project)"
-  (:require [ai.obney.orc.orc-service.core.judge-definition :as judge-definition]
-            [ai.obney.grain.event-store-v3.interface :as es]
+  (:require [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
-            [ai.obney.orc.orc-service.core.researcher-resume-state :as researcher-resume-state]
-            [ai.obney.orc.orc-service.core.trace-time :as trace-time]
-            ;; Value SHAPE for the tick blackboard, which caches metadata only.
-            ;; profile is deliberately dependency-free so both this namespace
-            ;; and the command/processor side can describe a value.
-            [ai.obney.orc.orc-service.core.profile :as profile]))
+            [ai.obney.orc.orc-service.core.logic :as logic]))
 
-;; =============================================================================
-;; Event Type Sets
-;; =============================================================================
+;; --- Budget facts ---
 
-(def sheet-core-events
-  "Core events that directly affect sheet read model"
-  #{:sheet/sheet-created
-    :sheet/sheet-renamed
-    :sheet/sheet-deleted
-    :sheet/node-created    ;; first root node sets root-node-id
-    :sheet/node-deleted    ;; deleting root clears root-node-id
-    ;; Versioning events
-    :sheet/version-published
-    :sheet/draft-stashed
-    :sheet/draft-reverted
-    :sheet/stash-restored
-    :sheet/execution-mode-set
-    :sheet/content-hash-set})
+(defn- first-start [context tick-id]
+  (when tick-id
+    (let [result (es/read (:event-store context)
+                          {:tenant-id (:tenant-id context) :tags #{[:tick tick-id]}
+                           :types #{:sheet/tree-tick-started}})]
+      (when (:cognitect.anomalies/category result)
+        (throw (ex-info "Cannot read canonical model campaign start"
+                        {:failure-kind :model-plan-incompatible :reason :canonical-start-unavailable})))
+      (first (filter #(= tick-id (:tick-id %)) (into [] result))))))
 
-(def node-events
-  "Events that affect node read model"
-  #{:sheet/node-created
-    :sheet/node-moved
-    :sheet/node-reordered
-    :sheet/node-deleted
-    :sheet/node-name-set
-    :sheet/node-instruction-set
-    :sheet/node-context-set
-    :sheet/node-io-set
-    :sheet/node-decorators-set
-    :sheet/node-check-set
-    :sheet/node-executor-set
-    :sheet/node-model-policy-set
-    :sheet/model-fallback-policy-set
-    :sheet/node-retry-set
-    :sheet/node-judges-set
-    :sheet/parallel-config-set
-    :sheet/map-each-config-set
-    :sheet/llm-condition-config-set
-    :sheet/repl-researcher-config-set
-    :sheet/delegate-config-set
-    :sheet/node-execution-started
-    :sheet/node-execution-completed})
+(defn researcher-campaign
+  "Original emitted campaign metadata from the canonical first start.
+   This is an index description, not permission to dispatch a model request."
+  [context tick-id]
+  (logic/campaign-options (first-start context tick-id)))
 
-(def blackboard-events
-  "Events that affect blackboard read model"
-  #{:sheet/key-declared
-    :sheet/key-schema-updated
-    :sheet/key-value-set
-    :sheet/key-deleted})
+(defn root
+  "Resolve a bounded owner through complete canonical first-start lineage.
+   Unknown/cyclic ancestry and read anomalies never imply an unlimited family."
+  [context tick-id]
+  (loop [tick-id tick-id seen #{} owner nil]
+    (cond
+      (nil? tick-id) owner
+      (contains? seen tick-id)
+      (throw (ex-info "Cyclic LLM budget ancestry" {:failure-kind :budget-history-unavailable}))
+      :else
+      (let [result (es/read (:event-store context)
+                            {:tenant-id (:tenant-id context) :tags #{[:tick tick-id]}
+                             :types #{:sheet/tree-tick-started}})
+            _ (when (:cognitect.anomalies/category result)
+                (throw (ex-info "Cannot read LLM budget ancestry" {:failure-kind :budget-history-unavailable :anomaly result})))
+            start (first (into [] result))
+            _ (when (and (nil? start) (seq seen))
+                (throw (ex-info "Incomplete LLM budget ancestry" {:failure-kind :budget-history-unavailable :tick-id tick-id})))
+            budget (get-in start [:options :llm-call-budget])
+            owner (if (and (integer? budget) (pos? budget))
+                    {:sheet-id (:sheet-id start) :tick-id (:tick-id start)
+                     :budget budget :accounting-version (get-in start [:options :llm-budget-accounting-version])}
+                    owner)]
+        (recur (:parent-tick-id start) (conj seen tick-id) owner)))))
 
-(def judge-events
-  "Events that affect judge read model"
-  #{:sheet/judge-declared
-    :sheet/judge-revised})
+(defn start-options [context sheet-id tick-id parent-tick-id options]
+  (let [parent-root (when parent-tick-id (root context parent-tick-id))
+        budget (:llm-call-budget options)]
+    (cond
+      parent-root
+      (assoc options :llm-call-budget (:budget parent-root)
+                     :llm-budget-root-sheet-id (:sheet-id parent-root)
+                     :llm-budget-root-tick-id (:tick-id parent-root))
+      (and (integer? budget) (pos? budget))
+      (assoc options :llm-budget-root-sheet-id sheet-id :llm-budget-root-tick-id tick-id
+                     :llm-budget-accounting-version logic/accounting-version)
+      :else options)))
 
-(def tick-events
-  "Events that affect tick/execution read model"
-  #{:sheet/tree-tick-started
-    :sheet/node-execution-started
-    :sheet/node-execution-completed
-    :sheet/tree-tick-completed
-    :sheet/tick-cancelled})
+(defn tags [context tick-id existing]
+  (if-let [owner (root context tick-id)]
+    (conj existing [:llm-budget-root (:tick-id owner)])
+    existing))
 
-(def version-events
-  "Events that affect version/stash read model"
-  #{:sheet/version-published
-    :sheet/draft-stashed
-    :sheet/draft-reverted
-    :sheet/stash-restored
-    :sheet/execution-mode-set
-    :sheet/content-hash-set})
-
-(def draft-dirty-events
-  "Events that mark draft as dirty (differs from published)"
-  #{:sheet/node-created
-    :sheet/node-moved
-    :sheet/node-reordered
-    :sheet/node-deleted
-    :sheet/node-name-set
-    :sheet/node-instruction-set
-    :sheet/node-context-set
-    :sheet/node-io-set
-    :sheet/node-decorators-set
-    :sheet/node-check-set
-    :sheet/node-executor-set
-    :sheet/node-model-policy-set
-    :sheet/model-fallback-policy-set
-    :sheet/node-retry-set
-    :sheet/node-judges-set
-    :sheet/parallel-config-set
-    :sheet/map-each-config-set
-    :sheet/llm-condition-config-set
-    :sheet/repl-researcher-config-set
-    :sheet/delegate-config-set
-    :sheet/key-declared
-    :sheet/key-schema-updated
-    :sheet/key-deleted
-    :sheet/judge-declared
-    :sheet/judge-revised})
-
-(def sheet-events
-  "Events that affect sheet read model (includes draft-dirty tracking and versioning)"
-  (clojure.set/union sheet-core-events draft-dirty-events version-events))
-
-(def all-sheet-events
-  "All events for a complete sheet view"
-  (clojure.set/union sheet-events node-events blackboard-events tick-events version-events))
-
-;; =============================================================================
-;; Sheets Projection
-;; =============================================================================
-
-(defmulti sheets*
-  "Apply event to sheets read model"
-  (fn [_state event] (:event/type event)))
-
-(defmethod sheets* :sheet/sheet-created
-  [state event]
-  (assoc state (:sheet-id event)
-         {:id (:sheet-id event)
-          :name (:name event)
-          :root-node-id nil
-          :created-at (str (:event/timestamp event))}))
-
-(defmethod sheets* :sheet/sheet-renamed
-  [state event]
-  (assoc-in state [(:sheet-id event) :name] (:new-name event)))
-
-(defmethod sheets* :sheet/node-created
-  [state event]
-  ;; When creating a node with no parent, it becomes the root
-  (if (nil? (:parent-id event))
-    (assoc-in state [(:sheet-id event) :root-node-id] (:node-id event))
-    state))
-
-(defmethod sheets* :sheet/node-deleted
-  [state event]
-  ;; If deleting the root node, clear root-node-id
-  (let [sheet-id (:sheet-id event)
-        node-id (:node-id event)
-        current-root (get-in state [sheet-id :root-node-id])]
-    (if (= current-root node-id)
-      (assoc-in state [sheet-id :root-node-id] nil)
-      state)))
-
-(defmethod sheets* :sheet/sheet-deleted
-  [state event]
-  (dissoc state (:sheet-id event)))
-
-;; Versioning methods
-(defmethod sheets* :sheet/version-published
-  [state event]
-  (-> state
-      (assoc-in [(:sheet-id event) :published-version] (:version-number event))
-      (assoc-in [(:sheet-id event) :draft-dirty?] false)))
-
-(defmethod sheets* :sheet/draft-stashed
-  [state event]
-  (assoc-in state [(:sheet-id event) :has-stash?] true))
-
-(defmethod sheets* :sheet/draft-reverted
-  [state event]
-  (assoc-in state [(:sheet-id event) :draft-dirty?] false))
-
-(defmethod sheets* :sheet/stash-restored
-  [state event]
-  ;; Restoring stash clears the stash (single stash per sheet)
-  (-> state
-      (assoc-in [(:sheet-id event) :has-stash?] false)
-      (assoc-in [(:sheet-id event) :draft-dirty?] true)))
-
-(defmethod sheets* :sheet/execution-mode-set
-  [state event]
-  (assoc-in state [(:sheet-id event) :execution-mode] (:mode event)))
-
-(defmethod sheets* :sheet/content-hash-set
-  [state event]
-  (assoc-in state [(:sheet-id event) :content-hash] (:content-hash event)))
-
-(defmethod sheets* :default
-  [state event]
-  ;; For events that modify the tree structure, mark draft as dirty
-  ;; (only if a published version exists)
-  (let [sheet-id (:sheet-id event)
-        event-type (:event/type event)]
-    (if (and sheet-id
-             (contains? draft-dirty-events event-type)
-             (get-in state [sheet-id :published-version]))
-      (assoc-in state [sheet-id :draft-dirty?] true)
-      state)))
-
-(defn sheets
-  "Build sheets read model from events"
-  [initial-state events]
-  (reduce sheets* initial-state events))
+(defn event
+  "Construct a canonical admission fact with its dedicated family tag.
+   New first starts use their already-derived options; later facts use durable lineage."
+  [context {:keys [type body] :as definition}]
+  (let [first? (= :sheet/tree-tick-started type)
+        start (if first? body (first-start context (:tick-id body)))
+        root-id (when first? (get-in body [:options :llm-budget-root-tick-id]))]
+    (es/->event (update definition :tags
+                        (fn [existing]
+                          (into (if root-id
+                                  (conj existing [:llm-budget-root root-id])
+                                  (tags context (:tick-id body) existing))
+                                (logic/campaign-tags start body)))))))
 
 (defreadmodel :sheet sheets
-  {:events sheet-events :version 1}
-  [state event] (sheets* state event))
-
-;; =============================================================================
-;; Nodes Projection
-;; =============================================================================
-
-(defmulti nodes*
-  "Apply event to nodes read model"
-  (fn [_state event] (:event/type event)))
-
-(defmethod nodes* :sheet/node-created
-  [state event]
-  (let [node-id (:node-id event)
-        parent-id (:parent-id event)
-        index (or (:index event) 0)]
-    (-> state
-        ;; Create the new node
-        (assoc node-id
-               {:id node-id
-                :sheet-id (:sheet-id event)
-                :type (:type event)
-                :name (case (:type event)
-                        :leaf "New Leaf"
-                        :sequence "Sequence"
-                        :fallback "Fallback"
-                        :condition "Condition"
-                        :llm-condition "LLM Condition"
-                        :parallel "Parallel"
-                        :map-each "Map Each"
-                        :repl-researcher "REPL Researcher"
-                        :delegate "Delegate")
-                :parent-id parent-id
-                :children-ids []
-                :status :idle
-                ;; Leaf fields
-                :instruction nil
-                :reads []
-                :writes []
-                :decorators []
-                :executor nil
-                :model nil
-                :fn nil
-                :tools nil
-                :retry nil
-                ;; Condition fields
-                :check nil
-                ;; Parallel fields
-                :success-policy nil
-                :failure-policy nil
-                ;; Map-each fields
-                :source-key nil
-                :item-key nil
-                :output-key nil
-                :max-concurrency nil
-                :preserve-failures? nil
-                ;; Execution tracking
-                :last-error nil})
-        ;; Add to parent's children if parent exists
-        (cond-> parent-id
-          (update-in [parent-id :children-ids]
-                     (fn [children]
-                       (let [children (or children [])]
-                         (vec (concat (take index children)
-                                      [node-id]
-                                      (drop index children))))))))))
-
-(defmethod nodes* :sheet/node-moved
-  [state event]
-  (let [node-id (:node-id event)
-        old-parent-id (:old-parent-id event)
-        new-parent-id (:new-parent-id event)
-        index (:index event)]
-    (-> state
-        ;; Update node's parent-id
-        (assoc-in [node-id :parent-id] new-parent-id)
-        ;; Remove from old parent's children
-        (cond-> old-parent-id
-          (update-in [old-parent-id :children-ids]
-                     (fn [children]
-                       (vec (remove #(= % node-id) children)))))
-        ;; Add to new parent's children at index
-        (update-in [new-parent-id :children-ids]
-                   (fn [children]
-                     (let [children (or children [])]
-                       (vec (concat (take index children)
-                                    [node-id]
-                                    (drop index children)))))))))
-
-(defmethod nodes* :sheet/node-reordered
-  [state event]
-  (let [node-id (:node-id event)
-        parent-id (get-in state [node-id :parent-id])
-        new-index (:new-index event)]
-    (if parent-id
-      (update-in state [parent-id :children-ids]
-                 (fn [children]
-                   (let [without-node (vec (remove #(= % node-id) children))]
-                     (vec (concat (take new-index without-node)
-                                  [node-id]
-                                  (drop new-index without-node))))))
-      state)))
-
-(defmethod nodes* :sheet/node-deleted
-  [state event]
-  (let [node-id (:node-id event)
-        parent-id (get-in state [node-id :parent-id])]
-    (-> state
-        ;; Remove from parent's children
-        (cond-> parent-id
-          (update-in [parent-id :children-ids]
-                     (fn [children]
-                       (vec (remove #(= % node-id) children)))))
-        ;; Remove the node itself
-        (dissoc node-id))))
-
-(defmethod nodes* :sheet/node-name-set
-  [state event]
-  (assoc-in state [(:node-id event) :name] (:name event)))
-
-(defmethod nodes* :sheet/node-instruction-set
-  [state event]
-  (assoc-in state [(:node-id event) :instruction] (:instruction event)))
-
-(defmethod nodes* :sheet/node-context-set
-  [state event]
-  (assoc-in state [(:node-id event) :context] (:context event)))
-
-(defmethod nodes* :sheet/node-io-set
-  [state event]
-  (-> state
-      (assoc-in [(:node-id event) :reads] (:reads event))
-      (assoc-in [(:node-id event) :writes] (:writes event))))
-
-(defmethod nodes* :sheet/node-decorators-set
-  [state event]
-  (assoc-in state [(:node-id event) :decorators] (:decorators event)))
-
-(defmethod nodes* :sheet/node-check-set
-  [state event]
-  (assoc-in state [(:node-id event) :check] (:check event)))
-
-(defmethod nodes* :sheet/node-executor-set
-  [state event]
-  (-> state
-      (assoc-in [(:node-id event) :executor] (:executor event))
-      (assoc-in [(:node-id event) :model] (:model event))
-      (assoc-in [(:node-id event) :fn] (:fn event))
-      (assoc-in [(:node-id event) :recoverable-fn] (:recoverable-fn event))
-      (assoc-in [(:node-id event) :tool] (:tool event))
-      (assoc-in [(:node-id event) :tools] (:tools event))
-      (assoc-in [(:node-id event) :options] (:options event))
-      ;; Phase 4B: opt-in gated tool-caller builder for :code nodes.
-      (assoc-in [(:node-id event) :tool-caller-fn] (:tool-caller-fn event))
-      (assoc-in [(:node-id event) :tool-contracts] (:tool-contracts event))
-      ;; :decision executor: run-time options key, confidence floor, abstention.
-      (assoc-in [(:node-id event) :options-from] (:options-from event))
-      (assoc-in [(:node-id event) :bands-from] (:bands-from event))
-      (assoc-in [(:node-id event) :min-confidence] (:min-confidence event))
-      (assoc-in [(:node-id event) :abstain] (:abstain event))))
-
-(defmethod nodes* :sheet/node-model-policy-set [state event]
-  (update state (:node-id event) merge
-          (select-keys event [:provider :fallback-models :fallback-policy :options])))
-
-(defmethod nodes* :sheet/model-fallback-policy-set [state event]
-  (assoc-in state [(:node-id event) :model-fallback-policy] (:model-fallback-policy event)))
-
-(defmethod nodes* :sheet/node-retry-set
-  [state event]
-  (assoc-in state [(:node-id event) :retry] (:retry event)))
-
-(defmethod nodes* :sheet/parallel-config-set
-  [state event]
-  (-> state
-      (assoc-in [(:node-id event) :success-policy] (:success-policy event))
-      (assoc-in [(:node-id event) :failure-policy] (:failure-policy event))))
-
-(defmethod nodes* :sheet/map-each-config-set
-  [state event]
-  (cond-> state
-    true (assoc-in [(:node-id event) :source-key] (:source-key event))
-    true (assoc-in [(:node-id event) :item-key] (:item-key event))
-    true (assoc-in [(:node-id event) :output-key] (:output-key event))
-    true (assoc-in [(:node-id event) :max-concurrency] (:max-concurrency event))
-    (some? (:preserve-failures? event))
-    (assoc-in [(:node-id event) :preserve-failures?] (:preserve-failures? event))))
-
-(defmethod nodes* :sheet/llm-condition-config-set
-  [state event]
-  (-> state
-      (assoc-in [(:node-id event) :instruction] (:instruction event))
-      (assoc-in [(:node-id event) :reads] (:reads event))
-      (assoc-in [(:node-id event) :model] (:model event))))
-
-(defmethod nodes* :sheet/repl-researcher-config-set
-  [state event]
-  (-> state
-      (assoc-in [(:node-id event) :instruction] (:instruction event))
-      (assoc-in [(:node-id event) :reads] (:reads event))
-      (assoc-in [(:node-id event) :writes] (:writes event))
-      (assoc-in [(:node-id event) :mcp-tools] (:mcp-tools event))
-      (assoc-in [(:node-id event) :tool-contracts] (:tool-contracts event))
-      (assoc-in [(:node-id event) :tool-caller-fn] (:tool-caller-fn event))
-      (assoc-in [(:node-id event) :browser-tools] (:browser-tools event))
-      (assoc-in [(:node-id event) :model] (:model event))
-      (assoc-in [(:node-id event) :max-iterations] (:max-iterations event))
-      (assoc-in [(:node-id event) :rlm] (:rlm event))
-      (assoc-in [(:node-id event) :options] (:options event))
-      ;; D-003: project :timeout-ms (total Phase-1+Phase-2 budget) into node state
-      (assoc-in [(:node-id event) :timeout-ms] (:timeout-ms event))))
-
-(defmethod nodes* :sheet/delegate-config-set
-  [state event]
-  (-> state
-      (assoc-in [(:node-id event) :target-sheet-id] (:target-sheet-id event))
-      (assoc-in [(:node-id event) :reads] (:reads event))
-      (assoc-in [(:node-id event) :writes] (:writes event))
-      (assoc-in [(:node-id event) :delegate-timeout-ms] (:timeout-ms event))
-      (assoc-in [(:node-id event) :delegate-max-ticks] (:max-ticks event))
-      (assoc-in [(:node-id event) :inherit-ontology?] (:inherit-ontology? event))))
-
-(defmethod nodes* :sheet/node-judges-set
-  [state event]
-  (assoc-in state [(:node-id event) :judges] (:judges event)))
-
-(defmethod nodes* :sheet/node-execution-started
-  [state event]
-  (assoc-in state [(:node-id event) :status] :running))
-
-(defmethod nodes* :sheet/node-execution-completed
-  [state event]
-  (-> state
-      (assoc-in [(:node-id event) :status] (:status event))
-      (assoc-in [(:node-id event) :last-error] (:error event))))
-
-(defmethod nodes* :default [state _] state)
-
-(defn nodes
-  "Build nodes read model from events"
-  [initial-state events]
-  (reduce nodes* initial-state events))
+  {:events logic/sheet-events :version 1}
+  [state event] (logic/sheets* state event))
 
 (defreadmodel :sheet nodes
-  {:events node-events :version 1}
-  [state event] (nodes* state event))
-
-;; =============================================================================
-;; Blackboard Projection
-;; =============================================================================
-
-(defn- blackboard-entity-id
-  "Blackboard key names are local to a sheet. Grain's partitioned projection
-   engine requires entity ids to be globally unique across all partitions, so
-   include the sheet id instead of letting a same-named key look like an entity
-   moving from one sheet partition to another."
-  [event-or-entry]
-  [(:sheet-id event-or-entry) (:key event-or-entry)])
-
-(defmulti blackboard*
-  "Apply event to blackboard read model"
-  (fn [_state event] (:event/type event)))
-
-(defmethod blackboard* :sheet/key-declared
-  [state event]
-  (assoc state (blackboard-entity-id event)
-         {:sheet-id (:sheet-id event)
-          :key (:key event)
-          :schema (:schema event)
-          :value nil
-          :version 0}))
-
-(defmethod blackboard* :sheet/key-schema-updated
-  [state event]
-  (assoc-in state [(blackboard-entity-id event) :schema] (:schema event)))
-
-(defmethod blackboard* :sheet/key-value-set
-  [state event]
-  (-> state
-      (assoc-in [(blackboard-entity-id event) :value] (:value event))
-      (assoc-in [(blackboard-entity-id event) :version] (:version event))))
-
-(defmethod blackboard* :sheet/key-deleted
-  [state event]
-  (dissoc state (blackboard-entity-id event)))
-
-(defmethod blackboard* :default [state _] state)
-
-(defn blackboard
-  "Build blackboard read model from events"
-  [initial-state events]
-  (reduce blackboard* (or initial-state {}) events))
+  {:events logic/node-events :version 1}
+  [state event] (logic/nodes* state event))
 
 (defreadmodel :sheet blackboard
-  {:events blackboard-events :version 3
+  {:events logic/blackboard-events :version 1
    :partition-fn :sheet-id
-   :entity-id-fn blackboard-entity-id}
-  [state event] (blackboard* state event))
-
-;; =============================================================================
-;; Judges Projection
-;; =============================================================================
-
-(defn- judge-entity-id
-  "Judge names, like blackboard keys, are local to their host sheet."
-  [event-or-entry]
-  [(:sheet-id event-or-entry) (:judge-name event-or-entry)])
-
-(defmulti judges*
-  "Apply event to judges read model"
-  (fn [_state event] (:event/type event)))
-
-(defn- judge-definition-entry
-  "The current-definition view of a declared judge config at a revision. The
-   declared config is kept as the host of the entry (existing readers use its
-   keys directly) and enriched with the DEFAULTED purposes."
-  [event]
-  (let [jc (:judge-config event)
-        ;; Gap-4: judge-config may carry `:sheet-id` referring to the
-        ;; CONSUMER'S eval sheet (for `:type :custom`). The merge below sets
-        ;; `:sheet-id` to the host sheet (the framework needs `:sheet-id` in the
-        ;; judge map for partitioning + cache). To preserve the eval-sheet
-        ;; reference, we lift it to `:eval-sheet-id` BEFORE the merge --
-        ;; custom-judge sub-execution reads from there.
-        jc+eval (cond-> jc
-                  (:sheet-id jc) (assoc :eval-sheet-id (:sheet-id jc)))]
-    (merge jc+eval
-           {:sheet-id (:sheet-id event)
-            :judge-name (:judge-name event)
-            :purposes (judge-definition/effective-purposes jc)})))
-
-(defmethod judges* :sheet/judge-declared
-  [state event]
-  (let [revision (or (:revision-number event) 1)]
-    (assoc state (judge-entity-id event)
-           (merge (judge-definition-entry event)
-                  {:criteria-version (or (:criteria-version event) 1)
-                   :revision-number revision
-                   :revisions [{:revision-number revision
-                                :judge-config (:judge-config event)}]}))))
-
-(defmethod judges* :sheet/judge-revised
-  [state event]
-  (let [k (judge-entity-id event)
-        previous (get state k)
-        revision (:revision-number event)]
-    (assoc state k
-           (merge (judge-definition-entry event)
-                  {:criteria-version (or (:criteria-version previous) 1)
-                   :revision-number revision
-                   :revisions (conj (vec (:revisions previous))
-                                    {:revision-number revision
-                                     :judge-config (:judge-config event)})}))))
-
-(defmethod judges* :default [state _] state)
-
-(defn judges
-  "Build judges read model from events"
-  [initial-state events]
-  (reduce judges* (or initial-state {}) events))
+   :entity-id-fn logic/blackboard-entity-id}
+  [state event] (logic/blackboard* state event))
 
 (defreadmodel :sheet judges
-  {:events judge-events :version 4
+  {:events logic/judge-events :version 1
    :partition-fn :sheet-id
-   :entity-id-fn judge-entity-id}
-  [state event] (judges* state event))
-
-;; =============================================================================
-;; Ticks Projection (for tracking execution state)
-;; =============================================================================
-
-(defmulti ticks*
-  "Apply event to ticks read model"
-  (fn [_state event] (:event/type event)))
-
-(defmethod ticks* :sheet/tree-tick-started
-  [state event]
-  (let [tick-id (:tick-id event)
-        iteration (or (:iteration event) 1)
-        existing (get state tick-id)]
-    (if existing
-      ;; Re-tick - update iteration count
-      (-> state
-          (assoc-in [tick-id :iteration] iteration)
-          (assoc-in [tick-id :status] :running))
-      ;; New tick
-      (assoc state tick-id
-             (cond-> {:id tick-id
-                      :sheet-id (:sheet-id event)
-                      :status :running
-                      :iteration iteration
-                      :started-at (str (:event/timestamp event))
-                      :completed-at nil
-                      :root-status nil}
-               ;; Lineage: lets cancellation checks walk to ancestors so a
-               ;; child tick spawned around the moment its parent was
-               ;; cancelled still self-terminates.
-               (:parent-tick-id event)
-               (assoc :parent-tick-id (:parent-tick-id event))
-               (:correlation-id event)
-               (assoc :correlation-id (:correlation-id event)))))))
-
-(defmethod ticks* :sheet/tree-tick-completed
-  [state event]
-  (let [tick-id (:tick-id event)]
-    ;; Cancellation is terminal and wins even when asynchronous projection
-    ;; workers observe completion after cancellation. Event-store replay is
-    ;; ordered, while live pubsub delivery can race; making the reducer
-    ;; monotonic keeps both paths equivalent without hiding either event.
-    (cond-> (-> state
-                (assoc-in [tick-id :root-status] (:root-status event))
-                (assoc-in [tick-id :completed-at] (str (:event/timestamp event))))
-      (not= :cancelled (get-in state [tick-id :status]))
-      (assoc-in [tick-id :status] :completed))))
-
-(defmethod ticks* :sheet/tick-cancelled
-  [state event]
-  (-> state
-      (assoc-in [(:tick-id event) :status] :cancelled)
-      (assoc-in [(:tick-id event) :cancelled-at] (str (:event/timestamp event)))))
-
-(defmethod ticks* :default [state _] state)
-
-(defn ticks
-  "Build ticks read model from events"
-  [initial-state events]
-  (reduce ticks* (or initial-state {}) events))
+   :entity-id-fn logic/judge-entity-id}
+  [state event] (logic/judges* state event))
 
 (defreadmodel :sheet ticks
-  {:events tick-events :version 2
+  {:events logic/tick-events :version 1
    :partition-fn :sheet-id
    :entity-id-fn :tick-id}
-  [state event] (ticks* state event))
-
-;; =============================================================================
-;; Versions Projection
-;; =============================================================================
-
-(defmulti versions*
-  "Apply event to versions read model.
-   State structure: {sheet-id {version-number version-snapshot}}"
-  (fn [_state event] (:event/type event)))
-
-(defmethod versions* :sheet/version-published
-  [state event]
-  (let [sheet-id (:sheet-id event)
-        version-num (:version-number event)]
-    (assoc-in state [sheet-id version-num]
-              {:snapshot-id (:snapshot-id event)
-               :sheet-id sheet-id
-               :version-number version-num
-               :published-at (str (:event/timestamp event))
-               :description (:description event)
-               :snapshot (:snapshot event)})))
-
-(defmethod versions* :default [state _] state)
-
-(defn versions
-  "Build versions read model from events"
-  [initial-state events]
-  (reduce versions* (or initial-state {}) events))
+  [state event] (logic/ticks* state event))
 
 (defreadmodel :sheet versions
-  {:events version-events :version 1}
-  [state event] (versions* state event))
-
-;; =============================================================================
-;; Stash Projection
-;; =============================================================================
-
-(defmulti stashes*
-  "Apply event to stashes read model.
-   State structure: {sheet-id stash} - only one stash per sheet"
-  (fn [_state event] (:event/type event)))
-
-(defmethod stashes* :sheet/draft-stashed
-  [state event]
-  (let [sheet-id (:sheet-id event)]
-    (assoc state sheet-id
-           {:stash-id (:stash-id event)
-            :sheet-id sheet-id
-            :stashed-at (str (:event/timestamp event))
-            :snapshot (:snapshot event)})))
-
-(defmethod stashes* :sheet/stash-restored
-  [state event]
-  ;; Restoring a stash consumes it
-  (dissoc state (:sheet-id event)))
-
-(defmethod stashes* :sheet/draft-reverted
-  [state event]
-  ;; A new stash was created before revert, which overwrites old stash
-  ;; The stash event comes before the revert event, so nothing to do here
-  state)
-
-(defmethod stashes* :default [state _] state)
-
-(defn stashes
-  "Build stashes read model from events"
-  [initial-state events]
-  (reduce stashes* (or initial-state {}) events))
+  {:events logic/version-events :version 1}
+  [state event] (logic/versions* state event))
 
 (defreadmodel :sheet stashes
-  {:events version-events :version 1}
-  [state event] (stashes* state event))
+  {:events logic/version-events :version 1}
+  [state event] (logic/stashes* state event))
 
 ;; =============================================================================
 ;; Query Helper Functions
@@ -791,10 +190,10 @@
   (let [events (into [] (es/read (:event-store ctx)
                                  {:tenant-id (:tenant-id ctx)
                                   :tags #{[:sheet sheet-id]}
-                                  :types blackboard-events}))]
+                                  :types logic/blackboard-events}))]
     (into {}
           (map (juxt :key identity))
-          (vals (blackboard {} events)))))
+          (vals (logic/read-models-blackboard {} events)))))
 
 (defn get-judges
   "Get all judges declared for a sheet as a map keyed by judge name"
@@ -871,25 +270,7 @@
               (let [node (get nodes-by-id nid)]
                 (cons node
                       (mapcat descendants (:children-ids node)))))]
-      (rest (descendants node-id))))) ;; rest to exclude the node itself
-
-(defn is-descendant?
-  "Check if potential-descendant is a descendant of ancestor-id"
-  [nodes-by-id ancestor-id potential-descendant-id]
-  (loop [to-check #{potential-descendant-id}
-         visited #{}]
-    (if (empty? to-check)
-      false
-      (let [current (first to-check)
-            remaining (disj to-check current)]
-        (if (visited current)
-          (recur remaining visited)
-          (let [node (get nodes-by-id current)
-                parent-id (:parent-id node)]
-            (cond
-              (= parent-id ancestor-id) true
-              (nil? parent-id) (recur remaining (conj visited current))
-              :else (recur (conj remaining parent-id) (conj visited current)))))))))
+      (rest (descendants node-id)))))
 
 ;; =============================================================================
 ;; Version Query Helpers
@@ -923,67 +304,11 @@
   (get (rmp/project ctx :sheet/stashes {:tags #{[:sheet sheet-id]}})
        sheet-id))
 
-;; =============================================================================
-;; Traces Projection
-;; =============================================================================
-
-(def trace-events
-  "Events that affect execution traces read model"
-  #{:sheet/execution-traced :sheet/execution-trace-refreshed})
-
-(defmulti traces*
-  "Apply event to traces read model.
-   State structure: {trace-id trace}"
-  (fn [_state event] (:event/type event)))
-
-(defmethod traces* :sheet/execution-traced
-  [state event]
-  (let [trace-id (:trace-id event)]
-    (assoc state trace-id
-           (cond-> {:trace-id trace-id
-                    :sheet-id (:sheet-id event)
-                    :correlation-id (:correlation-id event)
-                    :root-trace-id (:root-trace-id event)
-                    :child-trace-ids (vec (or (:child-trace-ids event) []))
-                    :started-at (trace-time/canonical-string (:started-at event))
-                    :completed-at (trace-time/canonical-string (:completed-at event))
-                    :duration-ms (:duration-ms event)
-                    :status (:status event)
-                    :configured-max-ticks (:configured-max-ticks event)
-                    :consumed-ticks (:consumed-ticks event)
-                    :terminal-reason (:terminal-reason event)
-                    :input-snapshot (:input-snapshot event)
-                    :output-snapshot (:output-snapshot event)
-                    :researcher-iterations (vec (or (:researcher-iterations event) []))
-                    :researcher-events (vec (or (:researcher-events event) []))
-                    :node-traces (mapv (fn [node-trace]
-                                         (-> node-trace
-                                             (update :started-at trace-time/canonical-string)
-                                             (update :completed-at trace-time/canonical-string)))
-                                       (:node-traces event))}
-             (nil? (:correlation-id event)) (dissoc :correlation-id)
-             (:parent-trace-id event) (assoc :parent-trace-id (:parent-trace-id event))
-             (:version-number event) (assoc :version-number (:version-number event))
-             (some? (:source-event-count event))
-             (assoc :source-event-count (:source-event-count event))
-             (:error event) (assoc :error (:error event))))))
-
-(defmethod traces* :sheet/execution-trace-refreshed
-  [state event]
-  (traces* state (assoc event :event/type :sheet/execution-traced)))
-
-(defmethod traces* :default [state _] state)
-
-(defn traces
-  "Build traces read model from events"
-  [initial-state events]
-  (reduce traces* (or initial-state {}) events))
-
 (defreadmodel :sheet traces
-  {:events trace-events :version 8
+  {:events logic/trace-events :version 1
    :partition-fn :sheet-id
    :entity-id-fn :trace-id}
-  [state event] (traces* state event))
+  [state event] (logic/traces* state event))
 
 ;; =============================================================================
 ;; Trace Query Helpers
@@ -1022,156 +347,11 @@
   [ctx]
   (into {} (map (juxt :id :name) (get-sheets-all ctx))))
 
-;; =============================================================================
-;; Tick Execution Contexts (Tick-Scoped Isolation)
-;; =============================================================================
-;;
-;; When a tick is started with an execution-snapshot (async path), this read
-;; model stores the execution context per tick: nodes-by-id, blackboard
-;; METADATA, options, etc.
-;;
-;; The blackboard here holds SHAPE, NOT VALUES. Each key records its schema,
-;; version, a size :profile, and — when a write produced the current value —
-;; the canonical :source of that write. Values are resolved on demand from
-;; the value log; :source makes
-;; that an exact pointer fetch rather than a last-write-wins search.
-;;
-;; Why: this read model is projected with a {:tags #{[:tick ...]}} SCOPE, which
-;; routes to p-partitioned-full — a path that never consults L1 and re-encodes
-;; its whole entry on every projection that observes a new event, with no
-;; >=10-event threshold. Seven processors project it on each
-;; :sheet/node-execution-started, so embedding values paid the whole blackboard
-;; back to LMDB once per write-bearing projection and the entry tracked payload
-;; size. Measured on the l2-storage-test fan-out fixture (four leaves): a 40 KB
-;; payload wrote 425 KB to L2 across 11 full re-encodes, with a 42 KB resting
-;; entry that grew 8.35x when the payload grew 10x. Metadata-only brings that
-;; to 27 KB of traffic, a 2.4 KB entry, and 1.00x scaling.
-;;
-;; For snapshot-less UI ticks, no execution context is stored
-;; and processors fall back to reading live sheet state.
-
-(def tick-execution-context-events
-  "Events that affect tick-scoped execution contexts"
-  #{:sheet/tree-tick-started
-    :sheet/execution-value-written
-    :sheet/execution-value-referenced})
-
-(defn- metadata-entry
-  "A blackboard entry reduced to shape: no :value, plus a size :profile when
-   there is a value to describe. nil values get no profile — there is no shape
-   to record — but the ENTRY still exists, which is what tells a consumer the
-   key was declared."
-  [entry value]
-  (cond-> (dissoc entry :value)
-    (some? value) (assoc :profile (profile/profile-value value))))
-
-(defmulti tick-execution-contexts*
-  "Apply event to tick execution contexts read model.
-   State structure: {tick-id {:nodes-by-id {...}
-                              :root-node-id uuid
-                              :blackboard {key {:key k :schema s :version n
-                                                :profile {...}
-                                                :source {:tick-id uuid :event-id uuid}}}
-                              :version-number int?
-                              :options {...}}}
-
-   Note the blackboard carries no :value — see the section comment above."
-  (fn [_state event] (:event/type event)))
-
-(defmethod tick-execution-contexts* :sheet/tree-tick-started
-  [state event]
-  (if-let [snapshot (:execution-snapshot event)]
-    ;; Snapshot-based tick: store full execution context
-    (let [;; The snapshot carries structure and declared blackboard metadata.
-          ;; Every value is resolved through :seed-sources.
-          bb-entries (reduce-kv (fn [acc k entry]
-                                  (assoc acc k (dissoc entry :value)))
-                                {}
-                                (or (:blackboard-entries snapshot) {}))
-          blackboard (reduce-kv
-                       (fn [bb key-name source]
-                         (let [k (if (string? key-name) (keyword key-name) key-name)]
-                           (if (contains? bb k)
-                             (assoc-in bb [k :source] source)
-                             bb)))
-                       bb-entries
-                       (or (:seed-sources event) {}))]
-      (assoc state (:tick-id event)
-             (cond-> {:sheet-id (:sheet-id event)
-                      :nodes-by-id (:nodes-by-id snapshot)
-                      :root-node-id (:root-node-id snapshot)
-                      :blackboard blackboard
-                      :version-number (:version-number snapshot)
-                      :options (:options event)}
-               (:instruction-overrides snapshot)
-               (assoc :instruction-overrides (:instruction-overrides snapshot))
-               (:correlation-id event)
-               (assoc :correlation-id (:correlation-id event))
-               ;; G1 (ADR 0018): surface the opaque :tool-context per tick so
-               ;; execute-leaf-node can assoc it onto the leaf's context at any
-               ;; depth. Absent -> not stored (backward-compatible).
-               (:tool-context event)
-               (assoc :tool-context (:tool-context event)))))
-    ;; Snapshot-less UI tick: no execution context stored
-    state))
-
-(defmethod tick-execution-contexts* :sheet/execution-value-written
-  [state event]
-  (let [tick-id (:tick-id event)
-        k (:key event)
-        v (:value event)
-        value-profile (:value-profile event)]
-    (if (contains? state tick-id)
-      (-> state
-          ;; Shape, not the value. update-in (rather than assoc-in on :profile)
-          ;; so a write of nil still CREATES the entry — the key becoming
-          ;; present is itself information, and assoc-in on a nil profile would
-          ;; record it as a key with a nil shape.
-          (update-in [tick-id :blackboard k]
-                     (fn [entry]
-                       (cond-> (metadata-entry (or entry {}) v)
-                         value-profile (assoc :profile value-profile))))
-          (update-in [tick-id :blackboard k :version] (fnil inc 0))
-          ;; Provenance: which write event produced the value currently under
-          ;; this key. A key can be written several times in one tick, so
-          ;; "the value of k" is ambiguous after the fact — a reader that
-          ;; resolves k by name alone gets the LAST write, which may have
-          ;; happened after the node that read it already finished.
-          ;; Recording the source reference lets a reader capture exactly
-          ;; which write it saw, making rehydration an exact lookup.
-          (assoc-in [tick-id :blackboard k :source]
-                    {:tick-id tick-id :event-id (:event/id event)}))
-      state)))
-
-(defmethod tick-execution-contexts* :sheet/execution-value-referenced
-  [state event]
-  (let [tick-id (:tick-id event)
-        k (:key event)]
-    (if (get-in state [tick-id :blackboard k])
-      (-> state
-          (update-in [tick-id :blackboard k :version] (fnil inc 0))
-          (assoc-in [tick-id :blackboard k :source] (:source event)))
-      state)))
-
-(defmethod tick-execution-contexts* :default [state _] state)
-
-(defn tick-execution-contexts
-  "Build tick execution contexts read model from events"
-  [initial-state events]
-  (reduce tick-execution-contexts* (or initial-state {}) events))
-
-;; Version 3: the cached blackboard holds metadata only (no :value), plus a
-;; size :profile per key. The bump is mandatory, not cosmetic — the version is
-;; part of the L2 cache key, so without it a pre-existing v2 entry would be
-;; found by read-partition-manifest, incrementally updated from its watermark,
-;; and left holding :value for every key written before the deploy: a
-;; mixed-shape blackboard. A fresh key space forces re-derivation from events,
-;; which reproduces the metadata exactly (including every :source).
 (defreadmodel :sheet tick-execution-contexts
-  {:events tick-execution-context-events :version 4
+  {:events logic/tick-execution-context-events :version 1
    :partition-fn :sheet-id
    :entity-id-fn :tick-id}
-  [state event] (tick-execution-contexts* state event))
+  [state event] (logic/tick-execution-contexts* state event))
 
 (defn get-tick-execution-context
   "Get the full execution context for a tick-scoped execution.
@@ -1200,128 +380,11 @@
   [ctx tick-id]
   (:nodes-by-id (get-tick-execution-context ctx tick-id)))
 
-;; =============================================================================
-;; In-Progress Executions Projection
-;; =============================================================================
-
-(def in-progress-execution-events
-  "Events that affect in-progress execution tracking"
-  #{:sheet/tree-tick-started
-    :sheet/node-execution-started
-    :sheet/node-execution-completed
-    :sheet/tree-tick-completed
-    :sheet/tick-cancelled
-    :sheet/execution-traced
-    :sheet/sequence-progress-updated
-    :sheet/map-each-progress-updated})
-
-(defmulti in-progress-executions*
-  "Apply event to in-progress executions read model.
-   State structure: {tick-id execution-context}
-   where execution-context contains:
-   - :tick-id, :sheet-id, :status, :started-at
-   - :current-node-id - which node is currently executing
-   - :nodes-in-progress - set of node-ids currently executing
-   - :sequence-progress - {node-id {:index N :total M}}
-   - :map-each-progress - {node-id {:index N :total M}}"
-  (fn [_state event] (:event/type event)))
-
-(defmethod in-progress-executions* :sheet/tree-tick-started
-  [state event]
-  (let [tick-id (:tick-id event)]
-    (assoc state tick-id
-           {:tick-id tick-id
-            :sheet-id (:sheet-id event)
-            :status :running
-            :started-at (str (:event/timestamp event))
-            :current-node-id nil
-            :nodes-in-progress #{}
-            :sequence-progress {}
-            :map-each-progress {}})))
-
-(defmethod in-progress-executions* :sheet/node-execution-started
-  [state event]
-  (let [tick-id (:tick-id event)
-        node-id (:node-id event)]
-    (if (contains? state tick-id)
-      (-> state
-          (assoc-in [tick-id :current-node-id] node-id)
-          (update-in [tick-id :nodes-in-progress] conj node-id))
-      state)))
-
-(defmethod in-progress-executions* :sheet/node-execution-completed
-  [state event]
-  (let [tick-id (:tick-id event)
-        node-id (:node-id event)]
-    (if (contains? state tick-id)
-      (-> state
-          (update-in [tick-id :nodes-in-progress] disj node-id)
-          ;; Update current-node-id to another running node if any
-          (update tick-id
-                  (fn [ctx]
-                    (let [remaining (disj (:nodes-in-progress ctx) node-id)]
-                      (assoc ctx :current-node-id (first remaining)))))
-          ;; Clear progress for completed node
-          (update-in [tick-id :sequence-progress] dissoc node-id)
-          (update-in [tick-id :map-each-progress] dissoc node-id))
-      state)))
-
-(defmethod in-progress-executions* :sheet/tree-tick-completed
-  [state event]
-  (let [tick-id (:tick-id event)]
-    (-> state
-        (assoc-in [tick-id :status] :completed)
-        (assoc-in [tick-id :completed-at] (str (:event/timestamp event)))
-        (assoc-in [tick-id :root-status] (:root-status event)))))
-
-(defmethod in-progress-executions* :sheet/tick-cancelled
-  [state event]
-  (let [tick-id (:tick-id event)]
-    (-> state
-        (assoc-in [tick-id :status] :cancelled)
-        (assoc-in [tick-id :cancelled-at] (str (:event/timestamp event))))))
-
-(defmethod in-progress-executions* :sheet/execution-traced
-  [state event]
-  ;; Execution traced means it's complete - remove from in-progress
-  ;; But keep completed status for querying recently completed
-  (let [trace-id (:trace-id event)]
-    ;; The tick-id might not match trace-id, so we need to find it
-    ;; For now, leave the state as-is since tree-tick-completed handles completion
-    state))
-
-(defmethod in-progress-executions* :sheet/sequence-progress-updated
-  [state event]
-  (let [tick-id (:tick-id event)
-        node-id (:node-id event)]
-    (if (contains? state tick-id)
-      (assoc-in state [tick-id :sequence-progress node-id]
-                {:index (:child-index event)
-                 :total (:total-children event)})
-      state)))
-
-(defmethod in-progress-executions* :sheet/map-each-progress-updated
-  [state event]
-  (let [tick-id (:tick-id event)
-        node-id (:node-id event)]
-    (if (contains? state tick-id)
-      (assoc-in state [tick-id :map-each-progress node-id]
-                {:index (:item-index event)
-                 :total (:total-items event)})
-      state)))
-
-(defmethod in-progress-executions* :default [state _] state)
-
-(defn in-progress-executions
-  "Build in-progress executions read model from events"
-  [initial-state events]
-  (reduce in-progress-executions* (or initial-state {}) events))
-
 (defreadmodel :sheet in-progress-executions
-  {:events in-progress-execution-events :version 2
+  {:events logic/in-progress-execution-events :version 1
    :partition-fn :sheet-id
    :entity-id-fn :tick-id}
-  [state event] (in-progress-executions* state event))
+  [state event] (logic/in-progress-executions* state event))
 
 ;; =============================================================================
 ;; In-Progress Execution Query Helpers
@@ -1368,34 +431,9 @@
   [ctx tick-id node-id]
   (get-in (get-execution-context ctx tick-id) [:map-each-progress node-id]))
 
-;; =============================================================================
-;; Tree Metadata Read Model
-;; =============================================================================
-
-(def tree-metadata-events
-  "Events for tree metadata"
-  #{:sheet/tree-metadata-extracted
-    :sheet/sheet-deleted})
-
-(defmulti tree-metadata* (fn [_state event] (:event/type event)))
-
-(defmethod tree-metadata* :default [state _] state)
-
-(defmethod tree-metadata* :sheet/tree-metadata-extracted [state event]
-  (assoc state (:sheet-id event) (:metadata event)))
-
-(defmethod tree-metadata* :sheet/sheet-deleted [state event]
-  (dissoc state (:sheet-id event)))
-
-(defn tree-metadata
-  "Reduce function for tree metadata.
-   Returns map of sheet-id -> metadata."
-  [initial-state events]
-  (reduce tree-metadata* initial-state events))
-
 (defreadmodel :sheet tree-metadata
-  {:events tree-metadata-events :version 1}
-  [state event] (tree-metadata* state event))
+  {:events logic/tree-metadata-events :version 1}
+  [state event] (logic/tree-metadata* state event))
 
 (defn get-tree-metadata
   "Get metadata for a specific sheet.
@@ -1424,85 +462,11 @@
          (take limit)
          (mapv (fn [[id meta]] (assoc meta :sheet-id id))))))
 
-;; =============================================================================
-;; Rolling Metrics Read Model
-;; =============================================================================
-
-(def rolling-window-size
-  "Number of recent executions to track for rolling metrics"
-  100)
-
-(defmulti rolling-metrics* (fn [_state event] (:event/type event)))
-
-(defmethod rolling-metrics* :default [state _] state)
-
-(defmethod rolling-metrics* :sheet/node-execution-completed [state event]
-  (let [{:keys [sheet-id node-id status duration-ms]} event
-        key [sheet-id node-id]
-        success? (= status :success)]
-    (update state key
-      (fn [metrics]
-        (let [metrics (or metrics {:sheet-id sheet-id
-                                   :executions []
-                                   :success-count 0
-                                   :failure-count 0
-                                   :total-duration 0})]
-          (-> metrics
-              (update :executions #(->> (conj % {:status status
-                                                  :duration-ms duration-ms
-                                                  :timestamp (str (:event/timestamp event))})
-                                        (take-last rolling-window-size)
-                                        vec))
-              (update :success-count #(if success? (inc %) %))
-              (update :failure-count #(if (not success?) (inc %) %))
-              (update :total-duration #(+ % (or duration-ms 0)))))))))
-
-(def rolling-metrics-events
-  "Events that affect rolling metrics read model"
-  #{:sheet/node-execution-completed})
-
-(defn rolling-metrics
-  "Reduce function for rolling metrics.
-   Returns map of [sheet-id node-id] -> metrics."
-  [initial-state events]
-  (reduce rolling-metrics* initial-state events))
-
 (defreadmodel :sheet rolling-metrics
-  {:events rolling-metrics-events :version 2
+  {:events logic/rolling-metrics-events :version 1
    :partition-fn :sheet-id
    :entity-id-fn (fn [event] [(:sheet-id event) (:node-id event)])}
-  [state event] (rolling-metrics* state event))
-
-(defn calculate-trend
-  "Calculate recent trend: :improving, :declining, or :stable.
-   Requires at least 10 executions to calculate."
-  [executions]
-  (when (>= (count executions) 10)
-    (let [recent (take-last 10 executions)
-          older (take 10 (drop (- (count executions) 20) executions))
-          recent-rate (/ (count (filter #(= :success (:status %)) recent)) 10.0)
-          older-rate (when (seq older)
-                       (/ (count (filter #(= :success (:status %)) older))
-                          (double (count older))))]
-      (cond
-        (nil? older-rate) :stable
-        (> recent-rate (+ older-rate 0.1)) :improving
-        (< recent-rate (- older-rate 0.1)) :declining
-        :else :stable))))
-
-(defn compute-node-metrics
-  "Compute metrics from a rolling metrics entry.
-   Returns map with success-rate, failure-rate, avg-duration-ms, trend."
-  [metrics]
-  (let [n (count (:executions metrics))
-        durations (keep :duration-ms (:executions metrics))]
-    (when (pos? n)
-      {:execution-count n
-       :success-rate (double (/ (:success-count metrics) n))
-       :failure-rate (double (/ (:failure-count metrics) n))
-       :avg-duration-ms (when (seq durations)
-                          (double (/ (reduce + durations) (count durations))))
-       :recent-trend (calculate-trend (:executions metrics))})))
+  [state event] (logic/rolling-metrics* state event))
 
 (defn get-node-rolling-metrics
   "Get rolling metrics for a specific node.
@@ -1513,7 +477,7 @@
     (when metrics
       (merge {:sheet-id sheet-id
               :node-id node-id}
-             (compute-node-metrics metrics)))))
+             (logic/compute-node-metrics metrics)))))
 
 (defn get-tree-rolling-metrics
   "Get rolling metrics for all nodes in a sheet.
@@ -1526,54 +490,17 @@
                  (keep (fn [[[_ nid] metrics]]
                          (when metrics
                            (merge {:node-id nid}
-                                  (compute-node-metrics metrics)))))
+                                  (logic/compute-node-metrics metrics)))))
                  vec)
      :total-executions (->> sheet-metrics
                             (map (comp count :executions second))
                             (reduce + 0))}))
 
-;; =============================================================================
-;; C-2a-2: Per-node-type rolling metrics (cross-sheet aggregation)
-;; =============================================================================
-;;
-;; Aggregates :sheet/node-execution-completed events that carry a :node-type
-;; field, summing counts and durations across all sheets so the Living
-;; Description consolidator can learn patterns at the node-type granularity.
-
-(defmulti node-type-rolling-metrics* (fn [_state event] (:event/type event)))
-(defmethod node-type-rolling-metrics* :default [state _] state)
-
-(defmethod node-type-rolling-metrics* :sheet/node-execution-completed [state event]
-  (if-let [nt (:node-type event)]
-    (let [{:keys [status duration-ms]} event
-          success? (= status :success)]
-      (update state nt
-        (fn [metrics]
-          (let [metrics (or metrics {:node-type nt
-                                     :executions []
-                                     :success-count 0
-                                     :failure-count 0
-                                     :total-duration 0})]
-            (-> metrics
-                (update :executions #(->> (conj % {:status status
-                                                    :duration-ms duration-ms
-                                                    :timestamp (str (:event/timestamp event))})
-                                          (take-last rolling-window-size)
-                                          vec))
-                (update :success-count #(if success? (inc %) %))
-                (update :failure-count #(if (not success?) (inc %) %))
-                (update :total-duration #(+ % (or duration-ms 0))))))))
-    ;; No :node-type on this event (e.g. replay of pre-C-2a-2 events) — skip.
-    state))
-
 (defreadmodel :sheet node-type-rolling-metrics
   {:events #{:sheet/node-execution-completed} :version 1
-   ;; Partition by node-type so all events of a given type land in the same
-   ;; bucket (cross-sheet aggregation). Events lacking :node-type are
-   ;; skipped at projection time.
    :partition-fn (fn [event] (or (:node-type event) ::no-node-type))
    :entity-id-fn :node-type}
-  [state event] (node-type-rolling-metrics* state event))
+  [state event] (logic/node-type-rolling-metrics* state event))
 
 (defn get-node-type-metrics
   "Cross-sheet rolling metrics for a given node-type keyword.
@@ -1584,45 +511,11 @@
                                  {:partition-key node-type})]
     (get all-metrics node-type)))
 
-;; =============================================================================
-;; C-2a-2: Per-tree-fingerprint rolling metrics (cross-sheet aggregation)
-;; =============================================================================
-;;
-;; Aggregates :sheet/rlm-tree-execution-completed events that carry a
-;; :tree-fingerprint, summing counts and durations across all sheets so
-;; the consolidator can learn patterns at the tree-shape granularity.
-
-(defmulti tree-fingerprint-rolling-metrics* (fn [_state event] (:event/type event)))
-(defmethod tree-fingerprint-rolling-metrics* :default [state _] state)
-
-(defmethod tree-fingerprint-rolling-metrics* :sheet/rlm-tree-execution-completed [state event]
-  (if-let [fp (:tree-fingerprint event)]
-    (let [{:keys [status duration-ms]} event
-          success? (= status :success)]
-      (update state fp
-        (fn [metrics]
-          (let [metrics (or metrics {:tree-fingerprint fp
-                                     :executions []
-                                     :success-count 0
-                                     :failure-count 0
-                                     :total-duration 0})]
-            (-> metrics
-                (update :executions #(->> (conj % {:status status
-                                                    :duration-ms duration-ms
-                                                    :timestamp (str (:event/timestamp event))})
-                                          (take-last rolling-window-size)
-                                          vec))
-                (update :success-count #(if success? (inc %) %))
-                (update :failure-count #(if (not success?) (inc %) %))
-                (update :total-duration #(+ % (or duration-ms 0))))))))
-    ;; No :tree-fingerprint on this event (replay of pre-C-2a-2 events) — skip.
-    state))
-
 (defreadmodel :sheet tree-fingerprint-rolling-metrics
   {:events #{:sheet/rlm-tree-execution-completed} :version 1
    :partition-fn (fn [event] (or (:tree-fingerprint event) ::no-tree-fingerprint))
    :entity-id-fn :tree-fingerprint}
-  [state event] (tree-fingerprint-rolling-metrics* state event))
+  [state event] (logic/tree-fingerprint-rolling-metrics* state event))
 
 (defn get-tree-fingerprint-metrics
   "Cross-sheet rolling metrics for a given tree-fingerprint hash.
@@ -1634,46 +527,11 @@
                                  {:partition-key tree-fingerprint})]
     (get all-metrics tree-fingerprint)))
 
-;; =============================================================================
-;; CC-13 — Injection Records
-;; =============================================================================
-;;
-;; The read side of the narrow `:intervention/*` ledger row. One entry per
-;; R-Inject render occurrence, so a turn's injection can be joined to that
-;; turn's judge scores by the [sheet-id tick-id] pair those scores carry.
-
-(def injection-record-events
-  "Events that affect the injection-records read model."
-  #{:intervention/injection-recorded})
-
-(defn- injection-record-entity-id
-  "Scope the entity by the whole occurrence, not by node.
-
-   Node ids are local to their sheet and a node re-renders on every tick, so a
-   bare node-id would make one entity look like it was moving between sheet
-   partitions AND would let a later tick clobber an earlier tick's record —
-   the same failure the blackboard's [sheet-id key] scoping exists to prevent."
-  [event-or-entry]
-  [(:sheet-id event-or-entry) (:tick-id event-or-entry) (:node-id event-or-entry)])
-
-(defmulti injection-records*
-  "Apply event to the injection-records read model."
-  (fn [_state event] (:event/type event)))
-
-(defmethod injection-records* :default [state _event] state)
-
-(defmethod injection-records* :intervention/injection-recorded
-  [state event]
-  ;; Project the domain fields only — the grain envelope keys (:event/type,
-  ;; :event/id, …) are not part of the ledger row.
-  (assoc state (injection-record-entity-id event)
-         (into {} (remove (fn [[k _]] (= "event" (namespace k))) event))))
-
 (defreadmodel :sheet injection-records
-  {:events injection-record-events :version 1
+  {:events logic/injection-record-events :version 1
    :partition-fn :sheet-id
-   :entity-id-fn injection-record-entity-id}
-  [state event] (injection-records* state event))
+   :entity-id-fn logic/injection-record-entity-id}
+  [state event] (logic/injection-records* state event))
 
 (defn get-injection-records
   "Every injection record for a sheet, as a map of
@@ -1686,254 +544,32 @@
   [ctx sheet-id tick-id node-id]
   (get (get-injection-records ctx sheet-id) [sheet-id tick-id node-id]))
 
-;; The latest durable continuation state for each researcher occurrence.
-(defmulti researcher-checkpoints* (fn [_state event] (:event/type event)))
-(defmethod researcher-checkpoints* :default [state _event] state)
-(defmethod researcher-checkpoints* :rlm/researcher-checkpointed [state event]
-  (assoc state [(:tick-id event) (:node-id event)]
-         (select-keys event [:sheet-id :tick-id :node-id :checkpoint :checkpointed-at])))
-
 (defreadmodel :sheet researcher-checkpoints
   {:events #{:rlm/researcher-checkpointed} :version 1
    :partition-fn :sheet-id
    :entity-id-fn (juxt :tick-id :node-id)}
-  [state event] (researcher-checkpoints* state event))
+  [state event] (logic/researcher-checkpoints* state event))
 
 (defn get-researcher-checkpoint [ctx sheet-id tick-id node-id]
   (get (rmp/project ctx :sheet/researcher-checkpoints {:partition-key sheet-id})
        [tick-id node-id]))
 
-;; Campaign lifecycle is derived from facts the engine already commits. A
-;; parent terminal event can race a late researcher frontier, so tick status is
-;; retained alongside campaigns and applied both to existing and later rows.
-(def researcher-campaign-events
-  #{:sheet/tree-tick-started
-    :rlm/researcher-frontier-claimed
-    :rlm/researcher-resume-state-saved
-    :sheet/node-execution-completed
-    :sheet/tree-tick-completed
-    :sheet/tick-cancelled})
-
-(def ^:private researcher-campaign-terminal-statuses
-  #{:success :failure :timeout :blocked :cancelled :abandoned})
-
-(defn- terminal-researcher-campaign? [campaign]
-  (contains? researcher-campaign-terminal-statuses (:status campaign)))
-
-(defn- parent-status->campaign-status [tick-state]
-  (case (:execution-status tick-state)
-    :completed :abandoned
-    :cancelled :cancelled
-    nil))
-
-(defn- new-or-active-campaign-status [tick-state requested]
-  (or (parent-status->campaign-status tick-state) requested))
-
-(defn- update-active-campaigns [campaigns f]
-  (into {}
-        (map (fn [[node-id campaign]]
-               [node-id (if (terminal-researcher-campaign? campaign)
-                          campaign
-                          (f campaign))]))
-        campaigns))
-
-(defmulti researcher-campaigns* (fn [_state event] (:event/type event)))
-(defmethod researcher-campaigns* :default [state _event] state)
-
-(defmethod researcher-campaigns* :sheet/tree-tick-started
-  [state event]
-  (update state (:tick-id event)
-          #(merge {:sheet-id (:sheet-id event)
-                   :execution-status :running
-                   :campaigns {}}
-                  %)))
-
-(defmethod researcher-campaigns* :rlm/researcher-frontier-claimed
-  [state event]
-  (let [tick-id (:tick-id event)
-        node-id (:node-id event)
-        tick-state (get state tick-id)
-        campaign (get-in tick-state [:campaigns node-id])]
-    (if (terminal-researcher-campaign? campaign)
-      state
-      (assoc-in state [tick-id :campaigns node-id]
-                (merge campaign
-                       {:sheet-id (:sheet-id event)
-                        :tick-id tick-id
-                        :node-id node-id
-                        :status (new-or-active-campaign-status tick-state :running)
-                        :ownership-epoch
-                        (max (or (:ownership-epoch campaign) 0)
-                             (:ownership-epoch event))
-                        :campaign-started-at-ms
-                        (or (:campaign-started-at-ms campaign)
-                            (:campaign-started-at-ms event))
-                        :campaign-deadline-ms
-                        (or (:campaign-deadline-ms campaign)
-                            (:campaign-deadline-ms event))
-                        :started-at (or (:started-at campaign)
-                                        (some-> (:campaign-started-at-ms event)
-                                                long
-                                                java.time.Instant/ofEpochMilli
-                                                str)
-                                        (:claimed-at event)
-                                        (str (:event/timestamp event)))
-                        :deadline (or (:deadline campaign)
-                                      (some-> (:campaign-deadline-ms event)
-                                              long
-                                              java.time.Instant/ofEpochMilli
-                                              str))
-                        :completed-at
-                        (when (= :cancelled
-                                 (parent-status->campaign-status tick-state))
-                          (:parent-completed-at tick-state))})))))
-
-(defmethod researcher-campaigns* :rlm/researcher-resume-state-saved
-  [state event]
-  (let [tick-id (:tick-id event)
-        node-id (:node-id event)
-        tick-state (get state tick-id)
-        campaign (get-in tick-state [:campaigns node-id])
-        resume-state (:resume-state event)]
-    (if (terminal-researcher-campaign? campaign)
-      state
-      (assoc-in state [tick-id :campaigns node-id]
-                (cond-> (merge campaign
-                               {:sheet-id (:sheet-id event)
-                        :tick-id tick-id
-                        :node-id node-id
-                        :status
-                        (new-or-active-campaign-status
-                         tick-state
-                         (if (:yielded? event) :yielded :running))
-                        :ownership-epoch (:ownership-epoch resume-state)
-                        :next-iteration-index (:next-iteration resume-state)
-                        :started-at
-                        (or (:started-at campaign)
-                            (some-> (:campaign-started-at-ms resume-state)
-                                    long
-                                    java.time.Instant/ofEpochMilli
-                                    str))
-                        :deadline
-                        (some-> (:campaign-deadline-ms resume-state)
-                                long
-                                java.time.Instant/ofEpochMilli
-                                str)
-                        :completed-at
-                        (when (= :cancelled
-                                 (parent-status->campaign-status tick-state))
-                          (:parent-completed-at tick-state))})
-                  (some? (:observed-quantum-duration-ms resume-state))
-                  (assoc :observed-quantum-duration-ms
-                         (:observed-quantum-duration-ms resume-state))
-
-                  (or (some? (:max-observed-quantum-duration-ms campaign))
-                      (some? (:max-observed-quantum-duration-ms resume-state)))
-                  (assoc :max-observed-quantum-duration-ms
-                         (max (long (or (:max-observed-quantum-duration-ms campaign)
-                                        0))
-                              (long (or (:max-observed-quantum-duration-ms resume-state)
-                                        0)))))))))
-
-(def ^:private node-status->campaign-status
-  {:success :success
-   :failure :failure
-   :timeout :timeout
-   :blocked :blocked})
-
-(defmethod researcher-campaigns* :sheet/node-execution-completed
-  [state event]
-  (let [path [(:tick-id event) :campaigns (:node-id event)]
-        campaign (get-in state path)
-        terminal-status (get node-status->campaign-status (:status event))]
-    (if (and campaign terminal-status
-             (not (terminal-researcher-campaign? campaign)))
-      (assoc-in state path
-                (cond-> (assoc campaign
-                               :status terminal-status
-                               :completed-at (str (:event/timestamp event)))
-                  (:error event) (assoc :terminal-reason (:error event))
-
-                  (= :blocked terminal-status)
-                  (assoc :terminal-reason (:block-payload event))
-
-                  (some? (:observed-quantum-duration-ms event))
-                  (assoc :observed-quantum-duration-ms
-                         (:observed-quantum-duration-ms event))
-
-                  (or (some? (:max-observed-quantum-duration-ms campaign))
-                      (some? (:max-observed-quantum-duration-ms event)))
-                  (assoc :max-observed-quantum-duration-ms
-                         (max (long (or (:max-observed-quantum-duration-ms campaign)
-                                        0))
-                              (long (or (:max-observed-quantum-duration-ms event)
-                                        0))))))
-      state)))
-
-(defmethod researcher-campaigns* :sheet/tree-tick-completed
-  [state event]
-  (if (= :running (:root-status event))
-    state
-    (update state (:tick-id event)
-            (fn [tick-state]
-              (let [completed-at (str (:event/timestamp event))]
-                (-> (merge {:sheet-id (:sheet-id event) :campaigns {}}
-                           tick-state)
-                    (assoc :execution-status :completed
-                           :parent-completed-at completed-at)
-                    (update :campaigns update-active-campaigns
-                            #(-> %
-                                 (assoc :status :abandoned)
-                                 (dissoc :completed-at :verdict-at
-                                         :terminal-reason)))))))))
-
-(defmethod researcher-campaigns* :sheet/tick-cancelled
-  [state event]
-  (update state (:tick-id event)
-          (fn [tick-state]
-            (let [completed-at (str (:event/timestamp event))]
-              (-> (merge {:sheet-id (:sheet-id event) :campaigns {}}
-                         tick-state)
-                  (assoc :execution-status :cancelled
-                         :parent-completed-at completed-at)
-                  (update :campaigns update-active-campaigns
-                          #(cond-> (assoc %
-                                         :status :cancelled
-                                         :completed-at completed-at)
-                             (:reason event)
-                             (assoc :terminal-reason (:reason event)))))))))
-
 (defreadmodel :sheet researcher-campaigns
-  {:events researcher-campaign-events :version 1
+  {:events logic/researcher-campaign-events :version 1
    :partition-fn :sheet-id
    :entity-id-fn :tick-id}
-  [state event] (researcher-campaigns* state event))
+  [state event] (logic/researcher-campaigns* state event))
 
 (defn get-researcher-campaign [ctx tick-id node-id]
   (get-in (rmp/project ctx :sheet/researcher-campaigns
                        {:tags #{[:tick tick-id]}})
           [tick-id :campaigns node-id]))
 
-;; Version-2 researcher persistence separates the supersedable continuation
-;; state from the immutable record of each completed attempt.
-(defmulti researcher-resume-states* (fn [_state event] (:event/type event)))
-(defmethod researcher-resume-states* :default [state _event] state)
-(defmethod researcher-resume-states* :rlm/researcher-resume-state-saved
-  [state event]
-  ;; Partition routing runs against entity state, so retain the partition key
-  ;; alongside the public payload, matching the legacy checkpoint projection.
-  (let [entity-key [(:tick-id event) (:node-id event)]
-        prior (get-in state [entity-key :resume-state])]
-    (assoc state entity-key
-           {:sheet-id (:sheet-id event)
-            :resume-state (researcher-resume-state/hydrate
-                           prior (:resume-state event))})))
-
 (defreadmodel :sheet researcher-resume-states
-  {:events #{:rlm/researcher-resume-state-saved} :version 2
+  {:events #{:rlm/researcher-resume-state-saved} :version 1
    :partition-fn :sheet-id
    :entity-id-fn (juxt :tick-id :node-id)}
-  [state event] (researcher-resume-states* state event))
+  [state event] (logic/researcher-resume-states* state event))
 
 (defn get-researcher-resume-state [ctx sheet-id tick-id node-id]
   (let [facts (->> (es/read (:event-store ctx)
@@ -1944,22 +580,13 @@
                    (mapv :resume-state))]
     (when (seq facts)
       {:sheet-id sheet-id
-       :resume-state (researcher-resume-state/hydrate-latest facts)})))
-
-(defmulti researcher-iteration-records* (fn [_state event] (:event/type event)))
-(defmethod researcher-iteration-records* :default [state _event] state)
-(defmethod researcher-iteration-records* :rlm/researcher-iteration-recorded
-  [state event]
-  (assoc state [(:tick-id event) (:node-id event)
-                (:iteration-index event) (:attempt-ordinal event)]
-         {:sheet-id (:sheet-id event)
-          :iteration-record (:iteration-record event)}))
+       :resume-state (logic/hydrate-latest facts)})))
 
 (defreadmodel :sheet researcher-iteration-records
   {:events #{:rlm/researcher-iteration-recorded} :version 1
    :partition-fn :sheet-id
    :entity-id-fn (juxt :tick-id :node-id :iteration-index :attempt-ordinal)}
-  [state event] (researcher-iteration-records* state event))
+  [state event] (logic/researcher-iteration-records* state event))
 
 (defn get-researcher-iteration-records [ctx sheet-id tick-id node-id]
   (->> (rmp/project ctx :sheet/researcher-iteration-records
@@ -1970,18 +597,11 @@
        (sort-by (juxt :iteration-index :attempt-ordinal))
        vec))
 
-(defmulti researcher-actions* (fn [_state event] (:event/type event)))
-(defmethod researcher-actions* :default [state _event] state)
-(defmethod researcher-actions* :rlm/researcher-action-completed [state event]
-  (assoc state [(:tick-id event) (:node-id event) (:action-id event)]
-         (select-keys event [:sheet-id :tick-id :node-id :action-id :action-kind
-                             :iteration :result :completed-at])))
-
 (defreadmodel :sheet researcher-actions
   {:events #{:rlm/researcher-action-completed} :version 1
    :partition-fn :sheet-id
    :entity-id-fn (juxt :tick-id :node-id :action-id)}
-  [state event] (researcher-actions* state event))
+  [state event] (logic/researcher-actions* state event))
 
 (defn get-researcher-actions [ctx sheet-id tick-id node-id]
   (->> (rmp/project ctx :sheet/researcher-actions {:partition-key sheet-id})
@@ -1990,32 +610,14 @@
                  [action-id action])))
        (into {})))
 
-(defmulti researcher-effect-claims* (fn [_state event] (:event/type event)))
-(defmethod researcher-effect-claims* :default [state _event] state)
-(defmethod researcher-effect-claims* :rlm/researcher-effect-claimed [state event]
-  (assoc state [(:tick-id event) (:node-id event) (:attempt-identity event)]
-         (select-keys event [:sheet-id :tick-id :node-id :iteration-index
-                             :logical-action-identity :attempt-identity
-                             :attempt-ordinal :ownership-epoch :kind :status
-                             :claimed-at :resolved-at])))
-(defmethod researcher-effect-claims* :rlm/researcher-effect-completed [state event]
-  (update state [(:tick-id event) (:node-id event) (:attempt-identity event)]
-          merge
-          (select-keys event [:status :resolved-at :result])))
-(defmethod researcher-effect-claims* :rlm/researcher-effect-indeterminate [state event]
-  (update state [(:tick-id event) (:node-id event) (:attempt-identity event)]
-          merge
-          (select-keys event [:status :resolved-at
-                              :resolved-by-ownership-epoch])))
-
 (defreadmodel :sheet researcher-effect-claims
   {:events #{:rlm/researcher-effect-claimed
              :rlm/researcher-effect-completed
              :rlm/researcher-effect-indeterminate}
-   :version 2
+   :version 1
    :partition-fn :sheet-id
    :entity-id-fn (juxt :tick-id :node-id :attempt-identity)}
-  [state event] (researcher-effect-claims* state event))
+  [state event] (logic/researcher-effect-claims* state event))
 
 (defn get-researcher-effect-claims [ctx sheet-id tick-id node-id]
   (->> (rmp/project ctx :sheet/researcher-effect-claims
@@ -2026,28 +628,13 @@
        (sort-by (juxt :ownership-epoch :attempt-ordinal :attempt-identity))
        vec))
 
-(def provider-call-reservation-fields
-  [:admission-kind :node-start-id :exec-context :candidate-index :node-attempt :campaign-sheet-id
-   :budget-sheet-id :budget-tick-id :sheet-id :tick-id :node-id
-   :campaign-tick-id :campaign-node-id :iteration-index
-   :logical-action-identity :invocation-identity :provider-attempt-ordinal
-   :ownership-epoch :reserved-at])
-
-(defn provider-call-reservations*
-  "Project immutable provider-call reservations by invocation identity."
-  [state event]
-  (if (= :sheet/provider-call-reserved (:event/type event))
-    (assoc state [(:budget-tick-id event) (:invocation-identity event)]
-           (select-keys event provider-call-reservation-fields))
-    state))
-
 (defreadmodel :sheet provider-call-reservations
   {:events #{:sheet/provider-call-reserved}
-   :version 2
+   :version 1
    :partition-fn :budget-sheet-id
    :entity-id-fn (juxt :budget-tick-id :invocation-identity)}
   [state event]
-  (provider-call-reservations* state event))
+  (logic/provider-call-reservations* state event))
 
 (defn get-provider-call-reservations
   "Return the immutable reservation ledger for one durable budget root."
@@ -2059,3 +646,398 @@
                  reservation)))
        (sort-by (juxt :provider-attempt-ordinal :invocation-identity))
        vec))
+
+;; --- Value log ---
+
+(defn read-tick-events
+  "All events for a tick. Event-store read failures return []; external value
+   failures propagate so execution never silently substitutes missing data."
+  [runtime-source tenant-id tick-id]
+  (let [events (try
+                 (if-let [event-store (logic/event-store-of runtime-source)]
+                   (into [] (es/read event-store (cond-> {:tags #{[:tick tick-id]}}
+                                                  tenant-id (assoc :tenant-id tenant-id))))
+                   [])
+                 (catch Exception _ []))]
+    (logic/value-log-hydrate runtime-source events)))
+
+(defn resolve-write-sources
+  "Return {key canonical-source-ref} for a node completion."
+  [source tenant-id tick-id completion]
+  (let [ek (logic/execution-key completion)]
+    (reduce (fn [acc event]
+              (if (and (logic/value-event? event)
+                       (= ek (logic/execution-key event))
+                       (not (logic/input-seed? event)))
+                (assoc acc (:key event) (or (:source event) (logic/source-ref event)))
+                acc))
+            (or (:write-sources completion) {})
+            (read-tick-events source tenant-id tick-id))))
+
+(defn- read-tick-writes
+  "A tick's :sheet/execution-value-written events, oldest first."
+  [runtime-source tenant-id tick-id]
+  (let [events (try
+                 (if-let [event-store (logic/event-store-of runtime-source)]
+                   (into [] (es/read event-store (cond-> {:types #{:sheet/execution-value-written
+                                                                   :sheet/execution-value-referenced}
+                                                         :tags #{[:tick tick-id]}}
+                                                  tenant-id (assoc :tenant-id tenant-id))))
+                   [])
+                 (catch Exception _ []))]
+    (logic/value-log-hydrate runtime-source events)))
+
+(defn- write-index
+  [cache runtime-source tenant-id tick-id]
+  (if-let [idx (get @cache tick-id)]
+    idx
+    (let [idx (logic/index-writes (read-tick-writes runtime-source tenant-id tick-id))]
+      (vswap! cache assoc tick-id idx)
+      idx)))
+
+(defn- resolve-source-entry-in
+  "A found value envelope, including explicit nil; nil means unresolved.
+   Reads each tick's write events at most once per `cache`."
+  [cache runtime-source tenant-id {:keys [tick-id event-id] :as source} seen]
+  (when (and tick-id event-id (not (contains? seen source)))
+    (when-let [event (get (write-index cache runtime-source tenant-id tick-id) event-id)]
+      (if (= :sheet/execution-value-referenced (:event/type event))
+        (resolve-source-entry-in cache runtime-source tenant-id (:source event) (conj seen source))
+        (when (contains? event :value) (select-keys event [:value]))))))
+
+(defn- resolve-source-entry
+  "A found value envelope, including explicit nil; nil means unresolved."
+  ([runtime-source tenant-id source]
+   (resolve-source-entry runtime-source tenant-id source #{}))
+  ([runtime-source tenant-id source seen]
+   (resolve-source-entry-in (logic/new-write-index-cache) runtime-source tenant-id source seen)))
+
+(defn resolve-writes
+  "Convenience: read a tick's events and return what one node execution
+   wrote. Prefer the `events`-taking fns when you already hold the events."
+  [runtime-source tenant-id tick-id completion]
+  (let [events (read-tick-events runtime-source tenant-id tick-id)
+        ek (logic/execution-key completion)
+        sources (reduce (fn [acc event]
+                          (if (and (logic/value-event? event)
+                                   (= ek (logic/execution-key event))
+                                   (not (logic/input-seed? event)))
+                            (assoc acc (:key event)
+                                   (or (:source event) (logic/source-ref event)))
+                            acc))
+                        (or (:write-sources completion) {}) events)]
+    (if (seq sources)
+      (let [writes (logic/new-write-index-cache)]
+        (reduce-kv (fn [acc k value-source]
+                     (if-let [entry (resolve-source-entry-in writes runtime-source tenant-id value-source #{})]
+                       (assoc acc k (:value entry)) acc))
+                   {} sources))
+      (logic/writes-for events completion))))
+
+(defn resolve-source
+  "Resolve a {:tick-id :event-id} reference, following cross-tick references.
+   Missing, foreign, and cyclic references resolve to nil. Explicit null also
+   returns nil; map-producing resolution APIs preserve its key presence."
+  ([runtime-source tenant-id source]
+   (:value (resolve-source-entry runtime-source tenant-id source)))
+  ([runtime-source tenant-id source seen]
+   (:value (resolve-source-entry runtime-source tenant-id source seen))))
+
+(defn tick-started-event
+  "The tick's ORIGINATING :sheet/tree-tick-started — the one carrying
+   :execution-snapshot and :seed-sources.
+
+   complete-tree-tick emits further events of that type for the SAME tick-id on
+   each re-tick, carrying neither, so this returns the snapshot-bearing one."
+  [runtime-source tenant-id tick-id]
+  (try
+    (when-let [event-store (logic/event-store-of runtime-source)]
+      (->> (es/read event-store (cond-> {:types #{:sheet/tree-tick-started}
+                                          :tags #{[:tick tick-id]}}
+                                   tenant-id (assoc :tenant-id tenant-id)))
+           (into [])
+           (some #(when (:execution-snapshot %) %))))
+    (catch Exception _ nil)))
+
+(defn tick-seeds
+  "Memoized resolution of a tick's canonical seed references.
+
+   Safe to memoize without an invalidation rule: the originating
+   tree-tick-started is appended by the tick-tree command before any processor
+   can run, and events are immutable."
+  [runtime-source tenant-id tick-id]
+  (if-let [cached (get @logic/tick-seeds* tick-id)]
+    cached
+    (let [started (tick-started-event runtime-source tenant-id tick-id)
+          writes (logic/new-write-index-cache)
+          v (reduce-kv (fn [acc k value-source]
+                         (if-let [entry (resolve-source-entry-in writes runtime-source tenant-id value-source #{})]
+                           (assoc acc k (:value entry)) acc))
+                       {} (or (:seed-sources started) {}))]
+      (swap! logic/tick-seeds* assoc tick-id v)
+      v)))
+
+(defn resolve-reads
+  "Resolve the exact values read by one node completion.
+
+   Recorded :read-sources win. Inside map-each, where shared blackboard
+   pointers are intentionally not recorded, use the iteration seed selected
+   by the completion's execution context. Remaining keys came from the tick's
+   original seeds."
+  [runtime-source tenant-id tick-id completion]
+  (let [read-keys (or (:read-keys completion) [])
+        sources (or (:read-sources completion) {})
+        events (read-tick-events runtime-source tenant-id tick-id)
+        iteration-seeds (get (logic/input-seeds-by-iteration events)
+                             (logic/exec-context (:inputs completion)))
+        tick-seed-values (tick-seeds runtime-source tenant-id tick-id)
+        writes (logic/new-write-index-cache)]
+    (reduce (fn [acc k]
+              (let [source (get sources k)
+                    entry (cond
+                            source (resolve-source-entry-in writes runtime-source tenant-id source #{})
+                            (contains? iteration-seeds k) {:value (get iteration-seeds k)}
+                            (contains? tick-seed-values k) {:value (get tick-seed-values k)})]
+                (if entry (assoc acc k (:value entry)) acc)))
+            {}
+            read-keys)))
+
+(defn values-by-event-id
+  "{event-id value} for specific write events of a tick.
+
+   Resolves by scanning the tick's write events and indexing them by
+   :event/id. Deliberately NOT by a per-pointer
+   {:as-of id :reverse? true :limit 1} seek, which looks like the obvious
+   optimization and is unsound:
+
+     :as-of is an inclusive upper BOUND, not an equality filter, so such a
+     query returns \"the last matching event at or before this id\" — and
+     'last' means last in the store's iteration order, which is APPEND order,
+     not id order. Concurrent appends commit out of id order routinely (a
+     map-each with max-concurrency > 1 does it on every run), and when they
+     do the seek returns a neighbouring write instead of the one asked for.
+     Measured on the composite map-each fixture, that missed roughly one
+     resolution in three.
+
+   The scan has no ordering assumption, so it is correct on any backend and
+   under any interleaving. An event whose id was not requested is ignored, so
+   a mismatched or foreign pointer resolves to nothing rather than to a
+   plausible wrong value."
+  [source tenant-id tick-id ids]
+  (let [ids (set (remove nil? ids))]
+    (if (or (empty? ids) (nil? (logic/event-store-of source)))
+      {}
+      (reduce (fn [acc e]
+              (let [id (cond
+                         (contains? ids (:event/id e)) (:event/id e)
+                         (contains? ids (:value-id e)) (:value-id e))]
+                (if id (assoc acc id (:value e)) acc)))
+              {}
+              (read-tick-writes source tenant-id tick-id)))))
+
+(defn resolve-values
+  "The values behind a METADATA blackboard, for `ks` (nil = every key).
+
+   `metadata-bb` is the :blackboard of a tick execution context:
+   {k {:key :schema :version :source :profile}} with no :value.
+   Keys that resolve to nothing are omitted."
+  [source tenant-id tick-id metadata-bb ks]
+  (let [ks (if (nil? ks) (keys metadata-bb) ks)
+        entries (into {} (for [k ks :when (contains? metadata-bb k)]
+                           [k (get metadata-bb k)]))
+        seeds (when (some (fn [[_ e]] (nil? (:source e))) entries)
+                (tick-seeds source tenant-id tick-id))
+        writes (logic/new-write-index-cache)]
+    (reduce (fn [acc [k e]]
+              (let [src (:source e)
+                    entry (if src
+                            (resolve-source-entry-in writes source tenant-id src #{})
+                            (when (contains? seeds k) {:value (get seeds k)}))]
+                (if entry (assoc acc k (:value entry)) acc)))
+            {}
+            entries)))
+
+(defn final-values
+  "The tick's END STATE as {key value}, read straight from the log.
+
+   Unlike resolve-values this does not consult the read model at all, so it
+   cannot be affected by how far the projection has caught up. That matters
+   for the one caller that owes an answer rather than a view — result
+   delivery. A tick's writes are appended atomically with the node completion
+   that produced them, so by the time tree-tick-completed is observed the log
+   is authoritative and complete, while the cache may still be catching up
+   under concurrent projections.
+
+   Seeds first, then every write in order, so the last write to a key wins —
+   the same end state the cached blackboard converges to."
+  [source tenant-id tick-id]
+  (let [writes (logic/new-write-index-cache)]
+  (merge (tick-seeds source tenant-id tick-id)
+         (reduce (fn [acc event]
+                   (let [entry (if (= :sheet/execution-value-referenced (:event/type event))
+                                 (resolve-source-entry-in writes source tenant-id (:source event) #{})
+                                 (when (contains? event :value) (select-keys event [:value])))]
+                     (if entry (assoc acc (:key event) (:value entry)) acc)))
+                 {}
+                 (read-tick-writes source tenant-id tick-id)))))
+
+(defn final-sources
+  "The canonical source reference currently backing each key at tick end."
+  [source tenant-id tick-id]
+  (reduce (fn [acc event]
+            (assoc acc (:key event) (or (:source event) (logic/source-ref event))))
+          (or (:seed-sources (tick-started-event source tenant-id tick-id)) {})
+          (read-tick-writes source tenant-id tick-id)))
+
+(defn hydrate-blackboard
+  "`metadata-bb` with :value filled in for `ks` (nil = every key).
+
+   THE ENTRY SET IS PRESERVED EXACTLY. A declared-but-unresolvable key keeps
+   its metadata and simply gets no :value — which is what the read model
+   produced for a declared-but-unwritten key. executor/gather-inputs skips an
+   entry with no :value and preserves an explicit :value nil as a native null.
+   Shared request presentation renders that value under its declared contract;
+   metadata-only declarations must not become supplied null inputs."
+  ([source tenant-id tick-id metadata-bb]
+   (hydrate-blackboard source tenant-id tick-id metadata-bb nil))
+  ([source tenant-id tick-id metadata-bb ks]
+   (let [vals* (resolve-values source tenant-id tick-id metadata-bb ks)]
+     (reduce-kv (fn [bb k v] (assoc-in bb [k :value] v))
+                (or metadata-bb {})
+                vals*))))
+
+(defn tick-family-ids
+  "Return `tick-id` and every transitively nested child tick.
+
+   Child starts carry a [:parent-tick parent-id] tag, so this walk is bounded
+   by the execution tree. It never scans unrelated tenant history."
+  [event-store tenant-id tick-id]
+  (loop [seen #{tick-id}
+         frontier [tick-id]]
+    (if (empty? frontier)
+      seen
+      (let [children
+            (into #{}
+                  (mapcat (fn [parent-id]
+                            (into []
+                                  (comp (map :tick-id)
+                                        (remove seen))
+                                  (es/read event-store
+                                           (cond-> {:types #{:sheet/tree-tick-started}
+                                                    :tags #{[:parent-tick parent-id]}}
+                                             tenant-id (assoc :tenant-id tenant-id))))))
+                  frontier)]
+        (recur (into seen children) (vec children))))))
+
+(defn get-family-usage
+  "Total provider usage for `trace-id` and all descendant executions:
+   {:prompt-tokens :completion-tokens :total-tokens} plus :cost when any
+   usage carries one. Each node completion contributes its :own-usage when present (a completion
+   whose :usage folds in generated child ticks), otherwise its top-level :usage;
+   the :by-node breakdown is a view of the same tokens, never added again."
+  [{:keys [event-store tenant-id]} trace-id]
+  (let [events (into []
+                     (mapcat (fn [tick-id]
+                               (into []
+                                     (es/read event-store
+                                              (cond-> {:types #{:sheet/node-execution-completed}
+                                                       :tags #{[:tick tick-id]}}
+                                                tenant-id (assoc :tenant-id tenant-id))))))
+                     (tick-family-ids event-store tenant-id trace-id))
+        usages (keep #(or (:own-usage %) (:usage %)) events)
+        total (fn [& ks] (reduce + 0 (keep #(apply logic/usage-number % ks) usages)))
+        costs (keep #(logic/usage-number % :cost) usages)]
+    (cond-> {:prompt-tokens (total :prompt-tokens :prompt_tokens)
+             :completion-tokens (total :completion-tokens :completion_tokens)
+             :total-tokens (total :total-tokens :total_tokens)}
+      (seq costs) (assoc :cost (reduce + 0 costs)))))
+
+(defreadmodel :sheet model-candidate-ledger {:events logic/model-call-journal-event-types :version 1} [state event]
+  (update state :entries (fnil conj [])
+          (select-keys event (concat logic/model-call-journal-owner-keys [:event/type :event/id :candidate-index :entry :request :selection-scope :plan-scope-id :plan]))))
+
+(defreadmodel :sheet provider-attempt-ledger
+  {:events logic/provider-observations-event-types :version 1}
+  [state event]
+  (let [id (:invocation-id event)]
+    (case (:event/type event)
+      :sheet/provider-attempt-started
+      (-> state
+          (update :order (fnil conj []) id)
+          (assoc-in [:by-id id] (assoc (select-keys event logic/provider-observations-owner-keys) :status :started)))
+      :sheet/provider-attempt-completed
+      (update-in state [:by-id id] assoc :status :completed :outcome (:outcome event))
+      state)))
+
+;; --- Execution family ---
+
+(defn- make-tick-reader
+  "A memoized reader of a tick's events: each tick's events are read from the
+   store at most ONCE per family query, however many entries (or cross-tick
+   references) consult them."
+  [{:keys [tenant-id] :as ctx}]
+  (let [cache (atom {})]
+    (fn [tick-id]
+      (or (get @cache tick-id)
+          (let [events (read-tick-events ctx tenant-id tick-id)
+                by-ref (reduce (fn [acc e]
+                                 (if (logic/value-event? e)
+                                   (let [acc (assoc acc (:event/id e) e)]
+                                     (if (:value-id e) (assoc acc (:value-id e) e) acc))
+                                   acc))
+                               {} events)
+                v {:events events :by-ref by-ref}]
+            (swap! cache assoc tick-id v)
+            v)))))
+
+(defn- tick-entries
+  "Every node-execution entry of one tick, plus the tick's lineage facts."
+  [ctx read-tick resolve-ref tick-id]
+  (let [tick-events (:events (read-tick tick-id))
+        started (some #(when (and (= :sheet/tree-tick-started (:event/type %))
+                                  (= tick-id (:tick-id %)))
+                         %)
+                      tick-events)
+        sheet-id (:sheet-id started)
+        nodes-by-id (or (get-tick-nodes-by-id ctx tick-id)
+                        (when sheet-id (get-nodes-by-id ctx sheet-id))
+                        {})
+        options (:options started)
+        tick {:tick-id tick-id
+              :sheet-id sheet-id
+              :parent-tick-id (:parent-tick-id started)
+              :nodes-by-id nodes-by-id
+              :attributed-to (or (:delegate-parent-node-id options)
+                                 (:researcher-campaign-node-id options))}
+        index (logic/tick-index resolve-ref tick-events)]
+    {:tick tick
+     :entries (->> tick-events
+                   (filter #(and (= :sheet/node-execution-completed (:event/type %))
+                                 (= tick-id (:tick-id %))))
+                   (mapv #(logic/entry-for resolve-ref index tick-events tick %)))}))
+
+(defn get-execution-family
+  "Every node execution of `trace-id` and of every nested child execution
+   (delegated workflows, generated child trees), in durable completion order.
+
+   Each entry: :tick-id :parent-tick-id (child ticks only) :sheet-id :node-id
+   :node-name :node-type :executor :instruction :status :exec-context :inputs
+   and :outputs (resolved VALUES, never truncated), :failure {:kind :message
+   :provider-evidence} when it failed, :tool-receipts when the tick recorded
+   tool effects for it, usage/model fields when recorded, :event-id and
+   :completed-at.
+
+   Option :node-id scopes the family to the executions beneath the executions
+   of that composite or delegate node (the node itself is excluded)."
+  ([ctx trace-id] (get-execution-family ctx trace-id {}))
+  ([{:keys [event-store tenant-id] :as ctx} trace-id {:keys [node-id]}]
+   (let [tick-ids (tick-family-ids event-store tenant-id trace-id)
+         read-tick (make-tick-reader ctx)
+         resolve-ref (logic/resolver read-tick)
+         per-tick (mapv #(tick-entries ctx read-tick resolve-ref %) tick-ids)
+         entries (into [] (mapcat :entries) per-tick)
+         ticks (mapv :tick per-tick)
+         scoped (if node-id (logic/scope-to-node entries ticks node-id) entries)]
+     (->> scoped
+          (sort-by #(str (:event-id %)))
+          vec))))

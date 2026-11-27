@@ -6,14 +6,12 @@
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.todo-processors :as processors]
-            [ai.obney.orc.orc-service.core.model-call-journal :as journal]
-            [ai.obney.orc.orc-service.core.researcher-effects :as effects]
-            [ai.obney.orc.orc-service.core.researcher-models :as models]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [litellm.router :as router]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 (def proof (atom nil))
 (def desired {:label "original-source" :count 2 :flags [true false]})
 (def detail-schema [:map {:closed true :description "Exact source label and typed nested observation."}
@@ -150,8 +148,8 @@
                                               :event-store-conn store})
               _ (reset! second-context ctx) resumed (orc/resume-in-progress! ctx)
               _ (is (some :resumed? resumed))
-              _ (is (h/settle-until! #(some? (runtime/durable-terminal-result ctx tick)) :timeout-ms 20000))
-              result (runtime/durable-terminal-result ctx tick)
+              _ (is (h/settle-until! #(some? (service-commands/durable-terminal-result ctx tick)) :timeout-ms 20000))
+              result (service-commands/durable-terminal-result ctx tick)
               events (orc/value-log-read-tick-events ctx tenant tick)
               plans (filter #(and (= :sheet/model-plan-retained (:event/type %)) (= :subcall (:role %))) events)
               requests (filter #(and (= :sheet/model-request-recorded (:event/type %)) (= :subcall (:role %))
@@ -203,9 +201,6 @@
             _ (reset! first-context ctx) sheet (orc/build-workflow! ctx (inline-workflow primary backup {}))
             node (:id (first (filter #(= "research" (:name %)) (orc/get-nodes-for-sheet ctx sheet))))]
         (reset! target node)
-        ;; Let real execution reach the measured response; withhold ONLY later
-        ;; candidate/effect/checkpoint incorporation. This is close/reopen,
-        ;; never represented as a process-kill proof.
         (with-redefs [cp/process-command
           (fn [command-context]
             (let [c (:command command-context) name (:command/name c) same? (= node (:node-id c))]
@@ -246,8 +241,8 @@
                                               :event-store-conn store})
               _ (reset! second-context ctx) resumed (orc/resume-in-progress! ctx)
               _ (is (some :resumed? resumed))
-              _ (is (h/settle-until! #(some? (runtime/durable-terminal-result ctx tick)) :timeout-ms 15000))
-              result (runtime/durable-terminal-result ctx tick)
+              _ (is (h/settle-until! #(some? (service-commands/durable-terminal-result ctx tick)) :timeout-ms 15000))
+              result (service-commands/durable-terminal-result ctx tick)
               events (orc/value-log-read-tick-events ctx tenant tick)
               physical (filter #(and (= :sheet/model-request-recorded (:event/type %)) (= :subcall (:role %))
                                      (= :completed (get-in % [:request :phase]))
@@ -291,7 +286,7 @@
       (let [owner (assoc original :role :subcall :logical-action-id "inline-owned-request")
             _ (is (nil? (:cognitect.anomalies/category (p/frontier! ctx owner 1))))
             plan (p/profile-plan primary "fixture/inline-original")
-            prepared (journal/prepare-inline-call ctx owner {:fallback-models []} (constantly plan))
+            prepared (processors/prepare-inline-call ctx owner {:fallback-models []} (constantly plan))
             bound (:callbacks prepared) request {:request-id (random-uuid) :candidate-index 0 :attempt-ordinal 0
                                                  :provider primary :requested-model "fixture/inline-original" :phase :started}
             _ (is (nil? (:cognitect.anomalies/category ((:claim! bound) 0 (first (:candidates plan))))))
@@ -319,14 +314,14 @@
             _ (is (nil? (:cognitect.anomalies/category (p/frontier! ctx owner 1))))
             legacy-owner (dissoc (assoc owner :logical-action-id "old-inline-request") :ownership-epoch)
             candidates [{:provider primary :model "fixture/old" :options {}}]
-            old (journal/callbacks ctx legacy-owner candidates :temporary-transport)
+            old (processors/callbacks ctx legacy-owner candidates :temporary-transport)
             plan (p/profile-plan primary "fixture/current") authored {:fallback-models []}
             reads (atom 0) retained (atom nil) read-real es/read
             result (with-redefs [es/read (fn [store options]
                       (when (and (= #{:sheet/tree-tick-started} (:types options)) (= 2 (swap! reads inc)))
                         (reset! retained (h/run-and-apply! ctx (p/command :sheet/retain-model-plan
-                                           (assoc owner :configuration-id (journal/retained-configuration-id plan)
-                                                        :plan-scope-id (journal/inline-plan-scope-id owner authored) :plan plan)))))
+                                           (assoc owner :configuration-id (service-logic/retained-configuration-id plan)
+                                                        :plan-scope-id (service-logic/inline-plan-scope-id owner authored) :plan plan)))))
                       (read-real store options))]
                      ((:claim! old) 0 (first candidates)))
             events (orc/value-log-read-tick-events ctx (:tenant-id ctx) (:tick-id owner))]
@@ -357,7 +352,7 @@
                                {:sheet-id child-sheet :tick-id (get-in context [:event :tick-id])
                                 :node-id (get-in context [:event :node-id]) :node-start-id (get-in context [:event :event/id])
                                 :exec-context {} :role :subcall :logical-action-id "child-actual-request"}) @staged)
-                bound (mapv #(journal/callbacks ctx % candidates :temporary-transport) owners)]
+                bound (mapv #(processors/callbacks ctx % candidates :temporary-transport) owners)]
             (doseq [[callbacks index] (map vector bound [1 2])]
               (is (nil? (:cognitect.anomalies/category ((:claim! callbacks) index (nth candidates index)))))
               (is (nil? (:cognitect.anomalies/category ((:record! callbacks)
@@ -365,7 +360,7 @@
                           :status :success :advanced? false :outcome {:status :success :outputs {:value "done"}}})))))
             (is (nil? (:cognitect.anomalies/category ((:select! (first bound)) 1 (nth candidates 1)))))
             (is (nil? (:cognitect.anomalies/category ((:select! (second bound)) 2 (nth candidates 2)))))
-            (is (= 2 (:start-index (journal/callbacks ctx (assoc (first owners) :logical-action-id "next-child-request") candidates :temporary-transport))))
+            (is (= 2 (:start-index (processors/callbacks ctx (assoc (first owners) :logical-action-id "next-child-request") candidates :temporary-transport))))
             (let [before (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx)
                                                               :types #{:sheet/model-candidate-selected}}))]
               (is (= [1 2] (mapv :candidate-index before)))
@@ -396,13 +391,11 @@
                   (is (h/settle-until! #(= 1 (count @staged)) :timeout-ms 5000)))
               node (get-in (first @staged) [:event :node-id])
               owner {:sheet-id sheet :tick-id tick :node-id node :ownership-epoch 1}
-              ;; This is the original declared effect preimage, before any
-              ;; retained profile or current provider default is involved.
               module {:inputs [{:name :source :spec [:string {:description "Original source label."}]}]
                       :outputs [{:name :detail :spec detail-schema :description "Exact source label and typed nested observation."}]
                       :instructions "Copy the original source label with count 2 and flags [true false]."}
-              logical (effects/logical-action-identity
-                        {:tick-id tick :node-id node :iteration-index 0 :generated-code-hash (effects/generated-code-hash code)
+              logical (service-logic/logical-action-identity
+                        {:tick-id tick :node-id node :iteration-index 0 :generated-code-hash (service-logic/generated-code-hash code)
                          :kind :provider :target {:provider primary :model "fixture/prime" :name "inline"
                                                  :fallback-models [{:provider backup :model "fixture/sub-backup"}] :fallback-policy nil}
                          :arguments {:module module :inputs {:source "original-source"}
@@ -411,16 +404,16 @@
               _ (is (nil? (:cognitect.anomalies/category
                             (h/run-and-apply! ctx (p/command :sheet/claim-researcher-effect
                                (merge owner {:iteration-index 0 :logical-action-identity logical
-                                             :attempt-identity (effects/attempt-identity logical 1 0)
+                                             :attempt-identity (service-logic/attempt-identity logical 1 0)
                                              :attempt-ordinal 0 :kind :provider :claimed-at (str (java.time.Instant/now))}))))))]
           (with-redefs [llm/preflight-provider! (fn [provider & args]
                           (when (#{primary backup} provider) (swap! preflights inc))
                           (apply real-preflight provider args))]
             (is (some :resumed? (orc/resume-in-progress! (assoc ctx :orc/clock-fn #(.plusSeconds (java.time.Instant/now) 3600)))))
-            (is (h/settle-until! #(some? (runtime/durable-terminal-result ctx tick)) :timeout-ms 15000)))
+            (is (h/settle-until! #(some? (service-commands/durable-terminal-result ctx tick)) :timeout-ms 15000)))
           (let [events (orc/value-log-read-tick-events ctx (:tenant-id ctx) tick)
                 completion (last (filter #(and (= :sheet/node-execution-completed (:event/type %)) (= node (:node-id %))) events))
-                result (runtime/durable-terminal-result ctx tick)
+                result (service-commands/durable-terminal-result ctx tick)
                 inline-claims (filter #(and (= :rlm/researcher-effect-claimed (:event/type %))
                                              (= logical (:logical-action-identity %))) events)]
             (is (= :failure (:status result)))
@@ -457,8 +450,8 @@
                           {:provider backup :model "fixture/old-backup" :options {:max-retries (cond gap? 2 retry? 1 :else 0)}}])
             plan {:version 1 :policy :temporary-transport :candidates candidates}
             index (if future? 0 1) authored {:fallback-models []}
-            configuration (if future? (journal/retained-configuration-id plan)
-                              (journal/configuration-id candidates :temporary-transport))
+            configuration (if future? (service-logic/retained-configuration-id plan)
+                              (service-logic/configuration-id candidates :temporary-transport))
             call-owner (assoc owner :configuration-id configuration)
             prediction {:outputs (if prime? {:code p/code :reasoning p/reasoning} {:detail desired}) :usage {:prompt-tokens 8 :completion-tokens 5 :total-tokens 13}
                         :model "fixture/original-inline-resolved"
@@ -469,7 +462,7 @@
                       {:status :failure :failure-kind :transport-failure :error "controlled later failure"}
                       {:status :success :result prediction :outputs (:outputs prediction) :usage (:usage prediction)
                        :model (:model prediction) :model-fallback {:policy :temporary-transport :candidate-index index :attempts []}})
-            bound (journal/callbacks ctx call-owner candidates :temporary-transport)
+            bound (processors/callbacks ctx call-owner candidates :temporary-transport)
             request {:request-id (random-uuid) :candidate-index index :attempt-ordinal (cond conflicting? 0 gap? 2 retry? 1 :else 0)
                      :provider (:provider (nth candidates index)) :requested-model (:model (nth candidates index))}
             resolves (atom 0) reservations (atom 0) dispatches (atom 0)]
@@ -478,13 +471,13 @@
                       (h/run-and-apply! ctx (p/command :sheet/claim-researcher-effect
                         (merge (select-keys owner [:sheet-id :tick-id :node-id :ownership-epoch])
                                {:iteration-index 0 :logical-action-identity (:logical-action-id owner)
-                                :attempt-identity (effects/attempt-identity (:logical-action-id owner) 1 0)
+                                :attempt-identity (service-logic/attempt-identity (:logical-action-id owner) 1 0)
                                 :attempt-ordinal 0 :kind :provider :claimed-at (str (java.time.Instant/now))})))))))
         (when future?
           (is (nil? (:cognitect.anomalies/category
                       (h/run-and-apply! ctx (p/command :sheet/retain-model-plan
-                         (assoc call-owner :plan-scope-id (journal/inline-plan-scope-id owner authored) :plan plan))))))
-          (let [refused (try (journal/prepare-inline-call ctx owner authored (fn [] (swap! resolves inc) plan))
+                         (assoc call-owner :plan-scope-id (service-logic/inline-plan-scope-id owner authored) :plan plan))))))
+          (let [refused (try (processors/prepare-inline-call ctx owner authored (fn [] (swap! resolves inc) plan))
                              :unexpected-success (catch clojure.lang.ExceptionInfo e (ex-data e)))]
             (is (= :model-plan-incompatible (:failure-kind refused)))
             (is (= :retained-profile-version-unsupported (:reason refused)))))
@@ -526,17 +519,17 @@
         (let [current (assoc owner :ownership-epoch 2 :node-start-id (get-in (last @staged) [:event :event/id]))
               resolve-plan! (fn [] (swap! resolves inc) (throw (ex-info "Historical receipt must precede current registry" {})))
               prepared-original (if prime?
-                         (journal/prepare-prime-call ctx current authored 0
+                         (processors/prepare-prime-call ctx current authored 0
                            (orc/get-researcher-effect-claims ctx (:sheet-id owner) (:tick-id owner) (:node-id owner))
                            resolve-plan! (fn [& _] (throw (ex-info "Historical logical ID must not be recomputed" {}))))
-                         (journal/prepare-inline-call ctx current authored resolve-plan!))
+                         (processors/prepare-inline-call ctx current authored resolve-plan!))
               prepared (cond-> prepared-original
                          (= :legacy-duplicate-identical mode)
                          (update-in [:callbacks :request-receipts] #(vec (mapcat (fn [receipt] [receipt receipt]) %))))
               result (try
                        (with-redefs [llm/preflight-provider! (fn [& _] (swap! resolves inc) (throw (ex-info "No preflight on known response" {})))
                                      llm/predict (fn [& _] (swap! dispatches inc) (throw (ex-info "No fresh request on known response" {})))]
-                       (models/predict {:fallback-models []} primary {:inputs [] :outputs [] :instructions "unused"} {}
+                       (processors/predict {:fallback-models []} primary {:inputs [] :outputs [] :instructions "unused"} {}
                          {:with-metadata? true}
                          (merge ctx current {:researcher-ownership-epoch 2 :researcher-iteration 0
                                              :prepared-inline-model-call (when-not prime? prepared)
@@ -546,7 +539,7 @@
                        (catch clojure.lang.ExceptionInfo error
                          (assoc (ex-data error) :status :failure)))
               events (orc/value-log-read-tick-events ctx (:tenant-id ctx) (:tick-id owner))
-              history (filter #(contains? journal/event-types (:event/type %)) events)]
+              history (filter #(contains? service-logic/model-call-journal-event-types (:event/type %)) events)]
           (is (= (:logical-action-id owner) (:logical-action-id prepared)))
           (is (= configuration (:configuration-id prepared)))
           (if (or failed-gap? conflicting? competing?)
@@ -590,7 +583,7 @@
             plans [(p/profile-plan primary "fixture/a") (p/profile-plan primary "fixture/b")]
             ready (java.util.concurrent.CountDownLatch. 2) release (promise)
             workers (mapv (fn [index plan]
-                            (future (journal/prepare-inline-call ctx (assoc owner :logical-action-id (str "request-" index)) authored
+                            (future (processors/prepare-inline-call ctx (assoc owner :logical-action-id (str "request-" index)) authored
                                        #(do (.countDown ready) @release plan)))) (range 2) plans)]
         (is (.await ready 5 java.util.concurrent.TimeUnit/SECONDS))
         (deliver release true)
@@ -638,14 +631,14 @@
             _ (is (nil? (:cognitect.anomalies/category (p/frontier! ctx owner 1))))
             legacy-owner (assoc owner :logical-action-id "old-inline-request")
             candidates [{:provider primary :model "fixture/old" :options {}}]
-            old (journal/callbacks ctx legacy-owner candidates :temporary-transport)
+            old (processors/callbacks ctx legacy-owner candidates :temporary-transport)
             plan (p/profile-plan primary "fixture/current") authored {:fallback-models []}
             reads (atom 0) retained (atom nil) read-real es/read
             result (with-redefs [es/read (fn [store options]
                       (when (and (= #{:sheet/tree-tick-started} (:types options)) (= 2 (swap! reads inc)))
                         (reset! retained (h/run-and-apply! ctx (p/command :sheet/retain-model-plan
-                                           (assoc owner :configuration-id (journal/retained-configuration-id plan)
-                                                        :plan-scope-id (journal/inline-plan-scope-id owner authored) :plan plan)))))
+                                           (assoc owner :configuration-id (service-logic/retained-configuration-id plan)
+                                                        :plan-scope-id (service-logic/inline-plan-scope-id owner authored) :plan plan)))))
                       (read-real store options))]
                      ((:claim! old) 0 (first candidates)))
             events (orc/value-log-read-tick-events ctx (:tenant-id ctx) (:tick-id owner))]
@@ -667,7 +660,7 @@
             authored-a {:model "fixture/a" :fallback-models []}
             authored-b {:model "fixture/b" :fallback-models []}
             plan-a (p/profile-plan primary "fixture/a") plan-b (p/profile-plan primary "fixture/b")
-            prepared-a (journal/prepare-inline-call ctx a authored-a (constantly plan-a))
+            prepared-a (processors/prepare-inline-call ctx a authored-a (constantly plan-a))
             callbacks-a (:callbacks prepared-a)
             prediction {:outputs {:detail desired} :usage {:prompt-tokens 2 :completion-tokens 1 :total-tokens 3}
                         :model "fixture/a-resolved"}
@@ -678,9 +671,7 @@
         (is (nil? (:cognitect.anomalies/category ((:record-request! callbacks-a)
                     (assoc request :phase :completed :outcome {:status :success :result prediction
                                                                :outputs (:outputs prediction) :usage (:usage prediction)})))))
-        ;; The other authored configuration may create its own real role plan;
-        ;; the first plan's valid journal is not unretained legacy work.
-        (let [prepared-b (journal/prepare-inline-call ctx b authored-b (constantly plan-b))]
+        (let [prepared-b (processors/prepare-inline-call ctx b authored-b (constantly plan-b))]
           (is (not= (:configuration-id prepared-a) (:configuration-id prepared-b)))
           (is (nil? (:cognitect.anomalies/category ((:claim! (:callbacks prepared-b)) 0 (first (:candidates plan-b)))))))
         (h/run-and-apply! ctx (p/command :sheet/resume-node-execution
@@ -689,12 +680,12 @@
         (is (h/settle-until! #(= 2 (count @staged)) :timeout-ms 5000))
         (is (nil? (:cognitect.anomalies/category (p/frontier! ctx owner 2))))
         (let [current (assoc a :ownership-epoch 2 :node-start-id (get-in (last @staged) [:event :event/id]))
-              prepared (journal/prepare-inline-call ctx current authored-a
+              prepared (processors/prepare-inline-call ctx current authored-a
                          #(throw (ex-info "Known authored plan must precede current registry" {})))
               calls (atom 0) reservations (atom 0)
               result (with-redefs [llm/preflight-provider! (fn [& _] (swap! calls inc) (throw (ex-info "No current preflight" {})))
                                    llm/predict (fn [& _] (swap! calls inc) (throw (ex-info "No fresh physical call" {})))]
-                       (models/predict {:fallback-models []} primary {:inputs [] :outputs [] :instructions "unused"} {}
+                       (processors/predict {:fallback-models []} primary {:inputs [] :outputs [] :instructions "unused"} {}
                          {:with-metadata? true}
                          (merge ctx current {:prepared-inline-model-call prepared :researcher-ownership-epoch 2
                                              :reserve-provider-call! (fn [_] (swap! reservations inc) nil)}) :subcall (:logical-action-id a)))
@@ -713,13 +704,13 @@
       (let [owner (assoc original :role :subcall :logical-action-id "legacy-current-epoch")
             _ (is (nil? (:cognitect.anomalies/category (p/frontier! ctx owner 1))))
             candidates [{:provider primary :model "fixture/old" :options {}}]
-            old (journal/callbacks ctx owner candidates :temporary-transport)
+            old (processors/callbacks ctx owner candidates :temporary-transport)
             _ (is (nil? (:cognitect.anomalies/category ((:claim! old) 0 (first candidates)))))
             plan (p/profile-plan primary "fixture/current")
             result (h/run-and-apply! ctx (p/command :sheet/retain-model-plan
                          (assoc owner :logical-action-id "different-new-request"
-                                      :configuration-id (journal/retained-configuration-id plan)
-                                      :plan-scope-id (journal/inline-plan-scope-id owner {:fallback-models []}) :plan plan)))
+                                      :configuration-id (service-logic/retained-configuration-id plan)
+                                      :plan-scope-id (service-logic/inline-plan-scope-id owner {:fallback-models []}) :plan plan)))
             events (orc/value-log-read-tick-events ctx (:tenant-id ctx) (:tick-id owner))]
         (is (= :cognitect.anomalies/conflict (:cognitect.anomalies/category result)))
         (is (not-any? #(= :sheet/model-plan-retained (:event/type %)) events))

@@ -121,7 +121,6 @@
           executor (runtime/get-executor "testTool")
           result (executor {:inputs {:query "test query"}
                             :context {:mcp/dry-run? true}})]
-      ;; An explicit dry run (and only that) yields a marked stand-in
       (is (map? result))
       (is (contains? result :testTool-result))
       (is (true? (get-in result [:testTool-result :dry-run?]))))))

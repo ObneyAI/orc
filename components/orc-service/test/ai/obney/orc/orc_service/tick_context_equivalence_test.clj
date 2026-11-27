@@ -27,10 +27,9 @@
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.read-models :as rm]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
-            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.grain.command-processor-v2.interface :as cp]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Deterministic executors
@@ -52,9 +51,6 @@
   {:current-item (str (:current-item inputs) "|tagged")})
 
 (defn note-item [{:keys [inputs]}]
-  ;; Writes a NON-item key from inside a map-each iteration. This is what
-  ;; makes composite-child attribution observable: the write is attributed to
-  ;; a descendant of the map-each child, not to the child itself.
   {:note (str "saw-" (:current-item inputs))})
 
 (defn branch-a [_] {:out-a "A"})
@@ -89,7 +85,7 @@
 
 (defn- dispatch! [ctx sheet-id inputs]
   (let [tick-id (random-uuid)
-        p (runtime/register-completion! tick-id)
+        p (service-logic/register-completion! tick-id)
         r (cp/process-command
            (assoc ctx :command {:command/id (random-uuid)
                                 :command/timestamp (time/now)
@@ -102,7 +98,7 @@
         (str "dispatch failed: " (:cognitect.anomalies/message r)))
     [(deref p 20000 ::timeout) tick-id]))
 
-;; --- the matrix ------------------------------------------------------------
+;; --- the matrix ---
 
 (defn- fixture:sequence
   "Producer writes :doc, consumer reads it and writes :summary. Also declares
@@ -130,12 +126,11 @@
   (let [sheet-id (new-sheet! ctx nm {:items [:vector :int]
                                      :current-item [:or :int :string]
                                      :note :string
-                                     :results [:vector :string]})
+                                     :results [:vector (if composite?
+                                                         [:map {:closed true} [:note :string]]
+                                                         :string)]})
         me-id (add-node! ctx sheet-id :map-each)]
     (if composite?
-      ;; Composite child: the map-each's direct child is a sequence, so the
-      ;; real writers are its LEAF descendants and attribution by
-      ;; [node-id exec-context] alone cannot find them.
       (let [child (add-node! ctx sheet-id :sequence :parent-id me-id :index 0)]
         (add-leaf! ctx sheet-id child 0 "expand-item" [:current-item] [:current-item])
         (add-leaf! ctx sheet-id child 1 "note-item" [:current-item] [:note]))
@@ -195,7 +190,7 @@
 ;; The round trip
 ;; =============================================================================
 
-;; --- the oracle ------------------------------------------------------------
+;; --- the oracle ---
 
 (defn oracle-tick-execution-contexts*
   "The canonical-reference BLACKBOARD projection used as an independent oracle.
@@ -259,24 +254,13 @@
 (defn- hydrated-blackboard
   "The v3 metadata cache, with values resolved back from the write log."
   [ctx tick-id]
-  (value-log/hydrate-blackboard (:event-store ctx) (:tenant-id ctx) tick-id
+  (rm/hydrate-blackboard (:event-store ctx) (:tenant-id ctx) tick-id
                                 (rm/get-tick-blackboard ctx tick-id) nil))
 
 (defn- round-trip [ctx tick-id]
   [(oracle-blackboard ctx tick-id) (hydrated-blackboard ctx tick-id)])
 
 (deftest resolution-is-faithful-to-the-pointer-across-fixture-matrix
-  ;; The exact, freshness-independent invariant, checked on EVERY fixture
-  ;; including the concurrent ones:
-  ;;
-  ;;   a key with a :source must resolve to the value carried by
-  ;;   THAT event — the write the projection last applied, which is precisely
-  ;;   the value the old cache held;
-  ;;   a key without one must resolve to its seed.
-  ;;
-  ;; This is what "the resolver reproduces the cache" means operationally, and
-  ;; unlike a comparison against a clean replay it cannot be perturbed by how
-  ;; far the projection has caught up.
   (doseq [[fixture-name build!] fixtures]
     (testing (str "pointer fidelity: " fixture-name)
       (h/with-async-test-context [ctx]
@@ -286,12 +270,12 @@
               (str fixture-name " did not succeed: " (:error result)))
           (h/settle-until! #(h/trace-stored? ctx tick-id))
           (let [cached (rm/get-tick-blackboard ctx tick-id)
-                seeds (value-log/tick-seeds (:event-store ctx) (:tenant-id ctx) tick-id)
+                seeds (rm/tick-seeds (:event-store ctx) (:tenant-id ctx) tick-id)
                 hydrated (hydrated-blackboard ctx tick-id)]
             (is (seq cached) (str fixture-name ": no cached blackboard"))
             (doseq [[k entry] cached]
               (let [expected (if-let [src (:source entry)]
-                               (value-log/resolve-source (:event-store ctx)
+                               (rm/resolve-source (:event-store ctx)
                                                          (:tenant-id ctx) src)
                                (get seeds k))]
                 (is (= expected (:value (get hydrated k)))
@@ -299,28 +283,17 @@
                          ": resolved value is not the one the cache pointed at"))))))))))
 
 (deftest resolver-reproduces-cached-values-across-fixture-matrix
-  ;; Whole-map equality against a clean replay of the tick's events. Restricted
-  ;; to serial fixtures: with concurrent writes a replay and the live
-  ;; projection can legitimately sit on different writes to a contended key
-  ;; (see concurrent-fixtures), which the pointer-fidelity test above covers
-  ;; exactly instead.
   (doseq [[fixture-name build!] serial-fixtures]
     (testing (str "round trip: " fixture-name)
       (h/with-async-test-context [ctx]
         (let [[sheet-id inputs] (build! ctx)
               [result tick-id] (dispatch! ctx sheet-id inputs)]
           (is (not= ::timeout result) (str fixture-name " timed out"))
-          ;; A fixture that FAILS would round-trip trivially — both sides end
-          ;; up equally empty — so the equality assertion below would pass
-          ;; vacuously. Require the run to have actually succeeded.
           (is (= :success (:status result))
               (str fixture-name " did not succeed: " (:error result)))
           (h/settle-until! #(h/trace-stored? ctx tick-id))
           (let [[oracle hydrated] (round-trip ctx tick-id)]
             (is (seq oracle) (str fixture-name ": oracle produced no blackboard"))
-            ;; Whole-map equality against the independent reducer. Not a spot
-            ;; check: every key the fixture produced, including entry set,
-            ;; schema and version.
             (is (= (normalize oracle) (normalize hydrated))
                 (str fixture-name ": resolved blackboard differs from the oracle.\n"
                      "oracle:   " (pr-str (normalize oracle)) "\n"
@@ -328,16 +301,6 @@
 
 (deftest live-version-counter-overcounts-under-concurrency
   (testing "the oracle's :version equals the write count; the live one can exceed it"
-    ;; Pins the one field where a clean replay and the live projection diverge,
-    ;; and shows WHY: a clean reduce increments once per write event, so its
-    ;; counter is exactly the number of writes to that key. The live counter
-    ;; can be higher, because concurrent projections re-apply a window of
-    ;; events over a state that already had them — (fnil inc 0) is not
-    ;; idempotent, while assoc-in of a value is. Values are therefore
-    ;; unaffected, which is what the equivalence test above asserts.
-    ;;
-    ;; Pre-existing: the counter is produced by the same projection path as
-    ;; before this change. Recorded rather than fixed because nothing reads it.
     (h/with-async-test-context [ctx]
       (let [[sheet-id inputs] (fixture:map-each-concurrent ctx)
             [result tick-id] (dispatch! ctx sheet-id inputs)]
@@ -375,21 +338,14 @@
             [_ tick-id] (dispatch! ctx sheet-id inputs)]
         (h/settle-until! #(h/trace-stored? ctx tick-id))
         (let [cached (rm/get-tick-blackboard ctx tick-id)
-              seeds (value-log/tick-seeds (:event-store ctx) (:tenant-id ctx) tick-id)]
+              seeds (rm/tick-seeds (:event-store ctx) (:tenant-id ctx) tick-id)]
           (doseq [[k e] cached]
-            ;; :unused is declared but never written and never seeded — it has
-            ;; no value at all, which is a legitimate third state. A :profile
-            ;; is recorded exactly when there was a value to describe, so it is
-            ;; the metadata-side witness for "this key has a value."
             (when (some? (:profile e))
               (is (some? (:source e))
                   (str "key " k " has a value but no route to resolve it")))))))))
 
 (deftest declared-but-unwritten-key-keeps-its-entry
   (testing "hydration preserves the entry set exactly"
-    ;; gather-inputs distinguishes 'entry absent' (skip the key) from 'entry
-    ;; present, value nil' (serialize nil -> empty string). Dropping an
-    ;; unresolvable entry would silently change LLM prompts.
     (h/with-async-test-context [ctx]
       (let [[sheet-id inputs] (fixture:sequence ctx)
             [_ tick-id] (dispatch! ctx sheet-id inputs)]
@@ -402,11 +358,6 @@
 
 (deftest as-of-pointer-rejects-mismatched-event
   (testing "a pointer that fails the tag filter resolves to nothing, not to the previous write"
-    ;; :as-of is an inclusive upper BOUND, not an equality filter. Without the
-    ;; (= (:event/id e) id) guard in values-by-event-id, a pointer whose event
-    ;; is not in this tick would silently resolve to whatever write happened to
-    ;; precede it — a wrong value rather than a missing one. That is the worst
-    ;; failure mode available here, so it gets a dedicated test.
     (h/with-async-test-context [ctx]
       (let [[sheet-id inputs] (fixture:overwritten-key ctx)
             [_ tick-a] (dispatch! ctx sheet-id inputs)
@@ -415,9 +366,7 @@
         (let [bb-b (rm/get-tick-blackboard ctx tick-b)
               ptr-b (:source (get bb-b :doc))]
           (is (some? ptr-b) "fixture must produce a written key")
-          ;; Ask tick A to resolve a pointer that belongs to tick B. There ARE
-          ;; earlier :doc writes in tick A that :as-of would happily return.
-          (let [resolved (value-log/values-by-event-id
+          (let [resolved (rm/values-by-event-id
                           (:event-store ctx) (:tenant-id ctx) tick-a
                           [(:event-id ptr-b)])]
             (is (empty? resolved)
@@ -432,8 +381,7 @@
         (is (= :success (:status result)) (str "run failed: " (:error result)))
         (h/settle-until! #(h/trace-stored? ctx tick-id))
         (let [events (h/read-tick-events ctx tick-id)
-              seeds (value-log/input-seeds-by-iteration events)]
-          ;; One seed per item, each under its own iteration identity.
+              seeds (service-logic/input-seeds-by-iteration events)]
           (is (= (count (:items inputs)) (count seeds))
               (str "expected one seeded iteration per item, got " (pr-str seeds)))
           (is (= (set (:items inputs))
@@ -442,15 +390,6 @@
 
 (deftest delivered-outputs-do-not-depend-on-projection-freshness
   (testing "every written key reaches the caller, resolved from the log"
-    ;; Result delivery reads the tick's end state from the write log, not from
-    ;; the cached blackboard. This is what makes :outputs immune to a
-    ;; projection that has not caught up — a race that can otherwise drop a
-    ;; key silently, since a partly-projected blackboard looks exactly like a
-    ;; complete one.
-    ;;
-    ;; The parallel fixture is the sharp case: three children complete at once,
-    ;; so their three writes land concurrently and the projection is most
-    ;; likely to lag.
     (h/with-async-test-context [ctx]
       (let [[sheet-id inputs] (fixture:parallel ctx)
             [result tick-id] (dispatch! ctx sheet-id inputs)]

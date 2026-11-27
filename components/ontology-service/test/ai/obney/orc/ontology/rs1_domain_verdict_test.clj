@@ -1,0 +1,176 @@
+(ns ai.obney.orc.ontology.rs1-domain-verdict-test
+  "RS-1: the reranker gives a domain verdict beside fitness.
+
+   Spec: `specs/ontology.allium` `enum DomainCoverage`, `value DomainVerdict`,
+   `contract TaskClassification.judge_domain_coverage`. `judge_domain_coverage`
+   is realised here as the reranker's per-candidate verdict — parsed,
+   canonicalised and validated exactly as the existing three keys are.
+
+   Seam 2 — the rerank workflow's parse step (`parse-reranked-json`) with
+   constructed payloads. The reranker is stubbed with a typed payload this
+   test constructs; no model-authored prose is asserted on."
+  (:require [ai.obney.orc.ontology.core.queries :as queries]
+            [ai.obney.orc.ontology.core.logic :as logic]
+            [ai.obney.orc.ontology.core.commands :as commands]
+            [clojure.test :refer [deftest testing is]]
+            [clojure.data.json :as json]
+            [clojure.string :as str]
+            [cheshire.core :as cheshire]
+            [malli.core :as m]
+            [ai.obney.orc.ontology.interface :as ontology]
+            [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
+            [ai.obney.orc.ontology.test-helpers :as th]
+            [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.time.interface :as time]))
+
+
+(deftest domain-verdict-fields-parse-and-validate
+  (testing "A reranker payload carrying the six keys parses to an entry with
+            :domain-coverage / :domain-label / :domain-reasoning beside the
+            three canonical keys, and the entry validates"
+    (let [payload (json/write-str
+                    [{:document_id "a"
+                      :reasoning "Fits the caller's structured-output need."
+                      :fitness_score 0.87
+                      :domain_reasoning "Shares subject matter (training plans) but not the output kind (a schedule, not a narrative)."
+                      :domain_coverage "partial"
+                      :domain_label "marathon-training-plan"}])
+          result {:outputs {:reranked-json payload}}
+          parsed (#'logic/parse-reranked-json result)
+          entry (first parsed)]
+      (is (= 1 (count parsed)))
+      (is (= :partial (:domain-coverage entry)))
+      (is (= "marathon-training-plan" (:domain-label entry)))
+      (is (= "Shares subject matter (training plans) but not the output kind (a schedule, not a narrative)."
+             (:domain-reasoning entry)))
+      (is (= "a" (:document-id entry)))
+      (is (= "Fits the caller's structured-output need." (:reasoning entry)))
+      (is (= 0.87 (:fitness-score entry)))
+      (is (m/validate ontology-schemas/reranked-result entry)
+          (str "Entry should validate. Explanation: "
+               (pr-str (m/explain ontology-schemas/reranked-result entry)))))))
+
+
+(deftest reranker-instruction-carries-domain-coverage-section
+  (testing "The reranker instruction contains the RS-1 domain section VERBATIM
+            — asserted against the constant this slice defines (OUR text,
+            never model prose)"
+    (let [instr (str @#'logic/reranker-instruction)]
+      (is (str/includes? instr (str @#'logic/domain-coverage-section))
+          "The instruction must include the domain-coverage section byte-for-byte")))
+
+  (testing "The output contract now asks for EXACTLY six keys, not three"
+    (let [instr (str @#'logic/reranker-instruction)]
+      (is (str/includes? instr "EXACTLY these six keys"))
+      (is (not (str/includes? instr "EXACTLY these three keys"))
+          "The shipped three-key output contract must be fully replaced"))))
+
+(deftest candidate-schema-accepts-and-renders-existing-domain-children
+  (testing "candidate-schema accepts an OPTIONAL :existing-domain-children"
+    (let [candidate {:content "A document about marathon training"
+                      :score 0.7
+                      :document-id "a"
+                      :existing-domain-children ["marathon-training-plan" "recipe-scaling"]}]
+      (is (m/validate @#'logic/candidate-schema candidate)
+          (str "Explanation: " (pr-str (m/explain @#'logic/candidate-schema candidate))))))
+
+  (testing "candidate-schema still accepts a candidate WITHOUT the new key (backward compatible)"
+    (let [candidate {:content "A document" :score 0.5 :document-id "b"}]
+      (is (m/validate @#'logic/candidate-schema candidate))))
+
+  (testing "The candidates JSON rendered for the LLM (cheshire, the same
+            encoder orc-service's executor uses for blackboard :reads) includes
+            a candidate's :existing-domain-children"
+    (let [candidate {:content "A document about marathon training"
+                      :score 0.7
+                      :document-id "a"
+                      :existing-domain-children ["marathon-training-plan" "recipe-scaling"]}
+          rendered (cheshire/generate-string candidate)]
+      (is (str/includes? rendered "existing-domain-children"))
+      (is (str/includes? rendered "marathon-training-plan"))
+      (is (str/includes? rendered "recipe-scaling")))))
+
+
+(defn- mint-command [parent-id child-id label]
+  {:command/name :ontology/mint-domain-child
+   :command/id (random-uuid)
+   :command/timestamp (time/now)
+   :parent-tree-id parent-id
+   :child-tree-id child-id
+   :domain-label label
+   :source-sheet-id (random-uuid)
+   :source-tick-id (random-uuid)
+   :source-node-id (random-uuid)})
+
+(deftest rerank-inputs-carry-the-bounded-label-list
+  (testing "apply-rerank computes the tenant-wide family-label list
+            (ontology/existing-domain-families) and passes it to
+            reranker/rerank! as :existing-domain-labels — every family's
+            OWN label, not just one candidate's children"
+    (th/with-test-context [base]
+      (let [ctx (assoc base :command-registry (cp/global-command-registry))
+            parent-a (random-uuid) parent-b (random-uuid)
+            child-a (random-uuid) child-b (random-uuid)
+            captured (atom nil)
+            candidate {:content "x" :score 0.8 :rank 1 :document-id "a"
+                       :document-metadata {:granularity :tree-class
+                                           :target-id (str (random-uuid))
+                                           :confidence 0.9 :last-update "2026"}}]
+        (cp/process-command (assoc ctx :command (mint-command parent-a child-a "marathon-training-plan")))
+        (cp/process-command (assoc ctx :command (mint-command parent-b child-b "recipe-scaling")))
+        (with-redefs [logic/reranker-rerank!
+                      (fn [_ opts]
+                        (reset! captured opts)
+                        [{:document-id "a" :reasoning "fits" :fitness-score 0.8}])]
+          (#'queries/apply-rerank ctx [candidate] "intent" "query" 5 nil)
+          (is (= #{"marathon-training-plan" "recipe-scaling"}
+                 (set (:existing-domain-labels @captured)))
+              "both families' own labels reached the rerank! call"))))))
+
+
+(deftest missing-or-malformed-domain-coverage-defers-to-unknown
+  (testing "A pre-RS-1 payload (the three shipped keys only, domain keys ABSENT)
+            parses to an entry with :domain-coverage :unknown and nil label/
+            reasoning, and the entry still validates"
+    (let [payload (json/write-str
+                    [{:document_id "a"
+                      :reasoning "Fits the intent."
+                      :fitness_score 0.6}])
+          result {:outputs {:reranked-json payload}}
+          parsed (#'logic/parse-reranked-json result)
+          entry (first parsed)]
+      (is (= 1 (count parsed)))
+      (is (= :unknown (:domain-coverage entry)))
+      (is (nil? (:domain-label entry)))
+      (is (nil? (:domain-reasoning entry)))
+      (is (m/validate ontology-schemas/reranked-result entry)
+          (str "Entry should validate. Explanation: "
+               (pr-str (m/explain ontology-schemas/reranked-result entry))))))
+
+  (testing "A MALFORMED domain_coverage (not one of the four values) is read
+            as :unknown rather than coerced to the given string"
+    (let [payload (json/write-str
+                    [{:document_id "a"
+                      :reasoning "Fits the intent."
+                      :fitness_score 0.6
+                      :domain_reasoning "Some reasoning."
+                      :domain_coverage "maybe"
+                      :domain_label "some-label"}])
+          result {:outputs {:reranked-json payload}}
+          parsed (#'logic/parse-reranked-json result)
+          entry (first parsed)]
+      (is (= 1 (count parsed)))
+      (is (= :unknown (:domain-coverage entry))
+          "A malformed verdict must defer to :unknown, never be coerced to :maybe")
+      (is (m/validate ontology-schemas/reranked-result entry)
+          (str "Entry should validate. Explanation: "
+               (pr-str (m/explain ontology-schemas/reranked-result entry)))))))
+
+(deftest label-reuse-requires-both-subject-matter-and-output-kind
+  (testing "convergence arc (RS-7 finding): the reuse rule was inverted ('reuse unless
+            BOTH differ') and the post-fix arm merged 17 families across groups.
+            Reuse now requires BOTH to match; either difference coins a new label."
+    (let [text (str @#'logic/reranker-instruction)]
+      (is (clojure.string/includes? text "only when this task\nshares BOTH the subject matter AND the output kind"))
+      (is (clojure.string/includes? text "If\nthe subject matter differs, or the output kind differs, it is a different\nfamily"))
+      (is (not (clojure.string/includes? text "BOTH differ from every listed label"))))))

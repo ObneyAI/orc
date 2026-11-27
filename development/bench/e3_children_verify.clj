@@ -16,14 +16,16 @@
 
    Run (from the orc-rinject-redesign worktree, OPENROUTER_API_KEY in env):
      clojure -M:dev -m e3-children-verify"
-  (:require [runner]
+  (:require
+            [runner]
             [ai.obney.orc.ontology.interface :as ont]
-            [ai.obney.orc.ontology.core.task-classifier :as tc]
             [ai.obney.orc.orc-service.core.todo-processors :as otp]
             [ai.obney.orc.colbert.interface :as colbert]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.commands :as ontology-commands]))
 
-;; --- abstract parents (12) ---
 (def parent-name-by-id
   {#uuid "8ad38e72-05e4-3201-bac7-3ed9c54a2791" "Research"
    #uuid "abe10f3b-ab49-3916-ae30-0ca7abfcad96" "Extraction"
@@ -62,7 +64,6 @@
 
 (defn child-id? [id] (contains? child-name-by-id id))
 
-;; in-domain coding tasks (same instructions as E1) that over-matched a broad parent
 (def in-domain-tasks
   [["wire-dependency"   "Add the cheshire JSON dependency to deps.edn and use it in the export writer to serialize the report map to a .json file."]
    ["perf-tune"         "The report-rendering endpoint is slow on large inputs; profile it and optimize the hot path so a 10k-row report renders under 500ms without changing the output."]
@@ -70,14 +71,13 @@
    ["debug-failing-test" "Debug why the integration test `checkout-flow-test` fails intermittently with a nil cart-id and make it deterministic."]
    ["rename-symbol"     "Rename the function `calc` to `compute-tax` across the billing namespace and update every caller, including the test files."]])
 
-;; OOD / non-coding tasks — the overfit guard (must NOT force-fit a child)
 (def ood-tasks
   [["ood-earnings-pdf"  "Summarize this quarterly earnings PDF into a one-page executive brief highlighting revenue, margin trend, and forward guidance."]
    ["ood-marketing"     "Plan a three-month marketing campaign to launch a new consumer coffee brand, including channels, budget split, and a content calendar."]
    ["ood-recipe"        "Suggest a vegetarian dinner menu for eight guests with a wine pairing for each course and a shopping list."]])
 
 (defn classify-one [ctx instruction]
-  (let [sig (tc/build-task-signature {:instruction instruction
+  (let [sig (ontology-logic/build-task-signature {:instruction instruction
                                       :reads [:user-message :active-plan :workspace-root]
                                       :writes [:assistant-response]
                                       :mcp-tools ["shell/exec" "fs/read" "fs/list"]})]
@@ -96,9 +96,8 @@
     (println "FATAL: OPENROUTER_API_KEY not set") (System/exit 1))
   (try
     (runner/start!)
-    (let [ctx (deref (var-get (requiring-resolve 'runner/system-state)))]
+    (let [ctx (runner/current-context)]
 
-      ;; -------- HARNESS SANITY + read-model confirmation of children --------
       (println "\n--- HARNESS SANITY ---")
       (let [idxs (filter #(= "ontology-descriptions" (:index-name %)) (colbert/list-indexes ctx))]
         (println "ontology-descriptions indexes built:" (count idxs)))
@@ -117,15 +116,11 @@
                            (= parent (:parent-behavior body))
                            (boolean (and concept (contains? (:broader concept) parent-uri)))))))
 
-      ;; -------- stable id on re-mint (mint twice -> same id) --------
       (println "\n--- STABLE ID ON RE-MINT (same id twice) ---")
       (let [[n p] (first children)
             id1 (derive-child-id n p)]
-        ;; the corpus was already seeded once by runner/start!; emit the same
-        ;; child again and confirm it resolves to the SAME id (history grows).
-        (require 'ai.obney.orc.ontology.core.seeds)
-        (let [emit! (requiring-resolve 'ai.obney.orc.ontology.core.seeds/emit-behavioral-child!)
-              read-seeds (requiring-resolve 'ai.obney.orc.ontology.core.seeds/read-seeds)]
+        (let [emit! #'ontology-commands/emit-behavioral-child!
+              read-seeds #'ontology-logic/read-seeds]
           (when (and emit! read-seeds)
             (let [child-edn (first (read-seeds "seeds/behavioral-subtree-children.edn"))]
               (emit! ctx child-edn)
@@ -134,7 +129,6 @@
                 (println (format "  %s re-minted -> same derived id %s ; history entries now = %d (>=2 proves accrual, not scatter)"
                                  n id1 (count hist))))))))
 
-      ;; -------- IN-DOMAIN: specialization --------
       (println "\n--- IN-DOMAIN coding tasks: does the relevant CHILD surface? ---")
       (doseq [[label instruction] in-domain-tasks]
         (let [r (classify-one ctx instruction)
@@ -146,11 +140,9 @@
             (println (fmt-row b))
             (when (seq (:reasoning b)) (println "        reasoning:" (:reasoning b))))))
 
-      ;; -------- RENDERED PREPEND for one in-domain task (Part-1 end-to-end) --------
       (println "\n--- RENDERED R-INJECT PREPEND (in-domain perf-tune) — do strengths render? ---")
-      (let [instruction (second (second in-domain-tasks)) ;; perf-tune
+      (let [instruction (second (second in-domain-tasks))
             r (classify-one ctx instruction)
-            ;; build the wedge payload shape apply-r05-classifier-context expects
             payload {:structural {:assigned-tree-id (random-uuid)
                                   :confidence 0.0 :was-fresh-mint? true
                                   :reasoning "n/a — behavioral focus" :top-candidates []
@@ -163,7 +155,6 @@
             result (otp/apply-r05-classifier-context node ctx)]
         (println (:instruction result)))
 
-      ;; -------- OOD: overfit guard --------
       (println "\n\n--- OVERFIT GUARD: OOD tasks must NOT force-fit a coding child ---")
       (doseq [[label instruction] ood-tasks]
         (let [r (classify-one ctx instruction)

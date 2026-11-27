@@ -1,5 +1,15 @@
 # ORC Allium distillation coverage
 
+## Durable workflow values
+
+The ORC service specification covers the serializable value boundary for
+blackboard writes, blocking payloads, and durable rejection evidence. The
+workflow integration obligation DURABLE-WORKFLOW-VALUES verifies refusal through
+a draft command, isolation of execution writes, and retrieval of structured
+rejection evidence through the public node trace query. The updated specification
+produces the same 39 warnings and 205 informational diagnostics as the full
+workspace snapshot before the change.
+
 ## Checkpoint recovery and delegate admission review
 
 The scoped regression witnesses cover two existing contracts: rejected partial
@@ -108,17 +118,18 @@ are represented in a checked Allium specification.
 | Component | Domain | Spec | Status |
 |---|---|---|---|
 | `agent-browser` | Agent-oriented browser interaction | `agent-browser.allium` | Distilled and checked |
-| `colbert` | Late-interaction indexing and retrieval | `colbert.allium` | Distilled and checked |
-| `evaluation` | Rubrics, judges, scoring, and feedback | `evaluation.allium` | Distilled and checked |
+| `colbert-service` | Late-interaction indexing and retrieval | `colbert.allium` | Distilled and checked |
+| `evaluation-service` | Rubrics, judges, scoring, and feedback | `evaluation.allium` | Distilled and checked |
 | `file-store` | Storage contract | `file-storage.allium` | Distilled and checked |
 | `file-store-local` | Local implementation of storage contract | `file-storage.allium` | Distilled and checked as adapter |
 | `file-store-s3` | S3 implementation of storage contract | `file-storage.allium` | Distilled and checked as adapter |
-| `gepa` | Pareto-based prompt optimization | `gepa.allium` | Distilled and checked |
+| `gepa-service` | Pareto-based prompt optimization | `gepa.allium` | Distilled and checked |
 | `grain-test-utils` | Test-only Grain helpers | — | Excluded: test infrastructure |
+| `integrations` | Optional provider registration and persisted code-function lookup | `orc-service.allium` and provider specs | Shared implementation of existing package boundaries |
 | `langfuse` | Trace destination adapter | `observability.allium` | Distilled and checked with the managed exporter lifecycle exposed by `orc-service` |
 | `llm` | Structured provider prediction and streaming | `llm.allium` | Distilled and checked |
 | `mcp-sheet-builder` | Workflow generation and portable MCP transport lifecycle | `mcp-sheet-builder.allium`, `mcp-client.allium` | Distilled, specified, and verified through DET-E2E-145 |
-| `ontology` | Ontology discovery, evolution, and retrieval | `ontology.allium` | Distilled and checked |
+| `ontology-service` | Ontology discovery, evolution, and retrieval | `ontology.allium` | Distilled and checked |
 | `orc-service` | Behavior-tree execution and RLM runtime | `orc-service.allium` | Distilled and checked |
 | `predict-rlm-image-tools` | Image benchmark deterministic transforms | `predict-rlm-tools.allium` | Distilled and checked |
 | `predict-rlm-invoice-tools` | Invoice workbook transform | `predict-rlm-tools.allium` | Distilled and checked |
@@ -790,7 +801,7 @@ by the deterministic judge/campaign tests is the repository's normal injected
 capability seam. The still-open Grain PR #22 remains a stack portability gate,
 not an unverified RR-17 behavior.
 
-`clojure -M:poly test brick:evaluation` ran every evaluation namespace in the
+`clojure -M:poly test brick:evaluation-service` ran every evaluation namespace in the
 `orc` consuming project with zero test failures, then stopped before the
 `orc-evaluation` context because the composed worktree resolves
 `cat/schema-util` from both the local Grain checkout and the remote PR-22 SHA.
@@ -1257,7 +1268,7 @@ transport or tool seam injected, plus gated REAL-model runs:
   (DET-E2E-307).
 - mcp-sheet-builder `ExecutorsUseTheNodesToolCaller` — `tool_seam_unification_test.clj`,
   `weed_followups_test.clj` (DET-E2E-305).
-- gepa `EveryModelInstructionIsAComponent` — `components/gepa/.../decision_instructions_test.clj`
+- gepa `EveryModelInstructionIsAComponent` — `components/gepa-service/.../decision_instructions_test.clj`
   (DET-E2E-308).
 - End to end on real models (Jev + Gemini): `real_llm_arc_e2e_test.clj` (DET-E2E-309).
 

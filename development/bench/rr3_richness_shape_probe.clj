@@ -41,8 +41,7 @@
   (:require [runner]
             [clojure.data.json :as json]
             [ai.obney.orc.ontology.interface :as ont]
-            [ai.obney.orc.ontology.core.reranker :as reranker]
-            [ai.obney.orc.ontology.core.task-classifier :as tc]))
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
 (def names
   {#uuid "bf47c816-2833-320e-9fbd-6ae109275ab0" "Code-building (PARENT — CORRECT ANSWER)"
@@ -55,8 +54,6 @@
 (def code-building-id #uuid "bf47c816-2833-320e-9fbd-6ae109275ab0")
 (def rename-move-symbol-id #uuid "9880798a-8487-3a24-93e4-b59c5ae5d789")
 
-;; Verbatim from development/bench/el2_inspect_rate.clj — the SAME established
-;; EL-5 refactor-force-fit regression case, not a new one.
 (def refactor-instruction
   "Refactor the order service to extract a pure pricing helper from the request handler, preserving existing behavior and keeping all current tests green.")
 
@@ -67,9 +64,6 @@
 (defn- full-richness? [c]
   (boolean (and (seq (:avoid-when c)) (seq (:strengths c)) (seq (:weaknesses c)))))
 
-;; classify-behaviors' :k is (* 2 :top-n). el2_inspect_rate — the established
-;; EL-5 refactor rate probe — runs with :top-n 5, so the candidate set the EL-5
-;; case is actually reranked over is k = 10. Mirror that exactly.
 (def el5-k 10)
 
 (def ^:private marker-key :ai.obney.orc.ontology.interface/parent-behavior)
@@ -89,21 +83,21 @@
                               :fitness-score 0.5})
                      candidates))
         shaper (if shape?
-                 @(requiring-resolve 'ai.obney.orc.ontology.interface/shape-candidate-richness)
+                 @#'ontology-logic/shape-candidate-richness
                  (fn [cs] (mapv #(dissoc % marker-key) cs)))]
-    (with-redefs-fn {(requiring-resolve 'ai.obney.orc.ontology.interface/shape-candidate-richness) shaper
-                     #'reranker/rerank! stub}
+    (with-redefs-fn {#'ontology-logic/shape-candidate-richness shaper
+                     #'ontology-logic/reranker-rerank! stub}
       (fn []
         (ont/search-descriptions ctx {:query sig
                                       :granularity :behavioral-subtree
-                                      :rerank-with-intent tc/behavioral-classifier-intent
+                                      :rerank-with-intent ontology-logic/behavioral-classifier-intent
                                       :k el5-k})))
     @capture))
 
 (defn -main [& _]
   (runner/start!)
-  (let [ctx (deref (var-get (requiring-resolve 'runner/system-state)))
-        sig (tc/build-task-signature {:instruction refactor-instruction
+  (let [ctx (runner/current-context)
+        sig (ontology-logic/build-task-signature {:instruction refactor-instruction
                                       :reads [:user-message :active-plan :workspace-root]
                                       :writes [:assistant-response]
                                       :mcp-tools ["shell/exec" "fs/read" "fs/list"]})]

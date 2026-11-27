@@ -1,11 +1,12 @@
 (ns ai.obney.orc.orc-service.executor-options-test
-  (:require [ai.obney.orc.orc-service.core.dsl :as dsl]
-            [ai.obney.orc.orc-service.core.executor :as executor]
+  (:require
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [clojure.core.async :as async]
             [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.llm.interface :as llm]))
+            [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (def test-blackboard
   {:question {:key :question
@@ -19,7 +20,7 @@
 
 (deftest llm-dsl-preserves-node-options
   (testing "llm nodes carry per-node executor options"
-    (let [node (dsl/llm "answer"
+    (let [node (service-logic/llm "answer"
                  :model "qwen/qwen3.7-max"
                  :instruction "Answer the question."
                  :reads [:question]
@@ -62,7 +63,7 @@
                        :usage {:prompt_tokens 10
                                :completion_tokens 2
                                :total_tokens 12}})]
-        (let [result (executor/execute-leaf
+        (let [result (service-processors/execute-leaf
                        node test-blackboard :openrouter
                        :options {:use-function-calling? false})]
           (is (= :success (:status result)))
@@ -84,7 +85,7 @@
                     (fn [_provider _module _inputs options]
                       (reset! captured-options options)
                       {:outputs {:answer "4"}})]
-        (let [result (executor/execute-leaf node test-blackboard :openrouter)]
+        (let [result (service-processors/execute-leaf node test-blackboard :openrouter)]
           (is (= :success (:status result)))
           (is (= false (:use-function-calling? @captured-options))))))))
 
@@ -105,7 +106,7 @@
                       (if (= 1 (count @captured-options))
                         (throw (ex-info "recoverable provider failure" {}))
                         {:outputs {:answer "4"}}))]
-        (let [result (executor/execute-leaf
+        (let [result (service-processors/execute-leaf
                       node test-blackboard :openrouter
                       :options {:max-retries 1
                                 :retry-delay-ms 1
@@ -141,7 +142,7 @@
                        [{:orc/event :final
                          :outputs {:answer "streamed"}}]))]
         (let [result
-              (executor/execute-leaf
+              (service-processors/execute-leaf
                node test-blackboard :openrouter
                :options {:max-retries 0
                          :tick-id tick-id
@@ -168,7 +169,7 @@
                 :type :leaf :executor :ai
                 :instruction "Answer." :reads [:question] :writes [:answer]}]
       (with-redefs [llm/predict (fn [& _] (swap! calls inc) {:outputs {:answer "4"}})]
-        (let [result (executor/execute-leaf
+        (let [result (service-processors/execute-leaf
                       node test-blackboard :openrouter
                       :options {:execution-deadline-ms (dec (System/currentTimeMillis))})]
           (is (= :timeout (:status result)))
@@ -191,7 +192,7 @@
                     (fn [& _]
                       (swap! calls inc)
                       (throw (ex-info "provider failure" {})))]
-        (let [result (executor/execute-leaf
+        (let [result (service-processors/execute-leaf
                       node test-blackboard :openrouter
                       :options {:max-retries 1
                                 :retry-delay-ms 1
@@ -215,7 +216,7 @@
                     (fn [_provider _module _inputs options]
                       (reset! captured-options options)
                       {:outputs {:code "(println \"FINAL_ANSWER: 4\")"}})]
-        (let [result (executor/execute-repl-researcher node test-blackboard :openrouter {})]
+        (let [result (service-processors/execute-repl-researcher node test-blackboard :openrouter {})]
           (is (= :success (:status result)))
           (is (= "4" (get-in result [:outputs :answer])))
           (is (= true (:use-function-calling? @captured-options))))))))

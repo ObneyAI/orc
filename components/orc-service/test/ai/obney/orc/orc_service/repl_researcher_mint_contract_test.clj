@@ -8,11 +8,11 @@
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
-            [ai.obney.orc.orc-service.core.executor :as executor]
-            [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (def ^:private mint-body
   {:capabilities ["preserve independently verified claims across branches"]
@@ -92,7 +92,7 @@
 (deftest det-e2e-163-unregistered-mint-command-is-not-a-sandbox-affordance
   (testing "a consumer without the optional ontology command cannot see or invoke minting"
     (h/with-test-context [ctx]
-      (let [rlm-ctx (rlm-sandbox/build-rlm-context
+      (let [rlm-ctx (service-processors/build-rlm-context
                      {:provider :test
                       :blackboard {}
                       :declared-writes [:answer]
@@ -102,7 +102,7 @@
                       :command-registry {}
                       :sheet-id (random-uuid)
                       :tick-id (random-uuid)})
-            result (rlm-sandbox/execute-rlm-code
+            result (service-logic/execute-rlm-code
                     rlm-ctx
                     "(mint-behavior! \"must-not-exist\" {})")]
         (is (re-find #"Could not resolve symbol: mint-behavior!"
@@ -116,5 +116,5 @@
       (is (thrown-with-msg?
            clojure.lang.ExceptionInfo
            #"mint-behavior.*schema.*name.*body.*parent-behavior"
-           (#'executor/registered-mint-behavior-contract
+           (#'service-logic/registered-mint-behavior-contract
             {:ontology/mint-behavioral-subtree identity}))))))

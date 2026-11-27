@@ -39,9 +39,6 @@
             [runner]))
 
 (defn- distinctive-mint-body []
-  ;; Same body shape as the C-Loop-2 verify — a domain unlikely to
-  ;; overlap any seeded behavior so the reranker reliably scores it
-  ;; highest on the matching task signature.
   {:capabilities ["correlates a SLEEP-pattern medical claim against a polysomnography reading"
                   "decodes ICD-10 sleep-apnea variants into a single graded severity score"]
    :strengths [{:trait "domain-specific terminology dictionary applied chunk-by-chunk"
@@ -62,9 +59,6 @@
    :consolidated-from-event-count 0})
 
 (defn- reindex-state [ctx]
-  ;; Use the read-model — :events-since-last-rebuild resets to 0 +
-  ;; :last-rebuild-timestamp updates whenever a :colbert/index-created
-  ;; event lands. Track those across the verify to detect rebuilds.
   (ontology/get-reindex-state ctx))
 
 (defn verify!
@@ -76,11 +70,10 @@
     (throw (ex-info "OPENROUTER_API_KEY must be set" {})))
   (u/start-publisher! {:type :console})
   (runner/start!)
-  (let [ctx (deref @(requiring-resolve 'runner/system-state))
+  (let [ctx (runner/current-context)
         mint-name "qp3-live-verify-polysomnography-grader"
         body (distinctive-mint-body)]
     (try
-      ;; --- Step 1: capture the pre-mint reindex state
       (println "\n--- Step 1: snapshot pre-mint reindex state")
       (let [pre-state (reindex-state ctx)
             pre-rebuild-ts (:last-rebuild-timestamp pre-state)
@@ -88,7 +81,6 @@
             _ (println "  pre-mint :last-rebuild-ts  " pre-rebuild-ts)
             _ (println "  pre-mint events-since-rebuild" (:events-since-last-rebuild pre-state))
 
-            ;; --- Step 2: dispatch the mint
             _ (println "\n--- Step 2: dispatch the mint")
             mint-result (cp/process-command
                           (assoc ctx :command
@@ -101,7 +93,6 @@
             _ (println "  mint dispatched; events emitted:"
                        (count (:command-result/events mint-result)))
 
-            ;; Read the mint event back to get the target-id
             mint-events (into [] (es/read (:event-store ctx)
                                           {:tenant-id (:tenant-id ctx)
                                            :types #{:ontology/behavioral-subtree-minted}}))
@@ -109,9 +100,6 @@
             target-id (:target-id mint-event)
             _ (println "  minted target-id:" target-id)
 
-            ;; --- Step 3: wait for the forced rebuild to land
-            ;; ColBERT bridge is async and slow — poll for the
-            ;; :colbert/index-created count to bump.
             _ (println "\n--- Step 3: wait for forced rebuild to complete")
             rebuild-deadline-ms 90000
             poll-interval-ms 2000
@@ -131,7 +119,6 @@
                                     (do (Thread/sleep poll-interval-ms)
                                         (recur (+ elapsed poll-interval-ms))))))
 
-            ;; --- Step 4: classify-behaviors with a matching task signature
             _ (println "\n--- Step 4: classify-behaviors with a matching task signature")
             task-signature (str "Review clinical notes for sleep apnea claims and produce a "
                                 "severity score using ICD-10 sleep-disorder codes and "
@@ -148,7 +135,6 @@
                          "confidence:" (:confidence b)
                          "fresh-mint?:" (:was-fresh-mint? b)))
 
-            ;; --- Step 5: assert the minted target-id is in the result
             minted-in-result? (some #(= target-id (:behavior-id %)) behaviors)
             pass? (and rebuild-detected? (boolean minted-in-result?))]
 
@@ -176,6 +162,6 @@
       (finally
         (runner/stop!)))))
 
-(comment
+#_(do
   (require '[qp-3-live-verify :as v] :reload)
   (v/verify!))

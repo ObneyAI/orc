@@ -64,7 +64,6 @@
                        :reads [:input]
                        :writes [:output]
                        :judges ["test-judge"]))
-          ;; The llm node is the root node when it's the only node
           llm-node (:root-node workflow)]
       (is (= ["test-judge"] (:judges llm-node))))))
 
@@ -99,17 +98,6 @@
         (is (h/is-anomaly? result))
         (is (= :cognitect.anomalies/not-found (h/anomaly-category result)))))))
 
-;; =============================================================================
-;; Gap-8 RED#6 — :weight on judge-config rejects negative numbers,
-;; accepts both integers and doubles, accepts absence (optional)
-;; =============================================================================
-;;
-;; The composite-score computation in evaluation/judge-runtime treats
-;; :weight as the consumer's declared per-judge weight (Gap-8 RED#4
-;; share-remaining-mass policy normalizes them). The schema MUST reject
-;; negative weights (nonsensical for a probability mass) AND accept
-;; integer literals like `1` (currently rejected because the field is
-;; typed :double — a footgun for consumers who write `:weight 1`).
 
 (defn- declare-judge-schema []
   (get schemas/commands :sheet/declare-judge))
@@ -181,17 +169,14 @@
     (testing "set-node-judges assigns judges to a leaf node"
       (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Node Judges Test"))
             sheet-id (-> sheet-result :command-result/events first :sheet-id)
-            ;; Declare judge first
             _ (h/run-and-apply! ctx (h/make-declare-judge-command
                                       sheet-id
                                       "my-judge"
                                       {:type :completeness :criteria "Test"}))
-            ;; Create a leaf node
             seq-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
             seq-id (-> seq-result :command-result/events first :node-id)
             leaf-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf :parent-id seq-id))
             leaf-id (-> leaf-result :command-result/events first :node-id)
-            ;; Set judges on node
             result (h/run-command ctx (h/make-set-node-judges-command
                                         sheet-id
                                         leaf-id
@@ -303,7 +288,6 @@
                            :judges ["my-judge"])))
             sheet-id (sheet/build-workflow! ctx workflow)
             nodes (rm/get-nodes-for-sheet ctx sheet-id)
-            ;; nodes is a seq of node maps, find the leaf node
             leaf-node (first (filter #(= :leaf (:type %)) nodes))]
         (is (some? leaf-node))
         (is (= ["my-judge"] (:judges leaf-node)))))))

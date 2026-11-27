@@ -4,7 +4,7 @@ Judges that grade what ORC nodes did, durable assessments of every judgment, and
 
 > **Design.** The reasons behind the rubric, the discrete bands and the adversarial stance are in [JUDGE-ARCHITECTURE.md](JUDGE-ARCHITECTURE.md). This document is the reference.
 >
-> **Examples are tested.** Every block marked `;; docs-example: <id>` is run by `components/evaluation/test/ai/obney/orc/evaluation/docs_examples_test.clj`, and that test fails if a block differs from the code it runs.
+> **Examples are tested.** Every block marked `;; docs-example: <id>` is run by `components/evaluation-service/test/ai/obney/orc/evaluation/docs_examples_test.clj`, and that test fails if a block differs from the code it runs.
 
 <p align="center"><img src="media/judges.gif" alt="Judges scoring node outputs asynchronously" width="760"></p>
 <p align="center"><sub>Judges grade the nodes that matter while the work keeps running. <i>Illustrative.</i></sub></p>
@@ -158,7 +158,7 @@ The assessment has `:band` and `:score` and no `:feedback` key.
 
 ## Built-in judges
 
-Four judges ship as workflows (`components/evaluation/src/ai/obney/orc/evaluation/core/judge_behaviours.clj`):
+Four judges ship as workflows (`components/evaluation-service/src/ai/obney/orc/evaluation/core/logic.clj`):
 
 | Type | Grades |
 |---|---|
@@ -470,7 +470,7 @@ The synchronous judge functions still exist and are what GEPA's judge metric cal
 ;; docs-example: synchronous-functions
 (defn mock-grounding-check []
   (judges/with-mock-llm
-    (judges/evaluate-single
+    (evaluation/evaluate-single
      :grounding
      {:inputs {:context "FAQ: The gym is open Monday to Friday, 6am to 10pm."}
       :response "The gym is open Monday to Friday."
@@ -534,14 +534,9 @@ The component ships ORC workflows that run the retained judge functions over a t
 | File | Purpose |
 |---|---|
 | `interface.clj` | public API |
-| `core/judge_behaviours.clj` | the built-in judges as workflows; default rubrics |
-| `core/judge_run.clj` | the one run path of a judge: evidence in, outcome out |
-| `core/judge_runtime.clj` | requests assessments on completion, runs judges, composite, learning records |
-| `core/assessments.clj` | assessment lifecycle and `get-assessments` |
-| `core/commands.clj` | request and record-outcome commands |
-| `core/performance.clj`, `core/node_version.clj` | performance per node version |
-| `core/alerts.clj` | opt-in performance alerts |
-| `core/rubrics.clj`, `core/scale.clj` | built-in criteria, stance and band wording; band to score |
-| `core/heuristic_structural.clj` | the deterministic structural judge |
-| `core/judges.clj`, `core/feedback.clj` | retained synchronous functions and value types |
-| `core/trace_extraction.clj`, `core/sheets.clj` | trace queries; evaluation workflows |
+| `core/logic.clj` | judge workflows, rubrics, scoring, lifecycle reducers and performance calculations |
+| `core/commands.clj` | score recording and assessment outcome commands |
+| `core/todo_processors.clj` | request and run assessments, aggregate scores and emit performance alerts |
+| `core/read_models.clj` | assessment, performance and judge score projections |
+| `core/queries.clj` | assessment, performance and trace queries |
+| `core/judges.clj`, `core/feedback.clj` | synchronous judge configuration and feedback record types |

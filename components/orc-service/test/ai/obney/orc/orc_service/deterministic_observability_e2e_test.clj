@@ -1,13 +1,13 @@
 (ns ai.obney.orc.orc-service.deterministic-observability-e2e-test
   "Deterministic end-to-end coverage for durable execution observability."
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
-            [cognitect.anomalies :as anom]))
+            [cognitect.anomalies :as anom]
+            [ai.obney.orc.orc-service.core.commands :as service-commands]))
 
 (defn uppercase [{:keys [inputs]}]
   {:middle (.toUpperCase ^String (:input inputs))})
@@ -274,17 +274,23 @@
     (h/with-async-test-context [ctx]
       (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-258-trace-refresh"))
             trace-id (random-uuid)
-            node-a {:node-id (random-uuid) :node-type :sequence :status :success}
-            node-b {:node-id (random-uuid) :node-type :leaf :status :success}
-            node-c {:node-id (random-uuid) :node-type :leaf :status :success}
-            node-d {:node-id (random-uuid) :node-type :leaf :status :success}
+            started-at "2026-08-26T12:00:00Z"
+            completed-at "2026-08-26T12:00:01Z"
+            node-trace (fn [node-type path]
+                         {:node-id (random-uuid) :trace-instance-id (random-uuid)
+                          :node-type node-type :node-name (peek path) :path path
+                          :status :success :started-at started-at :completed-at completed-at})
+            node-a (node-trace :sequence ["pipeline"])
+            node-b (node-trace :leaf ["pipeline" "read"])
+            node-c (node-trace :leaf ["pipeline" "transform"])
+            node-d (node-trace :leaf ["pipeline" "write"])
             trace-payload (fn [source-event-count node-traces]
                             {:trace-id trace-id
                              :sheet-id sheet-id
                              :root-trace-id trace-id
                              :child-trace-ids []
-                             :started-at "2026-08-26T12:00:00Z"
-                             :completed-at "2026-08-26T12:00:01Z"
+                             :started-at started-at
+                             :completed-at completed-at
                              :duration-ms 1000
                              :status :success
                              :input-snapshot {}
@@ -292,7 +298,7 @@
                              :source-event-count source-event-count
                              :node-traces node-traces})
             publish! (fn [source-event-count node-traces]
-                       (trace-publication/publish!
+                       (service-commands/publish!
                         ctx (trace-payload source-event-count node-traces)))
             premature-refresh
             (h/run-and-apply!
@@ -302,10 +308,10 @@
                         (trace-payload 4 [node-a node-b node-c node-d])))]
         (is (= ::anom/conflict (::anom/category premature-refresh))
             "a revision cannot become the trace's creation fact")
-        (publish! 3 [node-a node-b node-c])
-        (publish! 2 [node-a node-b])
-        (publish! 3 [node-a node-b])
-        (publish! 4 [node-a node-b node-c node-d])
+        (is (nil? (::anom/category (publish! 3 [node-a node-b node-c]))))
+        (is (= ::anom/conflict (::anom/category (publish! 2 [node-a node-b]))))
+        (is (= ::anom/conflict (::anom/category (publish! 3 [node-a node-b]))))
+        (is (nil? (::anom/category (publish! 4 [node-a node-b node-c node-d]))))
         (let [trace (get-in (h/run-query ctx (h/make-get-trace-query trace-id))
                             [:query/result :trace])
               publications (->> (es/read (:event-store ctx)
@@ -315,9 +321,7 @@
                                           :tags #{[:trace trace-id]}})
                                 (into []))]
           (is (= 4 (:source-event-count trace)))
-          (is (= [node-a node-b node-c node-d]
-                 (mapv #(select-keys % [:node-id :node-type :status])
-                       (:node-traces trace))))
+          (is (= [node-a node-b node-c node-d] (:node-traces trace)))
           (is (= [:sheet/execution-traced :sheet/execution-trace-refreshed]
                  (mapv :event/type publications))
               "creation is singular and a newer assembly is a distinct revision fact")
@@ -381,9 +385,6 @@
     (h/with-async-test-context [ctx]
       (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-118-export-isolation"))
             control (sheet/execute ctx sheet-id {:input "same"})
-            ;; The public trace is the sequence summary plus two durable
-            ;; leaves. The returned :node-trace contains only those leaves,
-            ;; so it cannot be used as the settle count.
             control-trace-ready?
             (h/settle-until!
              #(= 3
@@ -420,7 +421,6 @@
         (is (= :success (:status foreign-result))
             "an unrelated terminal exercises the exporter predicate")
         (is control-trace-ready? "the durable control trace is fully projected")
-        ;; The exporter worker is deliberately blocked while all workflows run.
         (is (every? #(= (select-keys control [:status :outputs])
                         (select-keys % [:status :outputs]))
                     results))
@@ -449,9 +449,6 @@
             (is (<= (:max-occupancy before-stop) (:capacity before-stop)))
             (is (:stopped? stopped))
             (is (< elapsed-ms 2000.0))))
-        ;; Verify durable projections after the deliberately blocked exporter
-        ;; has drained and stopped. The exporter may delay sibling subscribers,
-        ;; but it must not alter their eventual durable result.
         (is (every?
              (fn [result]
                (and (h/settle-until!

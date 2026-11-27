@@ -326,13 +326,6 @@
         (is (= {:route "lookup"} (:outputs detail)))
         (is (= record (:decision detail)))))))
 
-;; ---------------------------------------------------------------------------
-;; A finite answer on a conversational model is requested as a structured
-;; (function-calling) response by default. Found live: in marker mode a model
-;; that answers with the bare option id (no field marker) is unparseable,
-;; because the marker parser's whole-text fallback covers only string outputs.
-;; An explicit node option still wins.
-;; ---------------------------------------------------------------------------
 
 (deftest decision-requests-structured-output-by-default
   (h/with-async-test-context [ctx]
@@ -344,10 +337,6 @@
       (is (false? (get-in (first @calls) [:options :use-function-calling?]))
           "an explicit node option wins"))))
 
-;; ---------------------------------------------------------------------------
-;; Boolean decisions may abstain to false (ModelDecision: "false is an offered
-;; option of a yes/no decision")
-;; ---------------------------------------------------------------------------
 
 (defn- holds-workflow [workflow-name & {:as decision-options}]
   (sheet/workflow workflow-name

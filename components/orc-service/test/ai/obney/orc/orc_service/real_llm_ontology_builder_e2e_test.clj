@@ -9,9 +9,9 @@
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.evolutionary :as evolutionary]
             [ai.obney.orc.ontology.interface.schemas]
-            [ai.obney.orc.ontology.core.evolutionary-commands]
             [ai.obney.orc.orc-service.complex-e2e-support :as live]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.ontology.core.commands :as ontology-commands]))
 
 (defn- event-type [event]
   (or (:event/type event) (:type event)))
@@ -100,9 +100,6 @@
                      (pr-str (mapv #(select-keys % [:label :alt-labels :entity-type :source-id])
                                    (vals concepts-by-uri))))))
 
-          ;; Contact the real OpenRouter endpoint with a deliberately invalid
-          ;; credential. This is an actual provider/HTTP failure, not a fake or
-          ;; scripted model. No partial ontology snapshot may become current.
           (let [_ (live/register-openrouter-auth-failure!)
                 before-terminal-count (count (events-of ctx :evolutionary/build-completed))
                 before-snapshot-count (count (events-of ctx :evolutionary/ttl-snapshot-created))

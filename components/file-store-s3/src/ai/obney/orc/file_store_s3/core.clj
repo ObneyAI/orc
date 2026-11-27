@@ -72,21 +72,3 @@
 (defmethod p/start-file-store :s3
   [config]
   (p/start (->S3FileStore config)))
-
-(comment
-  ;; Example usage with LocalStack
-  (def file-store
-    (p/start (->S3FileStore {:s3-bucket "orc-files"
-                             :localstack/enabled true
-                             :localstack/endpoint "http://localhost:4566"
-                             :aws/region "us-east-1"})))
-
-  (def file-id (random-uuid))
-
-  (p/put-file file-store
-              {:file-id file-id
-               :file-contents (byte-array (.getBytes "Hello, world!"))})
-
-  (String. (p/get-file file-store {:file-id file-id}))
-
-  "")

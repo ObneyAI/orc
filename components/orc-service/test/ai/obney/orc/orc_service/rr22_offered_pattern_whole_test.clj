@@ -24,7 +24,6 @@
                 :rerank-fallback? false}})
 
 (def ^:private long-pattern
-  ;; ~6,000 characters of exact, parseable source: forty :llm stages then a final.
   (str "[:sequence\n"
        (str/join "\n" (for [i (range 40)]
                         (format "  [:llm {:reads [:stage-%d] :writes [:stage-%d] :instruction \"refine step %d of the long worked example, keeping every intermediate finding explicit\"}]"

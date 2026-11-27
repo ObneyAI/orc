@@ -61,7 +61,6 @@
       (is (= before (event-records ctx)) "Reading pending work neither dispatches nor finalizes it"))))
 
 (defn- verify-reconstructed-result [{:keys [database tenant-id tick-id expected]}]
-  ;; No processors, schedules, provider, or completion waiter are started.
   (let [ctx (read-context database tenant-id)]
     (try
       (let [before (event-records ctx)
@@ -98,8 +97,6 @@
         manifest {:database database :tenant-id tenant-id :tick-id tick-id :expected expected}]
     (try
       (verify-reconstructed-result manifest)
-      ;; A separate JVM can verify this same durable store after this JVM exits.
-      ;; The test never starts an overlapping child JVM merely to prove recovery.
       (when-let [path (System/getenv "ORC_DURABLE_RESULT_MANIFEST")]
         (spit path (pr-str manifest)))
       (finally

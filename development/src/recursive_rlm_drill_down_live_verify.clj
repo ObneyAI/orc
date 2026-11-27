@@ -22,13 +22,14 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.interface.schemas]
             [litellm.router]
             [ai.obney.orc.llm.interface]
             [clojure.string :as str]
             [clojure.pprint :as pp]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [ai.obney.orc.orc-service.core.logic :as service-logic]
+            [ai.obney.orc.orc-service.core.todo-processors :as service-processors]))
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -74,10 +75,6 @@
       path)))
 
 (defn- doc-text []
-  ;; 3 chunks separated by ===CHUNK===. The MIDDLE chunk is the sentinel —
-  ;; a deliberate poison-pill the sub-LLM is likely to fail on. We frame it
-  ;; as if it's part of the input data, not a system instruction, so it
-  ;; surfaces as a per-chunk failure rather than getting filtered.
   (str "===CHUNK===\n"
        "Section 1 — Partnership Announcement\n"
        "On May 15, 2026, OpenAI announced a partnership with Microsoft "
@@ -105,7 +102,7 @@
 (defn run! []
   (let [ctx (create-context)]
     (try
-      (executor/setup-providers!)
+      (service-logic/setup-providers!)
       (let [node {:type :repl-researcher
                   :instruction
                   (str "Document available: :document (3 sections separated by ===CHUNK===)\n\n"
@@ -140,12 +137,10 @@
             _ (println "Pass criterion: iter 2+ code calls at least one drill-down primitive")
 
             t0 (System/currentTimeMillis)
-            result (executor/execute-repl-researcher-rlm node blackboard :openrouter ctx)
+            result (service-processors/execute-repl-researcher-rlm node blackboard :openrouter ctx)
             elapsed (- (System/currentTimeMillis) t0)
 
             iterations (or (:iterations result) [])
-            ;; Iter 1 emits the tree; drill-down primitives are only relevant
-            ;; in iter 2+ (after the tree returned). Look there for usage.
             post-tree-iters (drop 1 iterations)
             all-post-tree-code (str/join "\n\n" (map iter-code post-tree-iters))
             primitives-found (primitives-used-in-code all-post-tree-code)]
@@ -196,4 +191,4 @@
          :iteration-count (count iterations)})
       (finally (stop-context ctx)))))
 
-(comment (run!))
+#_(do (run!))

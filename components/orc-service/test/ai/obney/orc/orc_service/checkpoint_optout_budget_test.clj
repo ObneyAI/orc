@@ -10,9 +10,6 @@
   (:import [com.sun.net.httpserver HttpServer]
            [java.util.concurrent ExecutorService TimeUnit]))
 
-;; The existing rich mixed-family graph is reused verbatim except for explicit
-;; checkpoint opt-out. Native cap4 replaces cap5: the ordinary prefix plus prime
-;; spends four slots, so the inline model call must not reach the transport.
 (defn build-optout! [ctx model variant run]
  (let [build (fn [name node] (orc/build-workflow! ctx (orc/workflow (str run "-" name) (orc/blackboard f/board) node)))
        grandchild (build "extract-grandchild" (f/leaf model "extract" "Copy every complete initial and lookup source record without changing attribution, order, zero or false. For each claim select its freshest observed-at. Normalize selected quantities to whole units using their declared descriptions, then sum into facts.total." [:sources :lookup-sources :purpose] [:extract-reasoning :facts]))
@@ -42,7 +39,6 @@
 (def last-proof (atom nil))
 
 (deftest capped-checkpoint-optout-uses-durable-admission
-  ;; BUDGET-7a: SharedLlmCallBudget applies even with campaign recovery disabled.
   (let [directory (.toFile (java.nio.file.Files/createTempDirectory
                             "orc-optout-budget-" (make-array java.nio.file.attribute.FileAttribute 0)))
         pack (first f/packs) run-id (str "conversation-optout-inline-" (random-uuid))

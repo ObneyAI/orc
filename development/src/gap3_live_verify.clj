@@ -35,7 +35,6 @@
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
             [ai.obney.orc.ontology.core.todo-processors]
-            [ai.obney.orc.ontology.core.consolidator]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.core.commands]
@@ -49,7 +48,10 @@
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.time.interface :as time]
             [com.brunobonacci.mulog :as u]
-            [litellm.router :as litellm-router]))
+            [litellm.router :as litellm-router]
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]
+            [ai.obney.orc.ontology.core.queries :as ontology-queries]
+            [ai.obney.orc.ontology.core.todo-processors :as ontology-processors]))
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -110,7 +112,6 @@
                   :enabled? true}))
         (Thread/sleep 100)
 
-        ;; Lower consolidation threshold so a single observation triggers.
         (println "  → setting consolidation threshold to 1 for :tree-class")
         (cp/process-command
           (assoc ctx :command
@@ -162,8 +163,6 @@
                     :writes {:generated-tree-raw tree-dsl
                              :entities ["Acme Corp" "John Doe" "2026-01-01"]}
                     :duration-ms 12345}))
-          ;; Wait for judges to emit BEFORE assigning the task-class so
-          ;; the auto-trigger sees judge signal in its first run.
           (loop [waited 0]
             (let [n (count (into [] (es/read (:event-store ctx)
                                               {:types #{:judge/score-emitted}
@@ -173,8 +172,6 @@
                 (>= waited 90000) (println "  ⚠ only" n "of 5 emitted after 90s")
                 :else (do (Thread/sleep 2000) (recur (+ waited 2000))))))
 
-          ;; Record the tree-execution-completion so the consolidator
-          ;; can join it with the task-classification.
           (println "  → recording rlm-tree-execution-completion")
           (cp/process-command
             (assoc ctx :command
@@ -190,9 +187,6 @@
                     :duration-ms 12345}))
           (Thread/sleep 200)
 
-          ;; Now assign the task-class — threshold=1 will auto-fire
-          ;; consolidation, and the consolidator will see judges +
-          ;; execution events already in the store.
           (println "  → assigning task-class — triggers consolidation")
           (let [start (System/currentTimeMillis)]
             (cp/process-command
@@ -216,8 +210,6 @@
                       :target-type :tree-class
                       :target-id tree-class-id
                       :on-demand? true}))
-            ;; Wait up to 60s for the consolidator's LLM reflection +
-            ;; emission of :ontology/tree-description-updated
             (loop [waited 0]
               (let [updates (into [] (es/read (:event-store ctx)
                                                {:types #{:ontology/tree-description-updated}
@@ -255,6 +247,6 @@
         (finally
           (stop-context ctx))))))
 
-(comment
+#_(do
   (require '[gap3-live-verify :as v])
   (v/verify!))

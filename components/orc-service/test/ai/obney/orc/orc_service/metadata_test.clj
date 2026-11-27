@@ -8,14 +8,14 @@
    - Infer problem types from names
    - Merge user overrides with extracted metadata"
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.orc-service.core.metadata :as metadata]))
+            [ai.obney.orc.orc-service.core.logic :as service-logic]))
 
 ;; =============================================================================
 ;; Access private functions for testing
 ;; =============================================================================
 
 (def ^:private classify-node-type
-  #'ai.obney.orc.orc-service.core.metadata/classify-node-type)
+  #'service-logic/classify-node-type)
 
 ;; =============================================================================
 ;; classify-node-type Tests
@@ -44,69 +44,69 @@
 (deftest infer-problem-types-classification-test
   (testing "detects Classification from node names"
     (let [nodes [{:name "classify-input"}]
-          result (metadata/infer-problem-types {} nodes [])]
+          result (service-logic/infer-problem-types {} nodes [])]
       (is (some #{"problem:Classification"} result))))
 
   (testing "detects Classification from blackboard keys"
     (let [blackboard [{:key "category-label"}]
-          result (metadata/infer-problem-types {} [] blackboard)]
+          result (service-logic/infer-problem-types {} [] blackboard)]
       (is (some #{"problem:Classification"} result)))))
 
 (deftest infer-problem-types-scoring-test
   (testing "detects Scoring from node names"
     (let [nodes [{:name "score-candidate"}]
-          result (metadata/infer-problem-types {} nodes [])]
+          result (service-logic/infer-problem-types {} nodes [])]
       (is (some #{"problem:Scoring"} result))))
 
   (testing "detects Scoring from rating/rank patterns"
     (let [nodes [{:name "rank-options"}]
-          result (metadata/infer-problem-types {} nodes [])]
+          result (service-logic/infer-problem-types {} nodes [])]
       (is (some #{"problem:Scoring"} result)))))
 
 (deftest infer-problem-types-extraction-test
   (testing "detects DataExtraction from extract patterns"
     (let [nodes [{:name "extract-fields"}]
-          result (metadata/infer-problem-types {} nodes [])]
+          result (service-logic/infer-problem-types {} nodes [])]
       (is (some #{"problem:DataExtraction"} result))))
 
   (testing "detects DataExtraction from parse patterns"
     (let [blackboard [{:key "parsed-data"}]
-          result (metadata/infer-problem-types {} [] blackboard)]
+          result (service-logic/infer-problem-types {} [] blackboard)]
       (is (some #{"problem:DataExtraction"} result)))))
 
 (deftest infer-problem-types-summarization-test
   (testing "detects Summarization"
     (let [nodes [{:name "summarize-document"}]
-          result (metadata/infer-problem-types {} nodes [])]
+          result (service-logic/infer-problem-types {} nodes [])]
       (is (some #{"problem:Summarization"} result)))))
 
 (deftest infer-problem-types-generation-test
   (testing "detects Generation from generate patterns"
     (let [nodes [{:name "generate-response"}]
-          result (metadata/infer-problem-types {} nodes [])]
+          result (service-logic/infer-problem-types {} nodes [])]
       (is (some #{"problem:Generation"} result))))
 
   (testing "detects Generation from create/write patterns"
     (let [blackboard [{:key "draft-content"}]
-          result (metadata/infer-problem-types {} [] blackboard)]
+          result (service-logic/infer-problem-types {} [] blackboard)]
       (is (some #{"problem:Generation"} result)))))
 
 (deftest infer-problem-types-qa-test
   (testing "detects QuestionAnswering"
     (let [nodes [{:name "answer-question"}]
-          result (metadata/infer-problem-types {} nodes [])]
+          result (service-logic/infer-problem-types {} nodes [])]
       (is (some #{"problem:QuestionAnswering"} result)))))
 
 (deftest infer-problem-types-transformation-test
   (testing "detects Transformation"
     (let [nodes [{:name "transform-data"}]
-          result (metadata/infer-problem-types {} nodes [])]
+          result (service-logic/infer-problem-types {} nodes [])]
       (is (some #{"problem:Transformation"} result)))))
 
 (deftest infer-problem-types-comparison-test
   (testing "detects Comparison"
     (let [nodes [{:name "compare-documents"}]
-          result (metadata/infer-problem-types {} nodes [])]
+          result (service-logic/infer-problem-types {} nodes [])]
       (is (some #{"problem:Comparison"} result)))))
 
 (deftest infer-problem-types-multiple-test
@@ -114,8 +114,7 @@
     (let [nodes [{:name "classify-and-score"}
                  {:name "generate-summary"}]
           blackboard [{:key "comparison-result"}]
-          result (metadata/infer-problem-types {} nodes blackboard)]
-      ;; Should detect at least Classification, Scoring, Summarization, Comparison
+          result (service-logic/infer-problem-types {} nodes blackboard)]
       (is (>= (count result) 3))
       (is (some #{"problem:Classification"} result))
       (is (some #{"problem:Scoring"} result))
@@ -124,9 +123,8 @@
 (deftest infer-problem-types-empty-test
   (testing "returns empty vector when no patterns match"
     (let [nodes [{:name "process-data"}]
-          result (metadata/infer-problem-types {} nodes [])]
+          result (service-logic/infer-problem-types {} nodes [])]
       (is (vector? result))
-      ;; "process" doesn't match any heuristics
       (is (empty? result)))))
 
 ;; =============================================================================
@@ -139,7 +137,7 @@
                      :description nil
                      :name "test-sheet"}
           overrides {:problem-types ["problem:Classification" "problem:Generation"]}
-          result (metadata/merge-metadata extracted overrides)]
+          result (service-logic/merge-metadata extracted overrides)]
       (is (= ["problem:Classification" "problem:Generation"]
              (:problem-types result))))))
 
@@ -149,7 +147,7 @@
                      :description nil
                      :name "test-sheet"}
           overrides {:description "Custom description for this workflow"}
-          result (metadata/merge-metadata extracted overrides)]
+          result (service-logic/merge-metadata extracted overrides)]
       (is (= "Custom description for this workflow"
              (:description result))))))
 
@@ -160,7 +158,7 @@
                      :name "test-sheet"
                      :node-count 5}
           overrides {}
-          result (metadata/merge-metadata extracted overrides)]
+          result (service-logic/merge-metadata extracted overrides)]
       (is (= ["problem:Scoring"] (:problem-types result)))
       (is (nil? (:description result)))
       (is (= "test-sheet" (:name result)))
@@ -171,8 +169,7 @@
     (let [extracted {:problem-types ["problem:Scoring"]
                      :description nil}
           overrides {:problem-types []}
-          result (metadata/merge-metadata extracted overrides)]
-      ;; Empty vector is falsy with (seq ...), so original preserved
+          result (service-logic/merge-metadata extracted overrides)]
       (is (= ["problem:Scoring"] (:problem-types result))))))
 
 (deftest merge-metadata-both-overrides-test
@@ -182,7 +179,7 @@
                      :name "original"}
           overrides {:problem-types ["problem:QA"]
                      :description "New description"}
-          result (metadata/merge-metadata extracted overrides)]
+          result (service-logic/merge-metadata extracted overrides)]
       (is (= ["problem:QA"] (:problem-types result)))
       (is (= "New description" (:description result)))
       (is (= "original" (:name result))))))

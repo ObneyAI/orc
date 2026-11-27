@@ -54,10 +54,9 @@
   [outputs expected]
   (cond
     (nil? expected)
-    1.0  ;; No expectation means success
+    1.0
 
     (map? expected)
-    ;; Compare each key
     (let [keys (keys expected)
           matches (for [k keys]
                     (let [output (get outputs k)
@@ -68,7 +67,6 @@
         (/ (reduce + matches) (count matches))))
 
     :else
-    ;; Single expected value - check against first output
     (let [first-output (first (vals outputs))]
       (if (pattern-match? first-output expected) 1.0 0.0))))
 
@@ -124,13 +122,11 @@
     :inputs inputs
     :expected expected}"
   [ctx phase1-sheet-id phase2-sheet-id inputs expected]
-  (let [;; Run Phase 1
+  (let [
         phase1-result (execute-with-metrics ctx phase1-sheet-id inputs expected)
 
-        ;; Run Phase 2
         phase2-result (execute-with-metrics ctx phase2-sheet-id inputs expected)
 
-        ;; Determine winners
         accuracy-winner (cond
                           (> (:accuracy phase1-result) (:accuracy phase2-result)) :phase1
                           (< (:accuracy phase1-result) (:accuracy phase2-result)) :phase2
@@ -179,7 +175,6 @@
                         (run-comparison ctx phase1-sheet-id phase2-sheet-id inputs expected))
                       test-cases)
 
-        ;; Calculate averages
         phase1-results (map :phase1 results)
         phase2-results (map :phase2 results)
 
@@ -201,7 +196,6 @@
                         :success-rate (/ (count (filter #(= :success (:status %)) phase2-results))
                                          (max 1 (count phase2-results)))}
 
-        ;; Determine overall winner based on accuracy
         overall-winner (cond
                          (> (:avg-accuracy phase1-summary) (:avg-accuracy phase2-summary)) :phase1
                          (< (:avg-accuracy phase1-summary) (:avg-accuracy phase2-summary)) :phase2
@@ -255,30 +249,3 @@
          "  Tokens: " (format "%.0f" (float (:avg-tokens phase2))) "\n"
          "  Success Rate: " (format "%.1f%%" (* 100 (float (:success-rate phase2)))) "\n"
          "\nOverall Winner: " (name overall-winner) "\n")))
-
-(comment
-  ;; Example usage
-
-  ;; Run single comparison
-  (def result
-    (run-comparison ctx
-      phase1-sheet-id
-      phase2-sheet-id
-      {:question "How do I trace LLM calls in Langfuse?"}
-      {:answer #"trace|Langfuse"}))
-
-  (println (format-comparison-report result))
-
-  ;; Run batch comparison
-  (def batch-result
-    (batch-comparison ctx
-      phase1-sheet-id
-      phase2-sheet-id
-      [{:inputs {:question "How do I trace LLM calls?"}
-        :expected {:answer #"trace"}}
-       {:inputs {:question "What is the Python SDK?"}
-        :expected {:answer #"Python|SDK"}}
-       {:inputs {:question "How do sessions work?"}
-        :expected {:answer #"session"}}]))
-
-  (println (format-batch-summary batch-result)))

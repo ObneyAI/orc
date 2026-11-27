@@ -6,12 +6,12 @@
    fire (1) without also firing (3) — the escalation trigger.
 
    Run: clojure -M:dev -m el5-separability-probe"
-  (:require [ai.obney.orc.ontology.core.embedding :as emb]))
+  (:require
+            [ai.obney.orc.ontology.core.logic :as ontology-logic]))
 
 (def refactor-task
   "INSTRUCTION:\nRefactor the order service to extract a pure pricing helper from the request handler, preserving existing behavior and keeping all current tests green.\n\nREADS: :user-message :active-plan :workspace-root\nWRITES: :assistant-response\nMCP-TOOLS: shell/exec fs/read fs/list\nBROWSER-TOOLS: (none)")
 
-;; Case (1): rename-move-symbol on the refactor task (the force-fit we must fire).
 (def rename-avoid
   ["the task changes behavior or adds functionality — that is code-building, not a behavior-preserving rename/move"
    "the change is a data reshape rather than an identity refactor of code symbols — that is the Transformation behavior"
@@ -23,7 +23,6 @@
    "the symbol is referenced from multiple files including tests"
    "a build or test command exists to confirm exhaustiveness and behavior preservation"])
 
-;; Case (3): a web-search behavior on a plain web-search task (must NOT fire).
 (def websearch-task
   "INSTRUCTION:\nSearch the web for the latest documentation on the payment API and summarize what you find.\n\nREADS: :user-message\nWRITES: :assistant-response\nMCP-TOOLS: web/search\nBROWSER-TOOLS: (none)")
 (def websearch-avoid
@@ -35,12 +34,12 @@
 
 (defn max-cos [task-emb strings]
   (->> strings
-       (keep (fn [s] (when (seq s) (emb/cosine-similarity task-emb (emb/embed-text s)))))
+       (keep (fn [s] (when (seq s) (ontology-logic/embedding-cosine-similarity task-emb (ontology-logic/embedding-embed-text s)))))
        (apply max)))
 
 (defn -main [& _]
-  (let [r-emb (emb/embed-text refactor-task)
-        w-emb (emb/embed-text websearch-task)
+  (let [r-emb (ontology-logic/embedding-embed-text refactor-task)
+        w-emb (ontology-logic/embedding-embed-text websearch-task)
         r-avoid (max-cos r-emb rename-avoid)
         r-good  (max-cos r-emb rename-good)
         r-diff  (- r-avoid r-good)

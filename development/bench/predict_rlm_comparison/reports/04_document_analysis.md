@@ -1,7 +1,7 @@
 # Document Analysis — ORC RLM vs predict-rlm
 
 **Date:** 2026-05-19
-**Run:** [`results/document-analysis_2026-05-19_131441.edn`](../results/document-analysis_2026-05-19_131441.edn)
+**Run:** [Archived run `document-analysis_2026-05-19_131441.edn`](../../README.md#archived-may-2026-benchmark-captures)
 **Task source:** [`development/bench/document_analysis.clj`](../../document_analysis.clj) (ns `document-analysis`)
 **Reference:** [`references/predict-rlm/document_analysis/sample/output/report.md`](../references/predict-rlm/document_analysis/sample/output/report.md)
 **Source document:** YYJ-2025-Parking-Management-RFP (Victoria International Airport, ~280K chars / 136 pages — same RFP predict-rlm uses)
