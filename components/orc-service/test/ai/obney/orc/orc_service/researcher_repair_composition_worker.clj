@@ -54,15 +54,20 @@
           (let [url (io/resource resource)
                 _ (assert url (str "Missing source resource: " resource))
                 bytes (.getBytes (slurp url) "UTF-8")]
-            {:resource resource :url (str url)
+            {:resource resource
+             :url (str (if (= "file" (.getProtocol url))
+                         (.toURI (.getCanonicalFile (io/file url)))
+                         url))
              :sha256 (format "%064x" (java.math.BigInteger. 1
                                       (.digest (java.security.MessageDigest/getInstance "SHA-256") bytes)))}))
         source-resources))
 (defn guard-sources! [dir mode]
   (let [expected (read! (io/file dir "expected-sources.edn"))
         actual (source-evidence)]
-    (assert (= expected actual) "Worker sources must match the invoking test JVM")
-    (save! dir (str mode "-sources.edn") actual)))
+    (save! dir (str mode "-sources.edn") actual)
+    (assert (= expected actual)
+            (str "Worker sources must match the invoking test JVM: "
+                 (first (remove (fn [[a b]] (= a b)) (map vector expected actual)))))))
 (defn process-info []
   (let [p (java.lang.ProcessHandle/current) info (.info p)]
     {:pid (.pid p) :command (.orElse (.command info) "")
@@ -150,7 +155,7 @@
 (defn launch! [mode dir url]
   (let [argv [(str (System/getProperty "java.home") "/bin/java") "-Xmx768m"
               "--add-opens=java.base/java.nio=ALL-UNNAMED" "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
-              "-cp" (System/getProperty "java.class.path") "clojure.main" "-m" "ai.obney.orc.orc-service.researcher-repair-composition-worker" mode (str dir) url]
+              "-cp" (h/fresh-jvm-classpath) "clojure.main" "-m" "ai.obney.orc.orc-service.researcher-repair-composition-worker" mode (str dir) url]
         b (ProcessBuilder. ^java.util.List argv)]
     (.redirectErrorStream b true) (.redirectOutput b (io/file dir (str mode ".log")))
     (let [p (.start b)] (save! dir (str mode "-launch.edn") {:pid (.pid p) :argv argv}) p)))
@@ -166,13 +171,15 @@
       (let [p (launch! "prepare" dir (:url s)) _ (swap! owned conj p)
             ready (io/file dir "pending.edn")]
         (h/settle-until! #(or (.exists ready) (not (.isAlive p))) :timeout-ms 90000)
-        (assert (.exists ready) (str "Missing pending gate; see " dir))
+        (assert (.exists ready)
+                (h/worker-diagnostic "Missing pending gate" p (io/file dir "prepare.log")))
         (save! dir "prepare-exit.edn" {:pid (.pid p) :exit (kill-owned! p)})
         (let [q (launch! "recover" dir (:url s)) _ (swap! owned conj q)
               closed (.waitFor q 90 TimeUnit/SECONDS)]
-          (assert closed "Recovery worker timed out")
+          (assert closed (h/worker-diagnostic "Recovery worker timed out" q (io/file dir "recover.log")))
           (save! dir "recover-exit.edn" {:pid (.pid q) :exit (.exitValue q)})
-          (assert (zero? (.exitValue q)) "Recovery worker failed")
+          (assert (zero? (.exitValue q))
+                  (h/worker-diagnostic "Recovery worker failed" q (io/file dir "recover.log")))
           (let [r (read! (io/file dir "recovered.edn"))]
             (assert (= :success (get-in r [:tick :root-status])) "Actual parent must succeed")
             (assert (= {:count 14 :enabled false :note nil} (:answer (first (:writes r)))) "Exact canonical native answer required"))))

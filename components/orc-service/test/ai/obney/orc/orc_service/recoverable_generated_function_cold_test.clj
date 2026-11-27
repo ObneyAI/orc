@@ -9,7 +9,7 @@
   (let [java (str (System/getProperty "java.home") "/bin/java")
         command [java "--add-opens=java.base/java.nio=ALL-UNNAMED"
                  "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED" "-Xmx768m"
-                 "-cp" (System/getProperty "java.class.path") "clojure.main" "-m"
+                 "-cp" (h/fresh-jvm-classpath) "clojure.main" "-m"
                  "ai.obney.orc.orc-service.recoverable-function-worker" mode (str dir)]
         builder (ProcessBuilder. ^java.util.List command)]
     (.redirectErrorStream builder true)
@@ -28,7 +28,8 @@
             _ (swap! owned conj first-worker)
             ready (io/file dir "pending.edn")]
         (h/settle-until! #(or (.exists ready) (not (.isAlive first-worker))) :timeout-ms 90000)
-        (is (.exists ready) (str "Prepare fixture: " dir))
+        (is (.exists ready)
+            (h/worker-diagnostic "Missing pending gate" first-worker (io/file dir "prepare-console.txt")))
         (when (.exists ready)
           (let [manifest (read-edn (io/file dir "manifest.edn"))
                 pending (read-edn ready)
@@ -45,9 +46,13 @@
             (is (= (:deadline manifest) (get-in pending [:snapshot :options :execution-deadline-ms])))
             (end-owned! first-worker)
             (let [second-worker (launch! "recover" dir)
-                  _ (swap! owned conj second-worker)]
-              (is (.waitFor second-worker 90 TimeUnit/SECONDS) (str "Recovery fixture: " dir))
-              (is (= 0 (.exitValue second-worker)) (str "Recovery console: " dir))
+                  _ (swap! owned conj second-worker)
+                  exited? (.waitFor second-worker 90 TimeUnit/SECONDS)
+                  console (io/file dir "recover-console.txt")]
+              (is exited? (h/worker-diagnostic "Recovery worker timed out" second-worker console))
+              (when exited?
+                (is (zero? (.exitValue second-worker))
+                    (h/worker-diagnostic "Recovery worker failed" second-worker console)))
               (is (.exists (io/file dir "recovered.edn")))
               (when (.exists (io/file dir "recovered.edn"))
                 (let [recovered (read-edn (io/file dir "recovered.edn"))

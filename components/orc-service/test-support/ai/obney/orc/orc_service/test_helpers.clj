@@ -18,10 +18,37 @@
             [ai.obney.grain.time.interface :as time]
             [ai.obney.grain.fressian-util.interface :as fressian-util]
             [clojure.data.fressian :as fressian]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.walk :as walk])
   (:import [java.io File]))
 
+
+(defn fresh-jvm-classpath
+  "Carry the active test loader's paths into a new process. Polylith loads
+   project tests in a URLClassLoader without changing java.class.path."
+  []
+  (let [loaders (reverse (take-while some?
+                                   (iterate #(.getParent ^ClassLoader %)
+                                            (clojure.lang.RT/baseLoader))))
+        loader-paths (for [loader loaders
+                           :when (instance? java.net.URLClassLoader loader)
+                           url (.getURLs ^java.net.URLClassLoader loader)]
+                       (.getPath (io/file (.toURI url))))
+        bootstrap-paths (str/split (System/getProperty "java.class.path")
+                                  (re-pattern (java.util.regex.Pattern/quote
+                                               java.io.File/pathSeparator)))]
+    (str/join java.io.File/pathSeparator (distinct (concat loader-paths bootstrap-paths)))))
+
+(defn worker-diagnostic
+  "Describe the child process and include its last console lines in CI output."
+  [message ^Process process log-file]
+  (str message " ("
+       (if (.isAlive process) "still running" (str "exit " (.exitValue process)))
+       "), log " log-file
+       (when (.isFile (io/file log-file))
+         (with-open [reader (io/reader log-file)]
+           (str "\n" (str/join "\n" (take-last 30 (line-seq reader))))))))
 
 (defn- record-put
   "Accumulate one put into the stats map, both in total and per cache key.
